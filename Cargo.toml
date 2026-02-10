@@ -1,0 +1,59 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/micro-types",
+    "crates/micro-config",
+    "crates/micro-auth",
+    "crates/micro-provider",
+    "crates/micro-models",
+    "crates/micro-tools",
+    "crates/micro-session",
+    "crates/micro-context",
+    "crates/micro-skills",
+    "crates/micro-commands",
+    "crates/micro-policy",
+    "crates/micro-agent",
+    "crates/micro-testkit",
+    "crates/micro-tui",
+    "crates/micro-cli",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+
+[workspace.dependencies]
+micro-types = { path = "crates/micro-types" }
+micro-auth = { path = "crates/micro-auth" }
+micro-config = { path = "crates/micro-config" }
+micro-provider = { path = "crates/micro-provider" }
+micro-models = { path = "crates/micro-models" }
+micro-tools = { path = "crates/micro-tools" }
+micro-session = { path = "crates/micro-session" }
+micro-context = { path = "crates/micro-context" }
+micro-skills = { path = "crates/micro-skills" }
+micro-commands = { path = "crates/micro-commands" }
+micro-policy = { path = "crates/micro-policy" }
+micro-agent = { path = "crates/micro-agent" }
+micro-testkit = { path = "crates/micro-testkit" }
+micro-tui = { path = "crates/micro-tui" }
+
+anyhow = "1"
+async-trait = "0.1"
+clap = { version = "4", features = ["derive", "env"] }
+crossterm = { version = "0.29", features = ["bracketed-paste", "event-stream"] }
+futures = "0.3"
+ratatui = "0.30"
+reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "fs", "io-util", "sync", "time", "signal"] }
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+strip = true
+panic = "abort"

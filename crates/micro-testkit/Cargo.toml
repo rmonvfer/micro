@@ -1,0 +1,21 @@
+[package]
+name = "micro-testkit"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+micro-agent = { workspace = true }
+micro-context = { workspace = true }
+micro-provider = { workspace = true }
+micro-tools = { workspace = true }
+micro-types = { workspace = true }
+
+async-trait = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+
+[dev-dependencies]
+# `test-util` lets the retry tests run the agent's backoff on paused virtual time
+# instead of waiting out the real delays.
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "test-util"] }

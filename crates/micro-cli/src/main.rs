@@ -1,0 +1,221 @@
+//! Entry point. With no subcommand it opens the interface; `--print` runs one prompt and
+//! exits.
+
+mod approver;
+mod commands;
+mod headless;
+mod runtime;
+mod share;
+mod subcommands;
+
+use anyhow::Result;
+use clap::Parser;
+use clap::Subcommand;
+use micro_types::Message;
+use micro_types::ThinkingLevel;
+use runtime::Selection;
+use std::path::PathBuf;
+
+#[derive(Parser)]
+#[command(name = "micro", version, about = "A small coding agent")]
+struct Cli {
+    /// The prompt to run. Without --print this seeds the interface.
+    prompt: Vec<String>,
+
+    #[command(subcommand)]
+    command: Option<Command>,
+
+    /// Run the prompt and exit instead of opening the interface.
+    #[arg(short = 'p', long)]
+    print: bool,
+
+    /// Model to use: an id, a provider-qualified id, a unique prefix, or an alias.
+    #[arg(short, long, env = "MICRO_MODEL")]
+    model: Option<String>,
+
+    /// Provider to use, when the model alone does not determine one.
+    #[arg(long, env = "MICRO_PROVIDER")]
+    provider: Option<String>,
+
+    /// Extended thinking effort.
+    #[arg(long, value_parser = parse_thinking, default_value = "off")]
+    thinking: ThinkingLevel,
+
+    /// Workspace root. Tools cannot read or write outside it.
+    #[arg(short = 'C', long, default_value = ".")]
+    cwd: PathBuf,
+
+    /// Resume a saved session by id.
+    #[arg(long, value_name = "ID")]
+    resume: Option<String>,
+
+    /// Resume the most recent session for this workspace.
+    #[arg(long = "continue", conflicts_with = "resume")]
+    continue_latest: bool,
+
+    /// Suppress tool progress on stderr.
+    #[arg(short, long)]
+    quiet: bool,
+
+    /// How much the agent may do without asking.
+    #[arg(long, value_parser = parse_mode, default_value = "cautious")]
+    approve: micro_policy::Mode,
+}
+
+#[derive(Subcommand)]
+enum Command {
+    /// Manage provider credentials.
+    Auth {
+        #[command(subcommand)]
+        action: AuthAction,
+    },
+    /// List models in the catalog.
+    Models {
+        /// Only show models matching this query.
+        query: Option<String>,
+        /// Merge live provider listings before showing the catalog.
+        #[arg(long)]
+        live: bool,
+    },
+    /// Inspect saved sessions.
+    Sessions {
+        #[command(subcommand)]
+        action: Option<SessionAction>,
+    },
+}
+
+#[derive(Subcommand)]
+enum AuthAction {
+    /// Sign in to a provider.
+    Login { provider: String },
+    /// Adopt the credentials agent47 already holds.
+    Import {
+        /// Replace credentials micro already has.
+        #[arg(long)]
+        overwrite: bool,
+    },
+    /// Remove a stored credential.
+    Logout { provider: String },
+    /// Show which providers are configured.
+    Status,
+}
+
+#[derive(Subcommand)]
+enum SessionAction {
+    /// List sessions, most recent first.
+    List {
+        /// Include sessions from every workspace.
+        #[arg(long)]
+        all: bool,
+    },
+    /// Delete a session.
+    Delete { id: String },
+}
+
+fn parse_mode(value: &str) -> Result<micro_policy::Mode, String> {
+    match value {
+        "cautious" => Ok(micro_policy::Mode::Cautious),
+        "workspace" => Ok(micro_policy::Mode::Workspace),
+        "unrestricted" => Ok(micro_policy::Mode::Unrestricted),
+        other => Err(format!(
+            "unknown approval mode `{other}`: expected cautious, workspace, or unrestricted"
+        )),
+    }
+}
+
+fn parse_thinking(value: &str) -> Result<ThinkingLevel, String> {
+    match value {
+        "off" => Ok(ThinkingLevel::Off),
+        "low" => Ok(ThinkingLevel::Low),
+        "medium" => Ok(ThinkingLevel::Medium),
+        "high" => Ok(ThinkingLevel::High),
+        other => Err(format!("unknown thinking level: {other}")),
+    }
+}
+
+#[tokio::main]
+async fn main() -> Result<()> {
+    let cli = Cli::parse();
+
+    match &cli.command {
+        Some(Command::Auth { action }) => {
+            return match action {
+                AuthAction::Login { provider } => subcommands::auth_login(provider).await,
+                AuthAction::Import { overwrite } => subcommands::auth_import(*overwrite).await,
+                AuthAction::Logout { provider } => subcommands::auth_logout(provider).await,
+                AuthAction::Status => subcommands::auth_status().await,
+            }
+        }
+        Some(Command::Models { query, live }) => {
+            return subcommands::models(query.as_deref(), *live).await
+        }
+        Some(Command::Sessions { action }) => {
+            // Sessions are recorded against the resolved workspace, so listing has to use
+            // the same one rather than wherever the shell happens to be.
+            let root = runtime::workspace(&cli.cwd)?;
+            return match action {
+                Some(SessionAction::List { all }) => subcommands::sessions_list(&root, *all).await,
+                Some(SessionAction::Delete { id }) => subcommands::sessions_delete(id).await,
+                None => subcommands::sessions_list(&root, false).await,
+            };
+        }
+        None => {}
+    }
+
+    let root = runtime::workspace(&cli.cwd)?;
+    // Each front end answers the policy its own way: the non-interactive path prompts on
+    // the terminal, while the interface routes requests to a modal over the transcript.
+    let (approver, approvals): (std::sync::Arc<dyn micro_policy::Approver>, _) = match cli.print {
+        true => (std::sync::Arc::new(approver::TerminalApprover), None),
+        false => {
+            let (approver, requests) = micro_tui::approval_channel();
+            (approver, Some(requests))
+        }
+    };
+
+    let selection = Selection {
+        model: cli.model.clone(),
+        provider: cli.provider.clone(),
+        thinking: cli.thinking,
+        mode: cli.approve,
+        approver,
+    };
+
+    let resume = match (&cli.resume, cli.continue_latest) {
+        (Some(id), _) => Some(id.clone()),
+        (None, true) => Some(subcommands::latest_session(&root).await?),
+        (None, false) => None,
+    };
+
+    let built = runtime::build(&root, &selection, resume.as_deref()).await?;
+    let writer = runtime::persist(built.session, built.recorder);
+    let prompt = cli.prompt.join(" ");
+
+    let result = if cli.print {
+        if prompt.trim().is_empty() {
+            anyhow::bail!("--print needs a prompt");
+        }
+        headless::run(built.agent, Message::user(prompt), cli.quiet).await
+    } else {
+        let options = micro_tui::TuiOptions {
+            cwd: root.clone(),
+            model: built.model.qualified_id(),
+            context_window: built.model.context_window,
+            thinking: cli.thinking,
+            approvals,
+            // Without this every submitted line goes to the model, `/help` included.
+            commands: Some(Box::new(built.commands)),
+            ..micro_tui::TuiOptions::default()
+        };
+        // The conversation is persisted through the recorder, so the transcript the
+        // interface hands back on exit is already on disk.
+        micro_tui::run_with(built.agent, built.history, options)
+            .await
+            .map(|_| ())
+    };
+
+    // The agent has been dropped by now, which closes the recorder and ends the writer.
+    // Waiting for it guarantees every message reached the log before the process exits.
+    let _ = writer.await;
+    result
+}

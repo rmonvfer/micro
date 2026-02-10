@@ -1,0 +1,109 @@
+{
+  "data": [
+    {
+      "id": "claude-opus-5",
+      "name": "Claude Opus 5",
+      "vendor": "Anthropic",
+      "version": "claude-opus-5",
+      "model_picker_enabled": true,
+      "policy": { "state": "enabled", "terms": "Preview terms apply." },
+      "capabilities": {
+        "type": "chat",
+        "family": "claude-opus-5",
+        "tokenizer": "o200k_base",
+        "limits": {
+          "max_context_window_tokens": 1000000,
+          "max_output_tokens": 64000,
+          "max_prompt_tokens": 936000
+        },
+        "supports": {
+          "streaming": true,
+          "tool_calls": true,
+          "parallel_tool_calls": true,
+          "vision": true
+        }
+      }
+    },
+    {
+      "id": "gpt-5.6-terra",
+      "name": "GPT-5.6 Terra",
+      "vendor": "Azure OpenAI",
+      "version": "gpt-5.6-terra",
+      "model_picker_enabled": true,
+      "capabilities": {
+        "type": "chat",
+        "family": "gpt-5.6-terra",
+        "limits": {
+          "max_context_window_tokens": 1050000,
+          "max_output_tokens": 128000
+        },
+        "supports": {
+          "streaming": true,
+          "tool_calls": true,
+          "vision": true
+        }
+      }
+    },
+    {
+      "id": "kimi-k3",
+      "name": "Kimi K3",
+      "vendor": "Moonshot AI",
+      "model_picker_enabled": true,
+      "capabilities": {
+        "type": "chat",
+        "family": "kimi-k3",
+        "limits": {
+          "max_context_window_tokens": 1048576,
+          "max_output_tokens": 131072
+        },
+        "supports": {
+          "streaming": true,
+          "tool_calls": true
+        }
+      }
+    },
+    {
+      "id": "text-embedding-3-small",
+      "name": "Embedding V3 small",
+      "vendor": "Azure OpenAI",
+      "model_picker_enabled": false,
+      "capabilities": {
+        "type": "embeddings",
+        "family": "text-embedding-3-small",
+        "limits": { "max_inputs": 256 },
+        "supports": {}
+      }
+    },
+    {
+      "id": "claude-opus-4.8",
+      "name": "Claude Opus 4.8",
+      "vendor": "Anthropic",
+      "model_picker_enabled": true,
+      "policy": { "state": "disabled", "terms": "Enable in settings." },
+      "capabilities": {
+        "type": "chat",
+        "family": "claude-opus-4.8",
+        "limits": {
+          "max_context_window_tokens": 200000,
+          "max_output_tokens": 64000
+        },
+        "supports": { "streaming": true, "tool_calls": true, "vision": true }
+      }
+    },
+    {
+      "id": "gpt-4o-mini-no-tools",
+      "name": "GPT-4o mini (no tools)",
+      "vendor": "Azure OpenAI",
+      "model_picker_enabled": true,
+      "capabilities": {
+        "type": "chat",
+        "family": "gpt-4o-mini",
+        "limits": {
+          "max_context_window_tokens": 128000,
+          "max_output_tokens": 16384
+        },
+        "supports": { "streaming": true, "tool_calls": false }
+      }
+    }
+  ]
+}

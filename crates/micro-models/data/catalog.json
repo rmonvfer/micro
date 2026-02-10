@@ -1,0 +1,420 @@
+{
+  "providers": {
+    "openrouter": {
+      "name": "OpenRouter",
+      "base_url": "https://openrouter.ai/api/v1",
+      "api": "openai-completions",
+      "models": [
+        {
+          "id": "anthropic/claude-opus-5",
+          "name": "Claude Opus 5",
+          "context_window": 1000000,
+          "max_output_tokens": 128000,
+          "reasoning": true,
+          "input": ["text", "image", "pdf"],
+          "aliases": ["opus"],
+          "cost": { "input": 5.0, "output": 25.0, "cache_read": 0.5, "cache_write": 6.25 }
+        },
+        {
+          "id": "anthropic/claude-sonnet-5",
+          "name": "Claude Sonnet 5",
+          "context_window": 1000000,
+          "max_output_tokens": 128000,
+          "reasoning": true,
+          "input": ["text", "image", "pdf"],
+          "aliases": ["sonnet"],
+          "cost": { "input": 2.0, "output": 10.0, "cache_read": 0.2, "cache_write": 2.5 }
+        },
+        {
+          "id": "anthropic/claude-fable-5",
+          "name": "Claude Fable 5",
+          "context_window": 1000000,
+          "max_output_tokens": 128000,
+          "reasoning": true,
+          "input": ["text", "image", "pdf"],
+          "aliases": ["fable"],
+          "cost": { "input": 10.0, "output": 50.0, "cache_read": 1.0, "cache_write": 12.5 }
+        },
+        {
+          "id": "anthropic/claude-haiku-4.5",
+          "name": "Claude Haiku 4.5",
+          "context_window": 200000,
+          "max_output_tokens": 64000,
+          "reasoning": true,
+          "input": ["text", "image", "pdf"],
+          "aliases": ["haiku"],
+          "cost": { "input": 1.0, "output": 5.0, "cache_read": 0.1, "cache_write": 1.25 }
+        },
+        {
+          "id": "openai/gpt-5.6-terra",
+          "name": "GPT-5.6 Terra",
+          "context_window": 1050000,
+          "max_output_tokens": 128000,
+          "reasoning": true,
+          "input": ["text", "image", "pdf"],
+          "cost": { "input": 1.0, "output": 6.0, "cache_read": 0.1, "cache_write": 1.25 }
+        },
+        {
+          "id": "openai/gpt-5.6-luna",
+          "name": "GPT-5.6 Luna",
+          "context_window": 1050000,
+          "max_output_tokens": 128000,
+          "reasoning": true,
+          "input": ["text", "image", "pdf"],
+          "cost": { "input": 0.1, "output": 0.6, "cache_read": 0.01, "cache_write": 0.125 }
+        },
+        {
+          "id": "openai/gpt-5.4-mini",
+          "name": "GPT-5.4 Mini",
+          "context_window": 400000,
+          "max_output_tokens": 128000,
+          "reasoning": true,
+          "input": ["text", "image", "pdf"],
+          "cost": { "input": 0.75, "output": 4.5, "cache_read": 0.075, "cache_write": 0.0 }
+        },
+        {
+          "id": "google/gemini-3.6-flash",
+          "name": "Gemini 3.6 Flash",
+          "context_window": 1048576,
+          "max_output_tokens": 65536,
+          "reasoning": true,
+          "input": ["text", "image", "audio", "video", "pdf"],
+          "cost": { "input": 1.5, "output": 7.5, "cache_read": 0.15, "cache_write": 0.083333 }
+        },
+        {
+          "id": "google/gemini-3.1-pro-preview",
+          "name": "Gemini 3.1 Pro Preview",
+          "context_window": 1048576,
+          "max_output_tokens": 65536,
+          "reasoning": true,
+          "input": ["text", "image", "audio", "video", "pdf"],
+          "cost": { "input": 2.0, "output": 12.0, "cache_read": 0.2, "cache_write": 0.375 }
+        },
+        {
+          "id": "x-ai/grok-4.5",
+          "name": "Grok 4.5",
+          "context_window": 500000,
+          "max_output_tokens": 128000,
+          "reasoning": true,
+          "input": ["text", "image", "pdf"],
+          "aliases": ["grok"],
+          "cost": { "input": 2.0, "output": 6.0, "cache_read": 0.3, "cache_write": 0.0 }
+        },
+        {
+          "id": "moonshotai/kimi-k3",
+          "name": "Kimi K3",
+          "context_window": 1048576,
+          "max_output_tokens": 131072,
+          "reasoning": true,
+          "input": ["text", "image"],
+          "aliases": ["kimi"],
+          "cost": { "input": 3.0, "output": 15.0, "cache_read": 0.3, "cache_write": 0.0 }
+        },
+        {
+          "id": "z-ai/glm-5.2",
+          "name": "GLM 5.2",
+          "context_window": 262144,
+          "max_output_tokens": 262144,
+          "reasoning": true,
+          "input": ["text"],
+          "aliases": ["glm"],
+          "cost": { "input": 0.76, "output": 2.42, "cache_read": 0.14, "cache_write": 0.0 }
+        },
+        {
+          "id": "deepseek/deepseek-v4-pro",
+          "name": "DeepSeek V4 Pro",
+          "context_window": 1048576,
+          "max_output_tokens": 384000,
+          "reasoning": true,
+          "input": ["text"],
+          "aliases": ["deepseek"],
+          "cost": { "input": 0.435, "output": 0.87, "cache_read": 0.003625, "cache_write": 0.0 }
+        }
+      ]
+    },
+
+    "github-copilot": {
+      "name": "GitHub Copilot",
+      "base_url": "https://api.individual.githubcopilot.com",
+      "api": "openai-completions",
+      "headers": {
+        "Copilot-Integration-Id": "vscode-chat",
+        "Editor-Plugin-Version": "copilot-chat/0.35.0",
+        "Editor-Version": "vscode/1.107.0",
+        "User-Agent": "GitHubCopilotChat/0.35.0"
+      },
+      "models": [
+        {
+          "id": "claude-opus-5",
+          "name": "Claude Opus 5",
+          "api": "anthropic-messages",
+          "context_window": 1000000,
+          "max_output_tokens": 64000,
+          "reasoning": true,
+          "input": ["text", "image", "pdf"],
+          "cost": { "input": 5.0, "output": 25.0, "cache_read": 0.5, "cache_write": 6.25 }
+        },
+        {
+          "id": "claude-sonnet-5",
+          "name": "Claude Sonnet 5",
+          "api": "anthropic-messages",
+          "context_window": 1000000,
+          "max_output_tokens": 128000,
+          "reasoning": true,
+          "input": ["text", "image", "pdf"],
+          "cost": { "input": 2.0, "output": 10.0, "cache_read": 0.2, "cache_write": 2.5 }
+        },
+        {
+          "id": "claude-fable-5",
+          "name": "Claude Fable 5",
+          "context_window": 1000000,
+          "max_output_tokens": 128000,
+          "reasoning": true,
+          "input": ["text", "image", "pdf"],
+          "cost": { "input": 10.0, "output": 50.0, "cache_read": 1.0, "cache_write": 12.5 }
+        },
+        {
+          "id": "claude-opus-4.8",
+          "name": "Claude Opus 4.8",
+          "api": "anthropic-messages",
+          "context_window": 200000,
+          "max_output_tokens": 64000,
+          "reasoning": true,
+          "input": ["text", "image", "pdf"],
+          "cost": { "input": 5.0, "output": 25.0, "cache_read": 0.5, "cache_write": 6.25 }
+        },
+        {
+          "id": "claude-haiku-4.5",
+          "name": "Claude Haiku 4.5",
+          "api": "anthropic-messages",
+          "context_window": 200000,
+          "max_output_tokens": 64000,
+          "reasoning": true,
+          "input": ["text", "image", "pdf"],
+          "cost": { "input": 1.0, "output": 5.0, "cache_read": 0.1, "cache_write": 1.25 }
+        },
+        {
+          "id": "gpt-5.6-terra",
+          "name": "GPT-5.6 Terra",
+          "api": "openai-responses",
+          "context_window": 1050000,
+          "max_output_tokens": 128000,
+          "reasoning": true,
+          "input": ["text", "image", "pdf"],
+          "cost": { "input": 2.0, "output": 12.0, "cache_read": 0.2, "cache_write": 0.0 }
+        },
+        {
+          "id": "gpt-5.6-luna",
+          "name": "GPT-5.6 Luna",
+          "api": "openai-responses",
+          "context_window": 1050000,
+          "max_output_tokens": 128000,
+          "reasoning": true,
+          "input": ["text", "image", "pdf"],
+          "cost": { "input": 0.2, "output": 1.2, "cache_read": 0.02, "cache_write": 0.0 }
+        },
+        {
+          "id": "gpt-5.6-sol",
+          "name": "GPT-5.6 Sol",
+          "api": "openai-responses",
+          "context_window": 1050000,
+          "max_output_tokens": 128000,
+          "reasoning": true,
+          "input": ["text", "image", "pdf"],
+          "cost": { "input": 5.0, "output": 30.0, "cache_read": 0.5, "cache_write": 6.25 }
+        },
+        {
+          "id": "gpt-5.4",
+          "name": "GPT-5.4",
+          "api": "openai-responses",
+          "context_window": 1050000,
+          "max_output_tokens": 128000,
+          "reasoning": true,
+          "input": ["text", "image", "pdf"],
+          "cost": { "input": 2.5, "output": 15.0, "cache_read": 0.25, "cache_write": 0.0 }
+        },
+        {
+          "id": "gpt-5.4-mini",
+          "name": "GPT-5.4 mini",
+          "api": "openai-responses",
+          "context_window": 400000,
+          "max_output_tokens": 128000,
+          "reasoning": true,
+          "input": ["text", "image"],
+          "cost": { "input": 0.75, "output": 4.5, "cache_read": 0.075, "cache_write": 0.0 }
+        },
+        {
+          "id": "gemini-3.6-flash",
+          "name": "Gemini 3.6 Flash",
+          "context_window": 1000000,
+          "max_output_tokens": 64000,
+          "reasoning": true,
+          "input": ["text", "image", "pdf"],
+          "cost": { "input": 1.5, "output": 7.5, "cache_read": 0.15, "cache_write": 0.0 }
+        },
+        {
+          "id": "gemini-3.1-pro-preview",
+          "name": "Gemini 3.1 Pro Preview",
+          "context_window": 1000000,
+          "max_output_tokens": 64000,
+          "reasoning": true,
+          "input": ["text", "image", "audio", "video", "pdf"],
+          "cost": { "input": 2.0, "output": 12.0, "cache_read": 0.2, "cache_write": 0.0 }
+        },
+        {
+          "id": "grok-4.5",
+          "name": "Grok 4.5",
+          "context_window": 500000,
+          "max_output_tokens": 128000,
+          "reasoning": true,
+          "input": ["text", "image"],
+          "cost": { "input": 2.0, "output": 6.0, "cache_read": 0.5, "cache_write": 0.0 }
+        },
+        {
+          "id": "kimi-k3",
+          "name": "Kimi K3",
+          "context_window": 1048576,
+          "max_output_tokens": 131072,
+          "reasoning": true,
+          "input": ["text", "image"],
+          "cost": { "input": 3.0, "output": 15.0, "cache_read": 0.3, "cache_write": 0.0 }
+        }
+      ]
+    },
+
+    "google": {
+      "name": "Google",
+      "base_url": "https://generativelanguage.googleapis.com/v1beta",
+      "api": "google-generative-ai",
+      "models": [
+        {
+          "id": "gemini-3.1-pro-preview",
+          "name": "Gemini 3.1 Pro Preview",
+          "context_window": 1048576,
+          "max_output_tokens": 65536,
+          "reasoning": true,
+          "input": ["text", "image", "audio", "video", "pdf"],
+          "aliases": ["gemini-pro"],
+          "cost": { "input": 2.0, "output": 12.0, "cache_read": 0.2, "cache_write": 0.0 }
+        },
+        {
+          "id": "gemini-3.6-flash",
+          "name": "Gemini 3.6 Flash",
+          "context_window": 1048576,
+          "max_output_tokens": 65536,
+          "reasoning": true,
+          "input": ["text", "image", "audio", "video", "pdf"],
+          "aliases": ["gemini", "flash"],
+          "cost": { "input": 1.5, "output": 7.5, "cache_read": 0.15, "cache_write": 0.0 }
+        },
+        {
+          "id": "gemini-3.5-flash",
+          "name": "Gemini 3.5 Flash",
+          "context_window": 1048576,
+          "max_output_tokens": 65536,
+          "reasoning": true,
+          "input": ["text", "image", "audio", "video", "pdf"],
+          "cost": { "input": 1.5, "output": 9.0, "cache_read": 0.15, "cache_write": 0.0 }
+        },
+        {
+          "id": "gemini-3.5-flash-lite",
+          "name": "Gemini 3.5 Flash Lite",
+          "context_window": 1048576,
+          "max_output_tokens": 65536,
+          "reasoning": true,
+          "input": ["text", "image", "audio", "video", "pdf"],
+          "cost": { "input": 0.3, "output": 2.5, "cache_read": 0.03, "cache_write": 0.0 }
+        },
+        {
+          "id": "gemini-3.1-flash-lite",
+          "name": "Gemini 3.1 Flash Lite",
+          "context_window": 1048576,
+          "max_output_tokens": 65536,
+          "reasoning": true,
+          "input": ["text", "image", "audio", "video", "pdf"],
+          "cost": { "input": 0.25, "output": 1.5, "cache_read": 0.025, "cache_write": 0.0 }
+        },
+        {
+          "id": "gemini-pro-latest",
+          "name": "Gemini Pro Latest",
+          "context_window": 1048576,
+          "max_output_tokens": 65536,
+          "reasoning": true,
+          "input": ["text", "image", "audio", "video", "pdf"],
+          "cost": { "input": 2.0, "output": 12.0, "cache_read": 0.2, "cache_write": 0.0 }
+        },
+        {
+          "id": "gemini-flash-latest",
+          "name": "Gemini Flash Latest",
+          "context_window": 1048576,
+          "max_output_tokens": 65536,
+          "reasoning": true,
+          "input": ["text", "image", "audio", "video", "pdf"],
+          "cost": { "input": 1.5, "output": 9.0, "cache_read": 0.15, "cache_write": 0.0 }
+        },
+        {
+          "id": "gemini-2.5-pro",
+          "name": "Gemini 2.5 Pro",
+          "context_window": 1048576,
+          "max_output_tokens": 65536,
+          "reasoning": true,
+          "input": ["text", "image", "audio", "video", "pdf"],
+          "cost": { "input": 1.25, "output": 10.0, "cache_read": 0.125, "cache_write": 0.0 }
+        },
+        {
+          "id": "gemini-2.5-flash",
+          "name": "Gemini 2.5 Flash",
+          "context_window": 1048576,
+          "max_output_tokens": 65536,
+          "reasoning": true,
+          "input": ["text", "image", "audio", "video", "pdf"],
+          "cost": { "input": 0.3, "output": 2.5, "cache_read": 0.03, "cache_write": 0.0 }
+        }
+      ]
+    },
+
+    "anthropic": {
+      "name": "Anthropic",
+      "base_url": "https://api.anthropic.com/v1",
+      "api": "anthropic-messages",
+      "models": [
+        {
+          "id": "claude-opus-5",
+          "name": "Claude Opus 5",
+          "context_window": 1000000,
+          "max_output_tokens": 128000,
+          "reasoning": true,
+          "input": ["text", "image", "pdf"],
+          "cost": { "input": 5.0, "output": 25.0, "cache_read": 0.5, "cache_write": 6.25 }
+        },
+        {
+          "id": "claude-sonnet-5",
+          "name": "Claude Sonnet 5",
+          "context_window": 1000000,
+          "max_output_tokens": 128000,
+          "reasoning": true,
+          "input": ["text", "image", "pdf"],
+          "cost": { "input": 2.0, "output": 10.0, "cache_read": 0.2, "cache_write": 2.5 }
+        },
+        {
+          "id": "claude-fable-5",
+          "name": "Claude Fable 5",
+          "context_window": 1000000,
+          "max_output_tokens": 128000,
+          "reasoning": true,
+          "input": ["text", "image", "pdf"],
+          "cost": { "input": 10.0, "output": 50.0, "cache_read": 1.0, "cache_write": 12.5 }
+        },
+        {
+          "id": "claude-haiku-4-5-20251001",
+          "name": "Claude Haiku 4.5",
+          "context_window": 200000,
+          "max_output_tokens": 64000,
+          "reasoning": true,
+          "input": ["text", "image", "pdf"],
+          "cost": { "input": 1.0, "output": 5.0, "cache_read": 0.1, "cache_write": 1.25 }
+        }
+      ]
+    }
+  }
+}
