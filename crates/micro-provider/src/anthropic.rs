@@ -33,7 +33,7 @@ pub struct Anthropic {
 impl Anthropic {
     pub fn new() -> Self {
         Anthropic {
-            client: reqwest::Client::new(),
+            client: crate::http_client(),
         }
     }
 }

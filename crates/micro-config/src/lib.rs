@@ -78,6 +78,30 @@ pub enum Thinking {
     High,
 }
 
+/// What a second escape does when the prompt is empty.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum DoubleEscape {
+    /// Show the conversation's branches, to go back to one.
+    #[default]
+    Tree,
+    /// Branch from an earlier message.
+    Fork,
+    /// Nothing at all.
+    None,
+}
+
+/// What happens to a prompt written while an answer is arriving.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FollowUpMode {
+    /// Hold it until the turn finishes, then send it.
+    #[default]
+    Queue,
+    /// Send it as soon as it is written, interrupting what is running.
+    Interrupt,
+}
+
 /// How much the agent may do without being asked. Mirrors the modes the policy layer
 /// enforces; this is only where the choice is remembered between runs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -113,6 +137,76 @@ pub struct Config {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub live_models: Option<bool>,
 
+    /// Summarize the conversation on its own once the context fills up.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub auto_compact: Option<bool>,
+    /// Keep the model's reasoning folded away until it is asked for.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hide_thinking: Option<bool>,
+    /// Draw images in the terminal, where the terminal can.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub show_images: Option<bool>,
+    /// The widest an image may be drawn, in cells.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub image_width_cells: Option<u16>,
+    /// Shrink an image that would be wider than the room it has.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub auto_resize_images: Option<bool>,
+    /// Refuse to attach images at all, for a model or a workflow that cannot take them.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub block_images: Option<bool>,
+    /// Announce skills to the model, so it can reach for one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub skill_commands: Option<bool>,
+    /// Columns of breathing room on each side of the input.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub editor_padding: Option<u16>,
+    /// Columns of breathing room on each side of the conversation.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub output_padding: Option<u16>,
+    /// How many completions the command menu offers at once.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub autocomplete_max_items: Option<usize>,
+    /// Let the terminal draw its own cursor rather than the interface drawing one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub show_hardware_cursor: Option<bool>,
+    /// Report progress to the terminal while a turn runs.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub terminal_progress: Option<bool>,
+    /// Open without the introduction.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub quiet_startup: Option<bool>,
+    /// Show only the newest entry when the changelog is asked for.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub collapse_changelog: Option<bool>,
+    /// Show warnings at all.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub warnings: Option<bool>,
+    /// Say when a request paid to write a cache it could have read.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cache_miss_notices: Option<bool>,
+    /// What a second escape does.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub double_escape: Option<DoubleEscape>,
+    /// What happens to a prompt written while an answer is arriving.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub follow_up_mode: Option<FollowUpMode>,
+    /// Whether a project nobody has decided about is trusted.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub default_project_trust: Option<bool>,
+    /// How long a request may go without producing anything, in seconds.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub http_idle_timeout: Option<u64>,
+    /// Models this workspace may use, when it should not have the whole catalog.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub scoped_models: Option<Vec<String>>,
+    /// Warn that Anthropic subscription auth bills per token in a third-party harness.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub anthropic_extra_usage: Option<bool>,
+    /// How the ChatGPT Codex backend should answer: `sse`, or `auto` to let it decide.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub transport: Option<String>,
+
     /// Keys written by a version that knew more than this one.
     #[serde(flatten)]
     pub extra: Map<String, Value>,
@@ -140,7 +234,43 @@ pub struct Settings {
     pub theme: String,
     pub approval: ApprovalMode,
     pub live_models: bool,
+
+    pub auto_compact: bool,
+    pub hide_thinking: bool,
+    pub show_images: bool,
+    pub image_width_cells: u16,
+    pub auto_resize_images: bool,
+    pub block_images: bool,
+    pub skill_commands: bool,
+    pub editor_padding: u16,
+    pub output_padding: u16,
+    pub autocomplete_max_items: usize,
+    pub show_hardware_cursor: bool,
+    pub terminal_progress: bool,
+    pub quiet_startup: bool,
+    pub collapse_changelog: bool,
+    pub warnings: bool,
+    pub cache_miss_notices: bool,
+    pub double_escape: DoubleEscape,
+    pub follow_up_mode: FollowUpMode,
+    pub default_project_trust: bool,
+    pub http_idle_timeout: u64,
+    pub scoped_models: Vec<String>,
+    pub anthropic_extra_usage: bool,
+    pub transport: String,
 }
+
+/// The widest an image is drawn when nothing says otherwise.
+pub const DEFAULT_IMAGE_WIDTH_CELLS: u16 = 60;
+/// Columns of breathing room on each side of the conversation, which is what ohm leaves.
+/// The input gets none by default, also as ohm has it.
+pub const DEFAULT_PADDING: u16 = 1;
+/// How many completions the command menu offers at once.
+pub const DEFAULT_AUTOCOMPLETE_MAX_ITEMS: usize = 5;
+/// How long a request may go without producing anything before it is given up on.
+pub const DEFAULT_HTTP_IDLE_TIMEOUT: u64 = 120;
+/// How the Codex backend answers when nothing says otherwise.
+pub const DEFAULT_TRANSPORT: &str = "sse";
 
 impl Default for Settings {
     fn default() -> Self {
@@ -151,6 +281,30 @@ impl Default for Settings {
             theme: DEFAULT_THEME.to_string(),
             approval: ApprovalMode::default(),
             live_models: false,
+
+            auto_compact: true,
+            hide_thinking: true,
+            show_images: true,
+            image_width_cells: DEFAULT_IMAGE_WIDTH_CELLS,
+            auto_resize_images: true,
+            block_images: false,
+            skill_commands: true,
+            editor_padding: 0,
+            output_padding: DEFAULT_PADDING,
+            autocomplete_max_items: DEFAULT_AUTOCOMPLETE_MAX_ITEMS,
+            show_hardware_cursor: false,
+            terminal_progress: true,
+            quiet_startup: false,
+            collapse_changelog: false,
+            warnings: true,
+            cache_miss_notices: false,
+            double_escape: DoubleEscape::default(),
+            follow_up_mode: FollowUpMode::default(),
+            default_project_trust: false,
+            http_idle_timeout: DEFAULT_HTTP_IDLE_TIMEOUT,
+            scoped_models: Vec::new(),
+            anthropic_extra_usage: true,
+            transport: DEFAULT_TRANSPORT.to_string(),
         }
     }
 }
@@ -234,6 +388,7 @@ impl Config {
         arguments: &Overrides,
         environment: impl Fn(&str) -> Option<String>,
     ) -> Result<Settings> {
+        let defaults = Settings::default();
         let read = |variable: &str| {
             environment(variable)
                 .map(|value| value.trim().to_string())
@@ -267,6 +422,53 @@ impl Config {
                 self.live_models,
             )
             .unwrap_or(false),
+
+            // Nothing on the command line or in the environment sets these: they are
+            // preferences a user settles once, in `/settings`, and leaves alone.
+            auto_compact: self.auto_compact.unwrap_or(defaults.auto_compact),
+            hide_thinking: self.hide_thinking.unwrap_or(defaults.hide_thinking),
+            show_images: self.show_images.unwrap_or(defaults.show_images),
+            image_width_cells: self
+                .image_width_cells
+                .unwrap_or(defaults.image_width_cells)
+                .max(1),
+            auto_resize_images: self
+                .auto_resize_images
+                .unwrap_or(defaults.auto_resize_images),
+            block_images: self.block_images.unwrap_or(defaults.block_images),
+            skill_commands: self.skill_commands.unwrap_or(defaults.skill_commands),
+            editor_padding: self.editor_padding.unwrap_or(defaults.editor_padding),
+            output_padding: self.output_padding.unwrap_or(defaults.output_padding),
+            autocomplete_max_items: self
+                .autocomplete_max_items
+                .unwrap_or(defaults.autocomplete_max_items)
+                .max(1),
+            show_hardware_cursor: self
+                .show_hardware_cursor
+                .unwrap_or(defaults.show_hardware_cursor),
+            terminal_progress: self.terminal_progress.unwrap_or(defaults.terminal_progress),
+            quiet_startup: self.quiet_startup.unwrap_or(defaults.quiet_startup),
+            collapse_changelog: self
+                .collapse_changelog
+                .unwrap_or(defaults.collapse_changelog),
+            warnings: self.warnings.unwrap_or(defaults.warnings),
+            cache_miss_notices: self
+                .cache_miss_notices
+                .unwrap_or(defaults.cache_miss_notices),
+            double_escape: self.double_escape.unwrap_or(defaults.double_escape),
+            follow_up_mode: self.follow_up_mode.unwrap_or(defaults.follow_up_mode),
+            default_project_trust: self
+                .default_project_trust
+                .unwrap_or(defaults.default_project_trust),
+            http_idle_timeout: self
+                .http_idle_timeout
+                .unwrap_or(defaults.http_idle_timeout)
+                .max(1),
+            scoped_models: self.scoped_models.clone().unwrap_or(defaults.scoped_models),
+            anthropic_extra_usage: self
+                .anthropic_extra_usage
+                .unwrap_or(defaults.anthropic_extra_usage),
+            transport: self.transport.clone().unwrap_or(defaults.transport),
         })
     }
 
@@ -284,6 +486,29 @@ impl Config {
             theme: take(&mut fields, "theme", path)?,
             approval: take(&mut fields, "approval", path)?,
             live_models: take(&mut fields, "live_models", path)?,
+            auto_compact: take(&mut fields, "auto_compact", path)?,
+            hide_thinking: take(&mut fields, "hide_thinking", path)?,
+            show_images: take(&mut fields, "show_images", path)?,
+            image_width_cells: take(&mut fields, "image_width_cells", path)?,
+            auto_resize_images: take(&mut fields, "auto_resize_images", path)?,
+            block_images: take(&mut fields, "block_images", path)?,
+            skill_commands: take(&mut fields, "skill_commands", path)?,
+            editor_padding: take(&mut fields, "editor_padding", path)?,
+            output_padding: take(&mut fields, "output_padding", path)?,
+            autocomplete_max_items: take(&mut fields, "autocomplete_max_items", path)?,
+            show_hardware_cursor: take(&mut fields, "show_hardware_cursor", path)?,
+            terminal_progress: take(&mut fields, "terminal_progress", path)?,
+            quiet_startup: take(&mut fields, "quiet_startup", path)?,
+            collapse_changelog: take(&mut fields, "collapse_changelog", path)?,
+            warnings: take(&mut fields, "warnings", path)?,
+            cache_miss_notices: take(&mut fields, "cache_miss_notices", path)?,
+            double_escape: take(&mut fields, "double_escape", path)?,
+            follow_up_mode: take(&mut fields, "follow_up_mode", path)?,
+            default_project_trust: take(&mut fields, "default_project_trust", path)?,
+            http_idle_timeout: take(&mut fields, "http_idle_timeout", path)?,
+            scoped_models: take(&mut fields, "scoped_models", path)?,
+            anthropic_extra_usage: take(&mut fields, "anthropic_extra_usage", path)?,
+            transport: take(&mut fields, "transport", path)?,
             extra: fields,
         };
         Ok(config)

@@ -497,6 +497,15 @@ fn thinking_of(message: &AssistantMessage) -> String {
         .join("\n")
 }
 
+/// The summary inside a compaction message, if that is what this text is.
+fn summary_of(text: &str) -> Option<String> {
+    let inner = text
+        .trim()
+        .strip_prefix(micro_context::SUMMARY_OPEN)?
+        .strip_suffix(micro_context::SUMMARY_CLOSE)?;
+    Some(inner.trim().to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -834,13 +843,4 @@ mod tests {
         transcript.push_user("hi");
         assert!(transcript.version() > before);
     }
-}
-
-/// The summary inside a compaction message, if that is what this text is.
-fn summary_of(text: &str) -> Option<String> {
-    let inner = text
-        .trim()
-        .strip_prefix(micro_context::SUMMARY_OPEN)?
-        .strip_suffix(micro_context::SUMMARY_CLOSE)?;
-    Some(inner.trim().to_string())
 }

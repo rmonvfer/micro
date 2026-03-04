@@ -31,10 +31,20 @@ pub const GEMINI: &str = "gemini";
 pub const GITHUB_COPILOT: &str = "github-copilot";
 pub const OPENAI: &str = "openai";
 pub const OPENROUTER: &str = "openrouter";
+/// The ChatGPT Codex backend, reached with a ChatGPT subscription token rather than a
+/// platform API key. Kept apart from `openai` because the credential is not interchangeable.
+pub const OPENAI_CODEX: &str = "openai-codex";
 
 /// Every provider micro can authenticate, in the order a picker should show them. These
 /// are the canonical ids: the keys in the credential file, and the names a UI hands back.
-pub const PROVIDERS: &[&str] = &[ANTHROPIC, OPENROUTER, GITHUB_COPILOT, GEMINI, OPENAI];
+pub const PROVIDERS: &[&str] = &[
+    ANTHROPIC,
+    OPENROUTER,
+    GITHUB_COPILOT,
+    GEMINI,
+    OPENAI,
+    OPENAI_CODEX,
+];
 
 /// Other names a user might type, mapped onto the canonical id.
 const ALIASES: &[(&str, &str)] = &[
@@ -42,6 +52,8 @@ const ALIASES: &[(&str, &str)] = &[
     ("copilot", GITHUB_COPILOT),
     ("github", GITHUB_COPILOT),
     ("google", GEMINI),
+    ("codex", OPENAI_CODEX),
+    ("chatgpt", OPENAI_CODEX),
 ];
 
 /// Fold a name onto the id everything else uses. An unknown name comes back unchanged, so
@@ -845,6 +857,7 @@ mod tests {
                 GITHUB_COPILOT,
                 GEMINI,
                 OPENAI,
+                OPENAI_CODEX,
                 "cerebras"
             ]
         );

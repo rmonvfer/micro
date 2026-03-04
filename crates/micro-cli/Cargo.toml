@@ -12,6 +12,7 @@ path = "src/main.rs"
 micro-agent = { workspace = true }
 micro-auth = { workspace = true }
 micro-commands = { workspace = true }
+micro-config = { workspace = true }
 micro-context = { workspace = true }
 micro-models = { workspace = true }
 micro-provider = { workspace = true }

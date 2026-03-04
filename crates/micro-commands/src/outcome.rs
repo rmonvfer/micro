@@ -10,6 +10,8 @@ use std::fmt;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MessageKind {
     Info,
+    /// Worth knowing, but nothing failed.
+    Warning,
     Error,
 }
 
@@ -92,6 +94,9 @@ pub enum CommandOutcome {
     Fork {
         session_id: String,
         through_index: usize,
+        /// Set when the whole conversation is being copied rather than a point in it,
+        /// which is the difference between cloning and forking.
+        whole: bool,
     },
     /// Summarize the conversation so far and continue from the summary.
     Compact,
@@ -104,6 +109,13 @@ impl CommandOutcome {
     pub fn info(text: impl Into<String>) -> Self {
         CommandOutcome::Message {
             kind: MessageKind::Info,
+            text: text.into(),
+        }
+    }
+
+    pub fn warning(text: impl Into<String>) -> Self {
+        CommandOutcome::Message {
+            kind: MessageKind::Warning,
             text: text.into(),
         }
     }
@@ -251,10 +263,12 @@ impl fmt::Debug for CommandOutcome {
             CommandOutcome::Fork {
                 session_id,
                 through_index,
+                whole,
             } => formatter
                 .debug_struct("Fork")
                 .field("session_id", session_id)
                 .field("through_index", through_index)
+                .field("whole", whole)
                 .finish(),
             CommandOutcome::Reload => formatter.write_str("Reload"),
             CommandOutcome::Import { path } => {

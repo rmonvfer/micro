@@ -82,6 +82,7 @@ pub(crate) fn fork(argument: Option<&str>, context: &CommandContext<'_>) -> Comm
     CommandOutcome::Fork {
         session_id: session_id.to_string(),
         through_index,
+        whole: false,
     }
 }
 
@@ -378,12 +379,13 @@ pub(crate) async fn clone(context: &CommandContext<'_>) -> CommandOutcome {
         Err(error) => return CommandOutcome::error(format!("cannot read the session: {error}")),
     };
     if loaded.messages.is_empty() {
-        return CommandOutcome::error("nothing to clone yet");
+        return CommandOutcome::info("Nothing to clone yet");
     }
 
     CommandOutcome::Fork {
         session_id: session_id.to_string(),
         through_index: loaded.messages.len() - 1,
+        whole: true,
     }
 }
 
@@ -528,6 +530,7 @@ mod tests {
             session_id: Some("abc"),
             message_count: 5,
             usage: micro_types::Usage::default(),
+            collapse_changelog: false,
             ..harness.context()
         };
 
@@ -535,6 +538,7 @@ mod tests {
         let CommandOutcome::Fork {
             session_id,
             through_index,
+            ..
         } = outcome
         else {
             panic!("expected a fork");
@@ -550,6 +554,7 @@ mod tests {
             session_id: Some("abc"),
             message_count: 5,
             usage: micro_types::Usage::default(),
+            collapse_changelog: false,
             ..harness.context()
         };
 
@@ -573,6 +578,7 @@ mod tests {
             session_id: Some("abc"),
             message_count: 3,
             usage: micro_types::Usage::default(),
+            collapse_changelog: false,
             ..harness.context()
         };
 

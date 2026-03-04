@@ -36,6 +36,15 @@ pub struct CliCommands {
     /// Where micro keeps what it remembers between runs, which is where a trust decision
     /// is written.
     home: PathBuf,
+    /// Whether skills are announced to the model at all, so `/reload` rebuilds what the
+    /// run was built with rather than something else.
+    skills_enabled: bool,
+    /// Show only the newest entry when the changelog is asked for.
+    collapse_changelog: bool,
+    /// Warn that a subscription credential bills per token here. Said once a run, as ohm
+    /// says it: repeating it every model swap would train the reader to skip it.
+    anthropic_extra_usage: bool,
+    warned_about_extra_usage: bool,
 }
 
 /// Everything a host is built from. Gathered into one value because a run assembles all
@@ -51,6 +60,9 @@ pub struct HostParts {
     pub session: Arc<Mutex<Session>>,
     pub session_id: String,
     pub home: PathBuf,
+    pub skills_enabled: bool,
+    pub collapse_changelog: bool,
+    pub anthropic_extra_usage: bool,
 }
 
 impl CliCommands {
@@ -65,6 +77,10 @@ impl CliCommands {
             session: parts.session,
             session_id: parts.session_id,
             home: parts.home,
+            skills_enabled: parts.skills_enabled,
+            collapse_changelog: parts.collapse_changelog,
+            anthropic_extra_usage: parts.anthropic_extra_usage,
+            warned_about_extra_usage: false,
         }
     }
 
@@ -96,6 +112,11 @@ impl CliCommands {
         self.provider = model.provider.clone();
         self.model = model.clone();
 
+        let note = match self.subscription_warning(&resolved.api_key, &model.provider) {
+            Some(warning) => format!("Model: {}\n{warning}", model.qualified_id()),
+            None => format!("Model: {}", model.qualified_id()),
+        };
+
         Applied::Model {
             swap: Box::new(micro_agent::ModelSwap {
                 provider: resolved.client,
@@ -103,8 +124,23 @@ impl CliCommands {
                 api_key: resolved.api_key,
                 context_window: model.context_window as usize,
             }),
-            note: Some(format!("Now using {}.", model.qualified_id())),
+            note: Some(note),
         }
+    }
+
+    /// Anthropic's subscription credentials are OAuth tokens, and a third-party harness
+    /// spending one is billed per token rather than against the plan. Said once.
+    fn subscription_warning(&mut self, api_key: &str, provider: &str) -> Option<String> {
+        if !self.anthropic_extra_usage || self.warned_about_extra_usage {
+            return None;
+        }
+        if micro_auth::canonical_provider(provider) != "anthropic"
+            || !api_key.starts_with(ANTHROPIC_OAUTH_PREFIX)
+        {
+            return None;
+        }
+        self.warned_about_extra_usage = true;
+        Some(ANTHROPIC_SUBSCRIPTION_AUTH_WARNING.to_string())
     }
 
     fn context(&self, state: ConversationState) -> CommandContext<'_> {
@@ -118,6 +154,7 @@ impl CliCommands {
             session_id: Some(&self.session_id),
             message_count: state.message_count,
             usage: state.usage,
+            collapse_changelog: self.collapse_changelog,
         }
     }
 
@@ -206,18 +243,14 @@ impl CliCommands {
         {
             Ok(imported) => imported,
             Err(error) => {
-                return Applied::error(format!("Cannot import {}: {error}", source.display()))
+                return Applied::error(format!("Failed to import session: {error}"))
             }
         };
 
-        let mut note = format!(
-            "Imported {} into session {}.",
-            source.display(),
-            imported.session.id()
-        );
+        let mut note = format!("Session imported from: {}", source.display());
         if imported.skipped_lines > 0 {
             note.push_str(&format!(
-                " {} line(s) could not be read and were left out.",
+                " ({} line(s) could not be read and were left out)",
                 imported.skipped_lines
             ));
         }
@@ -255,8 +288,8 @@ impl CliCommands {
         };
 
         match crate::share::publish(&title, &loaded.messages, &token).await {
-            Ok(url) => Applied::note(format!("Shared: {url}")),
-            Err(error) => Applied::error(format!("Could not share the session: {error}")),
+            Ok(url) => Applied::note(format!("Gist: {url}")),
+            Err(error) => Applied::error(format!("Failed to create gist: {error}")),
         }
     }
 
@@ -265,7 +298,7 @@ impl CliCommands {
     /// Only the standing instructions change. The conversation is left exactly as it is,
     /// because nothing that was said stopped being true.
     async fn reload(&self) -> Applied {
-        let context = crate::runtime::load_context(&self.workspace).await;
+        let context = crate::runtime::load_context(&self.workspace, self.skills_enabled).await;
 
         let mut note = format!(
             "Reloaded {} and {}.",
@@ -297,14 +330,13 @@ impl CliCommands {
             return Applied::error(format!("Could not save the decision: {error}"));
         }
 
-        let workspace = self.workspace.display();
-        match trusted {
-            true => Applied::note(format!(
-                "Trusted {workspace}. From the next run on, files inside it are edited \
-                 without asking. Shell commands are still asked about."
-            )),
-            false => Applied::note(format!("No longer trusting {workspace}.")),
-        }
+        Applied::note(format!(
+            "Saved trust decision: {}. Restart micro for this to take effect.",
+            match trusted {
+                true => "trusted",
+                false => "untrusted",
+            }
+        ))
     }
 
     /// Give the session a title of its own, in place of the derived one.
@@ -317,7 +349,7 @@ impl CliCommands {
 
     /// Copy the conversation up to a point into a session of its own, and carry on in the
     /// copy. The session it came from is left exactly as it was.
-    async fn fork(&mut self, session_id: &str, through_index: usize) -> Applied {
+    async fn fork(&mut self, session_id: &str, through_index: usize, whole: bool) -> Applied {
         let forked = match self.sessions.fork(session_id, through_index).await {
             Ok(forked) => forked,
             Err(error) => {
@@ -331,7 +363,13 @@ impl CliCommands {
 
         Applied::Conversation {
             messages,
-            note: Some(format!("Forked into session {}", self.session_id)),
+            note: Some(
+                match whole {
+                    true => "Cloned to new session",
+                    false => "Forked to new session",
+                }
+                .to_string(),
+            ),
         }
     }
 }
@@ -356,7 +394,8 @@ impl Commands for CliCommands {
             CommandOutcome::Fork {
                 session_id,
                 through_index,
-            } => self.fork(&session_id, through_index).await,
+                whole,
+            } => self.fork(&session_id, through_index, whole).await,
 
             // Branching happens in the session that is open, so the conversation the
             // interface holds is replaced by the branch that was chosen.
@@ -406,6 +445,16 @@ impl Commands for CliCommands {
         }
     }
 }
+
+/// What an Anthropic subscription credential looks like. The plan's own tokens are OAuth
+/// tokens, and they carry this prefix wherever they are stored.
+const ANTHROPIC_OAUTH_PREFIX: &str = "sk-ant-oat";
+
+/// Said when a subscription credential is used from here, in ohm's words.
+const ANTHROPIC_SUBSCRIPTION_AUTH_WARNING: &str =
+    "Anthropic subscription auth is active. Third-party harness usage draws from extra \
+     usage and is billed per token, not your Claude plan limits. Manage extra usage at \
+     https://claude.ai/settings/usage. Disable this warning in /settings.";
 
 /// `1 skill` but `2 skills`, so a count reads as a sentence.
 fn counted(count: usize, thing: &str) -> String {
@@ -460,6 +509,9 @@ mod tests {
             session: Arc::new(Mutex::new(session)),
             session_id,
             home: root.join("home"),
+            skills_enabled: true,
+            collapse_changelog: false,
+            anthropic_extra_usage: true,
         });
         (host, root)
     }
@@ -533,7 +585,7 @@ mod tests {
             .expect("a command");
 
         let applied = host.apply(outcome).await;
-        assert!(matches!(applied, Applied::Note { error: true, .. }));
+        assert!(applied.is_error(), "{applied:?}");
         assert!(note(&applied).contains("anthropic"), "{}", note(&applied));
         assert!(!note(&applied).contains("Restart"), "{}", note(&applied));
     }
@@ -646,7 +698,7 @@ mod tests {
                 session_id: "20240101-000000-abcd".into(),
             })
             .await;
-        assert!(matches!(applied, Applied::Note { error: true, .. }), "{applied:?}");
+        assert!(applied.is_error(), "{applied:?}");
     }
 
     /// Branching moves where the next message hangs off, and hands back the conversation
@@ -693,7 +745,7 @@ mod tests {
                 entry_id: "17".into(),
             })
             .await;
-        assert!(matches!(applied, Applied::Note { error: true, .. }), "{applied:?}");
+        assert!(applied.is_error(), "{applied:?}");
     }
 
     #[tokio::test]
@@ -813,7 +865,7 @@ mod tests {
                 path: "not-here.jsonl".into(),
             })
             .await;
-        assert!(matches!(applied, Applied::Note { error: true, .. }), "{applied:?}");
+        assert!(applied.is_error(), "{applied:?}");
     }
 
     /// Reloading re-reads what the model was told and leaves the conversation alone.
@@ -848,7 +900,10 @@ mod tests {
         let (mut host, root) = host("trust").await;
         let outcome = host.dispatch("/trust", state(0)).await.expect("a command");
         let text = note(&host.apply(outcome).await).to_string();
-        assert!(text.starts_with("Trusted "), "{text}");
+        assert_eq!(
+            text,
+            "Saved trust decision: trusted. Restart micro for this to take effect."
+        );
 
         let store = micro_policy::TrustStore::load_from(root.join("home"))
             .await
@@ -863,11 +918,48 @@ mod tests {
             .dispatch("/trust off", state(0))
             .await
             .expect("a command");
-        assert!(note(&host.apply(outcome).await).starts_with("No longer trusting "));
+        assert_eq!(
+            note(&host.apply(outcome).await),
+            "Saved trust decision: untrusted. Restart micro for this to take effect."
+        );
         let store = micro_policy::TrustStore::load_from(root.join("home"))
             .await
             .unwrap();
         assert!(!store.is_trusted(&host.workspace));
+    }
+
+    /// A subscription credential is billed per token from here, which is worth saying
+    /// once and not worth saying twice.
+    #[tokio::test]
+    async fn a_subscription_credential_is_flagged_once() {
+        let (mut host, _root) = host("extra-usage").await;
+
+        let warning = host.subscription_warning("sk-ant-oat01-abc", "anthropic");
+        assert!(
+            warning
+                .as_deref()
+                .is_some_and(|text| text.contains("billed per token")),
+            "{warning:?}"
+        );
+        assert_eq!(
+            host.subscription_warning("sk-ant-oat01-abc", "anthropic"),
+            None,
+            "said once"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_api_key_is_not_a_subscription() {
+        let (mut host, _root) = host("api-key-usage").await;
+        assert_eq!(host.subscription_warning("sk-ant-api03-abc", "anthropic"), None);
+        assert_eq!(host.subscription_warning("sk-ant-oat01-abc", "openrouter"), None);
+    }
+
+    #[tokio::test]
+    async fn the_subscription_warning_can_be_turned_off() {
+        let (mut host, _root) = host("no-usage-warning").await;
+        host.anthropic_extra_usage = false;
+        assert_eq!(host.subscription_warning("sk-ant-oat01-abc", "anthropic"), None);
     }
 
     #[tokio::test]
@@ -889,7 +981,7 @@ mod tests {
         let (mut host, _root) = host("blank-key").await;
         let applied = host.store_api_key("openrouter".into(), "   ".into()).await;
 
-        assert!(matches!(applied, Applied::Note { error: true, .. }));
+        assert!(applied.is_error(), "{applied:?}");
         assert!(host.auth.get("openrouter").is_none());
     }
 

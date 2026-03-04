@@ -36,6 +36,10 @@ pub struct Display {
     pub hyperlinks: bool,
     /// How this terminal draws an image, when it can.
     pub images: Option<crate::capabilities::ImageProtocol>,
+    /// The widest an image may be drawn, in cells.
+    pub image_width: usize,
+    /// Whether an image wider than the room it has is shrunk to fit.
+    pub resize_images: bool,
 }
 
 /// The transcript as drawn, with the first line of each entry.
@@ -52,7 +56,8 @@ pub struct Rendered {
 /// Render the transcript into display lines, from [`Display::from`] onward.
 pub fn lines(transcript: &Transcript, theme: &Theme, display: &Display) -> Rendered {
     let mut out: Vec<Line<'static>> = Vec::new();
-    let mut pictures = crate::render::pictures::Pictures::new(display.images);
+    let mut pictures = crate::render::pictures::Pictures::new(display.images)
+        .sized(display.image_width, display.resize_images);
     let mut links = match display.hyperlinks {
         true => crate::render::links::Links::new(),
         false => crate::render::links::Links::disabled(),
@@ -324,6 +329,8 @@ mod tests {
             from: 0,
             hyperlinks: true,
             images: None,
+            image_width: 40,
+            resize_images: true,
         }
     }
 

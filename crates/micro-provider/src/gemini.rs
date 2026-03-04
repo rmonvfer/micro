@@ -63,7 +63,7 @@ pub struct Gemini {
 impl Gemini {
     pub fn new() -> Self {
         Gemini {
-            client: reqwest::Client::new(),
+            client: crate::http_client(),
             next_call: Arc::new(AtomicUsize::new(0)),
         }
     }

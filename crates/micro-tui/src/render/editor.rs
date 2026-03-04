@@ -21,17 +21,34 @@ const PLACEHOLDER: &str = "Ask anything - enter to send, shift+enter for a new l
 /// Draw the input and the rules around it. `focused` is false while something else owns the
 /// keyboard, and the cursor then stays away rather than blinking where the next keystroke
 /// will not land.
+/// How the input is drawn, beyond where it goes.
+#[derive(Debug, Clone, Copy)]
+pub struct Look {
+    /// Colour of the rules: ohm marks the reasoning effort here, so a raised level is
+    /// visible without reading the footer.
+    pub level: ratatui::style::Color,
+    /// Whether the input has the keyboard. An overlay takes it, and the cursor then stays
+    /// away rather than blinking where the next keystroke will not reach.
+    pub focused: bool,
+    /// Whether the terminal draws the cursor itself. Drawing one into the cells instead
+    /// keeps it visible on terminals that hide theirs, at the cost of the shape and blink
+    /// rate the user chose.
+    pub hardware_cursor: bool,
+}
+
 pub fn draw(
     frame: &mut Frame,
     area: Rect,
     content: Rect,
     editor: &Editor,
     theme: &Theme,
-    // Colour of the rules: ohm marks the reasoning effort here, so a raised level is
-    // visible without reading the footer.
-    level: ratatui::style::Color,
-    focused: bool,
+    look: Look,
 ) {
+    let Look {
+        level,
+        focused,
+        hardware_cursor,
+    } = look;
     if area.height == 0 || content.width == 0 {
         return;
     }
@@ -91,6 +108,16 @@ pub fn draw(
 
     if focused {
         let cursor_row = layout.cursor_row.saturating_sub(first).min(height - 1);
+        if !hardware_cursor {
+            let column =
+                rows.x + (layout.cursor_column as u16).min(rows.width.saturating_sub(1));
+            let position = (column, rows.y + cursor_row as u16);
+            frame
+                .buffer_mut()
+                .cell_mut(position)
+                .map(|cell| cell.set_style(Style::new().add_modifier(ratatui::style::Modifier::REVERSED)));
+            return;
+        }
         frame.set_cursor_position((
             rows.x + (layout.cursor_column as u16).min(rows.width.saturating_sub(1)),
             rows.y + cursor_row as u16,
@@ -132,7 +159,20 @@ mod tests {
         let area = Rect::new(0, 0, width, height);
         let content = Rect::new(1, 0, width - 2, height);
         terminal
-            .draw(|frame| draw(frame, area, content, editor, &Theme::dark(), Theme::dark().border_muted, true))
+            .draw(|frame| {
+                draw(
+                    frame,
+                    area,
+                    content,
+                    editor,
+                    &Theme::dark(),
+                    Look {
+                        level: Theme::dark().border_muted,
+                        focused: true,
+                        hardware_cursor: true,
+                    },
+                )
+            })
             .expect("draw");
         let buffer = terminal.backend().buffer().clone();
         (0..height)
@@ -169,8 +209,11 @@ mod tests {
                     Rect::new(1, 0, 8, 3),
                     &Editor::new(),
                     &theme,
-                    theme.border_muted,
-                    false,
+                    Look {
+                        level: theme.border_muted,
+                        focused: false,
+                        hardware_cursor: true,
+                    },
                 )
             })
             .expect("draw");

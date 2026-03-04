@@ -27,6 +27,11 @@ pub struct Pictures {
     pictures: Vec<Picture>,
     /// Rows reserved so far, which is how a picture finds its own block again.
     reserved: usize,
+    /// The widest a picture may be drawn, in cells.
+    max_columns: usize,
+    /// Whether a picture wider than the room it has is shrunk to fit, or left at its own
+    /// size and cut off by the region it is drawn in.
+    resize: bool,
 }
 
 impl Pictures {
@@ -35,7 +40,16 @@ impl Pictures {
             protocol,
             pictures: Vec::new(),
             reserved: 0,
+            max_columns: DEFAULT_MAX_COLUMNS,
+            resize: true,
         }
+    }
+
+    /// How wide a picture may be drawn, and whether one that does not fit is shrunk.
+    pub fn sized(mut self, max_columns: usize, resize: bool) -> Self {
+        self.max_columns = max_columns.max(1);
+        self.resize = resize;
+        self
     }
 
     /// Claim the rows an image needs, returning how many. `None` when this terminal cannot
@@ -44,13 +58,22 @@ impl Pictures {
         let protocol = self.protocol?;
         let _ = protocol;
 
+        // Never wider than the room there is, and never wider than the user asked for.
+        let room = match self.resize {
+            true => width.min(self.max_columns),
+            // Without resizing a picture keeps its own width, and the region cuts off
+            // whatever does not fit.
+            false => self.max_columns,
+        }
+        .max(1);
+
         // The size is read from the image itself when it is a PNG; anything else is given a
         // reasonable block rather than guessed at.
         let (columns, rows) = match decoded_size(data) {
             Some((width_px, height_px)) => {
-                images::cell_size(width_px, height_px, width, Some(MAX_ROWS))
+                images::cell_size(width_px, height_px, room, Some(MAX_ROWS))
             }
-            None => (width.min(40), 10),
+            None => (room.min(DEFAULT_MAX_COLUMNS), 10),
         };
 
         self.pictures.push(Picture {
@@ -89,6 +112,9 @@ impl Pictures {
 
 /// No image is given more of the screen than this, however large it is.
 const MAX_ROWS: usize = 20;
+
+/// The widest a picture is drawn when nothing says otherwise.
+const DEFAULT_MAX_COLUMNS: usize = 60;
 
 /// The pixel size of a base64 image, when it is a PNG and the header can be read.
 ///

@@ -166,6 +166,11 @@ static COMMANDS: &[Command] = &[
         description: "Save project trust decision for future sessions",
     },
     Command {
+        name: "set",
+        argument: Some("<setting> [value]"),
+        description: "Change a setting, or show what it is",
+    },
+    Command {
         name: "settings",
         argument: None,
         description: "show where every setting is read from",
@@ -264,6 +269,8 @@ pub struct CommandContext<'a> {
     pub message_count: usize,
     /// What the conversation has cost in tokens so far.
     pub usage: micro_types::Usage,
+    /// Show only the newest entry when the changelog is asked for.
+    pub collapse_changelog: bool,
 }
 
 /// Run a submitted line. `None` means it was ordinary text for the model.
@@ -304,15 +311,16 @@ pub async fn run(
         "name" => session::name(argument, context).await,
         "skills" => skills(context).await,
         "settings" => settings(context),
+        "set" => set(argument),
         "trust" => trust(argument),
         "reload" => CommandOutcome::Reload,
         "share" => CommandOutcome::Share,
-        "changelog" => CommandOutcome::info(CHANGELOG.trim()),
+        "changelog" => CommandOutcome::info(changelog(context.collapse_changelog)),
         "import" => match argument.map(str::trim).filter(|path| !path.is_empty()) {
             Some(path) => CommandOutcome::Import {
                 path: path.to_string(),
             },
-            None => CommandOutcome::error("say which file to import: /import <path>"),
+            None => CommandOutcome::error("Usage: /import <path.jsonl>"),
         },
         "hotkeys" => CommandOutcome::info(hotkeys_text()),
         "copy" => CommandOutcome::CopyLastAnswer,
@@ -334,6 +342,31 @@ pub async fn run(
 
 /// What has changed in micro, shipped with the binary so `/changelog` works offline.
 const CHANGELOG: &str = include_str!("../../../CHANGELOG.md");
+
+/// The changelog, whole or folded to its newest entry.
+///
+/// An entry starts at a `## ` heading, so folding keeps the title and everything under the
+/// first one.
+fn changelog(collapse: bool) -> String {
+    let text = CHANGELOG.trim();
+    if !collapse {
+        return text.to_string();
+    }
+
+    let mut out = String::new();
+    let mut entries = 0;
+    for line in text.lines() {
+        if line.starts_with("## ") {
+            entries += 1;
+            if entries > 1 {
+                break;
+            }
+        }
+        out.push_str(line);
+        out.push('\n');
+    }
+    out.trim_end().to_string()
+}
 
 /// `/trust` vouches for the project, so a later run may edit inside it without asking
 /// about every file. `/trust off` takes it back.
@@ -446,22 +479,356 @@ async fn skills(context: &CommandContext<'_>) -> CommandOutcome {
 }
 
 /// Where every setting comes from, so a surprising one can be traced to its file.
+/// `/settings` offers what can be changed, in ohm's words, each item carrying the command
+/// that changes it.
+///
+/// Every row here is honoured somewhere: a setting that controlled nothing would read as a
+/// feature and behave as a decoration.
 fn settings(context: &CommandContext<'_>) -> CommandOutcome {
     let home = micro_context::micro_home().unwrap_or_default();
-    let mut out = String::new();
-    out.push_str(&format!("home           {}\n", home.display()));
-    out.push_str(&format!("workspace      {}\n", context.workspace.display()));
-    out.push_str(&format!("provider       {}\n", context.provider));
-    if let Some(model) = context.model {
-        out.push_str(&format!("model          {}\n", model.qualified_id()));
+    let file = home.join(micro_config::FILE_NAME);
+    let saved = micro_config::Config::load_from(&file).unwrap_or_default();
+    let now = saved
+        .resolve(&micro_config::Overrides::default(), |_| None)
+        .unwrap_or_default();
+
+    let on_off = |value: bool| match value {
+        true => "on",
+        false => "off",
+    };
+
+    let items = vec![
+        PickerItem::new(
+            "Thinking level",
+            thinking_label(context),
+            "/thinking",
+        ),
+        PickerItem::new("Theme", now.theme.clone(), "/theme"),
+        PickerItem::new(
+            "Model",
+            match context.model {
+                Some(model) => model.qualified_id(),
+                None => "none".to_string(),
+            },
+            "/model",
+        ),
+        PickerItem::new(
+            "Default project trust",
+            on_off(now.default_project_trust),
+            "/trust",
+        ),
+        PickerItem::new("Auto-compact", on_off(now.auto_compact), "/set auto_compact"),
+        PickerItem::new(
+            "Hide thinking",
+            on_off(now.hide_thinking),
+            "/set hide_thinking",
+        ),
+        PickerItem::new("Show images", on_off(now.show_images), "/set show_images"),
+        PickerItem::new(
+            "Image width",
+            format!("{} cells", now.image_width_cells),
+            "/set image_width_cells",
+        ),
+        PickerItem::new(
+            "Auto-resize images",
+            on_off(now.auto_resize_images),
+            "/set auto_resize_images",
+        ),
+        PickerItem::new("Block images", on_off(now.block_images), "/set block_images"),
+        PickerItem::new(
+            "Skill commands",
+            on_off(now.skill_commands),
+            "/set skill_commands",
+        ),
+        PickerItem::new(
+            "Editor padding",
+            now.editor_padding.to_string(),
+            "/set editor_padding",
+        ),
+        PickerItem::new(
+            "Output padding",
+            now.output_padding.to_string(),
+            "/set output_padding",
+        ),
+        PickerItem::new(
+            "Autocomplete max items",
+            now.autocomplete_max_items.to_string(),
+            "/set autocomplete_max_items",
+        ),
+        PickerItem::new(
+            "Show hardware cursor",
+            on_off(now.show_hardware_cursor),
+            "/set show_hardware_cursor",
+        ),
+        PickerItem::new(
+            "Terminal progress",
+            on_off(now.terminal_progress),
+            "/set terminal_progress",
+        ),
+        PickerItem::new(
+            "Quiet startup",
+            on_off(now.quiet_startup),
+            "/set quiet_startup",
+        ),
+        PickerItem::new(
+            "Collapse changelog",
+            on_off(now.collapse_changelog),
+            "/set collapse_changelog",
+        ),
+        PickerItem::new("Warnings", on_off(now.warnings), "/set warnings"),
+        PickerItem::new(
+            "Cache miss notices",
+            on_off(now.cache_miss_notices),
+            "/set cache_miss_notices",
+        ),
+        PickerItem::new(
+            "Double-escape action",
+            format!("{:?}", now.double_escape).to_lowercase(),
+            "/set double_escape",
+        ),
+        PickerItem::new(
+            "Follow-up mode",
+            format!("{:?}", now.follow_up_mode).to_lowercase(),
+            "/set follow_up_mode",
+        ),
+        PickerItem::new(
+            "HTTP idle timeout",
+            format!("{} seconds", now.http_idle_timeout),
+            "/set http_idle_timeout",
+        ),
+        PickerItem::new(
+            "Scoped models",
+            match now.scoped_models.is_empty() {
+                true => "the whole catalog".to_string(),
+                false => now.scoped_models.join(", "),
+            },
+            "/set scoped_models",
+        ),
+        PickerItem::new(
+            "Transport",
+            format!("{} (ChatGPT Codex)", now.transport),
+            "/set transport",
+        ),
+        PickerItem::new(
+            "Anthropic extra usage",
+            on_off(now.anthropic_extra_usage),
+            "/set anthropic_extra_usage",
+        ),
+        PickerItem::new(
+            "Where everything is kept",
+            home.display().to_string(),
+            "/debug",
+        ),
+    ];
+    CommandOutcome::Choose(Picker::new("Settings", items))
+}
+
+/// `/set <name> [value]` changes one setting and remembers it. Without a value it says
+/// what the setting is now and what it may be.
+fn set(argument: Option<&str>) -> CommandOutcome {
+    let Some(argument) = argument.map(str::trim).filter(|text| !text.is_empty()) else {
+        return CommandOutcome::error("Usage: /set <setting> [value]");
+    };
+    let (name, value) = match argument.split_once(char::is_whitespace) {
+        Some((name, value)) => (name.trim(), Some(value.trim())),
+        None => (argument, None),
+    };
+
+    let path = match micro_config::default_path() {
+        Ok(path) => path,
+        Err(error) => return CommandOutcome::error(format!("Cannot find the settings: {error}")),
+    };
+    let mut config = match micro_config::Config::load_from(&path) {
+        Ok(config) => config,
+        Err(error) => return CommandOutcome::error(format!("Cannot read the settings: {error}")),
+    };
+
+    let Some(value) = value else {
+        return match describe(&config, name) {
+            Some(text) => CommandOutcome::info(text),
+            None => CommandOutcome::error(format!("There is no setting called `{name}`.")),
+        };
+    };
+
+    if let Err(message) = assign(&mut config, name, value) {
+        return CommandOutcome::error(message);
     }
-    out.push_str(&format!("credentials    {}/auth.json\n", home.display()));
-    out.push_str(&format!("models         {}/models.json\n", home.display()));
-    out.push_str(&format!("policy         {}/policy.json\n", home.display()));
-    out.push_str(&format!("config         {}/config.json\n", home.display()));
-    out.push_str(&format!("skills         {}/skills/\n", home.display()));
-    out.push_str(&format!("sessions       {}/sessions/", home.display()));
-    CommandOutcome::info(out)
+    match config.save_to(&path) {
+        Ok(()) => CommandOutcome::info(format!("{name} is now {value}.")),
+        Err(error) => CommandOutcome::error(format!("Could not save the settings: {error}")),
+    }
+}
+
+/// One setting as it stands, and what it will take.
+fn describe(config: &micro_config::Config, name: &str) -> Option<String> {
+    let now = config
+        .resolve(&micro_config::Overrides::default(), |_| None)
+        .ok()?;
+    let text = match name {
+        "auto_compact" => format!("auto_compact is {} (on or off)", now.auto_compact),
+        "hide_thinking" => format!("hide_thinking is {} (on or off)", now.hide_thinking),
+        "show_images" => format!("show_images is {} (on or off)", now.show_images),
+        "image_width_cells" => format!("image_width_cells is {} (cells)", now.image_width_cells),
+        "auto_resize_images" => {
+            format!("auto_resize_images is {} (on or off)", now.auto_resize_images)
+        }
+        "block_images" => format!("block_images is {} (on or off)", now.block_images),
+        "skill_commands" => format!("skill_commands is {} (on or off)", now.skill_commands),
+        "editor_padding" => format!("editor_padding is {} (columns)", now.editor_padding),
+        "output_padding" => format!("output_padding is {} (columns)", now.output_padding),
+        "autocomplete_max_items" => format!(
+            "autocomplete_max_items is {} (rows)",
+            now.autocomplete_max_items
+        ),
+        "show_hardware_cursor" => format!(
+            "show_hardware_cursor is {} (on or off)",
+            now.show_hardware_cursor
+        ),
+        "terminal_progress" => {
+            format!("terminal_progress is {} (on or off)", now.terminal_progress)
+        }
+        "quiet_startup" => format!("quiet_startup is {} (on or off)", now.quiet_startup),
+        "collapse_changelog" => {
+            format!("collapse_changelog is {} (on or off)", now.collapse_changelog)
+        }
+        "warnings" => format!("warnings is {} (on or off)", now.warnings),
+        "cache_miss_notices" => {
+            format!("cache_miss_notices is {} (on or off)", now.cache_miss_notices)
+        }
+        "double_escape" => format!(
+            "double_escape is {} (tree, fork or none)",
+            format!("{:?}", now.double_escape).to_lowercase()
+        ),
+        "follow_up_mode" => format!(
+            "follow_up_mode is {} (queue or interrupt)",
+            format!("{:?}", now.follow_up_mode).to_lowercase()
+        ),
+        "default_project_trust" => format!(
+            "default_project_trust is {} (on or off)",
+            now.default_project_trust
+        ),
+        "http_idle_timeout" => {
+            format!("http_idle_timeout is {} (seconds)", now.http_idle_timeout)
+        }
+        "transport" => format!(
+            "transport is {} (sse or auto; the ChatGPT Codex backend)",
+            now.transport
+        ),
+        "anthropic_extra_usage" => format!(
+            "anthropic_extra_usage is {} (on or off)",
+            now.anthropic_extra_usage
+        ),
+        "scoped_models" => format!(
+            "scoped_models is {} (a comma-separated list, or `all`)",
+            match now.scoped_models.is_empty() {
+                true => "all".to_string(),
+                false => now.scoped_models.join(","),
+            }
+        ),
+        _ => return None,
+    };
+    Some(text)
+}
+
+/// Put a value into the config, saying what went wrong rather than storing nonsense.
+fn assign(config: &mut micro_config::Config, name: &str, value: &str) -> Result<(), String> {
+    let flag = || match value.to_ascii_lowercase().as_str() {
+        "on" | "true" | "yes" | "1" => Ok(true),
+        "off" | "false" | "no" | "0" => Ok(false),
+        other => Err(format!("`{other}` is not on or off")),
+    };
+    let number = |limit: u64| -> Result<u64, String> {
+        let parsed: u64 = value
+            .parse()
+            .map_err(|_| format!("`{value}` is not a number"))?;
+        match parsed >= 1 && parsed <= limit {
+            true => Ok(parsed),
+            false => Err(format!("{value} is outside 1 to {limit}")),
+        }
+    };
+
+    match name {
+        "auto_compact" => config.auto_compact = Some(flag()?),
+        "hide_thinking" => config.hide_thinking = Some(flag()?),
+        "show_images" => config.show_images = Some(flag()?),
+        "image_width_cells" => config.image_width_cells = Some(number(500)? as u16),
+        "auto_resize_images" => config.auto_resize_images = Some(flag()?),
+        "block_images" => config.block_images = Some(flag()?),
+        "skill_commands" => config.skill_commands = Some(flag()?),
+        // Padding is allowed to be nothing, which is what ohm gives the input by default.
+        "editor_padding" => {
+            config.editor_padding = Some(
+                value
+                    .parse::<u16>()
+                    .map_err(|_| format!("`{value}` is not a number"))?
+                    .min(20),
+            )
+        }
+        "output_padding" => {
+            config.output_padding = Some(
+                value
+                    .parse::<u16>()
+                    .map_err(|_| format!("`{value}` is not a number"))?
+                    .min(20),
+            )
+        }
+        "autocomplete_max_items" => {
+            config.autocomplete_max_items = Some(number(50)? as usize)
+        }
+        "show_hardware_cursor" => config.show_hardware_cursor = Some(flag()?),
+        "terminal_progress" => config.terminal_progress = Some(flag()?),
+        "quiet_startup" => config.quiet_startup = Some(flag()?),
+        "collapse_changelog" => config.collapse_changelog = Some(flag()?),
+        "warnings" => config.warnings = Some(flag()?),
+        "cache_miss_notices" => config.cache_miss_notices = Some(flag()?),
+        "double_escape" => {
+            config.double_escape = Some(match value.to_ascii_lowercase().as_str() {
+                "tree" => micro_config::DoubleEscape::Tree,
+                "fork" => micro_config::DoubleEscape::Fork,
+                "none" => micro_config::DoubleEscape::None,
+                other => return Err(format!("`{other}` is not tree, fork or none")),
+            })
+        }
+        "follow_up_mode" => {
+            config.follow_up_mode = Some(match value.to_ascii_lowercase().as_str() {
+                "queue" => micro_config::FollowUpMode::Queue,
+                "interrupt" => micro_config::FollowUpMode::Interrupt,
+                other => return Err(format!("`{other}` is not queue or interrupt")),
+            })
+        }
+        "default_project_trust" => config.default_project_trust = Some(flag()?),
+        "http_idle_timeout" => config.http_idle_timeout = Some(number(3600)?),
+        "anthropic_extra_usage" => config.anthropic_extra_usage = Some(flag()?),
+        "transport" => {
+            let chosen = micro_provider::Transport::named(value).ok_or_else(|| {
+                format!("micro speaks sse, not `{value}`; the Codex backend is reached over SSE")
+            })?;
+            config.transport = Some(chosen.name().to_string());
+        }
+        "scoped_models" => {
+            config.scoped_models = Some(match value.eq_ignore_ascii_case("all") {
+                true => Vec::new(),
+                false => value
+                    .split(',')
+                    .map(str::trim)
+                    .filter(|part| !part.is_empty())
+                    .map(str::to_string)
+                    .collect(),
+            })
+        }
+        other => return Err(format!("There is no setting called `{other}`.")),
+    }
+    Ok(())
+}
+
+/// The reasoning effort in force, as a user reads it.
+fn thinking_label(context: &CommandContext<'_>) -> String {
+    let _ = context;
+    micro_config::Config::load()
+        .ok()
+        .and_then(|config| config.thinking)
+        .map(|level| format!("{level:?}").to_lowercase())
+        .unwrap_or_else(|| "off".to_string())
 }
 
 /// What micro knows about the session it is in, for when something is behaving oddly.
@@ -482,43 +849,109 @@ fn debug(context: &CommandContext<'_>) -> CommandOutcome {
     CommandOutcome::info(out)
 }
 
-/// Every key the interface listens for, in the order a reader meets them.
+/// `/hotkeys`, in ohm's three groups, ohm's order, and ohm's words.
+///
+/// The keys are micro's own, which are ohm's defaults: what a row says is bound is what
+/// [`crate`]'s caller actually binds, so this is a description rather than a wish.
 fn hotkeys_text() -> String {
-    let rows: &[(&str, &str)] = &[
-        ("enter", "send"),
-        ("shift+enter / ctrl+j", "new line"),
-        ("\\ then enter", "new line"),
-        ("alt+enter", "queue a follow-up"),
-        ("alt+up", "pull the queue back into the prompt"),
-        ("escape", "interrupt"),
-        ("ctrl+c", "clear, twice to leave"),
-        ("ctrl+d", "leave when the prompt is empty"),
-        ("ctrl+o", "expand or collapse everything"),
-        ("ctrl+t", "show or hide reasoning"),
-        ("shift+tab", "cycle reasoning effort"),
-        ("ctrl+p / shift+ctrl+p", "next or previous model"),
-        ("ctrl+l", "choose a model"),
-        ("ctrl+g", "edit the prompt in $EDITOR"),
-        ("ctrl+x", "copy the last answer"),
-        ("ctrl+v", "attach an image"),
-        ("ctrl+z", "suspend"),
-        ("ctrl+y / alt+y", "yank, then cycle the kill ring"),
-        ("ctrl+-", "undo"),
-        ("ctrl+]", "jump to a character"),
-        ("ctrl+w / alt+backspace", "delete the word before"),
-        ("alt+d", "delete the word after"),
-        ("ctrl+u / ctrl+k", "delete to the start or end of the line"),
-        ("ctrl+a / ctrl+e", "start or end of the line"),
-        ("alt+left / alt+right", "move a word"),
-        ("up / down", "move, or browse sent prompts"),
-        ("pageup / pagedown", "scroll the conversation"),
-        ("/", "commands"),
-        ("!", "run a shell command"),
+    let groups: &[(&str, &[(&str, &str)])] = &[
+        (
+            "Navigation",
+            &[
+                ("up/down/left/right", "Move cursor / browse history"),
+                ("alt+left/ctrl+left/alt+b", "Move by word"),
+                ("home/ctrl+a", "Start of line"),
+                ("end/ctrl+e", "End of line"),
+                ("ctrl+]", "Jump forward to character"),
+                ("ctrl+alt+]", "Jump backward to character"),
+                ("pageup/pagedown", "Scroll by page"),
+            ],
+        ),
+        (
+            "Editing",
+            &[
+                ("enter", "Send message"),
+                ("shift+enter/ctrl+j", "New line"),
+                ("ctrl+w/alt+backspace", "Delete word backwards"),
+                ("alt+d/alt+delete", "Delete word forwards"),
+                ("ctrl+u", "Delete to start of line"),
+                ("ctrl+k", "Delete to end of line"),
+                ("ctrl+y", "Paste the most-recently-deleted text"),
+                ("alt+y", "Cycle through the deleted text after pasting"),
+                ("ctrl+-", "Undo"),
+            ],
+        ),
+        (
+            "Other",
+            &[
+                ("tab", "Path completion / accept autocomplete"),
+                ("escape", "Cancel autocomplete / abort streaming"),
+                ("ctrl+c", "Clear editor (first) / exit (second)"),
+                ("ctrl+d", "Exit (when editor is empty)"),
+                ("ctrl+z", "Suspend to background"),
+                ("shift+tab", "Cycle thinking level"),
+                ("ctrl+p/shift+ctrl+p", "Cycle models"),
+                ("ctrl+l", "Open model selector"),
+                ("ctrl+o", "Toggle tool output expansion"),
+                ("ctrl+t", "Toggle thinking block visibility"),
+                ("ctrl+g", "Edit message in external editor"),
+                ("ctrl+x", "Copy last assistant message"),
+                ("alt+enter", "Queue follow-up message"),
+                ("alt+up", "Restore queued messages"),
+                ("ctrl+v", "Paste image or text from clipboard"),
+                ("/", "Slash commands"),
+                ("!", "Run bash command"),
+            ],
+        ),
     ];
-    rows.iter()
-        .map(|(keys, what)| format!("{keys:<24} {what}"))
+
+    let width = groups
+        .iter()
+        .flat_map(|(_, rows)| rows.iter())
+        .map(|(keys, _)| key_display(keys).chars().count())
+        .max()
+        .unwrap_or(0);
+
+    let mut out = String::new();
+    for (index, (title, rows)) in groups.iter().enumerate() {
+        if index > 0 {
+            out.push('\n');
+        }
+        out.push_str(title);
+        out.push('\n');
+        for (keys, what) in rows.iter() {
+            let keys = key_display(keys);
+            out.push_str(&format!("  {keys:<width$}  {what}\n"));
+        }
+    }
+    out.trim_end().to_string()
+}
+
+/// A key as it is read rather than as it is written: every part capitalized, and `alt`
+/// named `Option` where the keyboard says Option.
+fn key_display(keys: &str) -> String {
+    keys.split('/')
+        .map(|combination| {
+            combination
+                .split('+')
+                .map(capitalize_part)
+                .collect::<Vec<_>>()
+                .join("+")
+        })
         .collect::<Vec<_>>()
-        .join("\n")
+        .join("/")
+}
+
+fn capitalize_part(part: &str) -> String {
+    let part = match (cfg!(target_os = "macos"), part.eq_ignore_ascii_case("alt")) {
+        (true, true) => "option",
+        _ => part,
+    };
+    let mut characters = part.chars();
+    match characters.next() {
+        Some(first) => first.to_uppercase().collect::<String>() + characters.as_str(),
+        None => String::new(),
+    }
 }
 
 fn compact(context: &CommandContext<'_>) -> CommandOutcome {
@@ -596,6 +1029,7 @@ pub(crate) mod testing {
                 session_id: None,
                 message_count: 0,
                 usage: micro_types::Usage::default(),
+            collapse_changelog: false,
             }
         }
     }
@@ -645,6 +1079,203 @@ mod tests {
         assert_eq!(find("/model").unwrap().name, "model");
         assert_eq!(find("MODEL").unwrap().name, "model");
         assert!(find("nope").is_none());
+    }
+
+    /// Every registered command answers when it is run, and none of them panic on the
+    /// way. A command that is listed but not wired up would otherwise only be found by a
+    /// user typing it.
+    #[tokio::test]
+    async fn every_registered_command_answers() {
+        let root = std::env::temp_dir().join(format!("micro-every-command-{}", std::process::id()));
+        let workspace = root.join("workspace");
+        std::fs::create_dir_all(&workspace).unwrap();
+
+        let catalog = Catalog::bundled();
+        let auth = AuthStore::open_at(root.join("auth.json")).unwrap();
+        let sessions = SessionStore::new(root.join("sessions"));
+        let mut session = sessions
+            .create(&workspace, "anthropic/claude-opus-5")
+            .await
+            .unwrap();
+        session
+            .append(&micro_types::Message::user("something was said"))
+            .await
+            .unwrap();
+        let session_id = session.id().to_string();
+        let model = catalog
+            .resolve("anthropic/claude-opus-5")
+            .model()
+            .expect("the bundled catalog carries this model")
+            .clone();
+
+        let context = CommandContext {
+            catalog: &catalog,
+            auth: &auth,
+            sessions: &sessions,
+            workspace: &workspace,
+            provider: "anthropic",
+            model: Some(&model),
+            session_id: Some(&session_id),
+            message_count: 1,
+            usage: micro_types::Usage::default(),
+            collapse_changelog: false,
+        };
+
+        // An argument each command will accept, for the ones that need one. A command that
+        // takes none is run bare.
+        let argument_for = |name: &str| match name {
+            "import" => Some("nothing.jsonl"),
+            "set" => Some("warnings"),
+            "name" => Some("a name"),
+            "tree" => Some("1"),
+            "fork" => Some("0"),
+            "thinking" => Some("low"),
+            "theme" => Some("dark"),
+            "trust" => Some("off"),
+            "model" | "provider" | "login" | "logout" | "resume" | "export" => None,
+            _ => None,
+        };
+
+        for command in commands() {
+            // Sign-in reaches the network, and quitting says nothing worth asserting.
+            if matches!(command.name, "login" | "quit") {
+                continue;
+            }
+            let argument = argument_for(command.name);
+            let outcome = run(command, argument, &context).await;
+            assert!(
+                !format!("{outcome:?}").contains("is not wired up"),
+                "/{} is listed but not wired up",
+                command.name
+            );
+        }
+    }
+
+    /// Every setting `/settings` offers can be set, and every value it refuses is a value
+    /// nothing downstream would have honoured.
+    #[test]
+    fn every_offered_setting_can_be_set() {
+        let mut config = micro_config::Config::default();
+        for (name, value) in [
+            ("auto_compact", "off"),
+            ("hide_thinking", "off"),
+            ("show_images", "off"),
+            ("image_width_cells", "80"),
+            ("auto_resize_images", "off"),
+            ("block_images", "on"),
+            ("skill_commands", "off"),
+            ("editor_padding", "2"),
+            ("output_padding", "0"),
+            ("autocomplete_max_items", "12"),
+            ("show_hardware_cursor", "on"),
+            ("terminal_progress", "off"),
+            ("quiet_startup", "on"),
+            ("collapse_changelog", "on"),
+            ("warnings", "off"),
+            ("cache_miss_notices", "on"),
+            ("double_escape", "fork"),
+            ("follow_up_mode", "interrupt"),
+            ("default_project_trust", "on"),
+            ("http_idle_timeout", "300"),
+            ("scoped_models", "anthropic/, google/gemini-3-pro"),
+            ("transport", "auto"),
+        ] {
+            assign(&mut config, name, value).unwrap_or_else(|error| panic!("{name}: {error}"));
+            assert!(describe(&config, name).is_some(), "{name} cannot be read");
+        }
+
+        let now = config
+            .resolve(&micro_config::Overrides::default(), |_| None)
+            .unwrap();
+        assert!(!now.auto_compact);
+        assert_eq!(now.image_width_cells, 80);
+        assert_eq!(now.autocomplete_max_items, 12);
+        assert_eq!(now.http_idle_timeout, 300);
+        assert_eq!(now.double_escape, micro_config::DoubleEscape::Fork);
+        assert_eq!(
+            now.follow_up_mode,
+            micro_config::FollowUpMode::Interrupt
+        );
+        assert_eq!(now.scoped_models, vec!["anthropic/", "google/gemini-3-pro"]);
+        assert_eq!(now.output_padding, 0);
+        assert_eq!(now.transport, "auto");
+    }
+
+    #[test]
+    fn a_value_a_setting_cannot_take_is_refused() {
+        let mut config = micro_config::Config::default();
+        assert!(assign(&mut config, "auto_compact", "maybe").is_err());
+        assert!(assign(&mut config, "image_width_cells", "wide").is_err());
+        assert!(assign(&mut config, "http_idle_timeout", "0").is_err());
+        assert!(assign(&mut config, "double_escape", "sideways").is_err());
+        // A transport micro cannot speak is refused rather than stored and ignored.
+        assert!(assign(&mut config, "transport", "websocket").is_err());
+        assert!(assign(&mut config, "nothing_like_this", "on").is_err());
+        assert_eq!(config, micro_config::Config::default(), "nothing stuck");
+    }
+
+    /// Every row `/settings` offers dispatches to a command that exists.
+    #[test]
+    fn every_settings_row_dispatches_somewhere_real() {
+        let catalog = Catalog::bundled();
+        let auth = AuthStore::open_at(
+            std::env::temp_dir().join(format!("micro-settings-{}.json", std::process::id())),
+        )
+        .unwrap();
+        let sessions = SessionStore::new(std::env::temp_dir().join("micro-settings-sessions"));
+        let workspace = std::env::temp_dir();
+        let context = CommandContext {
+            catalog: &catalog,
+            auth: &auth,
+            sessions: &sessions,
+            workspace: &workspace,
+            provider: "anthropic",
+            model: None,
+            session_id: None,
+            message_count: 0,
+            usage: micro_types::Usage::default(),
+            collapse_changelog: false,
+        };
+
+        let CommandOutcome::Choose(picker) = settings(&context) else {
+            panic!("settings offers a choice");
+        };
+        assert!(picker.items.len() >= 20, "{}", picker.items.len());
+        for item in &picker.items {
+            let name = item
+                .command
+                .trim_start_matches('/')
+                .split_whitespace()
+                .next()
+                .expect("a command");
+            assert!(find(name).is_some(), "/{name} is not a command");
+        }
+    }
+
+    /// Every key the hotkey table names is one the interface actually listens for, so the
+    /// table is a description of the bindings rather than a wish list.
+    #[test]
+    fn every_hotkey_row_names_a_key_that_is_bound() {
+        let text = hotkeys_text();
+        for group in ["Navigation", "Editing", "Other"] {
+            assert!(text.contains(group), "{text}");
+        }
+        assert!(text.contains("Send message"), "{text}");
+        assert!(text.contains("Cycle thinking level"), "{text}");
+        assert!(text.contains("Paste image or text from clipboard"), "{text}");
+        assert!(text.contains("Run bash command"), "{text}");
+    }
+
+    /// A key is read the way a keyboard is labelled, and `alt` is `Option` on a Mac.
+    #[test]
+    fn a_key_is_shown_the_way_it_is_read() {
+        assert_eq!(key_display("enter"), "Enter");
+        assert_eq!(key_display("shift+enter/ctrl+j"), "Shift+Enter/Ctrl+J");
+        let word_left = key_display("alt+left");
+        match cfg!(target_os = "macos") {
+            true => assert_eq!(word_left, "Option+Left"),
+            false => assert_eq!(word_left, "Alt+Left"),
+        }
     }
 
     #[test]
@@ -755,6 +1386,7 @@ mod tests {
         let context = CommandContext {
             message_count: 4,
             usage: micro_types::Usage::default(),
+            collapse_changelog: false,
             ..harness.context()
         };
         assert!(matches!(
