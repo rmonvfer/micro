@@ -206,6 +206,9 @@ pub struct Config {
     /// How the ChatGPT Codex backend should answer: `sse`, or `auto` to let it decide.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub transport: Option<String>,
+    /// Extensions to load beyond the ones found in the project and the home directory.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub extensions: Option<Vec<String>>,
 
     /// Keys written by a version that knew more than this one.
     #[serde(flatten)]
@@ -258,6 +261,7 @@ pub struct Settings {
     pub scoped_models: Vec<String>,
     pub anthropic_extra_usage: bool,
     pub transport: String,
+    pub extensions: Vec<String>,
 }
 
 /// The widest an image is drawn when nothing says otherwise.
@@ -305,6 +309,7 @@ impl Default for Settings {
             scoped_models: Vec::new(),
             anthropic_extra_usage: true,
             transport: DEFAULT_TRANSPORT.to_string(),
+            extensions: Vec::new(),
         }
     }
 }
@@ -469,6 +474,7 @@ impl Config {
                 .anthropic_extra_usage
                 .unwrap_or(defaults.anthropic_extra_usage),
             transport: self.transport.clone().unwrap_or(defaults.transport),
+            extensions: self.extensions.clone().unwrap_or(defaults.extensions),
         })
     }
 
@@ -509,6 +515,7 @@ impl Config {
             scoped_models: take(&mut fields, "scoped_models", path)?,
             anthropic_extra_usage: take(&mut fields, "anthropic_extra_usage", path)?,
             transport: take(&mut fields, "transport", path)?,
+            extensions: take(&mut fields, "extensions", path)?,
             extra: fields,
         };
         Ok(config)

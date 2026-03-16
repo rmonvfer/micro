@@ -29,6 +29,10 @@ struct Cli {
     #[arg(short = 'p', long)]
     print: bool,
 
+    /// Take commands as JSON lines on stdin and answer on stdout, with no interface.
+    #[arg(long, conflicts_with = "print")]
+    rpc: bool,
+
     /// Model to use: an id, a provider-qualified id, a unique prefix, or an alias.
     #[arg(short, long, env = "MICRO_MODEL")]
     model: Option<String>,
@@ -180,9 +184,15 @@ async fn main() -> Result<()> {
 
     // Each front end answers the policy its own way: the non-interactive path prompts on
     // the terminal, while the interface routes requests to a modal over the transcript.
-    let (approver, approvals): (std::sync::Arc<dyn micro_policy::Approver>, _) = match cli.print {
-        true => (std::sync::Arc::new(approver::TerminalApprover), None),
-        false => {
+    let (approver, approvals): (std::sync::Arc<dyn micro_policy::Approver>, _) = match (
+        cli.print, cli.rpc,
+    ) {
+        // Nobody is at a terminal to answer in RPC mode, so a call the policy cannot
+        // decide is refused rather than left waiting for an answer that cannot come.
+        (_, true) => (std::sync::Arc::new(micro_policy::DenyEverything), None),
+        // With `--print` the user is at the terminal, and is asked there.
+        (true, false) => (std::sync::Arc::new(approver::TerminalApprover), None),
+        (false, false) => {
             let (approver, requests) = micro_tui::approval_channel();
             (approver, Some(requests))
         }
@@ -203,8 +213,40 @@ async fn main() -> Result<()> {
     };
 
     let built = runtime::build(&root, &selection, resume.as_deref(), &settings).await?;
+    // Extensions are told the session has begun, and told again when it ends, which is
+    // where one that holds anything open gets to let go of it.
+    let extensions = built.extensions.clone();
+    if let Some(host) = extensions.as_ref() {
+        let started = serde_json::json!({
+            "session_id": built.session.lock().await.id(),
+            "workspace": root.display().to_string(),
+            "model": built.model.qualified_id(),
+        });
+        let _ = host.lock().await.notify("session_start", started).await;
+    }
+
+    let session = std::sync::Arc::clone(&built.session);
     let writer = runtime::persist(built.session, built.recorder);
     let prompt = cli.prompt.join(" ");
+
+    if cli.rpc {
+        let mut rpc = micro_rpc::Rpc::new(
+            built.agent,
+            session,
+            micro_models::Catalog::load().unwrap_or_else(|_| micro_models::Catalog::bundled()),
+            root.clone(),
+        );
+        let outcome = rpc
+            .run(tokio::io::stdin(), tokio::io::stdout())
+            .await
+            .map_err(anyhow::Error::from);
+        // The agent lives inside the mode, and the writer runs until the agent's recorder
+        // closes. Letting go of the mode first is what ends it.
+        drop(rpc);
+        let _ = writer.await;
+        shut_down_extensions(extensions).await;
+        return outcome;
+    }
 
     let result = if cli.print {
         if prompt.trim().is_empty() {
@@ -233,5 +275,22 @@ async fn main() -> Result<()> {
     // The agent has been dropped by now, which closes the recorder and ends the writer.
     // Waiting for it guarantees every message reached the log before the process exits.
     let _ = writer.await;
+    shut_down_extensions(extensions).await;
     result
+}
+
+/// Let the extension host go, once nothing else needs it.
+///
+/// The host holds someone else's code in another process; leaving it running would
+/// outlive the session that started it.
+async fn shut_down_extensions(
+    extensions: Option<std::sync::Arc<tokio::sync::Mutex<micro_extensions::Host>>>,
+) {
+    let Some(host) = extensions else {
+        return;
+    };
+    // Only the last holder can shut it down, and by here nothing else should hold it.
+    if let Ok(host) = std::sync::Arc::try_unwrap(host) {
+        host.into_inner().shutdown().await;
+    }
 }

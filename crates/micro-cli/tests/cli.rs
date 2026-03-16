@@ -4,6 +4,7 @@
 mod support;
 
 use serde_json::json;
+use micro_extensions::which_bun;
 use support::offered_tools;
 use support::path_of;
 use support::tool_results;
@@ -655,5 +656,221 @@ fn an_empty_stored_credential_fails_before_any_request() {
         api.request_count(),
         0,
         "a request went out despite there being no credential to sign it with"
+    );
+}
+
+/// The headless protocol answers each command, echoes the id it was given, and ends when
+/// stdin closes.
+#[test]
+fn rpc_answers_every_command_it_is_given() {
+    let api = FakeApi::start([]);
+    let fixture = Fixture::new(&api);
+
+    let lines = fixture.rpc(&[
+        r#"{"type":"get_state","id":"1"}"#,
+        r#"{"type":"get_commands","id":"2"}"#,
+        r#"{"type":"get_available_models","id":"3"}"#,
+        r#"{"type":"bash","command":"echo hello","id":"4"}"#,
+        r#"{"type":"set_session_name","name":"the good one","id":"5"}"#,
+        r#"{"type":"get_session_stats","id":"6"}"#,
+    ]);
+
+    assert_eq!(lines.len(), 6, "{lines:#?}");
+    for (index, line) in lines.iter().enumerate() {
+        assert_eq!(line["type"], "response");
+        assert_eq!(line["id"], (index + 1).to_string());
+        assert_eq!(line["success"], true, "{line}");
+    }
+
+    assert_eq!(lines[0]["data"]["message_count"], 0);
+    assert!(lines[0]["data"]["session_id"].is_string());
+    assert!(
+        lines[1]["data"]["commands"]
+            .as_array()
+            .expect("a list of commands")
+            .len()
+            >= 20
+    );
+    assert!(!lines[2]["data"]["models"].as_array().unwrap().is_empty());
+    assert_eq!(lines[3]["data"]["output"], "hello");
+    assert_eq!(lines[3]["data"]["exit_code"], 0);
+    assert_eq!(lines[5]["data"]["title"], "the good one");
+}
+
+/// A line that is not a command is reported rather than ignored, and the stream carries on.
+#[test]
+fn rpc_reports_a_line_it_cannot_read_and_keeps_going() {
+    let api = FakeApi::start([]);
+    let fixture = Fixture::new(&api);
+
+    let lines = fixture.rpc(&["not json at all", r#"{"type":"get_state","id":"after"}"#]);
+
+    assert_eq!(lines.len(), 2);
+    assert_eq!(lines[0]["success"], false);
+    assert!(
+        lines[0]["error"]
+            .as_str()
+            .expect("a reason")
+            .contains("unreadable"),
+        "{}",
+        lines[0]
+    );
+    assert_eq!(lines[1]["id"], "after");
+    assert_eq!(lines[1]["success"], true);
+}
+
+/// A prompt streams the agent's own events, then the answer, all on the same stream.
+#[test]
+fn rpc_streams_a_turn_as_it_happens() {
+    let api = FakeApi::start([Reply::text("an answer from the model")]);
+    let fixture = Fixture::new(&api);
+
+    let lines = fixture.rpc(&[r#"{"type":"prompt","message":"ask something","id":"turn"}"#]);
+
+    // The command is acknowledged before the turn runs, so a caller knows it started.
+    assert_eq!(lines[0]["type"], "response");
+    assert_eq!(lines[0]["command"], "prompt");
+    assert_eq!(lines[0]["success"], true);
+
+    let kinds: Vec<&str> = lines
+        .iter()
+        .skip(1)
+        .filter_map(|line| line["type"].as_str())
+        .collect();
+    assert!(kinds.contains(&"turn_start"), "{kinds:?}");
+    assert!(kinds.contains(&"message_end"), "{kinds:?}");
+
+    let answered = lines.iter().any(|line| {
+        serde_json::to_string(line)
+            .unwrap_or_default()
+            .contains("an answer from the model")
+    });
+    assert!(answered, "the answer reached the stream: {lines:#?}");
+}
+
+/// A model the catalog does not have is refused by name rather than silently kept.
+#[test]
+fn rpc_refuses_a_model_it_does_not_have() {
+    let api = FakeApi::start([]);
+    let fixture = Fixture::new(&api);
+
+    let lines = fixture.rpc(&[
+        r#"{"type":"set_model","provider":"openrouter","model_id":"nothing-like-this","id":"1"}"#,
+    ]);
+
+    assert_eq!(lines[0]["success"], false);
+    assert!(
+        lines[0]["error"]
+            .as_str()
+            .unwrap()
+            .contains("nothing-like-this"),
+        "{}",
+        lines[0]
+    );
+}
+
+/// An extension in the project registers a tool, the model calls it, and what it returned
+/// reaches the answer — through a real Bun process, with no configuration anywhere.
+#[test]
+fn an_extension_tool_is_offered_to_the_model_and_runs() {
+    if which_bun().is_none() {
+        return;
+    }
+    let api = FakeApi::start([
+        Reply::tool_call("call_1", "project_greeting", json!({ "who": "world" })),
+        Reply::text("the extension said it"),
+    ]);
+    let fixture = Fixture::new(&api);
+    fixture.write(
+        ".micro/extensions/greeter.ts",
+        r#"
+export default (micro) => {
+    micro.registerTool({
+        name: "project_greeting",
+        description: "Return the project's own greeting",
+        parameters: { type: "object", properties: { who: { type: "string" } } },
+        execute: async (args) => `hello ${args.who}, from an extension`,
+    });
+};
+"#,
+    );
+
+    // Approval is given up front: an extension's tool is third-party code, so without
+    // this the policy asks, and nothing is there to answer.
+    let output = fixture.print(&["-m", "test", "--approve", "unrestricted", "greet the world"]);
+    assert!(output.status.success(), "{}", output.stderr);
+
+    // The model was offered the extension's tool by name.
+    let request = api.request(0);
+    let tools = request["tools"].as_array().expect("tools were sent");
+    assert!(
+        tools.iter().any(|tool| tool["function"]["name"] == "project_greeting"),
+        "the extension's tool was offered: {tools:#?}"
+    );
+
+    // And what the extension returned went back to the model as the result.
+    let second = api.request(1);
+    let messages = second["messages"].as_array().expect("a conversation");
+    let carried = messages.iter().any(|message| {
+        message["content"]
+            .as_str()
+            .is_some_and(|text| text.contains("hello world, from an extension"))
+    });
+    assert!(carried, "the extension's answer reached the model: {messages:#?}");
+}
+
+/// An extension's tool goes through the same policy as everything built in, so an
+/// unattended run refuses it rather than running someone else's code unasked.
+#[test]
+fn an_extension_tool_is_gated_like_every_other_tool() {
+    if which_bun().is_none() {
+        return;
+    }
+    let api = FakeApi::start([
+        Reply::tool_call("call_1", "project_greeting", json!({ "who": "world" })),
+        Reply::text("it was refused"),
+    ]);
+    let fixture = Fixture::new(&api);
+    fixture.write(
+        ".micro/extensions/greeter.ts",
+        r#"
+export default (micro) => {
+    micro.registerTool({
+        name: "project_greeting",
+        description: "Return the project's own greeting",
+        execute: async () => "this should not have run",
+    });
+};
+"#,
+    );
+
+    let output = fixture.print(&["-m", "test", "greet the world"]);
+    assert!(output.status.success(), "{}", output.stderr);
+
+    let messages = api.request(1);
+    let refused = messages["messages"]
+        .as_array()
+        .expect("a conversation")
+        .iter()
+        .any(|message| {
+            message["content"]
+                .as_str()
+                .is_some_and(|text| text.contains("Refused by the workspace policy"))
+        });
+    assert!(refused, "the call was refused: {messages:#?}");
+}
+
+/// A project with no extensions starts exactly as it did before, and says nothing about it.
+#[test]
+fn a_project_without_extensions_says_nothing_about_them() {
+    let api = FakeApi::start([Reply::text("fine")]);
+    let fixture = Fixture::new(&api);
+
+    let output = fixture.print(&["-m", "test", "say something"]);
+    assert!(output.status.success(), "{}", output.stderr);
+    assert!(
+        !output.stderr.contains("extension"),
+        "nothing to say: {}",
+        output.stderr
     );
 }
