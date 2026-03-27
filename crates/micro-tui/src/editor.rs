@@ -12,8 +12,8 @@ mod paste;
 mod undo;
 
 pub use kill_ring::KillRing;
-pub use paste::PasteStore;
 pub use kill_ring::LastAction;
+pub use paste::PasteStore;
 pub use undo::Snapshot;
 pub use undo::UndoStack;
 
@@ -247,6 +247,17 @@ impl Editor {
         self.move_end();
     }
 
+    /// Replace the whole buffer and place the cursor exactly where asked, clamped to what
+    /// the new text actually has. For an edit computed elsewhere rather than typed at the
+    /// keyboard — an extension's own `applyCompletion`, say — which knows where its own
+    /// cursor belongs and would have it moved to the end, as plain `set_text` does, otherwise.
+    pub fn set_text_with_cursor(&mut self, text: &str, row: usize, col: usize) {
+        self.set_text(text);
+        self.row = row.min(self.lines.len() - 1);
+        self.col = col.min(self.lines[self.row].len());
+        self.sticky = None;
+    }
+
     /// Empty the buffer and return what it held.
     /// Take the prompt to send: markers stand in on screen, but what leaves here is what
     /// they stand for.
@@ -358,7 +369,21 @@ impl Editor {
         self.sticky = None;
     }
 
+    /// Delete one grapheme forward. Like backspace, this never touches the kill ring and
+    /// ends whatever run was in progress.
     pub fn delete(&mut self) {
+        self.checkpoint();
+        self.last = LastAction::Other;
+        // A marker stands for a whole paste, so it goes all at once rather than losing its
+        // opening bracket and becoming ordinary text.
+        if let Some(marker) = self.marker_after_cursor() {
+            self.delete_marker(marker);
+            return;
+        }
+        self.delete_inner();
+    }
+
+    fn delete_inner(&mut self) {
         let length = self.lines[self.row].len();
         if self.col < length {
             let end = next_boundary(&self.lines[self.row], self.col);
@@ -588,6 +613,11 @@ impl Editor {
         paste::marker_ending_at(&self.lines[self.row], self.col)
     }
 
+    /// The marker the cursor sits just before, if there is one.
+    fn marker_after_cursor(&self) -> Option<paste::Marker> {
+        paste::marker_starting_at(&self.lines[self.row], self.col)
+    }
+
     /// Delete a whole marker and forget the paste behind it.
     ///
     /// The numbers of the pastes after it close up, and the markers still in the text are
@@ -793,25 +823,47 @@ fn next_boundary(text: &str, index: usize) -> usize {
         .unwrap_or(text.len())
 }
 
-fn is_word_char(text: &str) -> bool {
-    text.chars()
-        .next()
-        .is_some_and(|c| c.is_alphanumeric() || c == '_')
+/// What kind of character this is, for deciding where a word ends.
+///
+/// Punctuation is its own kind rather than a separator like whitespace. A path or a call
+/// is a run of words with punctuation between them, and treating the punctuation as a gap
+/// would step over `foo.bar` in one move where a reader expects three.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CharClass {
+    Whitespace,
+    Word,
+    Punctuation,
 }
 
-/// Start of the word before `index`: skip any separators, then the word itself.
+fn class_of(text: &str) -> CharClass {
+    match text.chars().next() {
+        Some(character) if character.is_whitespace() => CharClass::Whitespace,
+        Some(character) if character.is_alphanumeric() || character == '_' => CharClass::Word,
+        Some(character) if character.is_ascii_punctuation() => CharClass::Punctuation,
+        // Anything else — a symbol, an emoji — is a thing rather than a gap.
+        Some(_) => CharClass::Word,
+        None => CharClass::Whitespace,
+    }
+}
+
+/// Start of the word before `index`: skip any whitespace, then one run of one kind.
 fn word_start_before(text: &str, index: usize) -> usize {
     let mut cursor = index;
     while cursor > 0 {
         let previous = prev_boundary(text, cursor);
-        if is_word_char(&text[previous..cursor]) {
+        if class_of(&text[previous..cursor]) != CharClass::Whitespace {
             break;
         }
         cursor = previous;
     }
+    if cursor == 0 {
+        return cursor;
+    }
+
+    let run = class_of(&text[prev_boundary(text, cursor)..cursor]);
     while cursor > 0 {
         let previous = prev_boundary(text, cursor);
-        if !is_word_char(&text[previous..cursor]) {
+        if class_of(&text[previous..cursor]) != run {
             break;
         }
         cursor = previous;
@@ -824,14 +876,19 @@ fn word_end_after(text: &str, index: usize) -> usize {
     let mut cursor = index;
     while cursor < text.len() {
         let next = next_boundary(text, cursor);
-        if is_word_char(&text[cursor..next]) {
+        if class_of(&text[cursor..next]) != CharClass::Whitespace {
             break;
         }
         cursor = next;
     }
+    if cursor >= text.len() {
+        return cursor;
+    }
+
+    let run = class_of(&text[cursor..next_boundary(text, cursor)]);
     while cursor < text.len() {
         let next = next_boundary(text, cursor);
-        if !is_word_char(&text[cursor..next]) {
+        if class_of(&text[cursor..next]) != run {
             break;
         }
         cursor = next;
@@ -878,6 +935,25 @@ mod tests {
         }
         assert_eq!(editor.text(), "hello");
         assert_eq!(editor.cursor(), (0, 5));
+    }
+
+    /// Unlike plain `set_text`, which always lands the cursor at the end, this places it
+    /// exactly where asked — what an edit computed elsewhere, rather than typed, needs.
+    #[test]
+    fn set_text_with_cursor_places_it_where_asked() {
+        let mut editor = Editor::new();
+        editor.set_text_with_cursor("one\ntwo", 1, 1);
+        assert_eq!(editor.text(), "one\ntwo");
+        assert_eq!(editor.cursor(), (1, 1));
+    }
+
+    /// A row or column past what the new text actually has is clamped rather than trusted,
+    /// since the caller computed it against text that may not match what lands here exactly.
+    #[test]
+    fn set_text_with_cursor_clamps_past_the_end() {
+        let mut editor = Editor::new();
+        editor.set_text_with_cursor("hi", 9, 9);
+        assert_eq!(editor.cursor(), (0, 2));
     }
 
     #[test]
@@ -933,18 +1009,38 @@ mod tests {
         assert_eq!(editor.text(), "ok ");
     }
 
+    /// Whitespace is a gap; punctuation is a stop of its own. `beta.gamma` is three
+    /// moves, not one, which is what a reader editing a path or a call expects.
     #[test]
-    fn word_motion_skips_separators_then_the_word() {
+    fn word_motion_stops_at_punctuation_as_well_as_at_words() {
         let mut editor = editor_with("alpha  beta.gamma");
         editor.move_line_start();
         editor.move_word_right();
-        assert_eq!(editor.cursor().1, 5);
+        assert_eq!(editor.cursor().1, 5, "past alpha");
         editor.move_word_right();
-        assert_eq!(editor.cursor().1, 11);
+        assert_eq!(editor.cursor().1, 11, "past the gap and beta");
         editor.move_word_right();
-        assert_eq!(editor.cursor().1, 17);
+        assert_eq!(editor.cursor().1, 12, "past the dot on its own");
+        editor.move_word_right();
+        assert_eq!(editor.cursor().1, 17, "past gamma");
+
         editor.move_word_left();
-        assert_eq!(editor.cursor().1, 12);
+        assert_eq!(editor.cursor().1, 12, "back to the start of gamma");
+        editor.move_word_left();
+        assert_eq!(editor.cursor().1, 11, "back over the dot");
+        editor.move_word_left();
+        assert_eq!(editor.cursor().1, 7, "back to the start of beta");
+    }
+
+    /// A run of punctuation is one stop, not one per character.
+    #[test]
+    fn a_run_of_punctuation_moves_as_one() {
+        let mut editor = editor_with("a ==> b");
+        editor.move_line_start();
+        editor.move_word_right();
+        assert_eq!(editor.cursor().1, 1);
+        editor.move_word_right();
+        assert_eq!(editor.cursor().1, 5, "the whole ==> at once");
     }
 
     #[test]
@@ -1167,7 +1263,11 @@ mod ring_tests {
         editor.insert_str("kept");
         editor.backspace();
         editor.yank();
-        assert_eq!(editor.text(), "kepword", "the ring still holds the word kill");
+        assert_eq!(
+            editor.text(),
+            "kepword",
+            "the ring still holds the word kill"
+        );
     }
 
     #[test]
@@ -1187,7 +1287,11 @@ mod ring_tests {
             editor.insert_char(character);
         }
         editor.undo();
-        assert_eq!(editor.text(), "one ", "the second word goes back on its own");
+        assert_eq!(
+            editor.text(),
+            "one ",
+            "the second word goes back on its own"
+        );
         editor.undo();
         assert_eq!(editor.text(), "one", "and then the space");
     }
@@ -1229,6 +1333,31 @@ mod ring_tests {
         editor.backspace();
         assert_eq!(editor.text(), "see ");
         assert_eq!(editor.expanded_text(), "see ");
+    }
+
+    /// Forward delete is the other half of the same rule: a marker in front of the cursor
+    /// goes all at once rather than losing its opening bracket.
+    #[test]
+    fn forward_delete_takes_a_whole_marker() {
+        let mut editor = Editor::new();
+        editor.paste(&big());
+        editor.insert_str(" see");
+        editor.move_line_start();
+        editor.delete();
+        assert_eq!(editor.text(), " see");
+        assert_eq!(editor.expanded_text(), " see");
+    }
+
+    /// Forward delete is a change like any other, so it can be taken back.
+    #[test]
+    fn forward_delete_can_be_undone() {
+        let mut editor = Editor::new();
+        editor.insert_str("hello");
+        editor.move_line_start();
+        editor.delete();
+        assert_eq!(editor.text(), "ello");
+        editor.undo();
+        assert_eq!(editor.text(), "hello");
     }
 
     #[test]
@@ -1302,7 +1431,11 @@ mod ring_tests {
         let sent = editor.take();
         assert_eq!(sent, big());
         editor.paste(&big());
-        assert_eq!(editor.text(), "[paste #1 +41 lines]", "numbering starts over");
+        assert_eq!(
+            editor.text(),
+            "[paste #1 +41 lines]",
+            "numbering starts over"
+        );
     }
 
     #[test]
@@ -1310,7 +1443,11 @@ mod ring_tests {
         let mut editor = editor("alpha beta gamma");
         editor.move_line_start();
         editor.jump_to_char('a', true);
-        assert_eq!(editor.cursor().1, 4, "the a in alpha, not the one under the cursor");
+        assert_eq!(
+            editor.cursor().1,
+            4,
+            "the a in alpha, not the one under the cursor"
+        );
         editor.jump_to_char('g', true);
         assert_eq!(editor.cursor().1, 11);
     }
@@ -1321,7 +1458,11 @@ mod ring_tests {
         editor.insert_str("first\nsecond\nthird");
         editor.move_start();
         editor.jump_to_char('c', true);
-        assert_eq!(editor.cursor(), (1, 2), "the c in second, on the line below");
+        assert_eq!(
+            editor.cursor(),
+            (1, 2),
+            "the c in second, on the line below"
+        );
     }
 
     #[test]
@@ -1371,7 +1512,11 @@ mod ring_tests {
         // Paging keeps the display column, the way every vertical motion does, so only the
         // row is asserted here.
         editor.page_up(40, 24);
-        assert_eq!(editor.cursor().0, 0, "stopped at the top rather than running off");
+        assert_eq!(
+            editor.cursor().0,
+            0,
+            "stopped at the top rather than running off"
+        );
         editor.page_down(40, 24);
         assert_eq!(editor.cursor().0, 2, "and at the bottom");
     }

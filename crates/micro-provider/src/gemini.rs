@@ -26,7 +26,8 @@ use tokio::sync::mpsc;
 use tokio::sync::mpsc::UnboundedReceiver;
 use tokio::sync::mpsc::UnboundedSender;
 
-pub(crate) const GEMINI_BASE_URL: &str = "https://generativelanguage.googleapis.com/v1beta";
+#[cfg(test)]
+const GEMINI_BASE_URL: &str = "https://generativelanguage.googleapis.com/v1beta";
 
 /// JSON Schema keywords Gemini's function declarations reject. Anything left in the
 /// schema after this filter is a keyword it understands.
@@ -51,9 +52,24 @@ const UNSUPPORTED_SCHEMA_FIELDS: &[&str] = &[
     "title",
 ];
 
+/// Which service is answering the Gemini shape.
+///
+/// The request and the stream are the same either way. What differs is the address — a
+/// Vertex model lives under a project and a location — and how the credential is
+/// presented: an API key to Google's own endpoint, a bearer token to Vertex.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Backend {
+    /// Google's own `generativelanguage` endpoint, reached with an API key.
+    #[default]
+    Google,
+    /// Vertex AI, reached with a Google Cloud credential.
+    Vertex,
+}
+
 #[derive(Clone, Default)]
 pub struct Gemini {
     client: reqwest::Client,
+    backend: Backend,
     /// Where the next synthesized call id continues from. Shared across every request this
     /// provider serves, which is what keeps ids unique for a whole conversation rather
     /// than only within one response.
@@ -64,6 +80,16 @@ impl Gemini {
     pub fn new() -> Self {
         Gemini {
             client: crate::http_client(),
+            backend: Backend::Google,
+            next_call: Arc::new(AtomicUsize::new(0)),
+        }
+    }
+
+    /// The same shape as Vertex AI serves it.
+    pub fn vertex() -> Self {
+        Gemini {
+            client: crate::http_client(),
+            backend: Backend::Vertex,
             next_call: Arc::new(AtomicUsize::new(0)),
         }
     }
@@ -71,7 +97,10 @@ impl Gemini {
 
 impl Provider for Gemini {
     fn name(&self) -> &str {
-        "gemini"
+        match self.backend {
+            Backend::Google => "gemini",
+            Backend::Vertex => crate::vertex::PROVIDER,
+        }
     }
 
     fn stream(
@@ -82,6 +111,7 @@ impl Provider for Gemini {
     ) -> UnboundedReceiver<StreamEvent> {
         let (sender, receiver) = mpsc::unbounded_channel();
         let client = self.client.clone();
+        let backend = self.backend;
 
         // Two things have to hold for an id to stay unique across a whole conversation, and
         // they cover different failures. Starting from the calls the history already holds
@@ -93,7 +123,9 @@ impl Provider for Gemini {
         counter.fetch_max(tool_calls_so_far(&context.messages), Ordering::Relaxed);
 
         tokio::spawn(async move {
-            if let Err(message) = run(client, model, context, api_key, counter, &sender).await {
+            if let Err(message) =
+                run(client, backend, model, context, api_key, counter, &sender).await
+            {
                 let _ = sender.send(StreamEvent::Error { message });
             }
         });
@@ -130,17 +162,30 @@ fn tool_calls_so_far(messages: &[Message]) -> usize {
 
 async fn run(
     client: reqwest::Client,
+    backend: Backend,
     model: Model,
     context: Context,
     api_key: String,
     next_call: Arc<AtomicUsize>,
     sender: &UnboundedSender<StreamEvent>,
 ) -> Result<(), String> {
-    let payload = build_payload(&model, &context);
-    let response = client
-        .post(endpoint(&model.base_url, &model.id))
-        .header("x-goog-api-key", api_key)
-        .header("content-type", "application/json")
+    let payload = build_payload(&model, &context)?;
+    let request = match backend {
+        Backend::Google => client
+            .post(endpoint(&model.base_url, &model.id))
+            .header("x-goog-api-key", api_key),
+        Backend::Vertex => {
+            let account = crate::vertex::account(&model.base_url)?;
+            // A Vertex credential is a bearer token, minted from whatever the account
+            // was set up with; a plain API key is sent as one too.
+            let token = crate::vertex::access_token(&client, &api_key).await?;
+            client
+                .post(crate::vertex::endpoint(&account, &model.id))
+                .header("authorization", format!("Bearer {token}"))
+        }
+    }
+    .header("content-type", "application/json");
+    let response = crate::with_carried_headers(request, &context, &model.base_url)
         .json(&payload)
         .send()
         .await
@@ -505,7 +550,7 @@ fn map_finish_reason(reason: &str) -> StopReason {
     }
 }
 
-pub(crate) fn build_payload(model: &Model, context: &Context) -> Value {
+pub(crate) fn build_payload(model: &Model, context: &Context) -> Result<Value, String> {
     let mut payload = Map::new();
 
     if let Some(system) = context
@@ -525,34 +570,67 @@ pub(crate) fn build_payload(model: &Model, context: &Context) -> Value {
     );
 
     if !context.tools.is_empty() {
+        let supports_strict = supports_google_strict_tool_sampling(&model.id);
+        // Whether the request as a whole asks Gemini to validate arguments strictly. This
+        // is a request-level switch rather than a per-tool one — Gemini has no per-tool
+        // `strict` field the way OpenAI, Anthropic, and the Responses API do — so it is
+        // turned on the moment any tool in the batch resolves to it.
+        let mut any_strict = false;
         let declarations: Vec<Value> = context
             .tools
             .iter()
             .map(|tool| {
-                json!({
-                    "name": tool.name,
-                    "description": tool.description,
-                    "parameters": sanitize_schema(&tool.parameters),
-                })
+                let strict = crate::constrained_sampling::resolve_json_schema_strict_sampling(
+                    tool,
+                    supports_strict,
+                )?;
+                let declaration = match strict {
+                    Some(true) => {
+                        any_strict = true;
+                        // The strict rewrite already is full JSON Schema — additional
+                        // properties forbidden, every property required or nullable —
+                        // which is what `parametersJsonSchema` is for. Sanitizing it the
+                        // way an ordinary tool's schema is sanitized would strip the very
+                        // keywords strict sampling exists to add; the legacy
+                        // `parameters`/OpenAPI field a tool that never opted in still uses
+                        // does not reliably carry them at all.
+                        let parameters =
+                            crate::constrained_sampling::json_schema_tool_parameters(
+                                tool, strict,
+                            )?;
+                        json!({
+                            "name": tool.name,
+                            "description": tool.description,
+                            "parametersJsonSchema": parameters,
+                        })
+                    }
+                    _ => json!({
+                        "name": tool.name,
+                        "description": tool.description,
+                        "parameters": sanitize_schema(&tool.parameters),
+                    }),
+                };
+                Ok(declaration)
             })
-            .collect();
+            .collect::<Result<_, String>>()?;
         payload.insert(
             "tools".into(),
             json!([{ "functionDeclarations": declarations }]),
         );
+        if any_strict {
+            payload.insert(
+                "toolConfig".into(),
+                json!({ "functionCallingConfig": { "mode": "VALIDATED" } }),
+            );
+        }
     }
 
     let mut generation = Map::new();
     generation.insert("maxOutputTokens".into(), json!(model.max_tokens));
-    if let Some(budget) = model.thinking.budget_tokens() {
-        generation.insert(
-            "thinkingConfig".into(),
-            json!({ "thinkingBudget": budget, "includeThoughts": true }),
-        );
-    }
+    generation.insert("thinkingConfig".into(), thinking_config(model));
     payload.insert("generationConfig".into(), Value::Object(generation));
 
-    Value::Object(payload)
+    Ok(Value::Object(payload))
 }
 
 /// Build the `contents` array. Gemini has only two roles, so a tool result is a user
@@ -781,6 +859,87 @@ fn sanitize_below(key: &str, value: &Value) -> Value {
     value.clone()
 }
 
+/// How much thinking to ask for, and whether to be shown any of it.
+///
+/// Turning it off is said outright rather than left unsaid: a model that thinks by default
+/// keeps thinking when nothing tells it not to, and bills for it. Not every model can be
+/// told to stop — the newest ones take a level instead of a budget, and their lowest level
+/// is as quiet as they get.
+fn thinking_config(model: &Model) -> Value {
+    let Some(budget) = model.thinking.budget_tokens() else {
+        return match lowest_level(&model.id) {
+            Some(level) => json!({ "thinkingLevel": level }),
+            None => json!({ "thinkingBudget": 0 }),
+        };
+    };
+
+    match lowest_level(&model.id) {
+        // A model that takes a level does not take a budget, so effort is spelled as one.
+        Some(_) => json!({ "thinkingLevel": level_for(model.thinking), "includeThoughts": true }),
+        None => json!({ "thinkingBudget": budget, "includeThoughts": true }),
+    }
+}
+
+/// The quietest a model can be told to be, for the models that cannot be told to stop.
+fn lowest_level(id: &str) -> Option<&'static str> {
+    let id = id.to_ascii_lowercase();
+    if is_gemini_3(&id, "pro") {
+        return Some("LOW");
+    }
+    if is_gemini_3(&id, "flash")
+        || id == "gemini-flash-latest"
+        || id == "gemini-flash-lite-latest"
+        || id.contains("gemma-4")
+        || id.contains("gemma4")
+    {
+        return Some("MINIMAL");
+    }
+    None
+}
+
+/// The number after `gemini-` or `gemini-live-`, however many digits precede the next
+/// non-digit. `gemini-2.5-pro` is version 2; `gemini-live-3-flash` is version 3; anything
+/// that does not open with one of those two prefixes has no version to read.
+fn gemini_major_version(id: &str) -> Option<u32> {
+    let lower = id.to_ascii_lowercase();
+    let rest = lower
+        .strip_prefix("gemini-live-")
+        .or_else(|| lower.strip_prefix("gemini-"))?;
+    let digits: String = rest.chars().take_while(char::is_ascii_digit).collect();
+    digits.parse().ok()
+}
+
+/// Gemini 3 and later enforce required function parameters in validated tool-calling
+/// modes; nothing earlier understands the request-level knob that asks for it.
+fn supports_google_strict_tool_sampling(id: &str) -> bool {
+    gemini_major_version(id).is_some_and(|version| version >= 3)
+}
+
+/// `gemini-3-pro`, `gemini-3.1-pro`, and the same for flash.
+fn is_gemini_3(id: &str, family: &str) -> bool {
+    let Some(rest) = id.split_once("gemini-3").map(|(_, rest)| rest) else {
+        return false;
+    };
+    let rest = match rest.strip_prefix('.') {
+        Some(rest) => rest.trim_start_matches(|c: char| c.is_ascii_digit()),
+        None => rest,
+    };
+    rest.starts_with(&format!("-{family}"))
+}
+
+/// How hard a model that takes levels should think.
+fn level_for(thinking: micro_types::ThinkingLevel) -> &'static str {
+    match thinking {
+        micro_types::ThinkingLevel::Off => "MINIMAL",
+        micro_types::ThinkingLevel::Minimal => "MINIMAL",
+        micro_types::ThinkingLevel::Low => "LOW",
+        micro_types::ThinkingLevel::Medium => "MEDIUM",
+        micro_types::ThinkingLevel::High => "HIGH",
+        micro_types::ThinkingLevel::XHigh => "HIGH",
+        micro_types::ThinkingLevel::Max => "HIGH",
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -794,6 +953,9 @@ mod tests {
             base_url: GEMINI_BASE_URL.into(),
             max_tokens: 8_192,
             thinking: ThinkingLevel::Off,
+            compat: Default::default(),
+            headers: Default::default(),
+            reasoning: Default::default(),
         }
     }
 
@@ -872,16 +1034,21 @@ mod tests {
             system_prompt: Some("be brief".into()),
             ..Context::default()
         };
-        let payload = build_payload(&model(), &context);
+        let payload = build_payload(&model(), &context).unwrap();
 
         assert_eq!(
             payload["system_instruction"]["parts"][0]["text"],
             "be brief"
         );
         assert_eq!(payload["generationConfig"]["maxOutputTokens"], 8_192);
-        assert!(payload["generationConfig"].get("thinkingConfig").is_none());
+        // Thinking is turned off outright rather than left unsaid: a model that thinks by
+        // default keeps thinking, and bills for it, when nothing says otherwise.
+        assert_eq!(
+            payload["generationConfig"]["thinkingConfig"]["thinkingBudget"],
+            0
+        );
 
-        let blank = build_payload(&model(), &Context::default());
+        let blank = build_payload(&model(), &Context::default()).unwrap();
         assert!(blank.get("system_instruction").is_none());
     }
 
@@ -890,7 +1057,8 @@ mod tests {
         let payload = build_payload(
             &model().with_thinking(ThinkingLevel::Medium),
             &Context::default(),
-        );
+        )
+        .unwrap();
         let config = &payload["generationConfig"]["thinkingConfig"];
 
         assert_eq!(config["thinkingBudget"], 12_000);
@@ -904,16 +1072,167 @@ mod tests {
                 name: "read".into(),
                 description: "read a file".into(),
                 parameters: json!({ "type": "object" }),
+                constrained_sampling: None,
             }],
             ..Context::default()
         };
-        let payload = build_payload(&model(), &context);
+        let payload = build_payload(&model(), &context).unwrap();
 
         assert_eq!(payload["tools"].as_array().unwrap().len(), 1);
         assert_eq!(
             payload["tools"][0]["functionDeclarations"][0]["name"],
             "read"
         );
+    }
+
+    #[test]
+    fn strict_tool_sampling_is_read_off_the_model_id_not_a_compat_flag() {
+        assert_eq!(gemini_major_version("gemini-2.5-pro"), Some(2));
+        assert_eq!(gemini_major_version("gemini-3-pro"), Some(3));
+        assert_eq!(gemini_major_version("gemini-3.1-pro"), Some(3));
+        assert_eq!(gemini_major_version("gemini-live-2.5-flash"), Some(2));
+        assert_eq!(gemini_major_version("gemma-4"), None);
+        assert_eq!(gemini_major_version("claude-opus-5"), None);
+
+        assert!(!supports_google_strict_tool_sampling("gemini-2.5-pro"));
+        assert!(supports_google_strict_tool_sampling("gemini-3-pro"));
+        assert!(supports_google_strict_tool_sampling("gemini-3.1-flash"));
+    }
+
+    fn gemini_3_model() -> Model {
+        let mut model = model();
+        model.id = "gemini-3-pro".into();
+        model
+    }
+
+    fn tool_asking_for_json_schema_sampling(
+        strict: micro_types::JsonSchemaStrictness,
+    ) -> ToolDefinition {
+        ToolDefinition {
+            name: "grep".into(),
+            description: "search".into(),
+            parameters: json!({
+                "type": "object",
+                "properties": { "pattern": { "type": "string" } },
+                "required": ["pattern"],
+            }),
+            constrained_sampling: Some(micro_types::ConstrainedSampling::JsonSchema { strict }),
+        }
+    }
+
+    /// Gemini has no per-tool `strict` field the way the other providers do: a tool that
+    /// resolves to strict sampling is declared under `parametersJsonSchema` instead of
+    /// `parameters`, and the whole request is switched into Gemini's validated
+    /// tool-calling mode.
+    #[test]
+    fn a_tool_preferring_strict_sampling_gets_it_on_a_model_that_supports_it() {
+        let context = Context {
+            tools: vec![tool_asking_for_json_schema_sampling(
+                micro_types::JsonSchemaStrictness::Prefer,
+            )],
+            ..Context::default()
+        };
+        let payload = build_payload(&gemini_3_model(), &context).unwrap();
+
+        let declaration = &payload["tools"][0]["functionDeclarations"][0];
+        assert!(
+            declaration.get("parameters").is_none(),
+            "a strict tool is declared under parametersJsonSchema, not parameters"
+        );
+        assert_eq!(declaration["parametersJsonSchema"]["additionalProperties"], false);
+        assert_eq!(
+            payload["toolConfig"]["functionCallingConfig"]["mode"],
+            "VALIDATED"
+        );
+    }
+
+    /// A tool that never asked for constrained sampling is completely unaffected by a
+    /// model supporting strict tool sampling: no `toolConfig` is added, and its
+    /// declaration still goes through the ordinary sanitized `parameters` field.
+    #[test]
+    fn a_plain_tool_alongside_a_capable_model_is_unaffected() {
+        let context = Context {
+            tools: vec![ToolDefinition {
+                name: "read".into(),
+                description: "read a file".into(),
+                parameters: json!({ "type": "object" }),
+                constrained_sampling: None,
+            }],
+            ..Context::default()
+        };
+        let payload = build_payload(&gemini_3_model(), &context).unwrap();
+
+        assert!(payload.get("toolConfig").is_none());
+        assert_eq!(payload["tools"][0]["functionDeclarations"][0]["parameters"]["type"], "object");
+        assert!(payload["tools"][0]["functionDeclarations"][0]
+            .get("parametersJsonSchema")
+            .is_none());
+    }
+
+    /// A model before Gemini 3 is unaffected by a tool merely preferring constrained
+    /// sampling — the request-level knob it would need does not exist for that model, so
+    /// the tool falls back to ordinary sampling exactly as if it had asked for nothing.
+    #[test]
+    fn a_model_that_predates_strict_tool_sampling_is_unaffected() {
+        let original_parameters = json!({
+            "type": "object",
+            "properties": { "pattern": { "type": "string" } },
+            "required": ["pattern"],
+        });
+        let context = Context {
+            tools: vec![tool_asking_for_json_schema_sampling(
+                micro_types::JsonSchemaStrictness::Prefer,
+            )],
+            ..Context::default()
+        };
+        let payload = build_payload(&model(), &context).unwrap();
+
+        assert!(payload.get("toolConfig").is_none());
+        assert_eq!(
+            payload["tools"][0]["functionDeclarations"][0]["parameters"],
+            original_parameters
+        );
+    }
+
+    /// `"require"` on a model that predates strict tool sampling fails the request rather
+    /// than silently sending it under ordinary sampling.
+    #[test]
+    fn requiring_strict_sampling_on_a_model_that_predates_it_fails_the_request() {
+        let context = Context {
+            tools: vec![tool_asking_for_json_schema_sampling(
+                micro_types::JsonSchemaStrictness::Require,
+            )],
+            ..Context::default()
+        };
+        let error = build_payload(&model(), &context).unwrap_err();
+        assert!(error.contains("\"grep\""), "got {error:?}");
+    }
+
+    /// One tool resolving to strict turns on validated tool-calling mode for the whole
+    /// request, the same way one sequential tool call turns a whole batch sequential
+    /// elsewhere in this codebase — it is a request-level switch, not a per-tool one.
+    #[test]
+    fn one_strict_tool_switches_the_whole_request_into_validated_mode() {
+        let context = Context {
+            tools: vec![
+                ToolDefinition {
+                    name: "read".into(),
+                    description: "read a file".into(),
+                    parameters: json!({ "type": "object" }),
+                    constrained_sampling: None,
+                },
+                tool_asking_for_json_schema_sampling(micro_types::JsonSchemaStrictness::Prefer),
+            ],
+            ..Context::default()
+        };
+        let payload = build_payload(&gemini_3_model(), &context).unwrap();
+
+        assert_eq!(
+            payload["toolConfig"]["functionCallingConfig"]["mode"],
+            "VALIDATED"
+        );
+        // The tool that never opted in is still declared the ordinary way.
+        assert_eq!(payload["tools"][0]["functionDeclarations"][0]["parameters"]["type"], "object");
     }
 
     /// The failure this guards was a live 400 from Gemini: `required[0]: property is not
@@ -1614,5 +1933,56 @@ mod tests {
 
         assert!(receiver.try_recv().is_err());
         assert!(!state.started);
+    }
+
+    /// The newest models cannot be told to stop thinking, so they are told to think as
+    /// little as they can instead.
+    #[test]
+    fn a_model_that_cannot_stop_thinking_is_asked_for_its_quietest_level() {
+        for (id, quietest) in [
+            ("gemini-3-pro-preview", "LOW"),
+            ("gemini-3.1-pro", "LOW"),
+            ("gemini-3-flash", "MINIMAL"),
+            ("gemini-flash-latest", "MINIMAL"),
+            ("gemini-flash-lite-latest", "MINIMAL"),
+            ("gemma-4-27b", "MINIMAL"),
+        ] {
+            let config = thinking_config(&Model {
+                id: id.into(),
+                ..model()
+            });
+            assert_eq!(config["thinkingLevel"], quietest, "{id}");
+            assert!(config.get("includeThoughts").is_none(), "{id} stays quiet");
+        }
+    }
+
+    /// A model that takes a budget is told a budget, and one that takes a level is told a
+    /// level, whichever way the effort was asked for.
+    #[test]
+    fn effort_is_spelled_the_way_each_model_takes_it() {
+        let budgeted = thinking_config(&Model {
+            thinking: ThinkingLevel::High,
+            ..model()
+        });
+        assert!(budgeted["thinkingBudget"].as_u64().unwrap() > 0);
+        assert_eq!(budgeted["includeThoughts"], true);
+
+        let levelled = thinking_config(&Model {
+            id: "gemini-3-pro".into(),
+            thinking: ThinkingLevel::High,
+            ..model()
+        });
+        assert_eq!(levelled["thinkingLevel"], "HIGH");
+        assert_eq!(levelled["includeThoughts"], true);
+        assert!(levelled.get("thinkingBudget").is_none());
+    }
+
+    #[test]
+    fn an_older_model_is_told_to_stop_outright() {
+        let config = thinking_config(&Model {
+            id: "gemini-2.5-flash".into(),
+            ..model()
+        });
+        assert_eq!(config["thinkingBudget"], 0);
     }
 }

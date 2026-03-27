@@ -17,10 +17,10 @@ micro-context = { workspace = true }
 micro-extensions = { workspace = true }
 micro-models = { workspace = true }
 micro-provider = { workspace = true }
-micro-policy = { workspace = true }
 micro-rpc = { workspace = true }
 micro-session = { workspace = true }
 micro-skills = { workspace = true }
+micro-prompts = { workspace = true }
 micro-tools = { workspace = true }
 micro-tui = { workspace = true }
 micro-types = { workspace = true }

@@ -4,26 +4,52 @@
 //! as they type, and a marker on whatever is in use now. Choosing hands back the command
 //! line the item carries, which the interface dispatches as though it had been typed.
 
-use crate::fuzzy;
 use micro_commands::Picker as Choices;
 use micro_commands::PickerItem;
+use micro_models::fuzzy;
 use std::ops::Range;
 
 /// Rows a picker shows at once before it scrolls, matching ohm's selectors.
 pub const MAX_VISIBLE: usize = 10;
+/// The gap between a label's column and the detail beside it.
+pub const COLUMN_GAP: usize = 2;
+
+/// Which of a list's two views is showing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Scope {
+    /// Everything there is.
+    All,
+    /// What the workspace put on its shortlist.
+    Scoped,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Picker {
     choices: Choices,
+    /// Which view is showing. A list with a shortlist opens on it, because a workspace that
+    /// named a handful of models meant those to be the ones in front of you.
+    scope: Scope,
     query: String,
     /// Indices into `choices.items`, narrowed by the query and ranked by it.
     matches: Vec<usize>,
+    /// What the list leaves out, when it leaves anything out.
+    hint: Option<String>,
+    /// What is happening behind the list, when something is: the catalogs being refreshed,
+    /// and then whether that worked.
+    status: Option<(String, bool)>,
     selected: usize,
 }
 
 impl Picker {
     pub fn new(choices: Choices) -> Self {
+        let scope = match choices.scoped.is_empty() {
+            true => Scope::All,
+            false => Scope::Scoped,
+        };
         let mut picker = Picker {
+            hint: choices.hint.clone(),
+            status: None,
+            scope,
             choices,
             query: String::new(),
             matches: Vec::new(),
@@ -34,7 +60,7 @@ impl Picker {
         if let Some(current) = picker
             .matches
             .iter()
-            .position(|index| picker.choices.items[*index].current)
+            .position(|index| picker.showing()[*index].current)
         {
             picker.selected = current;
         }
@@ -45,21 +71,110 @@ impl Picker {
         &self.choices.title
     }
 
+    /// Whether the providers are worth asking about while this list is open.
+    pub fn refreshes(&self) -> bool {
+        self.choices.refreshes
+    }
+
+    /// Whether this list has a shortlist to switch between at all.
+    pub fn has_scopes(&self) -> bool {
+        !self.choices.scoped.is_empty()
+    }
+
+    pub fn scope(&self) -> Scope {
+        self.scope
+    }
+
+    /// Switch between the shortlist and the whole of it, keeping whatever has been typed.
+    pub fn toggle_scope(&mut self) {
+        if !self.has_scopes() {
+            return;
+        }
+        self.scope = match self.scope {
+            Scope::All => Scope::Scoped,
+            Scope::Scoped => Scope::All,
+        };
+        self.selected = 0;
+        self.refilter();
+    }
+
+    /// The choices the current view offers.
+    fn showing(&self) -> &[PickerItem] {
+        match self.scope {
+            Scope::All => &self.choices.items,
+            Scope::Scoped => &self.choices.scoped,
+        }
+    }
+
+    /// Whether the list has a line to narrow it by.
+    pub fn searchable(&self) -> bool {
+        self.choices.searchable
+    }
+
+    /// Whether the list names itself and says which keys work.
+    pub fn titled(&self) -> bool {
+        self.choices.titled
+    }
+
+    /// How wide the label's column is: the widest label there is, held between the bounds
+    /// the list asked for. Measured over everything the query left rather than over what is
+    /// on screen, so scrolling the list does not shift its second column.
+    pub fn column(&self) -> usize {
+        if self.choices.layout == micro_commands::PickerLayout::Badges {
+            return 0;
+        }
+        let (min, max) = self.choices.column;
+        let showing = self.showing();
+        let widest = self
+            .matches
+            .iter()
+            .map(|index| crate::wrap::text_width(&showing[*index].label))
+            .max()
+            .unwrap_or(0);
+        (widest + COLUMN_GAP).clamp(min, max)
+    }
+
+    /// What this list leaves out, when it leaves anything out.
+    pub fn hint(&self) -> Option<&str> {
+        self.hint.as_deref()
+    }
+
+    /// What is happening behind the list, and whether it went well.
+    pub fn status(&self) -> Option<(&str, bool)> {
+        self.status.as_ref().map(|(text, ok)| (text.as_str(), *ok))
+    }
+
+    pub fn set_status(&mut self, text: impl Into<String>, ok: bool) {
+        self.status = Some((text.into(), ok));
+    }
+
+    /// Replace what the list offers, keeping where the reader is and what they typed.
+    ///
+    /// The catalogs finishing a refresh must not move the selection out from under a hand
+    /// already on its way to pressing enter, so the chosen row is found again by name.
+    pub fn replace_items(&mut self, choices: Choices) {
+        let chosen = self.selected_item().map(|item| item.command.clone());
+        self.choices = choices;
+        self.refilter();
+        if let Some(chosen) = chosen {
+            if let Some(at) = self
+                .matches
+                .iter()
+                .position(|index| self.showing()[*index].command == chosen)
+            {
+                self.selected = at;
+            }
+        }
+    }
+
     pub fn query(&self) -> &str {
         &self.query
     }
 
-    /// How many items there are to choose from, before the query narrows them.
-    pub fn total(&self) -> usize {
-        self.choices.items.len()
-    }
-
     /// The items the query left, in the order they should be shown.
     pub fn matches(&self) -> Vec<&PickerItem> {
-        self.matches
-            .iter()
-            .map(|index| &self.choices.items[*index])
-            .collect()
+        let showing = self.showing();
+        self.matches.iter().map(|index| &showing[*index]).collect()
     }
 
     pub fn is_empty(&self) -> bool {
@@ -73,7 +188,7 @@ impl Picker {
     pub fn selected_item(&self) -> Option<&PickerItem> {
         self.matches
             .get(self.selected)
-            .map(|index| &self.choices.items[*index])
+            .map(|index| &self.showing()[*index])
     }
 
     /// The command line to dispatch for the highlighted item.
@@ -127,12 +242,17 @@ impl Picker {
     }
 
     /// An item is matched on its label and its detail together, so `/model` narrows on a
-    /// context size as readily as on a name.
+    /// context size as readily as on a name — or on whatever text the item says it is found
+    /// by, when that is more than the row shows.
     fn refilter(&mut self) {
-        let indexed: Vec<usize> = (0..self.choices.items.len()).collect();
-        let items = &self.choices.items;
-        self.matches = fuzzy::filter(indexed, &self.query, |index| {
-            format!("{} {}", items[*index].label, items[*index].detail)
+        let items = match self.scope {
+            Scope::All => &self.choices.items,
+            Scope::Scoped => &self.choices.scoped,
+        };
+        let indexed: Vec<usize> = (0..items.len()).collect();
+        self.matches = fuzzy::filter(indexed, &self.query, |index| match &items[*index].search {
+            Some(search) => search.clone(),
+            None => format!("{} {}", items[*index].label, items[*index].detail),
         });
         self.selected = self.selected.min(self.matches.len().saturating_sub(1));
     }
@@ -179,7 +299,7 @@ mod tests {
             picker.selected_item().unwrap().label,
             "anthropic/claude-sonnet-5"
         );
-        assert_eq!(picker.total(), 3);
+        assert_eq!(picker.matches().len(), 3);
     }
 
     #[test]

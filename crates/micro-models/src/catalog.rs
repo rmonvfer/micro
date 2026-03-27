@@ -25,6 +25,11 @@ pub enum WireApi {
     OpenaiCompletions,
     OpenaiResponses,
     GoogleGenerativeAi,
+    /// Amazon Bedrock's Converse Stream, which is signed rather than keyed and answers
+    /// in a binary event stream rather than in server-sent events.
+    BedrockConverseStream,
+    /// Google Vertex AI: the Gemini shape, addressed under a project and a location.
+    GoogleVertex,
 }
 
 /// A kind of content a model accepts as input.
@@ -40,7 +45,7 @@ pub enum Modality {
 
 /// Prices in US dollars per million tokens.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
-pub struct ModelCost {
+pub struct Rates {
     #[serde(default)]
     pub input: f64,
     #[serde(default)]
@@ -51,18 +56,71 @@ pub struct ModelCost {
     pub cache_write: f64,
 }
 
+/// Prices that replace the standard ones once a request is large enough.
+///
+/// Some services charge more for a long context, and charge it on the whole request
+/// rather than only on the tokens past the threshold.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct ModelCostTier {
+    /// The tier applies to a request whose input is larger than this.
+    pub input_tokens_above: u64,
+    #[serde(flatten)]
+    pub rates: Rates,
+}
+
+/// Prices in US dollars per million tokens, with whatever tiers the service charges.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct ModelCost {
+    #[serde(default)]
+    pub input: f64,
+    #[serde(default)]
+    pub output: f64,
+    #[serde(default)]
+    pub cache_read: f64,
+    #[serde(default)]
+    pub cache_write: f64,
+    /// Prices for a request past a size, largest matching threshold first.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tiers: Vec<ModelCostTier>,
+}
+
 impl ModelCost {
+    /// The standard rates, before any tier applies.
+    fn rates(&self) -> Rates {
+        Rates {
+            input: self.input,
+            output: self.output,
+            cache_read: self.cache_read,
+            cache_write: self.cache_write,
+        }
+    }
+
+    /// The rates for a request of this size.
+    ///
+    /// Everything the model read counts towards the threshold, cached or not, and the
+    /// tier that matches applies to the whole request rather than to the part above it.
+    fn rates_for(&self, usage: TokenUsage) -> Rates {
+        let read = usage.input + usage.cache_read + usage.cache_write;
+        self.tiers
+            .iter()
+            .filter(|tier| read > tier.input_tokens_above)
+            .max_by_key(|tier| tier.input_tokens_above)
+            .map(|tier| tier.rates)
+            .unwrap_or_else(|| self.rates())
+    }
+
     /// Price a single request. Token counts are taken as reported by the
     /// provider, so `usage.input` must already exclude anything counted under
     /// `cache_read` or `cache_write`.
     pub fn price(&self, usage: TokenUsage) -> RequestCost {
         const PER_MILLION: f64 = 1_000_000.0;
+        let rates = self.rates_for(usage);
         let scale = |tokens: u64, rate: f64| (tokens as f64 / PER_MILLION) * rate;
         RequestCost {
-            input: scale(usage.input, self.input),
-            output: scale(usage.output, self.output),
-            cache_read: scale(usage.cache_read, self.cache_read),
-            cache_write: scale(usage.cache_write, self.cache_write),
+            input: scale(usage.input, rates.input),
+            output: scale(usage.output, rates.output),
+            cache_read: scale(usage.cache_read, rates.cache_read),
+            cache_write: scale(usage.cache_write, rates.cache_write),
         }
     }
 
@@ -94,6 +152,13 @@ pub struct ModelDef {
     pub aliases: Vec<String>,
     #[serde(default)]
     pub cost: ModelCost,
+    /// Where this service differs from the protocol it answers.
+    #[serde(default, skip_serializing_if = "crate::CompatOverrides::is_empty")]
+    pub compat: crate::CompatOverrides,
+    /// What this model calls each thinking level. A level mapped to nothing is one it
+    /// does not offer.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub thinking: BTreeMap<String, Option<String>>,
 }
 
 impl ModelDef {
@@ -119,6 +184,15 @@ impl ModelDef {
             base_url: self.base_url.clone(),
             max_tokens: self.max_output_tokens,
             thinking,
+            reasoning: self.reasoning,
+            compat: crate::compat::resolve(
+                &self.provider,
+                &self.base_url,
+                &self.id,
+                &self.compat,
+                &self.thinking,
+            ),
+            headers: self.headers.clone(),
         }
     }
 }
@@ -226,7 +300,7 @@ impl Catalog {
                     incoming.aliases = existing.aliases.clone();
                 }
                 if incoming.cost.is_free() {
-                    incoming.cost = existing.cost;
+                    incoming.cost = existing.cost.clone();
                 }
                 if incoming.context_window == UNKNOWN_LIMIT {
                     incoming.context_window = existing.context_window;
@@ -345,6 +419,12 @@ impl Catalog {
             if let Some(aliases) = entry.aliases {
                 model.aliases = aliases;
             }
+            if let Some(compat) = entry.compat {
+                model.compat = compat;
+            }
+            if let Some(thinking) = entry.thinking {
+                model.thinking = thinking;
+            }
             model.headers.extend(entry.headers);
             return Ok(());
         }
@@ -375,6 +455,8 @@ impl Catalog {
             headers,
             aliases: entry.aliases.unwrap_or_default(),
             cost: entry.cost.unwrap_or_default(),
+            compat: entry.compat.unwrap_or_default(),
+            thinking: entry.thinking.unwrap_or_default(),
         });
         Ok(())
     }
@@ -454,6 +536,10 @@ struct ModelEntry {
     aliases: Option<Vec<String>>,
     #[serde(default)]
     cost: Option<ModelCost>,
+    #[serde(default)]
+    compat: Option<crate::CompatOverrides>,
+    #[serde(default)]
+    thinking: Option<BTreeMap<String, Option<String>>>,
 }
 
 #[cfg(test)]
@@ -532,8 +618,10 @@ mod tests {
     #[test]
     fn providers_are_listed_in_priority_order() {
         let catalog = Catalog::bundled();
+        let listed = catalog.providers();
+
         assert_eq!(
-            catalog.providers(),
+            listed.iter().take(5).copied().collect::<Vec<_>>(),
             vec![
                 "openrouter",
                 "github-copilot",
@@ -542,6 +630,11 @@ mod tests {
                 "openai-codex"
             ]
         );
+        // The rest follow in name order, after the ranked ones.
+        let rest: Vec<&str> = listed.into_iter().skip(5).collect();
+        let mut sorted = rest.clone();
+        sorted.sort_unstable();
+        assert_eq!(rest, sorted);
     }
 
     #[test]
@@ -647,7 +740,7 @@ mod tests {
             .unwrap();
 
         let added = catalog.get("anthropic", "claude-experimental").unwrap();
-        assert_eq!(added.base_url, "https://api.anthropic.com/v1");
+        assert_eq!(added.base_url, "https://api.anthropic.com");
         assert_eq!(added.api, WireApi::AnthropicMessages);
         assert_eq!(added.context_window, 500_000);
     }
@@ -668,8 +761,14 @@ mod tests {
         let model = catalog.get("ollama", "qwen3-coder:30b").unwrap();
         assert_eq!(model.name, "Qwen3 Coder 30B");
         assert!(model.cost.is_free());
-        // An unranked provider sorts after the known ones.
-        assert_eq!(*catalog.providers().last().unwrap(), "ollama");
+        // An unranked provider sorts after every ranked one.
+        let listed = catalog.providers();
+        let ollama = listed.iter().position(|name| *name == "ollama").unwrap();
+        let ranked = listed
+            .iter()
+            .position(|name| !PROVIDER_ORDER.contains(name))
+            .unwrap();
+        assert!(ollama >= ranked, "{listed:?}");
     }
 
     #[test]
@@ -688,6 +787,8 @@ mod tests {
             headers: BTreeMap::new(),
             aliases: Vec::new(),
             cost: ModelCost::default(),
+            compat: Default::default(),
+            thinking: Default::default(),
         };
 
         catalog.merge_listing([fresh]);
@@ -714,6 +815,8 @@ mod tests {
             headers: BTreeMap::new(),
             aliases: Vec::new(),
             cost: ModelCost::default(),
+            compat: Default::default(),
+            thinking: Default::default(),
         }]);
         assert_eq!(catalog.len(), before + 1);
         assert!(catalog.get("openrouter", "brand-new").is_some());
@@ -734,7 +837,7 @@ mod tests {
         let runtime = def.to_runtime(micro_types::ThinkingLevel::High);
         assert_eq!(runtime.id, "claude-opus-5");
         assert_eq!(runtime.provider, "anthropic");
-        assert_eq!(runtime.base_url, "https://api.anthropic.com/v1");
+        assert_eq!(runtime.base_url, "https://api.anthropic.com");
         assert_eq!(runtime.max_tokens, def.max_output_tokens);
         assert_eq!(runtime.thinking, micro_types::ThinkingLevel::High);
 

@@ -489,6 +489,9 @@ mod tests {
             base_url: "https://example.invalid".into(),
             max_tokens: 1024,
             thinking: ThinkingLevel::Off,
+            compat: Default::default(),
+            headers: Default::default(),
+            reasoning: Default::default(),
         }
     }
 
@@ -601,6 +604,8 @@ mod tests {
             system_prompt: Some("be brief".into()),
             messages: vec![Message::user("hi")],
             tools: Vec::new(),
+            headers: Vec::new(),
+            cache_key: None,
         };
 
         drain(provider.stream(model(), context.clone(), "secret".into())).await;
@@ -641,6 +646,8 @@ mod tests {
                     Message::tool_result("c1", "read", "ok", false),
                 ],
                 tools: Vec::new(),
+                headers: Vec::new(),
+                cache_key: None,
             },
         };
         assert!(paired.orphaned_tool_results().is_empty());

@@ -1,0 +1,25 @@
+{
+  "secretHex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+  "pairingId": "vector-pairing",
+  "keys": {
+    "m2p": "bdff165583a1528f912b56801f68f5331bac598118143b244299adc630710353",
+    "p2m": "6335edf4d056775081e4b5e0969125dbb4c615f3ae3fc2701c1679a95c3a7901",
+    "push": "4951f14da65c4a3ac43cb5aa031f0a82f5a050e0f79c4ea3f2876c8cf50ef343"
+  },
+  "sealed": {
+    "plaintext": "{\"seq\":1,\"payload\":{\"type\":\"ping\"}}",
+    "nonceHex": "000102030405060708090a0b",
+    "n": "AAECAwQFBgcICQoL",
+    "ct": "So3fDzrOBsCoxInMlQEbu/J2LXGu672foMg+20lvsBdJWqX/4HvX3kcY14h0GK6ORGZS"
+  },
+  "push": {
+    "payload": {
+      "kind": "offer",
+      "sessionId": "vector-session",
+      "sessionName": "parley-remote",
+      "machineName": "vector-machine"
+    },
+    "nonceHex": "0b0a09080706050403020100",
+    "ct": "{\"v\":1,\"n\":\"CwoJCAcGBQQDAgEA\",\"ct\":\"0Iucgt05cWozxXtgxcnmUUwn0Bnk4eFhbEoIFKoDgSpBOFWPSiD5vvNkPSc1YuHeKb7aaR4c1AmNKGKGgIMQxy7Gb62TGZu7tjwbE/YH55RzUVuMi5o/pGrbPj9jkJFMKYHrZcB6nt8DtkmOQyyCwFqOq1y95XILtC4=\"}"
+  }
+}

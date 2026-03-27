@@ -13,6 +13,7 @@ use micro_types::Message;
 use micro_types::Model;
 use micro_types::StopReason;
 use micro_types::StreamEvent;
+use micro_types::ToolDefinition;
 use micro_types::Usage;
 use serde_json::json;
 use serde_json::Map;
@@ -22,6 +23,23 @@ use tokio::sync::mpsc::UnboundedReceiver;
 use tokio::sync::mpsc::UnboundedSender;
 
 const API_VERSION: &str = "2023-06-01";
+
+/// What an Anthropic subscription credential looks like. A plan's own token is an OAuth
+/// token, and it is sent as a bearer rather than as an API key.
+const OAUTH_PREFIX: &str = "sk-ant-oat";
+/// What every credential Anthropic issues starts with.
+const ANTHROPIC_KEY_PREFIX: &str = "sk-ant-";
+
+/// Lets a thinking model keep thinking between tool calls instead of starting over each
+/// time. Without it the thinking blocks around a tool call are refused.
+const INTERLEAVED_THINKING_BETA: &str = "interleaved-thinking-2025-05-14";
+/// Streams a tool call's arguments as they are produced rather than in one piece.
+const FINE_GRAINED_TOOL_STREAMING_BETA: &str = "fine-grained-tool-streaming-2025-05-14";
+/// What a subscription credential is allowed to be used for, and by what.
+const CLAUDE_CODE_BETA: &str = "claude-code-20250219";
+const OAUTH_BETA: &str = "oauth-2025-04-20";
+/// The client a subscription credential is issued to.
+const CLAUDE_CODE_VERSION: &str = "2.1.75";
 /// Anthropic allows at most four cache breakpoints per request.
 const MAX_CACHE_BREAKPOINTS: usize = 4;
 
@@ -62,6 +80,52 @@ impl Provider for Anthropic {
     }
 }
 
+/// The tools Claude Code declares, in the casing it declares them with.
+///
+/// A subscription credential is issued to that client, and a request made with one is
+/// expected to look like one of its requests: a tool micro spells differently is spelled
+/// this way on the way out, and answered under its own name on the way back.
+///
+/// Source: https://cchistory.mariozechner.at/data/prompts-2.1.11.md
+const CLAUDE_CODE_TOOLS: &[&str] = &[
+    "Read",
+    "Write",
+    "Edit",
+    "Bash",
+    "Grep",
+    "Glob",
+    "AskUserQuestion",
+    "EnterPlanMode",
+    "ExitPlanMode",
+    "KillShell",
+    "NotebookEdit",
+    "Skill",
+    "Task",
+    "TaskOutput",
+    "TodoWrite",
+    "WebFetch",
+    "WebSearch",
+];
+
+/// One tool's name as Claude Code spells it, or as it was given when that client has no
+/// tool by that name.
+fn claude_code_name(name: &str) -> String {
+    CLAUDE_CODE_TOOLS
+        .iter()
+        .find(|known| known.eq_ignore_ascii_case(name))
+        .map(|known| known.to_string())
+        .unwrap_or_else(|| name.to_string())
+}
+
+/// The name the caller knows a tool by, for a call that came back under another spelling.
+fn declared_name(name: &str, tools: &[ToolDefinition]) -> String {
+    tools
+        .iter()
+        .find(|tool| tool.name.eq_ignore_ascii_case(name))
+        .map(|tool| tool.name.clone())
+        .unwrap_or_else(|| name.to_string())
+}
+
 async fn run(
     client: reqwest::Client,
     model: Model,
@@ -69,12 +133,30 @@ async fn run(
     api_key: String,
     sender: &UnboundedSender<StreamEvent>,
 ) -> Result<(), String> {
-    let payload = build_payload(&model, &context);
-    let response = client
+    let subscription = is_oauth(&api_key);
+    let payload = build_payload(&model, &context, subscription)?;
+    let request = client
         .post(endpoint(&model.base_url))
-        .header("x-api-key", api_key)
         .header("anthropic-version", API_VERSION)
         .header("content-type", "application/json")
+        .header("accept", "application/json")
+        .header("anthropic-dangerous-direct-browser-access", "true")
+        .header(
+            "anthropic-beta",
+            betas(&api_key, &model, &context).join(","),
+        );
+    // A subscription credential is a bearer token issued to a named client, and is
+    // refused when it is sent as an API key. A gateway's token is a bearer too, but
+    // carries none of that client's identity.
+    let request = match scheme_for(&api_key) {
+        AuthScheme::Subscription => request
+            .header("authorization", format!("Bearer {api_key}"))
+            .header("user-agent", format!("claude-cli/{CLAUDE_CODE_VERSION}"))
+            .header("x-app", "cli"),
+        AuthScheme::Bearer => request.header("authorization", format!("Bearer {api_key}")),
+        AuthScheme::ApiKey => request.header("x-api-key", api_key),
+    };
+    let response = crate::with_carried_headers(request, &context, &model.base_url)
         .json(&payload)
         .send()
         .await
@@ -90,7 +172,7 @@ async fn run(
         ));
     }
 
-    let mut state = Accumulator::new(&model);
+    let mut state = Accumulator::new(&model, &context.tools, subscription);
     read_sse(response, |event| state.handle(event, sender))
         .await
         .map_err(|error| format!("Anthropic stream failed: {error}"))?;
@@ -104,13 +186,20 @@ async fn run(
     Ok(())
 }
 
+/// Where a Messages request goes.
+///
+/// The catalog records a service's root, the way Anthropic's own clients take it, and the
+/// version belongs to the protocol rather than to the address: every Messages-compatible
+/// service answers at `/v1/messages` under whatever root it is given.
 fn endpoint(base_url: &str) -> String {
     let trimmed = base_url.trim_end_matches('/');
     if trimmed.ends_with("/messages") {
-        trimmed.to_string()
-    } else {
-        format!("{trimmed}/messages")
+        return trimmed.to_string();
     }
+    if trimmed.ends_with("/v1") {
+        return format!("{trimmed}/messages");
+    }
+    format!("{trimmed}/v1/messages")
 }
 
 /// Which block the stream is currently inside, plus the text accumulated for it.
@@ -134,6 +223,9 @@ enum OpenBlock {
 }
 
 struct Accumulator {
+    /// The tools the caller declared, when their names were changed on the way out. A
+    /// call is answered under the name the caller knows.
+    tools: Vec<ToolDefinition>,
     provider: String,
     model_id: String,
     blocks: Vec<ContentBlock>,
@@ -144,8 +236,12 @@ struct Accumulator {
 }
 
 impl Accumulator {
-    fn new(model: &Model) -> Self {
+    fn new(model: &Model, tools: &[ToolDefinition], subscription: bool) -> Self {
         Accumulator {
+            tools: match subscription {
+                true => tools.to_vec(),
+                false => Vec::new(),
+            },
             provider: model.provider.clone(),
             model_id: model.id.clone(),
             blocks: Vec::new(),
@@ -210,7 +306,7 @@ impl Accumulator {
                     }
                     Some("tool_use") => {
                         let id = read_str(block, "id");
-                        let name = read_str(block, "name");
+                        let name = declared_name(&read_str(block, "name"), &self.tools);
                         self.open = Some(OpenBlock::ToolCall {
                             index,
                             id: id.clone(),
@@ -378,17 +474,119 @@ fn normalize_tool_id(id: &str) -> String {
     sanitized.chars().take(40).collect()
 }
 
-pub(crate) fn build_payload(model: &Model, context: &Context) -> Value {
+/// Whether a credential is a subscription token rather than an API key.
+fn is_oauth(api_key: &str) -> bool {
+    api_key.starts_with(OAUTH_PREFIX)
+}
+
+/// How a credential is presented to the service.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AuthScheme {
+    /// A subscription token issued to Claude Code, sent as a bearer under that client's
+    /// name.
+    Subscription,
+    /// A bearer token that is nobody's client in particular, which is what an
+    /// Anthropic-compatible gateway issues.
+    Bearer,
+    /// A platform API key.
+    ApiKey,
+}
+
+/// Which scheme a credential is for, read from the credential itself.
+///
+/// Anthropic's own credentials are prefixed: `sk-ant-oat` for a subscription token and
+/// `sk-ant-` for a platform key. A value with neither prefix did not come from Anthropic,
+/// so it belongs to a gateway answering the same protocol, and those take a plain bearer
+/// token with none of Claude Code's identity attached to it.
+fn scheme_for(api_key: &str) -> AuthScheme {
+    if is_oauth(api_key) {
+        AuthScheme::Subscription
+    } else if api_key.starts_with(ANTHROPIC_KEY_PREFIX) {
+        AuthScheme::ApiKey
+    } else {
+        AuthScheme::Bearer
+    }
+}
+
+/// The beta features this request needs, in the order ohm sends them.
+///
+/// A subscription credential names what it is being used for; everything else is asked for
+/// only when the request would otherwise be answered differently.
+fn betas(api_key: &str, model: &Model, context: &Context) -> Vec<&'static str> {
+    let mut betas = Vec::new();
+    if is_oauth(api_key) {
+        betas.push(CLAUDE_CODE_BETA);
+        betas.push(OAUTH_BETA);
+    }
+    if !context.tools.is_empty() {
+        if !model.compat.supports_eager_tool_input_streaming {
+            betas.push(FINE_GRAINED_TOOL_STREAMING_BETA);
+        }
+        // Only worth asking for when there is thinking to interleave with the calls.
+        if model.thinking.budget_tokens().is_some() {
+            betas.push(INTERLEAVED_THINKING_BETA);
+        }
+    }
+    betas
+}
+
+/// A tool's name as it should be sent.
+fn name_for(name: &str, subscription: bool) -> String {
+    match subscription {
+        true => claude_code_name(name),
+        false => name.to_string(),
+    }
+}
+
+/// What a thinking level is called when the model is asked for an effort rather than a
+/// budget. `Off` never reaches here — a model told not to think is sent `disabled`.
+fn effort_for(level: micro_types::ThinkingLevel) -> &'static str {
+    match level {
+        micro_types::ThinkingLevel::Off => "low",
+        micro_types::ThinkingLevel::Minimal => "low",
+        micro_types::ThinkingLevel::Low => "low",
+        micro_types::ThinkingLevel::Medium => "medium",
+        micro_types::ThinkingLevel::High => "high",
+        micro_types::ThinkingLevel::XHigh => "high",
+        micro_types::ThinkingLevel::Max => "high",
+    }
+}
+
+pub(crate) fn build_payload(
+    model: &Model,
+    context: &Context,
+    subscription: bool,
+) -> Result<Value, String> {
     let mut payload = Map::new();
     payload.insert("model".into(), json!(model.id));
     payload.insert("max_tokens".into(), json!(model.max_tokens));
     payload.insert("stream".into(), json!(true));
 
-    if let Some(budget) = model.thinking.budget_tokens() {
-        payload.insert(
-            "thinking".into(),
-            json!({ "type": "enabled", "budget_tokens": budget }),
-        );
+    match model.thinking.budget_tokens() {
+        // A model that decides its own thinking is asked for an effort instead of a
+        // budget, and spends it as it sees fit. Sending it a budget asks for a shape it
+        // does not use.
+        Some(_) if model.compat.force_adaptive_thinking => {
+            payload.insert(
+                "thinking".into(),
+                json!({ "type": "adaptive", "display": "summarized" }),
+            );
+            payload.insert(
+                "output_config".into(),
+                json!({ "effort": effort_for(model.thinking) }),
+            );
+        }
+        Some(budget) => {
+            payload.insert(
+                "thinking".into(),
+                json!({ "type": "enabled", "budget_tokens": budget }),
+            );
+        }
+        // Said outright rather than left out: a model that thinks by default keeps
+        // thinking when nothing tells it not to, and bills for it.
+        None => {
+            payload.insert("thinking".into(), json!({ "type": "disabled" }));
+        }
     }
 
     if let Some(system) = &context.system_prompt {
@@ -397,27 +595,42 @@ pub(crate) fn build_payload(model: &Model, context: &Context) -> Value {
 
     payload.insert(
         "messages".into(),
-        Value::Array(build_messages(&context.messages)),
+        Value::Array(build_messages(&context.messages, subscription)),
     );
 
     if !context.tools.is_empty() {
-        let tools: Vec<Value> = context
-            .tools
-            .iter()
-            .map(|tool| {
-                json!({
-                    "name": tool.name,
-                    "description": tool.description,
-                    "input_schema": tool.parameters,
-                })
-            })
-            .collect();
+        let mut tools: Vec<Value> = Vec::with_capacity(context.tools.len());
+        for tool in &context.tools {
+            let strict = crate::constrained_sampling::resolve_json_schema_strict_sampling(
+                tool,
+                model.compat.supports_strict_tools,
+            )?;
+            // A tool that never asked for constrained sampling keeps its schema exactly
+            // as written — only one that resolved to strict gets the rewritten shape,
+            // which is what earns it the `strict` field alongside it below.
+            let parameters =
+                crate::constrained_sampling::json_schema_tool_parameters(tool, strict)?;
+            let mut described = json!({
+                "name": name_for(&tool.name, subscription),
+                "description": tool.description,
+                "input_schema": parameters,
+            });
+            // A service that streams a tool's arguments as they are decided is told
+            // to; one that does not is asked for the same thing as a beta instead.
+            if model.compat.supports_eager_tool_input_streaming {
+                described["eager_input_streaming"] = json!(true);
+            }
+            if strict == Some(true) {
+                described["strict"] = json!(true);
+            }
+            tools.push(described);
+        }
         payload.insert("tools".into(), Value::Array(tools));
     }
 
     let mut payload = Value::Object(payload);
-    apply_cache_breakpoints(&mut payload);
-    payload
+    apply_cache_breakpoints(&mut payload, model.compat.supports_cache_control_on_tools);
+    Ok(payload)
 }
 
 /// Convert the conversation to Anthropic's wire shape.
@@ -425,7 +638,7 @@ pub(crate) fn build_payload(model: &Model, context: &Context) -> Value {
 /// Consecutive tool results are merged into a single user message because Anthropic
 /// expects every `tool_use` in an assistant turn to be answered by `tool_result` blocks
 /// grouped in the user turn that follows it.
-fn build_messages(messages: &[Message]) -> Vec<Value> {
+fn build_messages(messages: &[Message], subscription: bool) -> Vec<Value> {
     let mut wire: Vec<Value> = Vec::new();
     let mut pending_results: Vec<Value> = Vec::new();
 
@@ -459,11 +672,13 @@ fn build_messages(messages: &[Message]) -> Vec<Value> {
             }
             Message::User { content, .. } => {
                 flush(&mut pending_results, &mut wire);
-                wire.push(json!({ "role": "user", "content": encode_blocks(content) }));
+                wire.push(
+                    json!({ "role": "user", "content": encode_blocks(content, subscription) }),
+                );
             }
             Message::Assistant(assistant) => {
                 flush(&mut pending_results, &mut wire);
-                let content = encode_blocks(&assistant.content);
+                let content = encode_blocks(&assistant.content, subscription);
                 if !content.is_empty() {
                     wire.push(json!({ "role": "assistant", "content": content }));
                 }
@@ -475,7 +690,7 @@ fn build_messages(messages: &[Message]) -> Vec<Value> {
     wire
 }
 
-fn encode_blocks(blocks: &[ContentBlock]) -> Vec<Value> {
+fn encode_blocks(blocks: &[ContentBlock], subscription: bool) -> Vec<Value> {
     blocks
         .iter()
         .filter_map(|block| match block {
@@ -514,7 +729,7 @@ fn encode_blocks(blocks: &[ContentBlock]) -> Vec<Value> {
             } => Some(json!({
                 "type": "tool_use",
                 "id": normalize_tool_id(id),
-                "name": name,
+                "name": name_for(name, subscription),
                 "input": arguments,
             })),
         })
@@ -524,14 +739,18 @@ fn encode_blocks(blocks: &[ContentBlock]) -> Vec<Value> {
 /// Mark up to four cache breakpoints: the last tool definition, the system prompt, and
 /// the final two user turns. Everything before a breakpoint is served from cache on the
 /// next request that shares the same prefix.
-pub(crate) fn apply_cache_breakpoints(payload: &mut Value) {
+pub(crate) fn apply_cache_breakpoints(payload: &mut Value, on_tools: bool) {
     let cache_control = json!({ "type": "ephemeral" });
     let mut remaining = MAX_CACHE_BREAKPOINTS;
 
-    if let Some(tools) = payload.get_mut("tools").and_then(Value::as_array_mut) {
-        if let Some(last) = tools.last_mut().and_then(Value::as_object_mut) {
-            last.insert("cache_control".into(), cache_control.clone());
-            remaining -= 1;
+    // Some services answering this protocol reject a marker on a tool definition, so
+    // there the breakpoints start with the system prompt instead.
+    if on_tools {
+        if let Some(tools) = payload.get_mut("tools").and_then(Value::as_array_mut) {
+            if let Some(last) = tools.last_mut().and_then(Value::as_object_mut) {
+                last.insert("cache_control".into(), cache_control.clone());
+                remaining -= 1;
+            }
         }
     }
 
@@ -589,7 +808,10 @@ mod tests {
                 name: "read".into(),
                 description: "read a file".into(),
                 parameters: json!({ "type": "object" }),
+                constrained_sampling: None,
             }],
+            headers: Vec::new(),
+            cache_key: None,
         }
     }
 
@@ -607,12 +829,101 @@ mod tests {
                 name: "grep".into(),
                 description: "search".into(),
                 parameters: parameters.clone(),
+                constrained_sampling: None,
             }],
             ..Context::default()
         };
-        let payload = build_payload(&Model::anthropic("claude-opus-5"), &context);
+        let payload = build_payload(&Model::anthropic("claude-opus-5"), &context, false).unwrap();
 
         assert_eq!(payload["tools"][0]["input_schema"], parameters);
+    }
+
+    fn tool_asking_for_json_schema_sampling(
+        strict: micro_types::JsonSchemaStrictness,
+    ) -> ToolDefinition {
+        ToolDefinition {
+            name: "grep".into(),
+            description: "search".into(),
+            parameters: json!({
+                "type": "object",
+                "properties": { "pattern": { "type": "string" } },
+                "required": ["pattern"],
+            }),
+            constrained_sampling: Some(micro_types::ConstrainedSampling::JsonSchema { strict }),
+        }
+    }
+
+    /// `Model::anthropic`'s bare `Compat::default()` does not claim strict-tools support on
+    /// its own — that inference belongs to `micro-models`' catalog resolution, not to this
+    /// crate — so a test for the genuine service states the flag the way the catalog would
+    /// resolve it, and a test for everyone else relies on the same default meaning "no."
+    #[test]
+    fn a_tool_preferring_strict_sampling_gets_it_when_the_service_claims_support() {
+        let mut model = Model::anthropic("claude-opus-5");
+        model.compat.supports_strict_tools = true;
+        let context = Context {
+            tools: vec![tool_asking_for_json_schema_sampling(
+                micro_types::JsonSchemaStrictness::Prefer,
+            )],
+            ..Context::default()
+        };
+        let payload = build_payload(&model, &context, false).unwrap();
+
+        assert_eq!(payload["tools"][0]["strict"], true);
+        assert_eq!(
+            payload["tools"][0]["input_schema"]["additionalProperties"],
+            false
+        );
+    }
+
+    /// A service that never claimed to support strict tools — the default, matching a
+    /// Claude model served through something other than Anthropic's own API — is
+    /// unaffected by a tool merely preferring constrained sampling: the schema is not
+    /// touched, and no `strict` field is added, same as a tool that never asked at all.
+    #[test]
+    fn a_service_that_has_not_claimed_support_is_unaffected_by_a_tool_preferring_strict_sampling() {
+        let original_parameters = json!({
+            "type": "object",
+            "properties": { "pattern": { "type": "string" } },
+            "required": ["pattern"],
+        });
+        let model = Model::anthropic("claude-opus-5");
+        assert!(
+            !model.compat.supports_strict_tools,
+            "the default this test relies on"
+        );
+        let context = Context {
+            tools: vec![tool_asking_for_json_schema_sampling(
+                micro_types::JsonSchemaStrictness::Prefer,
+            )],
+            ..Context::default()
+        };
+        let payload = build_payload(&model, &context, false).unwrap();
+
+        assert!(
+            payload["tools"][0].get("strict").is_none(),
+            "a service that was never told about strict fields is not sent one"
+        );
+        assert_eq!(
+            payload["tools"][0]["input_schema"],
+            original_parameters,
+            "the schema is exactly what the tool wrote, untouched"
+        );
+    }
+
+    /// `"require"` on a service that never claimed to support it fails the request rather
+    /// than silently sending it under ordinary sampling.
+    #[test]
+    fn requiring_strict_sampling_on_a_service_that_does_not_support_it_fails_the_request() {
+        let model = Model::anthropic("claude-opus-5");
+        let context = Context {
+            tools: vec![tool_asking_for_json_schema_sampling(
+                micro_types::JsonSchemaStrictness::Require,
+            )],
+            ..Context::default()
+        };
+        let error = build_payload(&model, &context, false).unwrap_err();
+        assert!(error.contains("\"grep\""), "got {error:?}");
     }
 
     #[test]
@@ -624,6 +935,19 @@ mod tests {
         assert_eq!(
             endpoint("https://api.anthropic.com/v1/messages/"),
             "https://api.anthropic.com/v1/messages"
+        );
+    }
+
+    /// A service's root is recorded without the protocol version, which is added here.
+    #[test]
+    fn a_service_root_gains_the_version_the_protocol_lives_under() {
+        assert_eq!(
+            endpoint("https://api.anthropic.com"),
+            "https://api.anthropic.com/v1/messages"
+        );
+        assert_eq!(
+            endpoint("https://api.kimi.com/coding"),
+            "https://api.kimi.com/coding/v1/messages"
         );
     }
 
@@ -649,7 +973,7 @@ mod tests {
             Message::tool_result("a", "read", "first", false),
             Message::tool_result("b", "read", "second", false),
         ];
-        let wire = build_messages(&messages);
+        let wire = build_messages(&messages, false);
 
         assert_eq!(wire.len(), 3);
         assert_eq!(wire[2]["role"], "user");
@@ -665,7 +989,7 @@ mod tests {
             },
             ContentBlock::text("kept"),
         ];
-        let encoded = encode_blocks(&blocks);
+        let encoded = encode_blocks(&blocks, false);
         assert_eq!(encoded.len(), 1);
         assert_eq!(encoded[0]["type"], "text");
     }
@@ -675,7 +999,9 @@ mod tests {
         let payload = build_payload(
             &Model::anthropic("claude-opus-5"),
             &context_with(vec![Message::user("one"), Message::user("two")]),
-        );
+            false,
+        )
+        .unwrap();
 
         assert_eq!(payload["tools"][0]["cache_control"]["type"], "ephemeral");
         assert_eq!(payload["system"][0]["cache_control"]["type"], "ephemeral");
@@ -704,13 +1030,183 @@ mod tests {
 
     #[test]
     fn thinking_budget_is_sent_only_when_enabled() {
-        let plain = build_payload(&Model::anthropic("claude-opus-5"), &Context::default());
-        assert!(plain.get("thinking").is_none());
+        let plain = build_payload(
+            &Model::anthropic("claude-opus-5"),
+            &Context::default(),
+            false,
+        )
+        .unwrap();
+        // Turned off outright rather than left unsaid, so a model that thinks by default
+        // does not keep thinking and billing for it.
+        assert_eq!(plain["thinking"]["type"], "disabled");
 
         let thinking = build_payload(
             &Model::anthropic("claude-opus-5").with_thinking(micro_types::ThinkingLevel::High),
             &Context::default(),
-        );
+            false,
+        )
+        .unwrap();
         assert_eq!(thinking["thinking"]["budget_tokens"], 32_000);
+    }
+
+    /// A subscription credential is a bearer token issued to a named client, and says so.
+    #[test]
+    fn a_subscription_credential_asks_for_what_it_is_allowed() {
+        let model = Model::anthropic("claude-opus-5");
+        let context = context_with(vec![Message::user("hi")]);
+
+        let asked = betas("sk-ant-oat01-abc", &model, &context);
+        assert!(asked.contains(&CLAUDE_CODE_BETA), "{asked:?}");
+        assert!(asked.contains(&OAUTH_BETA), "{asked:?}");
+        assert!(is_oauth("sk-ant-oat01-abc"));
+    }
+
+    #[test]
+    fn an_api_key_asks_for_nothing_it_does_not_need() {
+        let model = Model::anthropic("claude-opus-5");
+        let without_tools = Context {
+            tools: Vec::new(),
+            ..context_with(vec![Message::user("hi")])
+        };
+
+        assert!(betas("sk-ant-api03-abc", &model, &without_tools).is_empty());
+        assert!(!is_oauth("sk-ant-api03-abc"));
+    }
+
+    /// Keeping the thinking between tool calls is asked for only when there is thinking
+    /// to keep. Streaming a call's arguments is asked for per tool where that is taken,
+    /// and as a beta where it is not.
+    #[test]
+    fn tools_and_thinking_ask_for_what_they_need() {
+        let context = context_with(vec![Message::user("hi")]);
+        let model = Model::anthropic("claude-opus-5");
+
+        let plain = betas("sk-ant-api03-abc", &model, &context);
+        assert!(
+            !plain.contains(&FINE_GRAINED_TOOL_STREAMING_BETA),
+            "{plain:?}"
+        );
+        assert!(!plain.contains(&INTERLEAVED_THINKING_BETA), "{plain:?}");
+        assert_eq!(
+            build_payload(&model, &context, false).unwrap()["tools"][0]["eager_input_streaming"],
+            true
+        );
+
+        let mut legacy = model.clone();
+        legacy.compat.supports_eager_tool_input_streaming = false;
+        let asked = betas("sk-ant-api03-abc", &legacy, &context);
+        assert!(
+            asked.contains(&FINE_GRAINED_TOOL_STREAMING_BETA),
+            "{asked:?}"
+        );
+        assert!(build_payload(&legacy, &context, false).unwrap()["tools"][0]
+            .get("eager_input_streaming")
+            .is_none());
+
+        let thinking = model.with_thinking(micro_types::ThinkingLevel::High);
+        let asked = betas("sk-ant-api03-abc", &thinking, &context);
+        assert!(asked.contains(&INTERLEAVED_THINKING_BETA), "{asked:?}");
+    }
+
+    /// A subscription credential is issued to Claude Code, so a request made with one
+    /// names its tools the way that client names them, and a call comes back under the
+    /// name the caller declared.
+    #[test]
+    fn a_subscription_request_names_tools_the_way_its_client_does() {
+        let context = context_with(vec![Message::user("hi")]);
+        let model = Model::anthropic("claude-opus-5");
+
+        let sent = build_payload(&model, &context, true).unwrap();
+        assert_eq!(sent["tools"][0]["name"], "Read");
+        assert_eq!(
+            build_payload(&model, &context, false).unwrap()["tools"][0]["name"],
+            "read"
+        );
+
+        assert_eq!(declared_name("Read", &context.tools), "read");
+        // A tool that client has never heard of is sent as it was given.
+        assert_eq!(claude_code_name("compact"), "compact");
+    }
+
+    /// Thinking is turned off outright, because a model that thinks by default keeps
+    /// thinking when nothing says otherwise.
+    #[test]
+    fn thinking_is_turned_off_rather_than_left_unsaid() {
+        let payload = build_payload(
+            &Model::anthropic("claude-opus-5"),
+            &context_with(vec![Message::user("hi")]),
+            false,
+        )
+        .unwrap();
+        assert_eq!(payload["thinking"]["type"], "disabled");
+
+        let thinking =
+            Model::anthropic("claude-opus-5").with_thinking(micro_types::ThinkingLevel::Medium);
+        let payload = build_payload(&thinking, &context_with(vec![Message::user("hi")]), false)
+            .unwrap();
+        assert_eq!(payload["thinking"]["type"], "enabled");
+        assert!(payload["thinking"]["budget_tokens"].as_u64().unwrap() > 0);
+    }
+
+    /// A model that decides its own thinking is asked for an effort. The budget shape is
+    /// what older models take, and sending it to a newer one asks for something it does
+    /// not use.
+    #[test]
+    fn a_model_that_decides_its_own_thinking_is_asked_for_an_effort() {
+        let mut model =
+            Model::anthropic("claude-opus-5").with_thinking(micro_types::ThinkingLevel::High);
+        model.compat.force_adaptive_thinking = true;
+
+        let payload = build_payload(&model, &context_with(vec![Message::user("hi")]), false)
+            .unwrap();
+        assert_eq!(payload["thinking"]["type"], "adaptive");
+        assert_eq!(payload["thinking"]["display"], "summarized");
+        assert_eq!(payload["output_config"]["effort"], "high");
+        assert!(
+            payload["thinking"].get("budget_tokens").is_none(),
+            "a budget is not what this model takes",
+        );
+    }
+
+    /// Turning thinking off is the same for both shapes: said outright, with no effort
+    /// alongside it to argue with.
+    #[test]
+    fn an_adaptive_model_still_turns_thinking_off_outright() {
+        let mut model = Model::anthropic("claude-opus-5");
+        model.compat.force_adaptive_thinking = true;
+
+        let payload = build_payload(&model, &context_with(vec![Message::user("hi")]), false)
+            .unwrap();
+        assert_eq!(payload["thinking"]["type"], "disabled");
+        assert!(payload.get("output_config").is_none());
+    }
+}
+
+#[cfg(test)]
+mod auth_scheme {
+    use super::*;
+
+    /// Each kind of credential is presented the way the service expects it.
+    #[test]
+    fn a_credential_is_presented_by_what_it_is() {
+        assert_eq!(scheme_for("sk-ant-oat01-abc"), AuthScheme::Subscription);
+        assert_eq!(scheme_for("sk-ant-api03-abc"), AuthScheme::ApiKey);
+        // Neither prefix: a gateway answering the same protocol, which takes a plain
+        // bearer token with none of Claude Code's identity on it.
+        assert_eq!(scheme_for("glsa_abc123"), AuthScheme::Bearer);
+        assert_eq!(scheme_for("eyJhbGciOi.payload.sig"), AuthScheme::Bearer);
+    }
+
+    /// Only a subscription credential carries the client's name and betas.
+    #[test]
+    fn only_a_subscription_names_the_client() {
+        let model = Model::anthropic("claude-opus-5");
+        let context = micro_types::Context {
+            messages: vec![Message::user("hi")],
+            ..Default::default()
+        };
+        assert!(betas("sk-ant-oat01-abc", &model, &context).contains(&CLAUDE_CODE_BETA));
+        assert!(!betas("glsa_abc123", &model, &context).contains(&CLAUDE_CODE_BETA));
+        assert!(!betas("sk-ant-api03-abc", &model, &context).contains(&CLAUDE_CODE_BETA));
     }
 }

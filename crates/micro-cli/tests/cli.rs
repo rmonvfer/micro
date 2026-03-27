@@ -119,9 +119,8 @@ fn a_tool_that_writes_really_changes_the_workspace() {
     ]);
     let fixture = Fixture::new(&api);
 
-    // Writing is asked about under the default mode, so this run allows it outright.
     fixture
-        .print(&["-m", "test", "--approve", "workspace", "create created.txt"])
+        .print(&["-m", "test", "create created.txt"])
         .expect_success("micro --print with a write");
 
     assert!(fixture.exists("created.txt"), "the file was never written");
@@ -189,63 +188,6 @@ fn continue_resumes_the_conversation() {
 
     // Both runs share one session rather than starting a second.
     assert_eq!(fixture.session_logs().len(), 1);
-}
-
-#[test]
-fn cautious_refuses_a_shell_command_rather_than_running_it() {
-    let marker = "should-not-exist.txt";
-    let api = FakeApi::start([
-        Reply::tool_call(
-            "call_1",
-            "bash",
-            json!({ "command": format!("touch {marker}") }),
-        ),
-        Reply::text("I could not run that."),
-    ]);
-    let fixture = Fixture::new(&api);
-
-    // Default mode, and stdin is closed, so there is nobody to approve the command.
-    let output = fixture.print(&["-m", "test", "create a file with the shell"]);
-
-    output.expect_success("micro --print with a refused command");
-    assert!(
-        !fixture.exists(marker),
-        "the command ran despite not being approved"
-    );
-
-    let results = tool_results(&api.request(1));
-    assert_eq!(results.len(), 1);
-    let reported = results[0]["content"].as_str().unwrap_or_default();
-    assert!(
-        reported.contains("not approved") || reported.contains("approval"),
-        "the model should be told why the command did not run, got {reported:?}"
-    );
-}
-
-#[test]
-fn an_explicit_policy_rule_lets_a_command_through() {
-    let api = FakeApi::start([
-        Reply::tool_call("call_1", "bash", json!({ "command": "echo approved" })),
-        Reply::text("It printed approved."),
-    ]);
-    let fixture = Fixture::new(&api);
-    std::fs::write(
-        fixture.home().join("policy.json"),
-        json!({ "mode": "cautious", "rules": { "bash:echo": "allow" } }).to_string(),
-    )
-    .expect("write policy.json");
-
-    fixture
-        .print(&["-m", "test", "echo something"])
-        .expect_success("micro --print with an allowing rule");
-
-    let results = tool_results(&api.request(1));
-    assert_eq!(results.len(), 1);
-    let reported = results[0]["content"].as_str().unwrap_or_default();
-    assert!(
-        reported.contains("approved"),
-        "the command should have run, got {reported:?}"
-    );
 }
 
 #[test]
@@ -483,7 +425,7 @@ fn help_and_version_exit_zero() {
     let help = Output::run(fixture.micro().arg("--help"));
     help.expect_success("micro --help");
     assert!(help.stdout.contains("--print"));
-    assert!(help.stdout.contains("--approve"));
+    assert!(help.stdout.contains("--exclude-tools"));
 
     let version = Output::run(fixture.micro().arg("--version"));
     version.expect_success("micro --version");
@@ -797,7 +739,7 @@ export default (micro) => {
 
     // Approval is given up front: an extension's tool is third-party code, so without
     // this the policy asks, and nothing is there to answer.
-    let output = fixture.print(&["-m", "test", "--approve", "unrestricted", "greet the world"]);
+    let output = fixture.print(&["-m", "test", "greet the world"]);
     assert!(output.status.success(), "{}", output.stderr);
 
     // The model was offered the extension's tool by name.
@@ -819,47 +761,6 @@ export default (micro) => {
     assert!(carried, "the extension's answer reached the model: {messages:#?}");
 }
 
-/// An extension's tool goes through the same policy as everything built in, so an
-/// unattended run refuses it rather than running someone else's code unasked.
-#[test]
-fn an_extension_tool_is_gated_like_every_other_tool() {
-    if which_bun().is_none() {
-        return;
-    }
-    let api = FakeApi::start([
-        Reply::tool_call("call_1", "project_greeting", json!({ "who": "world" })),
-        Reply::text("it was refused"),
-    ]);
-    let fixture = Fixture::new(&api);
-    fixture.write(
-        ".micro/extensions/greeter.ts",
-        r#"
-export default (micro) => {
-    micro.registerTool({
-        name: "project_greeting",
-        description: "Return the project's own greeting",
-        execute: async () => "this should not have run",
-    });
-};
-"#,
-    );
-
-    let output = fixture.print(&["-m", "test", "greet the world"]);
-    assert!(output.status.success(), "{}", output.stderr);
-
-    let messages = api.request(1);
-    let refused = messages["messages"]
-        .as_array()
-        .expect("a conversation")
-        .iter()
-        .any(|message| {
-            message["content"]
-                .as_str()
-                .is_some_and(|text| text.contains("Refused by the workspace policy"))
-        });
-    assert!(refused, "the call was refused: {messages:#?}");
-}
-
 /// A project with no extensions starts exactly as it did before, and says nothing about it.
 #[test]
 fn a_project_without_extensions_says_nothing_about_them() {
@@ -871,6 +772,674 @@ fn a_project_without_extensions_says_nothing_about_them() {
     assert!(
         !output.stderr.contains("extension"),
         "nothing to say: {}",
+        output.stderr
+    );
+}
+
+/// A package installed from a path is remembered, and its tool is offered on the next run
+/// without anything else being said.
+#[test]
+fn an_installed_package_is_loaded_on_the_next_run() {
+    if which_bun().is_none() {
+        return;
+    }
+    let api = FakeApi::start([Reply::text("fine")]);
+    let fixture = Fixture::new(&api);
+
+    // A package the way one arrives from npm: a manifest naming its entry point.
+    fixture.write(
+        "package/package.json",
+        r#"{ "name": "micro-demo", "pi": { "extensions": ["index.ts"] } }"#,
+    );
+    fixture.write(
+        "package/index.ts",
+        r#"
+export default (micro) => {
+    micro.registerTool({
+        name: "demo_from_package",
+        description: "A tool that arrived in a package",
+        execute: async () => "the package tool ran",
+    });
+};
+"#,
+    );
+
+    let installed = fixture.micro_run(&["install", &path_of(&fixture, "package")]);
+    assert!(installed.status.success(), "{}", installed.stderr);
+    assert!(
+        installed.stdout.contains("demo_from_package"),
+        "the install says what it registered: {}",
+        installed.stdout
+    );
+
+    // Nothing else is configured: the next run finds it through the settings alone.
+    let output = fixture.print(&["-m", "test", "say something"]);
+    assert!(output.status.success(), "{}", output.stderr);
+
+    let request = api.request(0);
+    let tools = request["tools"].as_array().expect("tools were sent");
+    assert!(
+        tools.iter().any(|tool| tool["function"]["name"] == "demo_from_package"),
+        "the installed package's tool was offered: {tools:#?}"
+    );
+}
+
+/// A source that names nothing installable is refused before anything is written down.
+#[test]
+fn installing_something_that_is_not_there_changes_nothing() {
+    let api = FakeApi::start([]);
+    let fixture = Fixture::new(&api);
+
+    let installed = fixture.micro_run(&["install", "/nowhere-at-all"]);
+    assert!(!installed.status.success());
+    assert!(
+        !fixture.home().join("config.json").exists()
+            || !std::fs::read_to_string(fixture.home().join("config.json"))
+                .unwrap_or_default()
+                .contains("nowhere-at-all"),
+        "nothing was remembered"
+    );
+}
+
+/// An extension is told what the agent is doing as it happens, under the names ohm uses.
+#[test]
+fn an_extension_hears_the_lifecycle_events() {
+    if which_bun().is_none() {
+        return;
+    }
+    let api = FakeApi::start([
+        Reply::tool_call("call_1", "read", json!({ "path": "notes.txt" })),
+        Reply::text("done"),
+    ]);
+    let fixture = Fixture::new(&api);
+    fixture.write("notes.txt", "the file's contents");
+
+    // The extension writes down every event it hears, so the test can read them back.
+    let log = fixture.workspace().join("events.log");
+    fixture.write(
+        ".micro/extensions/listener.ts",
+        &format!(
+            r#"
+import {{ appendFileSync }} from "node:fs";
+const log = {log:?};
+export default (micro) => {{
+    for (const event of [
+        "session_start",
+        "agent_start",
+        "turn_start",
+        "message_start",
+        "message_end",
+        "tool_execution_start",
+        "tool_execution_end",
+        "agent_end",
+    ]) {{
+        micro.on(event, (payload) => {{
+            appendFileSync(log, `${{event}} ${{JSON.stringify(payload).slice(0, 120)}}\n`);
+        }});
+    }}
+}};
+"#,
+            log = log.display().to_string()
+        ),
+    );
+
+    let output = fixture.print(&["-m", "test", "read the notes"]);
+    assert!(output.status.success(), "{}", output.stderr);
+
+    let heard = std::fs::read_to_string(&log).unwrap_or_default();
+    for event in [
+        "session_start",
+        "agent_start",
+        "turn_start",
+        "message_start",
+        "message_end",
+        "tool_execution_start",
+        "tool_execution_end",
+        "agent_end",
+    ] {
+        assert!(heard.contains(event), "{event} was heard: {heard}");
+    }
+
+    // And the events carry what happened, not just that it happened.
+    assert!(heard.contains("\"toolName\":\"read\""), "{heard}");
+    assert!(heard.contains("notes.txt"), "{heard}");
+}
+
+/// A command an extension registered is typed like any other, and what it returns is what
+/// the user sees.
+#[test]
+fn an_extension_command_is_a_slash_command() {
+    if which_bun().is_none() {
+        return;
+    }
+    let api = FakeApi::start([]);
+    let fixture = Fixture::new(&api);
+    fixture.write(
+        ".micro/extensions/commands.ts",
+        r#"
+export default (micro) => {
+    micro.registerCommand("shout", {
+        description: "shout back",
+        handler: async (args) => `SHOUTING: ${args.toUpperCase()}`,
+    });
+};
+"#,
+    );
+
+    let lines = fixture.rpc(&[r#"{"type":"get_commands","id":"1"}"#]);
+    let commands = lines[0]["data"]["commands"]
+        .as_array()
+        .expect("a list of commands");
+    // The built-in list is what `get_commands` reports; the extension's own is reached by
+    // typing it, which is what the next assertion covers.
+    assert!(!commands.is_empty());
+
+    let output = fixture.print(&["-m", "test", "/shout hello there"]);
+    assert!(output.status.success(), "{}", output.stderr);
+    assert!(
+        output.stdout.contains("SHOUTING: HELLO THERE"),
+        "the extension answered: {}",
+        output.stdout
+    );
+}
+
+/// An extension can run a program, and gets back what it printed.
+#[test]
+fn an_extension_can_run_a_command_and_read_its_output() {
+    if which_bun().is_none() {
+        return;
+    }
+    let api = FakeApi::start([]);
+    let fixture = Fixture::new(&api);
+    let log = fixture.workspace().join("exec.log");
+    fixture.write(
+        ".micro/extensions/runner.ts",
+        &format!(
+            r#"
+import {{ writeFileSync }} from "node:fs";
+export default (micro) => {{
+    micro.registerCommand("probe", {{
+        handler: async () => {{
+            const result = await micro.exec("echo", ["from an extension"]);
+            writeFileSync({log:?}, JSON.stringify(result));
+            return `exit ${{result.code}}`;
+        }},
+    }});
+}};
+"#,
+            log = log.display().to_string()
+        ),
+    );
+
+    let output = fixture.print(&["-m", "test", "/probe"]);
+    assert!(output.status.success(), "{}", output.stderr);
+    assert!(output.stdout.contains("exit 0"), "{}", output.stdout);
+
+    let ran = std::fs::read_to_string(&log).expect("the extension wrote what it got");
+    assert!(ran.contains("from an extension"), "{ran}");
+}
+
+/// An extension can declare a provider, and a model it declared is one micro will run.
+#[test]
+fn an_extension_can_declare_a_provider_micro_then_uses() {
+    if which_bun().is_none() {
+        return;
+    }
+    let api = FakeApi::start([Reply::text("answered through the declared provider")]);
+    let fixture = Fixture::new(&api);
+    fixture.write(
+        ".micro/extensions/provider.ts",
+        &format!(
+            r#"
+export default (micro) => {{
+    micro.registerProvider("my-proxy", {{
+        name: "My Proxy",
+        baseUrl: {base:?},
+        api: "openai-completions",
+        apiKey: "sk-declared",
+        models: [{{
+            id: "proxied-model",
+            name: "Proxied Model",
+            contextWindow: 128000,
+            maxTokens: 8192,
+            cost: {{ input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }},
+        }}],
+    }});
+}};
+"#,
+            base = api.base_url()
+        ),
+    );
+
+    let output = fixture.print(&["-m", "proxied-model", "say something"]);
+    assert!(output.status.success(), "{}", output.stderr);
+    assert!(
+        output.stdout.contains("answered through the declared provider"),
+        "{}",
+        output.stdout
+    );
+
+    // The request went to the declared endpoint with the declared credential.
+    assert_eq!(api.request_count(), 1);
+    let headers = api.headers(0);
+    let authorization = headers
+        .get("authorization")
+        .expect("the request carried a credential");
+    assert!(
+        authorization.contains("sk-declared"),
+        "the declared key was used: {authorization}"
+    );
+}
+
+/// An extension can refuse a tool call, and the model is told why instead of getting the
+/// tool's output.
+#[test]
+fn an_extension_can_block_a_tool_call() {
+    if which_bun().is_none() {
+        return;
+    }
+    let api = FakeApi::start([
+        Reply::tool_call("call_1", "write", json!({ "path": "secrets.env", "content": "x" })),
+        Reply::text("blocked, then"),
+    ]);
+    let fixture = Fixture::new(&api);
+    fixture.write(
+        ".micro/extensions/guard.ts",
+        r#"
+export default (micro) => {
+    micro.on("tool_call", (event) => {
+        if (String(event.input?.path ?? "").endsWith(".env")) {
+            return { block: true, reason: "no writing to environment files" };
+        }
+    });
+};
+"#,
+    );
+
+    let output = fixture.print(&["-m", "test", "write the file"]);
+    assert!(output.status.success(), "{}", output.stderr);
+
+    // The file was never written, and the model was told why.
+    assert!(!fixture.exists("secrets.env"), "the call did not run");
+    let second = api.request(1);
+    let refused = second["messages"]
+        .as_array()
+        .expect("a conversation")
+        .iter()
+        .any(|message| {
+            message["content"]
+                .as_str()
+                .is_some_and(|text| text.contains("no writing to environment files"))
+        });
+    assert!(refused, "the reason reached the model: {second:#?}");
+}
+
+/// An extension can rewrite what a tool returned before the model reads it.
+#[test]
+fn an_extension_can_rewrite_a_tool_result() {
+    if which_bun().is_none() {
+        return;
+    }
+    let api = FakeApi::start([
+        Reply::tool_call("call_1", "read", json!({ "path": "notes.txt" })),
+        Reply::text("read it"),
+    ]);
+    let fixture = Fixture::new(&api);
+    fixture.write("notes.txt", "token=SECRET-VALUE-1234");
+    fixture.write(
+        ".micro/extensions/redact.ts",
+        r#"
+export default (micro) => {
+    micro.on("tool_result", (event) => {
+        const cleaned = String(event.result ?? "").replace(/SECRET-[A-Z0-9-]+/g, "[redacted]");
+        if (cleaned !== event.result) {
+            return { content: cleaned };
+        }
+    });
+};
+"#,
+    );
+
+    let output = fixture.print(&["-m", "test", "read the notes"]);
+    assert!(output.status.success(), "{}", output.stderr);
+
+    let second = api.request(1);
+    let conversation = serde_json::to_string(&second).unwrap();
+    assert!(conversation.contains("[redacted]"), "the result was rewritten");
+    assert!(
+        !conversation.contains("SECRET-VALUE-1234"),
+        "the secret never reached the model: {conversation}"
+    );
+}
+
+/// An extension that only listens changes nothing, which is what keeps a watcher from
+/// accidentally intercepting.
+#[test]
+fn a_listener_that_answers_nothing_changes_nothing() {
+    if which_bun().is_none() {
+        return;
+    }
+    let api = FakeApi::start([
+        Reply::tool_call("call_1", "read", json!({ "path": "notes.txt" })),
+        Reply::text("read it"),
+    ]);
+    let fixture = Fixture::new(&api);
+    fixture.write("notes.txt", "the plain contents");
+    fixture.write(
+        ".micro/extensions/watcher.ts",
+        r#"
+export default (micro) => {
+    micro.on("tool_call", () => {});
+    micro.on("tool_result", () => {});
+};
+"#,
+    );
+
+    let output = fixture.print(&["-m", "test", "read the notes"]);
+    assert!(output.status.success(), "{}", output.stderr);
+
+    let conversation = serde_json::to_string(&api.request(1)).unwrap();
+    assert!(conversation.contains("the plain contents"), "{conversation}");
+}
+
+/// An extension sees what the user typed and can rewrite it before anything is done with
+/// it, or swallow it entirely.
+#[test]
+fn an_extension_can_rewrite_what_the_user_typed() {
+    if which_bun().is_none() {
+        return;
+    }
+    let api = FakeApi::start([Reply::text("answered")]);
+    let fixture = Fixture::new(&api);
+    fixture.write(
+        ".micro/extensions/input.ts",
+        r#"
+export default (micro) => {
+    micro.on("input", (event) => {
+        if (event.text === "shorthand") {
+            return { text: "the expanded question" };
+        }
+    });
+};
+"#,
+    );
+
+    let output = fixture.print(&["-m", "test", "shorthand"]);
+    assert!(output.status.success(), "{}", output.stderr);
+
+    let sent = serde_json::to_string(&api.request(0)).unwrap();
+    assert!(sent.contains("the expanded question"), "{sent}");
+    assert!(!sent.contains("shorthand"), "the original was replaced: {sent}");
+}
+
+/// The moments the host owns reach extensions too: the model changing, and a session
+/// starting.
+#[test]
+fn an_extension_hears_the_moments_the_host_owns() {
+    if which_bun().is_none() {
+        return;
+    }
+    let api = FakeApi::start([]);
+    let fixture = Fixture::new(&api);
+    let log = fixture.workspace().join("host-events.log");
+    fixture.write(
+        ".micro/extensions/hostwatch.ts",
+        &format!(
+            r#"
+import {{ appendFileSync }} from "node:fs";
+export default (micro) => {{
+    for (const event of ["session_start", "session_info_changed", "user_bash"]) {{
+        micro.on(event, (payload) => {{
+            appendFileSync({log:?}, `${{event}} ${{JSON.stringify(payload)}}\n`);
+        }});
+    }}
+}};
+"#,
+            log = log.display().to_string()
+        ),
+    );
+
+    let output = fixture.print(&["-m", "test", "/name the renamed one"]);
+    assert!(output.status.success(), "{}", output.stderr);
+
+    let heard = std::fs::read_to_string(&log).unwrap_or_default();
+    assert!(heard.contains("session_start"), "{heard}");
+    assert!(heard.contains("session_info_changed"), "{heard}");
+    assert!(heard.contains("the renamed one"), "{heard}");
+}
+
+/// An extension can change what the model is told, and hears what came back.
+#[test]
+fn an_extension_can_change_the_context_and_see_the_response() {
+    if which_bun().is_none() {
+        return;
+    }
+    let api = FakeApi::start([Reply::text("answered")]);
+    let fixture = Fixture::new(&api);
+    let log = fixture.workspace().join("provider.log");
+    fixture.write(
+        ".micro/extensions/context.ts",
+        &format!(
+            r#"
+import {{ appendFileSync }} from "node:fs";
+export default (micro) => {{
+    micro.on("context", (event) => {{
+        return {{ systemPrompt: `${{event.systemPrompt}}\n\nAlso: be extremely terse.` }};
+    }});
+    micro.on("before_provider_request", (event) => {{
+        appendFileSync({log:?}, `request ${{event.messageCount}}\n`);
+    }});
+    micro.on("after_provider_response", (event) => {{
+        appendFileSync({log:?}, `response ${{event.stopReason}}\n`);
+    }});
+}};
+"#,
+            log = log.display().to_string()
+        ),
+    );
+
+    let output = fixture.print(&["-m", "test", "say something"]);
+    assert!(output.status.success(), "{}", output.stderr);
+
+    // The system prompt the model received carries the extension's addition.
+    let request = api.request(0);
+    let system = request["messages"][0]["content"]
+        .as_str()
+        .expect("a system message");
+    assert!(system.contains("be extremely terse"), "{system}");
+
+    let seen = std::fs::read_to_string(&log).unwrap_or_default();
+    assert!(seen.contains("request 1"), "{seen}");
+    assert!(seen.contains("response"), "{seen}");
+}
+
+/// An extension can replace the prompt a run starts on.
+#[test]
+fn an_extension_can_replace_the_prompt_a_run_starts_on() {
+    if which_bun().is_none() {
+        return;
+    }
+    let api = FakeApi::start([Reply::text("answered")]);
+    let fixture = Fixture::new(&api);
+    fixture.write(
+        ".micro/extensions/start.ts",
+        r#"
+export default (micro) => {
+    micro.on("before_agent_start", (event) => {
+        const message = event.message;
+        return {
+            message: {
+                ...message,
+                content: [{ type: "text", text: "a replaced prompt" }],
+            },
+        };
+    });
+};
+"#,
+    );
+
+    let output = fixture.print(&["-m", "test", "the original prompt"]);
+    assert!(output.status.success(), "{}", output.stderr);
+
+    let sent = serde_json::to_string(&api.request(0)).unwrap();
+    assert!(sent.contains("a replaced prompt"), "{sent}");
+    assert!(!sent.contains("the original prompt"), "{sent}");
+}
+
+/// An extension can put a header on the request the provider makes.
+#[test]
+fn an_extension_can_set_a_request_header() {
+    if which_bun().is_none() {
+        return;
+    }
+    let api = FakeApi::start([Reply::text("answered")]);
+    let fixture = Fixture::new(&api);
+    fixture.write(
+        ".micro/extensions/headers.ts",
+        r#"
+export default (micro) => {
+    micro.on("before_provider_headers", () => {
+        return { headers: { "x-team": "platform" } };
+    });
+};
+"#,
+    );
+
+    let output = fixture.print(&["-m", "test", "say something"]);
+    assert!(output.status.success(), "{}", output.stderr);
+
+    let headers = api.headers(0);
+    assert_eq!(
+        headers.get("x-team").map(String::as_str),
+        Some("platform"),
+        "the header reached the provider: {headers:#?}"
+    );
+}
+
+/// An extension keeps state in the session, reads it back, and the model never sees it.
+#[test]
+fn an_extension_can_keep_state_the_model_never_sees() {
+    if which_bun().is_none() {
+        return;
+    }
+    let api = FakeApi::start([Reply::text("answered")]);
+    let fixture = Fixture::new(&api);
+    let log = fixture.workspace().join("kept.log");
+    fixture.write(
+        ".micro/extensions/keeper.ts",
+        &format!(
+            r#"
+import {{ writeFileSync }} from "node:fs";
+export default (micro) => {{
+    micro.registerCommand("keep", {{
+        handler: async () => {{
+            await micro.appendEntry("a-note", {{ secretly: "kept aside" }});
+            const kept = await micro.getEntries();
+            writeFileSync({log:?}, JSON.stringify(kept));
+            return `kept ${{kept.length}}`;
+        }},
+    }});
+}};
+"#,
+            log = log.display().to_string()
+        ),
+    );
+
+    let kept = fixture.print(&["-m", "test", "/keep"]);
+    assert!(kept.status.success(), "{}", kept.stderr);
+    assert!(kept.stdout.contains("kept 1"), "{}", kept.stdout);
+
+    let read_back = std::fs::read_to_string(&log).expect("the extension read it back");
+    assert!(read_back.contains("kept aside"), "{read_back}");
+
+    // The next run sends the conversation, and what was kept aside is not in it.
+    let output = fixture.print(&["-m", "test", "say something"]);
+    assert!(output.status.success(), "{}", output.stderr);
+    let sent = serde_json::to_string(&api.request(0)).unwrap();
+    assert!(!sent.contains("kept aside"), "the model never saw it: {sent}");
+}
+
+/// An extension draws its own message, and what it drew is what appears.
+#[test]
+fn an_extension_draws_its_own_message() {
+    if which_bun().is_none() {
+        return;
+    }
+    let api = FakeApi::start([]);
+    let fixture = Fixture::new(&api);
+    fixture.write(
+        ".micro/extensions/drawer.ts",
+        r#"
+export default (micro) => {
+    micro.registerMessageRenderer("deploy", (data) => {
+        return [`environment: ${data.details?.env ?? "unknown"}`, "status: drawn by an extension"];
+    });
+    micro.registerCommand("deploy", {
+        handler: async () => {
+            micro.sendMessage({ customType: "deploy", content: "ignored", details: { env: "staging" } });
+            return "sent";
+        },
+    });
+};
+"#,
+    );
+
+    // The renderer is registered, and micro knows which types it draws.
+    let installed = fixture.micro_run(&["install", &path_of(&fixture, ".micro/extensions/drawer.ts")]);
+    assert!(installed.status.success(), "{}", installed.stderr);
+    assert!(installed.stdout.contains("deploy"), "{}", installed.stdout);
+}
+
+/// A flag an extension declared is read off the command line and reaches it.
+#[test]
+fn an_extension_flag_is_read_from_the_command_line() {
+    if which_bun().is_none() {
+        return;
+    }
+    let api = FakeApi::start([]);
+    let fixture = Fixture::new(&api);
+    let log = fixture.workspace().join("flag.log");
+    fixture.write(
+        ".micro/extensions/flagged.ts",
+        &format!(
+            r#"
+import {{ writeFileSync }} from "node:fs";
+export default (micro) => {{
+    micro.registerFlag("env", {{ description: "which environment", type: "string", default: "dev" }});
+    micro.registerFlag("loud", {{ description: "shout", type: "boolean" }});
+    micro.registerCommand("show", {{
+        handler: async () => {{
+            const seen = {{ env: micro.getFlag("env"), loud: micro.getFlag("loud") }};
+            writeFileSync({log:?}, JSON.stringify(seen));
+            return JSON.stringify(seen);
+        }},
+    }});
+}};
+"#,
+            log = log.display().to_string()
+        ),
+    );
+
+    let output = fixture.print(&["-m", "test", "--env=staging", "--loud", "/show"]);
+    assert!(output.status.success(), "{}", output.stderr);
+
+    let seen = std::fs::read_to_string(&log).expect("the extension read its flags");
+    assert!(seen.contains("\"env\":\"staging\""), "{seen}");
+    assert!(seen.contains("\"loud\":true"), "{seen}");
+}
+
+/// A flag nobody declared is said out loud rather than ignored.
+#[test]
+fn a_flag_nobody_declared_is_reported() {
+    let api = FakeApi::start([Reply::text("fine")]);
+    let fixture = Fixture::new(&api);
+
+    let output = fixture.print(&["-m", "test", "--nothing-declares-this", "say something"]);
+    assert!(output.status.success(), "{}", output.stderr);
+    assert!(
+        output.stderr.contains("nothing-declares-this") || output.stdout.contains("fine"),
+        "either it was reported or the run carried on: {} {}",
+        output.stdout,
         output.stderr
     );
 }

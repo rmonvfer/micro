@@ -109,13 +109,11 @@ pub fn draw(
     if focused {
         let cursor_row = layout.cursor_row.saturating_sub(first).min(height - 1);
         if !hardware_cursor {
-            let column =
-                rows.x + (layout.cursor_column as u16).min(rows.width.saturating_sub(1));
+            let column = rows.x + (layout.cursor_column as u16).min(rows.width.saturating_sub(1));
             let position = (column, rows.y + cursor_row as u16);
-            frame
-                .buffer_mut()
-                .cell_mut(position)
-                .map(|cell| cell.set_style(Style::new().add_modifier(ratatui::style::Modifier::REVERSED)));
+            frame.buffer_mut().cell_mut(position).map(|cell| {
+                cell.set_style(Style::new().add_modifier(ratatui::style::Modifier::REVERSED))
+            });
             return;
         }
         frame.set_cursor_position((
@@ -126,13 +124,60 @@ pub fn draw(
 }
 
 /// Scroll the input just enough to keep the cursor on screen.
-fn first_visible_row(cursor_row: usize, total: usize, height: usize) -> usize {
+///
+/// `pub(super)` rather than private: `render::overlay`'s extension editor is the same
+/// scrolling problem over lines instead of a frame, and this is the math either wants.
+pub(super) fn first_visible_row(cursor_row: usize, total: usize, height: usize) -> usize {
     if total <= height {
         return 0;
     }
     cursor_row
         .saturating_sub(height.saturating_sub(1))
         .min(total - height)
+}
+
+/// Draw a `setEditorComponent` component in the input's place: the same two rules, whatever
+/// lines the component last answered with between them.
+///
+/// No cursor is placed here — see the note beside `strip_cursor_marker` in `app.rs` for why
+/// a component's own hardware-cursor position is read out of its lines but not yet acted on.
+pub fn draw_component(
+    frame: &mut Frame,
+    area: Rect,
+    content: Rect,
+    lines: &[String],
+    theme: &Theme,
+    level: ratatui::style::Color,
+) {
+    if area.height == 0 || content.width == 0 {
+        return;
+    }
+    let bar = Line::from(vec![Span::styled(
+        "─".repeat(area.width as usize),
+        Style::new().fg(level),
+    )]);
+    frame
+        .buffer_mut()
+        .set_line(area.x, area.y, &bar, area.width);
+    if area.height > 1 {
+        frame
+            .buffer_mut()
+            .set_line(area.x, area.y + area.height - 1, &bar, area.width);
+    }
+
+    let rows = Rect {
+        x: content.x,
+        y: content.y.saturating_add(1),
+        width: content.width,
+        height: area.height.saturating_sub(RULES),
+    };
+    let text = Style::new().fg(theme.text);
+    for (offset, source) in lines.iter().take(rows.height as usize).enumerate() {
+        let line = Line::from(vec![Span::styled(source.clone(), text)]);
+        frame
+            .buffer_mut()
+            .set_line(rows.x, rows.y + offset as u16, &line, rows.width);
+    }
 }
 
 #[cfg(test)]

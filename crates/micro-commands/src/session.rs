@@ -45,7 +45,7 @@ pub(crate) async fn resume(argument: Option<&str>, context: &CommandContext<'_>)
         },
         several => {
             let title = format!("{} sessions start with \"{query}\"", several.len());
-            CommandOutcome::Choose(Picker::new(title, items(several.to_vec(), context)))
+            CommandOutcome::Choose(Picker::new(title, items(several.to_vec(), context)).searchable())
         }
     }
 }
@@ -95,7 +95,7 @@ async fn listing(context: &CommandContext<'_>) -> Result<Vec<SessionMeta>, Strin
 }
 
 fn session_picker(sessions: Vec<SessionMeta>, context: &CommandContext<'_>) -> Picker {
-    Picker::new("Resume a session", items(sessions, context))
+    Picker::new("Resume a session", items(sessions, context)).searchable()
 }
 
 fn items(sessions: Vec<SessionMeta>, context: &CommandContext<'_>) -> Vec<PickerItem> {
@@ -160,7 +160,19 @@ pub(crate) async fn tree(
         return CommandOutcome::info("No entries in session");
     }
 
-    let items = outline
+    // The tree opens showing what the reader asked it to: the whole of it, the shape of
+    // the conversation without the tool calls that fill it out, or only what they wrote.
+    let shown: Vec<&micro_session::Row<'_>> = outline
+        .iter()
+        .filter(|row| keeps(context.tree_filter, row))
+        .collect();
+    if shown.is_empty() {
+        return CommandOutcome::info(
+            "Nothing matches the tree filter. `/set tree_filter_mode all` shows everything.",
+        );
+    }
+
+    let items = shown
         .iter()
         .map(|row| {
             // Depth is drawn into the label, so a branch reads as one at a glance and the
@@ -175,7 +187,22 @@ pub(crate) async fn tree(
         })
         .collect();
 
-    CommandOutcome::Choose(Picker::new("Session Tree", items))
+    CommandOutcome::Choose(Picker::new("Session Tree", items).searchable())
+}
+
+/// Whether an entry is one the reader asked to see.
+fn keeps(filter: micro_config::TreeFilter, row: &micro_session::Row<'_>) -> bool {
+    use micro_config::TreeFilter;
+    let is_tool = matches!(row.entry.message, micro_types::Message::ToolResult { .. });
+    let is_user = matches!(row.entry.message, micro_types::Message::User { .. });
+
+    match filter {
+        TreeFilter::All => true,
+        // What the conversation is made of, which is everything but the tools filling it out.
+        TreeFilter::Default | TreeFilter::NoTools => !is_tool,
+        TreeFilter::UserOnly => is_user,
+        TreeFilter::LabeledOnly => row.label.is_some(),
+    }
 }
 
 /// What an entry is to the conversation as it stands: where it continues from, what it is

@@ -31,6 +31,9 @@ fn model() -> Model {
         base_url: "https://example.invalid".into(),
         max_tokens: 1024,
         thinking: ThinkingLevel::Off,
+        reasoning: Default::default(),
+        compat: Default::default(),
+        headers: Default::default(),
     }
 }
 
@@ -305,9 +308,10 @@ async fn the_summary_is_reported_so_a_renderer_can_show_it() {
 }
 
 #[tokio::test]
-async fn compaction_does_not_rewrite_what_the_run_returns() {
-    // The live context shrinks; the transcript a caller persists does not, so a resumed
-    // session still holds every message and can compact again from scratch.
+async fn compaction_is_recorded_rather_than_only_applied() {
+    // Nothing is deleted: every message still reaches the log. What is added is where the
+    // conversation is read from, so a session reopened later reads the summary instead of
+    // paying to write the same one again.
     let history = conversation(10, 400);
     let provider = FakeProvider::once(Turn::text("carrying on"));
     let summarizer = FakeSummarizer::new("earlier work");
@@ -327,10 +331,29 @@ async fn compaction_does_not_rewrite_what_the_run_returns() {
     assert_eq!(events.final_messages(), Some(messages.as_slice()));
 
     let mut persisted = Vec::new();
-    while let Ok(message) = recorded.try_recv() {
-        persisted.push(message);
+    while let Ok(record) = recorded.try_recv() {
+        persisted.push(record);
     }
-    assert_eq!(persisted, messages);
+
+    let written: Vec<micro_types::Message> = persisted
+        .iter()
+        .filter_map(|record| match record {
+            micro_agent::Record::Message(message) => Some(message.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(written, messages, "every message still reaches the log");
+
+    let compactions: Vec<&micro_agent::Record> = persisted
+        .iter()
+        .filter(|record| matches!(record, micro_agent::Record::Compacted { .. }))
+        .collect();
+    assert_eq!(compactions.len(), 1, "and the compaction is recorded once");
+    let micro_agent::Record::Compacted { summary, kept } = compactions[0] else {
+        unreachable!("filtered above")
+    };
+    assert_eq!(summary, "earlier work");
+    assert!(*kept > 0, "it says how much of the conversation it kept");
 }
 
 #[tokio::test]

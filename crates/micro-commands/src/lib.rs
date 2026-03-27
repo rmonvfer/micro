@@ -26,6 +26,7 @@ pub use outcome::CommandOutcome;
 pub use outcome::MessageKind;
 pub use outcome::Picker;
 pub use outcome::PickerItem;
+pub use outcome::PickerLayout;
 pub use outcome::ThemeChoice;
 pub use parse::parse;
 pub use parse::suggest;
@@ -271,6 +272,11 @@ pub struct CommandContext<'a> {
     pub usage: micro_types::Usage,
     /// Show only the newest entry when the changelog is asked for.
     pub collapse_changelog: bool,
+    /// The models a workspace put on its shortlist, as the patterns it named them by. The
+    /// model list opens on these; everything else is a keystroke away.
+    pub scoped_models: &'a [String],
+    /// What the conversation tree shows before anything is asked of it.
+    pub tree_filter: micro_config::TreeFilter,
 }
 
 /// Run a submitted line. `None` means it was ordinary text for the model.
@@ -398,7 +404,7 @@ fn thinking(argument: Option<&str>) -> CommandOutcome {
     match level_named(argument) {
         Some(level) => CommandOutcome::SetThinking { level },
         None => CommandOutcome::error(format!(
-            "unknown reasoning effort `{argument}`: expected off, low, medium or high"
+            "unknown reasoning effort `{argument}`: expected off, minimal, low, medium, high, xhigh or max"
         )),
     }
 }
@@ -406,17 +412,23 @@ fn thinking(argument: Option<&str>) -> CommandOutcome {
 /// The levels a user can ask for, with what each one is worth saying about it.
 const LEVELS: &[(&str, &str)] = &[
     ("off", "answer directly"),
+    ("minimal", "the least reasoning available"),
     ("low", "a little reasoning first"),
     ("medium", "a moderate amount"),
-    ("high", "as much as the model will do"),
+    ("high", "a lot of reasoning"),
+    ("xhigh", "extra reasoning"),
+    ("max", "as much as the model will do"),
 ];
 
 fn level_named(name: &str) -> Option<ThinkingLevel> {
     match name.trim().to_ascii_lowercase().as_str() {
         "off" | "none" => Some(ThinkingLevel::Off),
+        "minimal" => Some(ThinkingLevel::Minimal),
         "low" => Some(ThinkingLevel::Low),
         "medium" | "med" => Some(ThinkingLevel::Medium),
-        "high" | "max" => Some(ThinkingLevel::High),
+        "high" => Some(ThinkingLevel::High),
+        "xhigh" => Some(ThinkingLevel::XHigh),
+        "max" => Some(ThinkingLevel::Max),
         _ => None,
     }
 }
@@ -431,7 +443,10 @@ fn theme(argument: Option<&str>) -> CommandOutcome {
                 PickerItem::new("light", "ohm's light palette", "/theme light"),
                 PickerItem::new("auto", "follow the terminal", "/theme auto"),
             ],
-        ));
+        )
+        // A palette's name is short, so its column is held narrow: padding three names out
+        // to the width a model id needs would leave the descriptions stranded.
+        .columns(12, 32));
     };
 
     match argument.trim().to_ascii_lowercase().as_str() {
@@ -453,7 +468,14 @@ fn theme(argument: Option<&str>) -> CommandOutcome {
 /// What skills were found, and anything that stopped one loading.
 async fn skills(context: &CommandContext<'_>) -> CommandOutcome {
     let home = micro_context::micro_home().unwrap_or_default();
-    let found = micro_skills::discover(context.workspace, &home).await;
+    // Listing what is on offer answers with what this run is actually offering, which is
+    // the project's own only when the project has been trusted.
+    let trusted = !micro_config::requires_decision(context.workspace)
+        || micro_config::TrustStore::load()
+            .await
+            .unwrap_or_default()
+            .is_trusted(context.workspace);
+    let found = micro_skills::discover(context.workspace, &home, trusted).await;
 
     if found.skills.is_empty() && found.diagnostics.is_empty() {
         return CommandOutcome::info(
@@ -484,6 +506,18 @@ async fn skills(context: &CommandContext<'_>) -> CommandOutcome {
 ///
 /// Every row here is honoured somewhere: a setting that controlled nothing would read as a
 /// feature and behave as a decoration.
+/// A variant's name as it is written on the command line: `OneAtATime` is `one-at-a-time`.
+fn kebab(name: &str) -> String {
+    let mut out = String::new();
+    for (index, character) in name.chars().enumerate() {
+        if character.is_uppercase() && index > 0 {
+            out.push('-');
+        }
+        out.extend(character.to_lowercase());
+    }
+    out
+}
+
 fn settings(context: &CommandContext<'_>) -> CommandOutcome {
     let home = micro_context::micro_home().unwrap_or_default();
     let file = home.join(micro_config::FILE_NAME);
@@ -514,8 +548,8 @@ fn settings(context: &CommandContext<'_>) -> CommandOutcome {
         ),
         PickerItem::new(
             "Default project trust",
-            on_off(now.default_project_trust),
-            "/trust",
+            format!("{:?}", now.default_project_trust).to_lowercase(),
+            "/set default_project_trust",
         ),
         PickerItem::new("Auto-compact", on_off(now.auto_compact), "/set auto_compact"),
         PickerItem::new(
@@ -541,14 +575,9 @@ fn settings(context: &CommandContext<'_>) -> CommandOutcome {
             "/set skill_commands",
         ),
         PickerItem::new(
-            "Editor padding",
-            now.editor_padding.to_string(),
-            "/set editor_padding",
-        ),
-        PickerItem::new(
-            "Output padding",
-            now.output_padding.to_string(),
-            "/set output_padding",
+            "Content padding",
+            now.content_padding.to_string(),
+            "/set content_padding",
         ),
         PickerItem::new(
             "Autocomplete max items",
@@ -615,6 +644,41 @@ fn settings(context: &CommandContext<'_>) -> CommandOutcome {
             "/set anthropic_extra_usage",
         ),
         PickerItem::new(
+            "TUI mode",
+            format!("{:?}", now.tui_mode).to_lowercase(),
+            "/set tui_mode",
+        ),
+        PickerItem::new(
+            "Steering mode",
+            kebab(&format!("{:?}", now.steering_mode)),
+            "/set steering_mode",
+        ),
+        PickerItem::new(
+            "Tree filter mode",
+            kebab(&format!("{:?}", now.tree_filter_mode)),
+            "/set tree_filter_mode",
+        ),
+        PickerItem::new(
+            "Mermaid diagrams",
+            kebab(&format!("{:?}", now.mermaid)),
+            "/set mermaid",
+        ),
+        PickerItem::new(
+            "Fullscreen exit output",
+            kebab(&format!("{:?}", now.fullscreen_exit_output)),
+            "/set fullscreen_exit_output",
+        ),
+        PickerItem::new(
+            "Fullscreen scrollbar",
+            kebab(&format!("{:?}", now.fullscreen_scrollbar)),
+            "/set fullscreen_scrollbar",
+        ),
+        PickerItem::new(
+            "Clear on shrink",
+            on_off(now.clear_on_shrink),
+            "/set clear_on_shrink",
+        ),
+        PickerItem::new(
             "Where everything is kept",
             home.display().to_string(),
             "/debug",
@@ -644,6 +708,11 @@ fn set(argument: Option<&str>) -> CommandOutcome {
     };
 
     let Some(value) = value else {
+        // Named on its own, a setting offers what it may be rather than only saying what
+        // it is: a list you cannot change from is a list of things to go and type.
+        if let Some(choices) = settable(&config, name) {
+            return CommandOutcome::Choose(Picker::new(name.to_string(), choices).titled());
+        }
         return match describe(&config, name) {
             Some(text) => CommandOutcome::info(text),
             None => CommandOutcome::error(format!("There is no setting called `{name}`.")),
@@ -660,6 +729,163 @@ fn set(argument: Option<&str>) -> CommandOutcome {
 }
 
 /// One setting as it stands, and what it will take.
+/// What a setting may be set to, as a list to choose from.
+///
+/// Every setting that has a settled few values offers them; one that takes free text — a
+/// shortlist of models — has none to offer and is described instead.
+fn settable(config: &micro_config::Config, name: &str) -> Option<Vec<PickerItem>> {
+    let now = config
+        .resolve(&micro_config::Overrides::default(), |_| None)
+        .ok()?;
+
+    let on_off = |value: bool| match value {
+        true => "on",
+        false => "off",
+    };
+    let switch = |current: bool| {
+        vec![
+            ("on", "", current),
+            ("off", "", !current),
+        ]
+    };
+
+    let described: Vec<(&str, &str, bool)> = match name {
+        "auto_compact" => switch(now.auto_compact),
+        "hide_thinking" => switch(now.hide_thinking),
+        "show_images" => switch(now.show_images),
+        "auto_resize_images" => switch(now.auto_resize_images),
+        "block_images" => switch(now.block_images),
+        "skill_commands" => switch(now.skill_commands),
+        "show_hardware_cursor" => switch(now.show_hardware_cursor),
+        "terminal_progress" => switch(now.terminal_progress),
+        "quiet_startup" => switch(now.quiet_startup),
+        "collapse_changelog" => switch(now.collapse_changelog),
+        "warnings" => switch(now.warnings),
+        "cache_miss_notices" => switch(now.cache_miss_notices),
+        "anthropic_extra_usage" => switch(now.anthropic_extra_usage),
+        "double_escape" => {
+            let now = format!("{:?}", now.double_escape).to_lowercase();
+            vec![
+                ("tree", "show the conversation's branches", now == "tree"),
+                ("fork", "branch from a message", now == "fork"),
+                ("none", "do nothing", now == "none"),
+            ]
+        }
+        "follow_up_mode" => {
+            let now = format!("{:?}", now.follow_up_mode).to_lowercase();
+            vec![
+                ("queue", "wait for the turn to finish", now == "queue"),
+                ("interrupt", "stop the turn and send", now == "interrupt"),
+            ]
+        }
+        "default_project_trust" => {
+            let now = format!("{:?}", now.default_project_trust).to_lowercase();
+            vec![
+                ("ask", "ask about each project", now == "ask"),
+                ("always", "trust every project", now == "always"),
+                ("never", "trust no project", now == "never"),
+            ]
+        }
+        "tui_mode" => {
+            let now = format!("{:?}", now.tui_mode).to_lowercase();
+            vec![
+                ("regular", "draw inline, leaving the scrollback", now == "regular"),
+                ("fullscreen", "take the whole terminal", now == "fullscreen"),
+            ]
+        }
+        "clear_on_shrink" => switch(now.clear_on_shrink),
+        "steering_mode" => {
+            let now = kebab(&format!("{:?}", now.steering_mode));
+            vec![
+                ("one-at-a-time", "the oldest, and the rest after it", now == "one-at-a-time"),
+                ("all", "every one of them, as one message", now == "all"),
+            ]
+        }
+        "tree_filter_mode" => {
+            let now = kebab(&format!("{:?}", now.tree_filter_mode));
+            vec![
+                ("default", "prompts and answers", now == "default"),
+                ("no-tools", "without what the tools did", now == "no-tools"),
+                ("user-only", "only what was written", now == "user-only"),
+                ("labeled-only", "only what has a name", now == "labeled-only"),
+                ("all", "everything there is", now == "all"),
+            ]
+        }
+        "fullscreen_exit_output" => {
+            let now = kebab(&format!("{:?}", now.fullscreen_exit_output));
+            vec![
+                ("transcript", "leave the conversation on screen", now == "transcript"),
+                ("resume-hint", "leave only the line that brings it back", now == "resume-hint"),
+            ]
+        }
+        "fullscreen_scrollbar" => {
+            let now = kebab(&format!("{:?}", now.fullscreen_scrollbar));
+            vec![
+                ("auto", "when there is more than fits", now == "auto"),
+                ("always", "whether or not there is", now == "always"),
+                ("hidden", "never", now == "hidden"),
+            ]
+        }
+        "mermaid" => {
+            let now = kebab(&format!("{:?}", now.mermaid));
+            vec![
+                ("off", "leave it as the code it was written as", now == "off"),
+                ("final", "draw it once the answer is complete", now == "final"),
+                ("streaming", "draw it as it arrives", now == "streaming"),
+            ]
+        }
+        "transport" => vec![("sse", "how the Codex backend answers", true)],
+        _ => return numbered(name, &now),
+    };
+
+    let _ = on_off;
+    Some(
+        described
+            .into_iter()
+            .map(|(value, detail, current)| {
+                PickerItem::new(value, detail, format!("/set {name} {value}")).current(current)
+            })
+            .collect(),
+    )
+}
+
+/// A setting counted in columns, rows, cells or seconds, offered over the range it takes.
+fn numbered(name: &str, now: &micro_config::Settings) -> Option<Vec<PickerItem>> {
+    let (range, unit, current): (Vec<u64>, &str, u64) = match name {
+        "content_padding" => ((0..=3).collect(), "columns", now.content_padding as u64),
+        "interface_padding" => (
+            (0..=3).collect(),
+            "columns and rows",
+            now.interface_padding as u64,
+        ),
+        "autocomplete_max_items" => (
+            (3..=20).collect(),
+            "rows",
+            now.autocomplete_max_items as u64,
+        ),
+        "image_width_cells" => (
+            (10..=100).step_by(10).collect(),
+            "cells",
+            now.image_width_cells as u64,
+        ),
+        "http_idle_timeout" => (
+            vec![30, 60, 120, 300, 600, 1200, 3600],
+            "seconds",
+            now.http_idle_timeout,
+        ),
+        _ => return None,
+    };
+    Some(
+        range
+            .into_iter()
+            .map(|value| {
+                PickerItem::new(value.to_string(), unit, format!("/set {name} {value}"))
+                    .current(value == current)
+            })
+            .collect(),
+    )
+}
+
 fn describe(config: &micro_config::Config, name: &str) -> Option<String> {
     let now = config
         .resolve(&micro_config::Overrides::default(), |_| None)
@@ -674,8 +900,11 @@ fn describe(config: &micro_config::Config, name: &str) -> Option<String> {
         }
         "block_images" => format!("block_images is {} (on or off)", now.block_images),
         "skill_commands" => format!("skill_commands is {} (on or off)", now.skill_commands),
-        "editor_padding" => format!("editor_padding is {} (columns)", now.editor_padding),
-        "output_padding" => format!("output_padding is {} (columns)", now.output_padding),
+        "content_padding" => format!("content_padding is {} (columns)", now.content_padding),
+        "interface_padding" => format!(
+            "interface_padding is {} (columns and rows around the interface)",
+            now.interface_padding
+        ),
         "autocomplete_max_items" => format!(
             "autocomplete_max_items is {} (rows)",
             now.autocomplete_max_items
@@ -704,8 +933,8 @@ fn describe(config: &micro_config::Config, name: &str) -> Option<String> {
             format!("{:?}", now.follow_up_mode).to_lowercase()
         ),
         "default_project_trust" => format!(
-            "default_project_trust is {} (on or off)",
-            now.default_project_trust
+            "default_project_trust is {} (ask, always or never)",
+            format!("{:?}", now.default_project_trust).to_lowercase()
         ),
         "http_idle_timeout" => {
             format!("http_idle_timeout is {} (seconds)", now.http_idle_timeout)
@@ -755,17 +984,16 @@ fn assign(config: &mut micro_config::Config, name: &str, value: &str) -> Result<
         "auto_resize_images" => config.auto_resize_images = Some(flag()?),
         "block_images" => config.block_images = Some(flag()?),
         "skill_commands" => config.skill_commands = Some(flag()?),
-        // Padding is allowed to be nothing, which is what ohm gives the input by default.
-        "editor_padding" => {
-            config.editor_padding = Some(
+        "content_padding" => {
+            config.content_padding = Some(
                 value
                     .parse::<u16>()
                     .map_err(|_| format!("`{value}` is not a number"))?
                     .min(20),
             )
         }
-        "output_padding" => {
-            config.output_padding = Some(
+        "interface_padding" => {
+            config.interface_padding = Some(
                 value
                     .parse::<u16>()
                     .map_err(|_| format!("`{value}` is not a number"))?
@@ -796,8 +1024,67 @@ fn assign(config: &mut micro_config::Config, name: &str, value: &str) -> Result<
                 other => return Err(format!("`{other}` is not queue or interrupt")),
             })
         }
-        "default_project_trust" => config.default_project_trust = Some(flag()?),
+        "default_project_trust" => {
+            config.default_project_trust = Some(match value.to_ascii_lowercase().as_str() {
+                "ask" => micro_config::ProjectTrust::Ask,
+                "always" => micro_config::ProjectTrust::Always,
+                "never" => micro_config::ProjectTrust::Never,
+                other => return Err(format!("`{other}` is not ask, always or never")),
+            })
+        }
         "http_idle_timeout" => config.http_idle_timeout = Some(number(3600)?),
+        "steering_mode" => {
+            config.steering_mode = Some(match value.to_ascii_lowercase().as_str() {
+                "one-at-a-time" => micro_config::SteeringMode::OneAtATime,
+                "all" => micro_config::SteeringMode::All,
+                other => return Err(format!("`{other}` is not one-at-a-time or all")),
+            })
+        }
+        "tree_filter_mode" => {
+            config.tree_filter_mode = Some(match value.to_ascii_lowercase().as_str() {
+                "default" => micro_config::TreeFilter::Default,
+                "no-tools" => micro_config::TreeFilter::NoTools,
+                "user-only" => micro_config::TreeFilter::UserOnly,
+                "labeled-only" => micro_config::TreeFilter::LabeledOnly,
+                "all" => micro_config::TreeFilter::All,
+                other => {
+                    return Err(format!(
+                        "`{other}` is not default, no-tools, user-only, labeled-only or all"
+                    ))
+                }
+            })
+        }
+        "fullscreen_exit_output" => {
+            config.fullscreen_exit_output = Some(match value.to_ascii_lowercase().as_str() {
+                "transcript" => micro_config::ExitOutput::Transcript,
+                "resume-hint" => micro_config::ExitOutput::ResumeHint,
+                other => return Err(format!("`{other}` is not transcript or resume-hint")),
+            })
+        }
+        "fullscreen_scrollbar" => {
+            config.fullscreen_scrollbar = Some(match value.to_ascii_lowercase().as_str() {
+                "auto" => micro_config::Scrollbar::Auto,
+                "always" => micro_config::Scrollbar::Always,
+                "hidden" => micro_config::Scrollbar::Hidden,
+                other => return Err(format!("`{other}` is not auto, always or hidden")),
+            })
+        }
+        "clear_on_shrink" => config.clear_on_shrink = Some(flag()?),
+        "mermaid" => {
+            config.mermaid = Some(match value.to_ascii_lowercase().as_str() {
+                "off" => micro_config::Mermaid::Off,
+                "final" => micro_config::Mermaid::Final,
+                "streaming" => micro_config::Mermaid::Streaming,
+                other => return Err(format!("`{other}` is not off, final or streaming")),
+            })
+        }
+        "tui_mode" => {
+            config.tui_mode = Some(match value.to_ascii_lowercase().as_str() {
+                "regular" => micro_config::TuiMode::Regular,
+                "fullscreen" => micro_config::TuiMode::Fullscreen,
+                other => return Err(format!("`{other}` is not regular or fullscreen")),
+            })
+        }
         "anthropic_extra_usage" => config.anthropic_extra_usage = Some(flag()?),
         "transport" => {
             let chosen = micro_provider::Transport::named(value).ok_or_else(|| {
@@ -1030,6 +1317,8 @@ pub(crate) mod testing {
                 message_count: 0,
                 usage: micro_types::Usage::default(),
             collapse_changelog: false,
+            scoped_models: &[],
+            tree_filter: Default::default(),
             }
         }
     }
@@ -1119,6 +1408,8 @@ mod tests {
             message_count: 1,
             usage: micro_types::Usage::default(),
             collapse_changelog: false,
+            scoped_models: &[],
+            tree_filter: Default::default(),
         };
 
         // An argument each command will accept, for the ones that need one. A command that
@@ -1164,8 +1455,8 @@ mod tests {
             ("auto_resize_images", "off"),
             ("block_images", "on"),
             ("skill_commands", "off"),
-            ("editor_padding", "2"),
-            ("output_padding", "0"),
+            ("content_padding", "2"),
+            ("interface_padding", "2"),
             ("autocomplete_max_items", "12"),
             ("show_hardware_cursor", "on"),
             ("terminal_progress", "off"),
@@ -1175,7 +1466,7 @@ mod tests {
             ("cache_miss_notices", "on"),
             ("double_escape", "fork"),
             ("follow_up_mode", "interrupt"),
-            ("default_project_trust", "on"),
+            ("default_project_trust", "always"),
             ("http_idle_timeout", "300"),
             ("scoped_models", "anthropic/, google/gemini-3-pro"),
             ("transport", "auto"),
@@ -1197,7 +1488,7 @@ mod tests {
             micro_config::FollowUpMode::Interrupt
         );
         assert_eq!(now.scoped_models, vec!["anthropic/", "google/gemini-3-pro"]);
-        assert_eq!(now.output_padding, 0);
+        assert_eq!(now.content_padding, 2);
         assert_eq!(now.transport, "auto");
     }
 
@@ -1235,6 +1526,8 @@ mod tests {
             message_count: 0,
             usage: micro_types::Usage::default(),
             collapse_changelog: false,
+            scoped_models: &[],
+            tree_filter: Default::default(),
         };
 
         let CommandOutcome::Choose(picker) = settings(&context) else {
@@ -1387,6 +1680,8 @@ mod tests {
             message_count: 4,
             usage: micro_types::Usage::default(),
             collapse_changelog: false,
+            scoped_models: &[],
+            tree_filter: Default::default(),
             ..harness.context()
         };
         assert!(matches!(

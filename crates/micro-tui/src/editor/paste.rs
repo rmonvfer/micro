@@ -186,11 +186,13 @@ pub fn marker_starting_at(text: &str, index: usize) -> Option<Marker> {
     if index >= text.len() {
         return None;
     }
-    find_marker(&text[index..]).filter(|marker| marker.start == 0).map(|marker| Marker {
-        start: index,
-        end: index + marker.end,
-        id: marker.id,
-    })
+    find_marker(&text[index..])
+        .filter(|marker| marker.start == 0)
+        .map(|marker| Marker {
+            start: index,
+            end: index + marker.end,
+            id: marker.id,
+        })
 }
 
 /// The marker containing `index`, for motion that must step over one whole.
@@ -344,7 +346,10 @@ mod tests {
     fn a_position_inside_a_marker_reports_the_whole_marker() {
         let text = "[paste #1 9 chars]";
         assert!(marker_containing(text, 5).is_some());
-        assert!(marker_containing(text, 0).is_none(), "the edge is not inside");
+        assert!(
+            marker_containing(text, 0).is_none(),
+            "the edge is not inside"
+        );
         assert!(marker_containing(text, 18).is_none());
     }
 

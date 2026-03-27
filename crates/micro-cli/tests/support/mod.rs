@@ -349,6 +349,14 @@ impl Fixture {
         )
         .expect("write models.json");
 
+        // The workspace is vouched for, the way a user vouches for a project they are
+        // working in. Without it a project's own extensions and skills are left alone.
+        std::fs::write(
+            home.join("config.json"),
+            json!({ "default_project_trust": "always" }).to_string(),
+        )
+        .expect("write config.json");
+
         Fixture {
             // Canonicalized so the workspace matches what the session store records.
             root: root.canonicalize().unwrap_or(root),
@@ -457,6 +465,13 @@ impl Fixture {
                     .unwrap_or_else(|error| panic!("unreadable line {line}: {error}"))
             })
             .collect()
+    }
+
+    /// Run the binary with these arguments and take back what it printed.
+    pub fn micro_run(&self, arguments: &[&str]) -> Output {
+        let mut command = self.micro();
+        command.args(arguments);
+        Output::run(&mut command)
     }
 
     /// Run one prompt to completion with `--print`, with stdin closed so nothing can be

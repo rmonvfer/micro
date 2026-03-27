@@ -1,0 +1,8 @@
+[package]
+name = "micro-prompts"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+micro-config = { workspace = true }

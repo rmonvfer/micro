@@ -11,6 +11,7 @@
 use micro_types::Message;
 use serde::Deserialize;
 use serde::Serialize;
+use serde_json::Value;
 
 /// One entry in the log: a message, and where it sits in the tree.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -34,13 +35,64 @@ impl Entry {
     }
 }
 
-/// A line of the log, which is either an entry or a bare message from an older session.
+/// Something recorded in a session that is not part of the conversation.
 ///
-/// Untagged so both shapes parse: an envelope has an `id`, a bare message has a `role`.
+/// An extension keeps state here — what it decided, what it was told — and a label names
+/// an entry for whoever reads the tree later. None of it is ever shown to the model: the
+/// conversation is what [`Tree::path`] returns, and nothing here is in it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CustomEntry {
+    pub id: String,
+    #[serde(default)]
+    pub parent_id: Option<String>,
+    pub timestamp: i64,
+    /// What kind of thing this is, as whoever wrote it named it.
+    pub custom_type: String,
+    #[serde(default)]
+    pub data: serde_json::Value,
+}
+
+/// A stretch of the conversation replaced by a summary of it.
+///
+/// Compaction is a fact about the session rather than about the process that did it: a
+/// session reopened later reads the summary and what followed it, and does not pay to
+/// summarize the same stretch again. Nothing is deleted — the entries it stands for are
+/// still in the log, and a reader looking at the tree can still see them.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Compaction {
+    /// The entry this was recorded after, which is where it sits on the path.
+    pub entry_id: String,
+    /// The first entry that is still part of the conversation. Everything before it on
+    /// the path is what the summary stands for.
+    pub first_kept: Option<String>,
+    /// What the model said the replaced stretch amounted to.
+    pub summary: String,
+    pub timestamp: i64,
+}
+
+/// A name given to an entry, so a branch can be found again by what it was for.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Label {
+    /// The entry being named.
+    pub entry_id: String,
+    /// The name, or nothing to take a name away.
+    #[serde(default)]
+    pub label: Option<String>,
+    pub timestamp: i64,
+}
+
+/// A line of the log: an entry, something recorded beside the conversation, or a bare
+/// message from an older session.
+///
+/// Untagged so every shape parses: an envelope has an `id` and a `message`, a custom entry
+/// has a `custom_type`, a label has an `entry_id`, and a bare message has a `role`.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(untagged)]
 pub enum Line {
     Entry(Entry),
+    Compaction(Compaction),
+    Custom(CustomEntry),
+    Label(Label),
     Bare(Message),
 }
 
@@ -48,6 +100,13 @@ pub enum Line {
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Tree {
     entries: Vec<Entry>,
+    /// Everything recorded beside the conversation, in the order it was written.
+    customs: Vec<CustomEntry>,
+    /// What each entry has been named, by entry id.
+    labels: std::collections::BTreeMap<String, String>,
+    /// Every compaction recorded, oldest first. The newest one on the current path is
+    /// what the conversation is read through.
+    compactions: Vec<Compaction>,
     head: Option<String>,
 }
 
@@ -65,6 +124,16 @@ impl Tree {
                     tree.head = Some(entry.id.clone());
                     tree.entries.push(entry);
                 }
+                Line::Compaction(compaction) => tree.compactions.push(compaction),
+                Line::Custom(custom) => tree.customs.push(custom),
+                Line::Label(label) => match label.label {
+                    Some(name) => {
+                        tree.labels.insert(label.entry_id, name);
+                    }
+                    None => {
+                        tree.labels.remove(&label.entry_id);
+                    }
+                },
                 Line::Bare(message) => {
                     tree.push(message);
                 }
@@ -75,6 +144,46 @@ impl Tree {
 
     pub fn entries(&self) -> &[Entry] {
         &self.entries
+    }
+
+    /// Everything recorded beside the conversation.
+    pub fn customs(&self) -> &[CustomEntry] {
+        &self.customs
+    }
+
+    /// What an entry has been named, if anything.
+    pub fn label(&self, entry_id: &str) -> Option<&str> {
+        self.labels.get(entry_id).map(String::as_str)
+    }
+
+    /// Record something beside the conversation, hanging off wherever it currently is.
+    pub fn push_custom(&mut self, custom_type: impl Into<String>, data: Value) -> CustomEntry {
+        let custom = CustomEntry {
+            id: format!("c{}", self.customs.len() + 1),
+            parent_id: self.head.clone(),
+            timestamp: micro_types::now_ms(),
+            custom_type: custom_type.into(),
+            data,
+        };
+        self.customs.push(custom.clone());
+        custom
+    }
+
+    /// Name an entry, or take its name away. Naming something that is not there does
+    /// nothing, which is what makes a stale id harmless.
+    pub fn set_label(&mut self, entry_id: &str, label: Option<String>) -> bool {
+        if !self.entries.iter().any(|entry| entry.id == entry_id) {
+            return false;
+        }
+        match label {
+            Some(label) => {
+                self.labels.insert(entry_id.to_string(), label);
+            }
+            None => {
+                self.labels.remove(entry_id);
+            }
+        }
+        true
     }
 
     pub fn is_empty(&self) -> bool {
@@ -106,7 +215,44 @@ impl Tree {
         true
     }
 
-    /// The conversation as the model should see it: the path from the root to the head.
+    /// Record that a stretch of the conversation has been summarized.
+    ///
+    /// `kept` is how many of the most recent entries on the path are still part of the
+    /// conversation; everything before them is what the summary stands for.
+    pub fn push_compaction(&mut self, summary: impl Into<String>, kept: usize) -> Compaction {
+        let ids = self.path_ids();
+        let first_kept = match kept >= ids.len() {
+            // Nothing was replaced, which is a compaction that changed nothing.
+            true => ids.first().cloned(),
+            false => ids.get(ids.len() - kept).cloned(),
+        };
+        let compaction = Compaction {
+            entry_id: self.head.clone().unwrap_or_default(),
+            first_kept,
+            summary: summary.into(),
+            timestamp: micro_types::now_ms(),
+        };
+        self.compactions.push(compaction.clone());
+        compaction
+    }
+
+    /// The compaction the conversation is currently read through, if any.
+    ///
+    /// The newest one whose kept entry is still on the path: a compaction recorded on a
+    /// branch that has since been left behind says nothing about this one.
+    fn active_compaction(&self) -> Option<&Compaction> {
+        let ids = self.path_ids();
+        self.compactions
+            .iter()
+            .rev()
+            .find(|compaction| match &compaction.first_kept {
+                Some(kept) => ids.iter().any(|id| id == kept),
+                None => false,
+            })
+    }
+
+    /// The conversation as the model should see it: the path from the root to the head,
+    /// with any summarized stretch standing in for what it replaced.
     pub fn path(&self) -> Vec<Message> {
         let mut path = Vec::new();
         let mut cursor = self.head.clone();
@@ -114,11 +260,33 @@ impl Tree {
             let Some(entry) = self.entries.iter().find(|entry| entry.id == id) else {
                 break;
             };
-            path.push(entry.message.clone());
+            path.push((entry.id.clone(), entry.message.clone()));
             cursor = entry.parent_id.clone();
         }
         path.reverse();
-        path
+
+        let Some(compaction) = self.active_compaction() else {
+            return path.into_iter().map(|(_, message)| message).collect();
+        };
+
+        // Everything before the first kept entry is what the summary stands for, so the
+        // summary is read in its place.
+        let from = compaction
+            .first_kept
+            .as_ref()
+            .and_then(|kept| path.iter().position(|(id, _)| id == kept))
+            .unwrap_or(0);
+        let mut read = vec![micro_context::summary_message(&compaction.summary)];
+        read.extend(path.into_iter().skip(from).map(|(_, message)| message));
+        read
+    }
+
+    /// Where an entry sits along the path from the root to the head, counting from zero.
+    ///
+    /// An entry on another branch has no position here: it is not part of the
+    /// conversation as it currently stands.
+    pub fn position_on_path(&self, id: &str) -> Option<usize> {
+        self.path_ids().iter().position(|entry_id| entry_id == id)
     }
 
     /// Every entry that continues directly from `id`, oldest first.
@@ -143,6 +311,7 @@ impl Tree {
         rows
     }
 
+    /// The ids along the path from the root to the head, oldest first.
     fn path_ids(&self) -> Vec<String> {
         let mut ids = Vec::new();
         let mut cursor = self.head.clone();
@@ -153,6 +322,7 @@ impl Tree {
             ids.push(entry.id.clone());
             cursor = entry.parent_id.clone();
         }
+        ids.reverse();
         ids
     }
 
@@ -166,6 +336,7 @@ impl Tree {
         for child in self.children(parent) {
             rows.push(Row {
                 entry: child,
+                label: self.labels.get(&child.id).map(String::as_str),
                 depth,
                 on_path: on_path.contains(&child.id),
                 is_head: self.head.as_deref() == Some(child.id.as_str()),
@@ -179,6 +350,8 @@ impl Tree {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Row<'a> {
     pub entry: &'a Entry,
+    /// The name this entry was given, when it has one.
+    pub label: Option<&'a str>,
     /// How far from the root, for indenting.
     pub depth: usize,
     /// Whether the conversation currently runs through this entry.
@@ -272,6 +445,57 @@ mod tests {
         assert_eq!(tree.entries()[1].parent_id.as_deref(), Some("1"));
     }
 
+    /// What is kept beside the conversation is never in it: the model sees the path, and
+    /// the path holds messages only.
+    #[test]
+    fn something_kept_beside_the_conversation_stays_out_of_it() {
+        let mut tree = Tree::new();
+        tree.push(user("a question"));
+        let kept = tree.push_custom("note", serde_json::json!({ "seen": true }));
+
+        assert_eq!(tree.path().len(), 1, "the model sees the question alone");
+        assert_eq!(tree.customs().len(), 1);
+        assert_eq!(tree.customs()[0].custom_type, "note");
+        assert_eq!(kept.parent_id.as_deref(), Some("1"));
+    }
+
+    #[test]
+    fn an_entry_can_be_named_and_unnamed() {
+        let mut tree = Tree::new();
+        tree.push(user("a question"));
+
+        assert!(tree.set_label("1", Some("the good branch".into())));
+        assert_eq!(tree.label("1"), Some("the good branch"));
+
+        assert!(tree.set_label("1", None));
+        assert_eq!(tree.label("1"), None);
+        assert!(!tree.set_label("nowhere", Some("x".into())), "a stale id is harmless");
+    }
+
+    /// Everything written to the log comes back, each kind as what it was.
+    #[test]
+    fn a_log_holding_every_kind_of_line_reads_back() {
+        let tree = Tree::from_lines(vec![
+            Line::Entry(Entry::new("1", None, user("a question"))),
+            Line::Custom(CustomEntry {
+                id: "c1".into(),
+                parent_id: Some("1".into()),
+                timestamp: 0,
+                custom_type: "note".into(),
+                data: serde_json::json!({ "seen": true }),
+            }),
+            Line::Label(Label {
+                entry_id: "1".into(),
+                label: Some("the good branch".into()),
+                timestamp: 0,
+            }),
+        ]);
+
+        assert_eq!(tree.path().len(), 1);
+        assert_eq!(tree.customs()[0].data["seen"], true);
+        assert_eq!(tree.label("1"), Some("the good branch"));
+    }
+
     #[test]
     fn a_mixed_log_joins_up() {
         let tree = Tree::from_lines(vec![
@@ -280,5 +504,101 @@ mod tests {
         ]);
         assert_eq!(tree.path().len(), 2);
         assert_eq!(tree.head(), Some("2"));
+    }
+}
+
+#[cfg(test)]
+mod compaction {
+    use super::*;
+
+    fn conversation() -> Tree {
+        let mut tree = Tree::new();
+        for index in 0..6 {
+            tree.push(Message::user(format!("message {index}")));
+        }
+        tree
+    }
+
+    fn text(message: &Message) -> String {
+        message
+            .content()
+            .iter()
+            .map(micro_types::ContentBlock::as_text)
+            .collect()
+    }
+
+    /// After compacting, the conversation reads as the summary and what was kept — the
+    /// replaced stretch is still in the log but no longer part of what the model sees.
+    #[test]
+    fn the_conversation_reads_through_the_summary() {
+        let mut tree = conversation();
+        tree.push_compaction("what happened before", 2);
+
+        let path = tree.path();
+        assert_eq!(path.len(), 3, "the summary and the two kept messages");
+        assert!(micro_context::is_summary(&path[0]));
+        assert!(text(&path[0]).contains("what happened before"));
+        assert_eq!(text(&path[1]), "message 4");
+        assert_eq!(text(&path[2]), "message 5");
+    }
+
+    /// Nothing is deleted: the entries the summary stands for are still on the tree.
+    #[test]
+    fn nothing_is_removed_from_the_log() {
+        let mut tree = conversation();
+        tree.push_compaction("earlier", 2);
+        assert_eq!(tree.entries().len(), 6);
+    }
+
+    /// The conversation carries on after a compaction, and what follows joins what was
+    /// kept rather than what was replaced.
+    #[test]
+    fn the_conversation_continues_after_a_compaction() {
+        let mut tree = conversation();
+        tree.push_compaction("earlier", 2);
+        tree.push(Message::user("after"));
+
+        let path = tree.path();
+        assert_eq!(text(path.last().unwrap()), "after");
+        assert!(micro_context::is_summary(&path[0]));
+        assert_eq!(path.len(), 4);
+    }
+
+    /// Compacting twice reads through the newer summary alone, not through both.
+    #[test]
+    fn the_newest_compaction_is_the_one_that_counts() {
+        let mut tree = conversation();
+        tree.push_compaction("first summary", 4);
+        tree.push(Message::user("more"));
+        tree.push_compaction("second summary", 2);
+
+        let path = tree.path();
+        assert!(text(&path[0]).contains("second summary"));
+        assert!(!path.iter().skip(1).any(|message| text(message).contains("first summary")));
+    }
+
+    /// A compaction recorded on a branch that was left behind says nothing about the one
+    /// being read now.
+    #[test]
+    fn a_compaction_on_another_branch_is_ignored() {
+        let mut tree = conversation();
+        tree.push_compaction("on the abandoned branch", 2);
+        // Go back to before everything the compaction kept.
+        assert!(tree.branch_from("2"));
+
+        let path = tree.path();
+        assert!(
+            !micro_context::is_summary(&path[0]),
+            "the conversation reads plainly again: {path:?}",
+        );
+        assert_eq!(path.len(), 2);
+    }
+
+    /// A session that never compacted reads exactly as it always did.
+    #[test]
+    fn a_plain_conversation_is_unchanged() {
+        let tree = conversation();
+        assert_eq!(tree.path().len(), 6);
+        assert_eq!(text(&tree.path()[0]), "message 0");
     }
 }

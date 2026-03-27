@@ -12,19 +12,20 @@ use micro_auth::ProviderStatus;
 pub(crate) async fn login(argument: Option<&str>, context: &CommandContext<'_>) -> CommandOutcome {
     let Some(name) = argument else {
         return CommandOutcome::Choose(Picker::new(
-            "Sign in to a provider",
-            micro_auth::PROVIDERS
+            "Select provider to configure:",
+            micro_auth::provider_table()
                 .iter()
-                .map(|provider| {
+                .map(|entry| {
                     PickerItem::new(
-                        *provider,
-                        describe(&context.auth.status_of(provider)),
-                        format!("/login {provider}"),
+                        entry.id.clone(),
+                        describe(&context.auth.status_of(&entry.id)),
+                        format!("/login {}", entry.id),
                     )
-                    .current(*provider == context.provider)
+                    .current(entry.id == context.provider)
                 })
                 .collect(),
-        ));
+        )
+        .searchable());
     };
 
     let Some(provider) = known(name) else {
@@ -67,7 +68,7 @@ pub(crate) fn logout(argument: Option<&str>, context: &CommandContext<'_>) -> Co
         if signed_in.is_empty() {
             return CommandOutcome::info("no provider has a stored credential");
         }
-        return CommandOutcome::Choose(Picker::new("Sign out of a provider", signed_in));
+        return CommandOutcome::Choose(Picker::new("Select provider to logout:", signed_in).searchable());
     };
 
     let Some(provider) = known(name) else {
@@ -123,16 +124,15 @@ fn describe(status: &ProviderStatus) -> String {
 /// The canonical id for a name micro knows, or nothing.
 fn known(name: &str) -> Option<&'static str> {
     let canonical = canonical_provider(name);
-    micro_auth::PROVIDERS
-        .iter()
-        .copied()
+    micro_auth::providers()
+        .into_iter()
         .find(|provider| *provider == canonical)
 }
 
 fn unknown_provider(name: &str) -> String {
     format!(
         "unknown provider \"{name}\" - try one of: {}",
-        micro_auth::PROVIDERS.join(", ")
+        micro_auth::providers().join(", ")
     )
 }
 
@@ -154,7 +154,7 @@ mod tests {
             .iter()
             .map(|item| item.label.as_str())
             .collect();
-        assert_eq!(labels, micro_auth::PROVIDERS.to_vec());
+        assert_eq!(labels, micro_auth::providers());
         assert!(picker
             .items
             .iter()
@@ -187,7 +187,7 @@ mod tests {
         let CommandOutcome::PromptForApiKey { provider, .. } = outcome else {
             panic!("expected a key prompt");
         };
-        assert_eq!(provider, "gemini");
+        assert_eq!(provider, "google");
     }
 
     #[tokio::test]
@@ -246,7 +246,7 @@ mod tests {
         let outcome = dispatch("/auth", &harness.context()).await.unwrap();
         let report = text(&outcome);
 
-        for provider in micro_auth::PROVIDERS {
+        for provider in micro_auth::providers() {
             assert!(report.contains(provider), "missing {provider}");
         }
 
@@ -279,7 +279,16 @@ mod tests {
     #[test]
     fn only_providers_micro_knows_are_accepted() {
         assert_eq!(known("copilot"), Some("github-copilot"));
-        assert_eq!(known("GEMINI"), Some("gemini"));
-        assert_eq!(known("cerebras"), None);
+        assert_eq!(known("GEMINI"), Some("google"));
+        // Azure hosts a protocol micro speaks, so it is offered a login like any other.
+        assert_eq!(known("azure-openai-responses"), Some("azure-openai-responses"));
+        // Mistral serves the completions shape under its own name, so it is offered too.
+        assert_eq!(known("mistral"), Some("mistral"));
+        // Bedrock is signed rather than keyed, and is offered like any other.
+        assert_eq!(known("amazon-bedrock"), Some("amazon-bedrock"));
+        // Vertex is the Gemini shape under a project, and is offered like any other.
+        assert_eq!(known("google-vertex"), Some("google-vertex"));
+        // A name that is nobody's is still nobody's.
+        assert_eq!(known("not-a-service"), None);
     }
 }

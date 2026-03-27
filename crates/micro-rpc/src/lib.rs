@@ -64,35 +64,66 @@ impl Rpc {
 
     /// Read commands until the stream ends.
     ///
-    /// One command is carried out at a time: a prompt runs to completion, streaming its
-    /// events, before the next line is read. A caller that wants to interrupt sends
-    /// `abort`, which the turn watches for.
+    /// Reading happens on its own task, so a line that arrives while a turn is running is
+    /// available immediately rather than after the turn. That is what makes `abort` mean
+    /// anything: the caller can be heard while the thing it wants to stop is still going.
     pub async fn run<R, W>(&mut self, input: R, output: W) -> std::io::Result<()>
     where
-        R: AsyncRead + Unpin,
+        R: AsyncRead + Unpin + Send + 'static,
         W: AsyncWrite + Unpin,
     {
-        let mut lines = Lines::new(input);
-        let mut output = output;
-
-        while let Some(raw) = lines.next().await? {
-            let command: Command = match serde_json::from_str(&raw) {
-                Ok(command) => command,
-                Err(error) => {
-                    let answer = Response::failed(None, "unknown", format!("unreadable: {error}"));
-                    output.write_all(line(&answer).as_bytes()).await?;
-                    output.flush().await?;
-                    continue;
+        let (sender, mut incoming) = tokio::sync::mpsc::unbounded_channel::<String>();
+        let reading = tokio::spawn(async move {
+            let mut lines = Lines::new(input);
+            while let Ok(Some(raw)) = lines.next().await {
+                if sender.send(raw).is_err() {
+                    return;
                 }
-            };
+            }
+        });
 
-            self.dispatch(command, &mut output).await?;
+        let mut output = output;
+        while let Some(raw) = incoming.recv().await {
+            let Some(command) = self.read(&raw, &mut output).await? else {
+                continue;
+            };
+            self.dispatch(command, &mut output, &mut incoming).await?;
             output.flush().await?;
+
+            // Whatever was queued while the turn ran is run now, in the order it arrived.
+            while let Some(prompt) = self.pending.first().cloned() {
+                self.pending.remove(0);
+                self.turn(prompt, &mut output, &mut incoming).await?;
+            }
         }
+
+        reading.abort();
         Ok(())
     }
 
-    async fn dispatch<W>(&mut self, command: Command, output: &mut W) -> std::io::Result<()>
+    /// One line, parsed. An unreadable line is reported and skipped rather than ending
+    /// the session: the next line may be perfectly good.
+    async fn read<W>(&self, raw: &str, output: &mut W) -> std::io::Result<Option<Command>>
+    where
+        W: AsyncWrite + Unpin,
+    {
+        match serde_json::from_str(raw) {
+            Ok(command) => Ok(Some(command)),
+            Err(error) => {
+                let answer = Response::failed(None, "unknown", format!("unreadable: {error}"));
+                output.write_all(line(&answer).as_bytes()).await?;
+                output.flush().await?;
+                Ok(None)
+            }
+        }
+    }
+
+    async fn dispatch<W>(
+        &mut self,
+        command: Command,
+        output: &mut W,
+        incoming: &mut tokio::sync::mpsc::UnboundedReceiver<String>,
+    ) -> std::io::Result<()>
     where
         W: AsyncWrite + Unpin,
     {
@@ -101,38 +132,42 @@ impl Rpc {
         let name = command.name();
 
         match command {
-            Command::Prompt { message, images, .. } => {
+            Command::Prompt {
+                message, images, ..
+            } => {
                 let prompt = build_prompt(&message, images);
                 let answer = Response::ok(id, name);
                 output.write_all(line(&answer).as_bytes()).await?;
                 output.flush().await?;
-                self.turn(prompt, output).await?;
+                self.turn(prompt, output, incoming).await?;
             }
 
-            // Both of these are prompts about a turn that is not running here: a command is
-            // answered before the next line is read, so nothing is in flight to steer.
-            Command::Steer { message, images, .. } | Command::FollowUp { message, images, .. } => {
+            // Nothing is running when one of these arrives here, so it is a prompt like
+            // any other. Sent while a turn is running, they are taken by the turn itself.
+            Command::Steer {
+                message, images, ..
+            }
+            | Command::FollowUp {
+                message, images, ..
+            } => {
                 self.pending.push(build_prompt(&message, images));
                 let answer = Response::ok(id, name);
                 output.write_all(line(&answer).as_bytes()).await?;
                 output.flush().await?;
-
-                let queued = std::mem::take(&mut self.pending);
-                for prompt in queued {
-                    self.turn(prompt, output).await?;
-                }
             }
 
             Command::Abort { .. } => {
+                // Nothing is running when this arrives here, so aborting means dropping
+                // whatever was waiting — both what is queued for a run and what is
+                // queued behind one.
                 self.pending.clear();
+                let _ = self.agent.steering().take_all();
                 self.answer(Response::ok(id, name), output).await?;
             }
 
             Command::NewSession { .. } => {
                 let answer = match self.new_session().await {
-                    Ok(session_id) => {
-                        Response::with(id, name, json!({ "session_id": session_id }))
-                    }
+                    Ok(session_id) => Response::with(id, name, json!({ "session_id": session_id })),
                     Err(error) => Response::failed(id, name, error),
                 };
                 self.answer(answer, output).await?;
@@ -202,30 +237,22 @@ impl Rpc {
 
             Command::SetThinkingLevel { level, .. } => {
                 self.agent.set_thinking(level);
-                self.answer(
-                    Response::with(id, name, json!({ "level": level })),
-                    output,
-                )
-                .await?;
+                self.answer(Response::with(id, name, json!({ "level": level })), output)
+                    .await?;
             }
 
             Command::CycleThinkingLevel { .. } => {
                 let level = next_level(self.agent.model().thinking);
                 self.agent.set_thinking(level);
-                self.answer(
-                    Response::with(id, name, json!({ "level": level })),
-                    output,
-                )
-                .await?;
+                self.answer(Response::with(id, name, json!({ "level": level })), output)
+                    .await?;
             }
 
             Command::Compact { .. } => {
                 let answer = match self.agent.compact_now().await {
-                    Ok(summary) => Response::with(
-                        id,
-                        name,
-                        json!({ "summary": summary_text(&summary) }),
-                    ),
+                    Ok(summary) => {
+                        Response::with(id, name, json!({ "summary": summary_text(&summary) }))
+                    }
                     Err(refusal) => Response::failed(id, name, refusal.to_string()),
                 };
                 self.answer(answer, output).await?;
@@ -301,7 +328,7 @@ impl Rpc {
                 self.answer(answer, output).await?;
             }
 
-            Command::Fork { entry_id, .. } => {
+            Command::NavigateTree { entry_id, .. } => {
                 let answer = match self.branch(&entry_id).await {
                     Ok(count) => Response::with(id, name, json!({ "message_count": count })),
                     Err(error) => Response::failed(id, name, error),
@@ -309,11 +336,21 @@ impl Rpc {
                 self.answer(answer, output).await?;
             }
 
+            Command::Fork { entry_id, .. } => {
+                let answer = match self.fork_at(&entry_id).await {
+                    Ok((session_id, count)) => Response::with(
+                        id,
+                        name,
+                        json!({ "session_id": session_id, "message_count": count }),
+                    ),
+                    Err(error) => Response::failed(id, name, error),
+                };
+                self.answer(answer, output).await?;
+            }
+
             Command::Clone { .. } => {
                 let answer = match self.clone_session().await {
-                    Ok(session_id) => {
-                        Response::with(id, name, json!({ "session_id": session_id }))
-                    }
+                    Ok(session_id) => Response::with(id, name, json!({ "session_id": session_id })),
                     Err(error) => Response::failed(id, name, error),
                 };
                 self.answer(answer, output).await?;
@@ -427,29 +464,94 @@ impl Rpc {
     }
 
     /// Run one turn, writing every event the agent reports as it happens.
-    async fn turn<W>(&mut self, prompt: Message, output: &mut W) -> std::io::Result<()>
+    /// Run one turn, listening while it runs.
+    ///
+    /// A caller is heard mid-turn: `abort` drops the turn where it stands, and a steer or
+    /// follow-up joins the queue to run after it. Anything else waits, because it is about
+    /// a state the turn is still changing.
+    async fn turn<W>(
+        &mut self,
+        prompt: Message,
+        output: &mut W,
+        incoming: &mut tokio::sync::mpsc::UnboundedReceiver<String>,
+    ) -> std::io::Result<()>
     where
         W: AsyncWrite + Unpin,
     {
         let (sender, mut receiver) = tokio::sync::mpsc::unbounded_channel::<AgentEvent>();
-        let turn = self.agent.run(prompt, &sender);
-        tokio::pin!(turn);
+        let mut deferred: Vec<String> = Vec::new();
+        let mut aborted = false;
+        // Taken before the run, since the run borrows the agent for as long as it lasts.
+        let steering = self.agent.steering();
 
-        loop {
-            tokio::select! {
-                biased;
-                Some(event) = receiver.recv() => {
-                    output.write_all(line(&event).as_bytes()).await?;
-                    output.flush().await?;
+        // Scoped so the borrow of the agent ends with the turn, leaving whatever arrived
+        // while it ran to be dealt with afterwards.
+        {
+            let turn = self.agent.run(prompt, &sender);
+            tokio::pin!(turn);
+
+            loop {
+                tokio::select! {
+                    biased;
+                    Some(event) = receiver.recv() => {
+                        output.write_all(line(&event).as_bytes()).await?;
+                        output.flush().await?;
+                    }
+                    Some(raw) = incoming.recv() => {
+                        match serde_json::from_str::<Command>(&raw) {
+                            Ok(Command::Abort { id, .. }) => {
+                                let answer = Response::ok(id.as_deref(), "abort");
+                                output.write_all(line(&answer).as_bytes()).await?;
+                                output.flush().await?;
+                                aborted = true;
+                                break;
+                            }
+                            // Steering reaches the turn at its next boundary; a
+                            // follow-up waits for it to be over. Both go to the run
+                            // itself rather than being held and replayed afterwards.
+                            Ok(Command::Steer { id, message, images }) => {
+                                steering.steer(build_prompt(&message, images));
+                                let answer = Response::ok(id.as_deref(), "steer");
+                                output.write_all(line(&answer).as_bytes()).await?;
+                                output.flush().await?;
+                            }
+                            Ok(Command::FollowUp { id, message, images }) => {
+                                steering.follow_up(build_prompt(&message, images));
+                                let answer = Response::ok(id.as_deref(), "follow_up");
+                                output.write_all(line(&answer).as_bytes()).await?;
+                                output.flush().await?;
+                            }
+                            // Anything else is about state this turn is still changing, so it
+                            // is answered once the turn has finished changing it.
+                            _ => deferred.push(raw),
+                        }
+                    }
+                    _ = &mut turn => break,
                 }
-                _ = &mut turn => break,
             }
+
+            // Dropping the future abandons the turn. Whatever it already reported still
+            // belongs on the stream.
+            drop(turn);
         }
-        // Anything the turn reported as it finished is still worth sending.
+
         while let Ok(event) = receiver.try_recv() {
             output.write_all(line(&event).as_bytes()).await?;
         }
-        output.flush().await
+        output.flush().await?;
+
+        if aborted {
+            // What was queued behind an abandoned turn was queued behind the thing that
+            // was abandoned, so it goes with it.
+            let _ = steering.take_all();
+        }
+
+        for raw in deferred {
+            if let Some(command) = self.read(&raw, output).await? {
+                Box::pin(self.dispatch(command, output, incoming)).await?;
+            }
+        }
+        Ok(())
     }
 
     async fn state(&self) -> SessionState {
@@ -459,6 +561,8 @@ impl Rpc {
             model: self.agent.model().id.clone(),
             provider: self.agent.model().provider.clone(),
             thinking_level: self.agent.model().thinking,
+            // Only reachable between turns: a turn defers everything but abort and
+            // steer until it has finished.
             is_streaming: false,
             is_compacting: false,
             session_id: meta.id.clone(),
@@ -466,7 +570,9 @@ impl Rpc {
             session_name: (!meta.title.is_empty()).then(|| meta.title.clone()),
             auto_compaction_enabled: self.auto_compaction,
             message_count: self.agent.messages().len(),
-            pending_message_count: self.pending.len(),
+            // Everything waiting to be said, whether it is queued for a run or behind
+            // one that is going.
+            pending_message_count: self.pending.len() + self.agent.steering().waiting(),
         }
     }
 
@@ -506,6 +612,8 @@ impl Rpc {
         *self.session.lock().await = started;
         self.agent.set_messages(Vec::new());
         self.pending.clear();
+        // A new session starts empty, including of anything said to the one before it.
+        let _ = self.agent.steering().take_all();
         Ok(session_id)
     }
 
@@ -534,6 +642,32 @@ impl Rpc {
         drop(session);
         self.agent.set_messages(messages);
         Ok(count)
+    }
+
+    /// Copy the conversation up to an entry into a session of its own, and carry on in
+    /// the copy. What it was copied from is left exactly as it was.
+    async fn fork_at(&mut self, entry_id: &str) -> Result<(String, usize), String> {
+        let (id, through_index) = {
+            let session = self.session.lock().await;
+            let position = session
+                .tree()
+                .position_on_path(entry_id)
+                .ok_or_else(|| format!("there is no entry {entry_id} in this conversation"))?;
+            (session.id().to_string(), position)
+        };
+
+        let store = micro_session::SessionStore::from_env().map_err(|error| error.to_string())?;
+        let forked = store
+            .fork(&id, through_index)
+            .await
+            .map_err(|error| error.to_string())?;
+
+        let session_id = forked.id().to_string();
+        let messages = forked.branch();
+        let count = messages.len();
+        *self.session.lock().await = forked;
+        self.agent.set_messages(messages);
+        Ok((session_id, count))
     }
 
     async fn clone_session(&mut self) -> Result<String, String> {

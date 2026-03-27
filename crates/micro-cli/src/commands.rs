@@ -8,6 +8,7 @@
 use async_trait::async_trait;
 use micro_auth::AuthStore;
 use micro_commands::CommandContext;
+use micro_commands::Picker;
 use micro_commands::CommandOutcome;
 use micro_models::Catalog;
 use micro_models::ModelDef;
@@ -39,12 +40,23 @@ pub struct CliCommands {
     /// Whether skills are announced to the model at all, so `/reload` rebuilds what the
     /// run was built with rather than something else.
     skills_enabled: bool,
+    scoped_models: Vec<String>,
+    /// What this run was told to look at beyond the usual places, so a reload looks in the
+    /// same places the first load did.
+    resources: crate::runtime::Resources,
+    tree_filter: micro_config::TreeFilter,
     /// Show only the newest entry when the changelog is asked for.
     collapse_changelog: bool,
+    /// How hard the model is being asked to reason, so a model swap keeps it.
+    thinking: micro_types::ThinkingLevel,
+    /// The extension host, so a command an extension registered can be run.
+    extensions: Option<Arc<micro_extensions::Host>>,
     /// Warn that a subscription credential bills per token here. Said once a run, as ohm
     /// says it: repeating it every model swap would train the reader to skip it.
     anthropic_extra_usage: bool,
     warned_about_extra_usage: bool,
+    /// The user's own prompt files, which become commands named after them.
+    prompts: Vec<micro_prompts::PromptTemplate>,
 }
 
 /// Everything a host is built from. Gathered into one value because a run assembles all
@@ -61,8 +73,15 @@ pub struct HostParts {
     pub session_id: String,
     pub home: PathBuf,
     pub skills_enabled: bool,
+    /// The models the workspace put on its shortlist, which the model list opens on.
+    pub scoped_models: Vec<String>,
+    pub resources: crate::runtime::Resources,
+    pub tree_filter: micro_config::TreeFilter,
     pub collapse_changelog: bool,
+    pub thinking: micro_types::ThinkingLevel,
     pub anthropic_extra_usage: bool,
+    pub extensions: Option<Arc<micro_extensions::Host>>,
+    pub prompts: Vec<micro_prompts::PromptTemplate>,
 }
 
 impl CliCommands {
@@ -78,9 +97,15 @@ impl CliCommands {
             session_id: parts.session_id,
             home: parts.home,
             skills_enabled: parts.skills_enabled,
+            scoped_models: parts.scoped_models,
+            resources: parts.resources,
+            tree_filter: parts.tree_filter,
             collapse_changelog: parts.collapse_changelog,
+            thinking: parts.thinking,
+            extensions: parts.extensions,
             anthropic_extra_usage: parts.anthropic_extra_usage,
             warned_about_extra_usage: false,
+            prompts: parts.prompts,
         }
     }
 
@@ -89,8 +114,55 @@ impl CliCommands {
     ///
     /// This is the half a command cannot do by itself. The interface applies the result,
     /// because the agent is its, but only here are the catalog and the credential store.
+    /// Write the chosen model to the settings, so the next run starts on it.
+    fn remember_model(&self, model: &ModelDef) -> Result<(), String> {
+        let path = self.home.join(micro_config::FILE_NAME);
+        let mut config = micro_config::Config::load_from(&path)
+            .map_err(|error| format!("cannot read the settings: {error}"))?;
+        config.model = Some(model.qualified_id());
+        config.provider = Some(model.provider.clone());
+        config
+            .save_to(&path)
+            .map_err(|error| format!("cannot write the settings: {error}"))
+    }
+
+    /// Run one of the user's own prompt files, if the line names one.
+    fn prompt_command(&self, line: &str) -> Option<CommandOutcome> {
+        let (name, arguments) = command_parts(line)?;
+        let template = self
+            .prompts
+            .iter()
+            .find(|template| template.name == name)?;
+        Some(CommandOutcome::Send {
+            prompt: template.render(arguments),
+        })
+    }
+
+    /// What a sign-in leaves behind, however the credential was collected.
+    ///
+    /// A credential for the service already in use reaches the running agent now. Waiting
+    /// for a restart to pick it up would make signing in look like it failed.
+    async fn signed_in(&mut self, provider: &str) -> Applied {
+        if micro_auth::canonical_provider(provider)
+            == micro_auth::canonical_provider(&self.model.provider)
+        {
+            let model = self.model.clone();
+            return match self.swap_to(&model).await {
+                Applied::Model { swap, .. } => Applied::Model {
+                    swap,
+                    note: Some(format!("Signed in to {provider}.")),
+                },
+                other => other,
+            };
+        }
+
+        Applied::note(format!(
+            "Signed in to {provider}. Run `/model` to use one of its models."
+        ))
+    }
+
     async fn swap_to(&mut self, model: &ModelDef) -> Applied {
-        let resolved = match micro_provider::resolve(&self.auth, &model.provider).await {
+        let resolved = match micro_provider::resolve(&self.auth, model).await {
             Ok(resolved) => resolved,
             Err(error) => {
                 return Applied::error(format!(
@@ -111,16 +183,35 @@ impl CliCommands {
         // Kept in step so the next command reports the model that is actually running.
         self.provider = model.provider.clone();
         self.model = model.clone();
+        // And remembered, so the next run starts on it. Choosing a model is a decision
+        // about how to work, not about this conversation.
+        let remembered = self.remember_model(model);
+        crate::extensions::announce(
+            self.extensions.as_ref(),
+            "model_select",
+            serde_json::json!({
+                "model": { "id": model.id, "provider": model.provider },
+            }),
+        )
+        .await;
 
-        let note = match self.subscription_warning(&resolved.api_key, &model.provider) {
+        let mut note = match self.subscription_warning(&resolved.api_key, &model.provider) {
             Some(warning) => format!("Model: {}\n{warning}", model.qualified_id()),
             None => format!("Model: {}", model.qualified_id()),
         };
+        if let Err(error) = remembered {
+            note.push_str(&format!("\nIt was not remembered for next time: {error}"));
+        }
 
         Applied::Model {
             swap: Box::new(micro_agent::ModelSwap {
                 provider: resolved.client,
-                model: model.to_runtime(micro_types::ThinkingLevel::Off),
+                // The effort the user chose belongs to them, not to the model they were
+                // using when they chose it.
+                model: crate::runtime::with_host(
+                    model.to_runtime(self.thinking),
+                    resolved.base_url.as_deref(),
+                ),
                 api_key: resolved.api_key,
                 context_window: model.context_window as usize,
             }),
@@ -155,6 +246,8 @@ impl CliCommands {
             message_count: state.message_count,
             usage: state.usage,
             collapse_changelog: self.collapse_changelog,
+            scoped_models: &self.scoped_models,
+            tree_filter: self.tree_filter,
         }
     }
 
@@ -163,6 +256,16 @@ impl CliCommands {
     /// Nothing is deleted: what came after stays in the log as another branch, and the
     /// next message appended hangs off the entry that was chosen.
     async fn branch(&mut self, entry_id: &str) -> Applied {
+        if crate::extensions::cancelled(
+            self.extensions.as_ref(),
+            "session_before_tree",
+            serde_json::json!({ "entryId": entry_id }),
+        )
+        .await
+        {
+            return Applied::note("An extension stopped the move");
+        }
+
         let mut session = self.session.lock().await;
         if session.tree().head() == Some(entry_id) {
             return Applied::note("Already at this point");
@@ -172,6 +275,13 @@ impl CliCommands {
                 "There is no entry {entry_id} in this conversation. Run /tree to list them."
             ));
         }
+
+        crate::extensions::announce(
+            self.extensions.as_ref(),
+            "session_tree",
+            serde_json::json!({ "entryId": entry_id }),
+        )
+        .await;
 
         // The branch is what the model is shown from here on, and what the scrollback is
         // rebuilt from, so the two never disagree.
@@ -197,6 +307,12 @@ impl CliCommands {
         let messages = loaded.messages;
         self.session_id = loaded.session.id().to_string();
         *self.session.lock().await = loaded.session;
+        crate::extensions::announce(
+            self.extensions.as_ref(),
+            "session_start",
+            serde_json::json!({ "session_id": self.session_id, "resumed": true }),
+        )
+        .await;
 
         Applied::Conversation {
             messages,
@@ -217,6 +333,12 @@ impl CliCommands {
             Ok(session) => {
                 self.session_id = session.id().to_string();
                 *self.session.lock().await = session;
+                crate::extensions::announce(
+                    self.extensions.as_ref(),
+                    "session_start",
+                    serde_json::json!({ "session_id": self.session_id, "resumed": false }),
+                )
+                .await;
                 Applied::Conversation {
                     messages: Vec::new(),
                     note: Some("New session started".to_string()),
@@ -298,12 +420,24 @@ impl CliCommands {
     /// Only the standing instructions change. The conversation is left exactly as it is,
     /// because nothing that was said stopped being true.
     async fn reload(&self) -> Applied {
-        let context = crate::runtime::load_context(&self.workspace, self.skills_enabled).await;
+        let trusted = !micro_config::requires_decision(&self.workspace)
+            || micro_config::TrustStore::load_from(&self.home)
+                .await
+                .unwrap_or_default()
+                .is_trusted(&self.workspace);
+        let context =
+            crate::runtime::load_context(
+                &self.workspace,
+                self.skills_enabled,
+                trusted,
+                &self.resources,
+            )
+            .await;
 
         let mut note = format!(
             "Reloaded {} and {}.",
             counted(context.instruction_files.len(), "context file"),
-            counted(context.skill_count, "skill")
+            counted(context.skills.len(), "skill")
         );
         for diagnostic in &context.diagnostics {
             note.push('\n');
@@ -316,12 +450,31 @@ impl CliCommands {
         }
     }
 
+    /// Run a command an extension registered, if this line names one.
+    ///
+    /// What the extension returns is shown as it comes back: a string is the answer, and
+    /// anything else is described rather than dropped.
+    async fn extension_command(&mut self, line: &str) -> Option<CommandOutcome> {
+        let (name, arguments) = command_parts(line)?;
+        let host = self.extensions.clone()?;
+        if !host.commands().iter().any(|command| command.name == name) {
+            return None;
+        }
+
+        Some(match host.call_command(name, arguments).await {
+            Ok(serde_json::Value::Null) => CommandOutcome::info(format!("/{name} ran.")),
+            Ok(serde_json::Value::String(said)) => CommandOutcome::info(said),
+            Ok(other) => CommandOutcome::info(other.to_string()),
+            Err(error) => CommandOutcome::error(error),
+        })
+    }
+
     /// Remember what was decided about this project.
     ///
     /// The decision is read when a run starts, so it takes effect from the next one: the
     /// policy this run is enforcing was settled before the first tool call.
     async fn trust(&self, trusted: bool) -> Applied {
-        let mut store = match micro_policy::TrustStore::load_from(&self.home).await {
+        let mut store = match micro_config::TrustStore::load_from(&self.home).await {
             Ok(store) => store,
             Err(error) => return Applied::error(format!("Cannot read the trust store: {error}")),
         };
@@ -329,6 +482,16 @@ impl CliCommands {
         if let Err(error) = store.save_to(&self.home).await {
             return Applied::error(format!("Could not save the decision: {error}"));
         }
+
+        crate::extensions::announce(
+            self.extensions.as_ref(),
+            "project_trust",
+            serde_json::json!({
+                "path": self.workspace.display().to_string(),
+                "decision": match trusted { true => "yes", false => "no" },
+            }),
+        )
+        .await;
 
         Applied::note(format!(
             "Saved trust decision: {}. Restart micro for this to take effect.",
@@ -342,7 +505,15 @@ impl CliCommands {
     /// Give the session a title of its own, in place of the derived one.
     async fn rename(&mut self, title: &str) -> Applied {
         match self.session.lock().await.rename(title).await {
-            Ok(()) => Applied::note(format!("Session name set: {title}")),
+            Ok(()) => {
+                crate::extensions::announce(
+                    self.extensions.as_ref(),
+                    "session_info_changed",
+                    serde_json::json!({ "name": title }),
+                )
+                .await;
+                Applied::note(format!("Session name set: {title}"))
+            }
             Err(error) => Applied::error(format!("Could not rename the session: {error}")),
         }
     }
@@ -350,6 +521,22 @@ impl CliCommands {
     /// Copy the conversation up to a point into a session of its own, and carry on in the
     /// copy. The session it came from is left exactly as it was.
     async fn fork(&mut self, session_id: &str, through_index: usize, whole: bool) -> Applied {
+        // Asked before the copy is made, so refusing it leaves the session untouched
+        // rather than reporting a fork that has already happened.
+        if crate::extensions::cancelled(
+            self.extensions.as_ref(),
+            "session_before_fork",
+            serde_json::json!({
+                "session_id": session_id,
+                "position": through_index,
+                "whole": whole,
+            }),
+        )
+        .await
+        {
+            return Applied::note("An extension stopped the fork");
+        }
+
         let forked = match self.sessions.fork(session_id, through_index).await {
             Ok(forked) => forked,
             Err(error) => {
@@ -360,6 +547,12 @@ impl CliCommands {
         let messages = forked.branch();
         self.session_id = forked.id().to_string();
         *self.session.lock().await = forked;
+        crate::extensions::announce(
+            self.extensions.as_ref(),
+            "session_fork",
+            serde_json::json!({ "session_id": self.session_id, "whole": whole }),
+        )
+        .await;
 
         Applied::Conversation {
             messages,
@@ -376,7 +569,164 @@ impl CliCommands {
 
 #[async_trait]
 impl Commands for CliCommands {
+    /// What the user typed, before anything is done with it. An extension may rewrite it,
+    /// or swallow it by answering that it handled it.
+    async fn submitted(&mut self, line: String) -> Option<String> {
+        let answers = crate::extensions::consult(
+            self.extensions.as_ref(),
+            "input",
+            serde_json::json!({ "text": line }),
+        )
+        .await;
+
+        let mut line = line;
+        for answer in answers {
+            if answer
+                .get("handled")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false)
+            {
+                return None;
+            }
+            if let Some(text) = answer.get("text").and_then(serde_json::Value::as_str) {
+                line = text.to_string();
+            }
+        }
+        Some(line)
+    }
+
+    async fn shortcut(&mut self, key: &str) -> bool {
+        let Some(host) = self.extensions.clone() else {
+            return false;
+        };
+        let bound = host
+            .loaded()
+            .extensions
+            .iter()
+            .any(|extension| extension.shortcuts.iter().any(|shortcut| shortcut.key == key));
+        if !bound {
+            return false;
+        }
+
+        // A shortcut is a command with no name: whoever registered it decides what it does.
+        let _ = host
+            .ask_event("shortcut", serde_json::json!({ "key": key }))
+            .await;
+        true
+    }
+
+    async fn thinking_changed(&mut self, level: micro_types::ThinkingLevel) {
+        // Remembered here so a model swap carries it rather than resetting it.
+        self.thinking = level;
+        crate::extensions::announce(
+            self.extensions.as_ref(),
+            "thinking_level_select",
+            serde_json::json!({ "level": format!("{level:?}").to_lowercase() }),
+        )
+        .await;
+    }
+
+    async fn compacting(&mut self) -> bool {
+        !crate::extensions::cancelled(
+            self.extensions.as_ref(),
+            "session_before_compact",
+            serde_json::json!({}),
+        )
+        .await
+    }
+
+    async fn compacted(&mut self, summary: &str) {
+        crate::extensions::announce(
+            self.extensions.as_ref(),
+            "session_compact",
+            serde_json::json!({ "summary": summary }),
+        )
+        .await;
+    }
+
+    async fn ran_bash(&mut self, command: &str, output: &str, failed: bool) {
+        crate::extensions::announce(
+            self.extensions.as_ref(),
+            "user_bash",
+            serde_json::json!({ "command": command, "output": output, "failed": failed }),
+        )
+        .await;
+    }
+
+    /// What a submitted line means, in the order the names are claimed.
+    ///
+    /// Built-in commands are matched first and cannot be taken over: a name micro answers
+    /// to has to keep answering, or an installed extension could quietly replace `/quit`.
+    /// Then the user's own prompt files, then whatever the extensions registered.
+    fn begin_model_refresh(
+        &mut self,
+    ) -> Option<tokio::sync::oneshot::Receiver<micro_tui::Listings>> {
+        let (sender, receiver) = tokio::sync::oneshot::channel();
+        // Copilot lists what an account may reach only when asked with its own token, so
+        // the credential is read here where the store is, not in the task.
+        tokio::spawn(async move {
+            let client = reqwest::Client::new();
+            // Opened again rather than shared: the store is a file, and the task outlives
+            // the borrow that started it. The token says which host serves this account;
+            // only an individual plan is served by the default one.
+            let copilot = match micro_auth::AuthStore::open() {
+                Ok(store) => store
+                    .resolve(micro_auth::GITHUB_COPILOT)
+                    .await
+                    .ok()
+                    .map(|credential| {
+                        let token = credential.token().to_string();
+                        let base = micro_auth::copilot::base_url_from_token(&token)
+                            .unwrap_or_else(|| micro_models::COPILOT_BASE_URL.to_string());
+                        (token, base)
+                    }),
+                Err(_) => None,
+            };
+            let mut listings = micro_tui::Listings::default();
+            match micro_models::fetch_openrouter(&client).await {
+                Ok(models) => listings.models.extend(models),
+                Err(error) => listings.errors.push(error.to_string()),
+            }
+            if let Some((token, base)) = &copilot {
+                match micro_models::fetch_copilot(&client, token, base).await {
+                    Ok(models) => listings.models.extend(models),
+                    Err(error) => listings.errors.push(error.to_string()),
+                }
+            }
+            let _ = sender.send(listings);
+        });
+        Some(receiver)
+    }
+
+    async fn apply_model_refresh(&mut self, listings: micro_tui::Listings) -> Option<Picker> {
+        if !listings.models.is_empty() {
+            self.catalog.merge_listing(listings.models);
+        }
+        // The list is rebuilt the way it was built in the first place, so a model that has
+        // just appeared is in it and everything else reads exactly as it did.
+        let context = self.context(ConversationState::default());
+        match micro_commands::dispatch("/model", &context).await {
+            Some(CommandOutcome::Choose(picker)) => Some(picker),
+            _ => None,
+        }
+    }
+
     async fn dispatch(&mut self, line: &str, state: ConversationState) -> Option<CommandOutcome> {
+        // A name micro answers to is answered by micro. Trying the extensions first would
+        // let an installed one quietly take over `/quit`.
+        let claimed = command_parts(line)
+            .is_some_and(|(name, _)| micro_commands::find(name).is_some());
+        if claimed {
+            return micro_commands::dispatch(line, &self.context(state)).await;
+        }
+        if let Some(outcome) = self.prompt_command(line) {
+            return Some(outcome);
+        }
+        if let Some(outcome) = self.extension_command(line).await {
+            return Some(outcome);
+        }
+        // Nobody claimed it. What comes back is either the unknown-command message or
+        // nothing at all, for a line that was never a command.
         micro_commands::dispatch(line, &self.context(state)).await
     }
 
@@ -384,13 +734,6 @@ impl Commands for CliCommands {
         match outcome {
             // A device login is entirely this side of the seam: poll GitHub, store what it
             // returns. Nothing about the running agent changes.
-            CommandOutcome::DeviceLogin { pending } => {
-                match self.auth.complete_device_login(&pending).await {
-                    Ok(_) => Applied::note(format!("Signed in to {}.", pending.provider)),
-                    Err(error) => Applied::error(format!("Sign-in failed: {error}")),
-                }
-            }
-
             CommandOutcome::Fork {
                 session_id,
                 through_index,
@@ -438,11 +781,22 @@ impl Commands for CliCommands {
         }
     }
 
-    async fn store_api_key(&mut self, provider: String, key: String) -> Applied {
-        match self.auth.store_api_key(&provider, &key) {
-            Ok(_) => Applied::note(format!("Stored a credential for {provider}.")),
-            Err(error) => Applied::error(error.to_string()),
+    async fn finish_device_login(
+        &mut self,
+        pending: Box<micro_auth::PendingDeviceLogin>,
+    ) -> Applied {
+        let provider = pending.provider.clone();
+        if let Err(error) = self.auth.complete_device_login(&pending).await {
+            return Applied::error(format!("Sign-in failed: {error}"));
         }
+        self.signed_in(&provider).await
+    }
+
+    async fn store_api_key(&mut self, provider: String, key: String) -> Applied {
+        if let Err(error) = self.auth.store_api_key(&provider, &key) {
+            return Applied::error(error.to_string());
+        }
+        self.signed_in(&provider).await
     }
 }
 
@@ -510,8 +864,14 @@ mod tests {
             session_id,
             home: root.join("home"),
             skills_enabled: true,
+            scoped_models: Vec::new(),
+            resources: Default::default(),
+            tree_filter: Default::default(),
             collapse_changelog: false,
+            thinking: micro_types::ThinkingLevel::Off,
+            extensions: None,
             anthropic_extra_usage: true,
+            prompts: Vec::new(),
         });
         (host, root)
     }
@@ -556,9 +916,12 @@ mod tests {
         assert!(outcome.text().unwrap().contains("did you mean /model"));
     }
 
+    /// The list offers what can actually answer, and marks what is running.
     #[tokio::test]
-    async fn the_model_picker_marks_the_model_in_use() {
+    async fn the_model_picker_offers_what_is_signed_in_and_marks_the_model_in_use() {
         let (mut host, _root) = host("model-picker").await;
+        host.auth.store_api_key("anthropic", "sk-ant-test").unwrap();
+
         let outcome = host.dispatch("/model", state(0)).await.expect("a command");
 
         let CommandOutcome::Choose(picker) = outcome else {
@@ -570,7 +933,45 @@ mod tests {
             .filter(|item| item.current)
             .map(|item| item.label.as_str())
             .collect();
-        assert_eq!(current, vec!["anthropic/claude-opus-5"]);
+        assert_eq!(current, vec!["claude-opus-5"]);
+
+        // Everything offered is served by something there is a credential for. Which
+        // providers those are depends on the environment the test runs in, so the
+        // property is asserted rather than the list.
+        for item in &picker.items {
+            // The row names the model; the badge beside it names who serves it.
+            let provider = item.detail.trim_matches(['[', ']']);
+            assert!(
+                host.auth.status_of(provider).is_authenticated(),
+                "{} is offered without a credential",
+                item.label
+            );
+        }
+        assert!(
+            picker.hint.is_some(),
+            "the list should say what it leaves out"
+        );
+    }
+
+    /// Choosing a model is a decision about how to work, so the next run starts on it.
+    #[tokio::test]
+    async fn switching_model_is_remembered_for_next_time() {
+        let (mut host, root) = host("remember-model").await;
+        host.auth.store_api_key("anthropic", "sk-ant-test").unwrap();
+
+        let outcome = host
+            .dispatch("/model anthropic/claude-sonnet-5", state(0))
+            .await
+            .expect("a command");
+        let applied = host.apply(outcome).await;
+        assert!(!applied.is_error(), "{applied:?}");
+
+        let saved = micro_config::Config::load_from(
+            root.join("home").join(micro_config::FILE_NAME),
+        )
+        .expect("the settings were written");
+        assert_eq!(saved.model.as_deref(), Some("anthropic/claude-sonnet-5"));
+        assert_eq!(saved.provider.as_deref(), Some("anthropic"));
     }
 
     /// Without a credential the swap cannot be built, and the report says which provider to
@@ -905,14 +1306,10 @@ mod tests {
             "Saved trust decision: trusted. Restart micro for this to take effect."
         );
 
-        let store = micro_policy::TrustStore::load_from(root.join("home"))
+        let store = micro_config::TrustStore::load_from(root.join("home"))
             .await
             .unwrap();
         assert!(store.is_trusted(&host.workspace));
-        assert_eq!(
-            store.mode_for(&host.workspace, micro_policy::Mode::Cautious),
-            micro_policy::Mode::Workspace
-        );
 
         let outcome = host
             .dispatch("/trust off", state(0))
@@ -922,7 +1319,7 @@ mod tests {
             note(&host.apply(outcome).await),
             "Saved trust decision: untrusted. Restart micro for this to take effect."
         );
-        let store = micro_policy::TrustStore::load_from(root.join("home"))
+        let store = micro_config::TrustStore::load_from(root.join("home"))
             .await
             .unwrap();
         assert!(!store.is_trusted(&host.workspace));
@@ -998,4 +1395,13 @@ mod tests {
         assert!(!outcome.is_error(), "{outcome:?}");
         assert!(host.auth.get("openrouter").is_none());
     }
+}
+
+/// The name and arguments of a slash command, or nothing when the line is not one.
+fn command_parts(line: &str) -> Option<(&str, &str)> {
+    let rest = line.trim().strip_prefix('/')?;
+    Some(match rest.split_once(char::is_whitespace) {
+        Some((name, arguments)) => (name, arguments.trim()),
+        None => (rest, ""),
+    })
 }

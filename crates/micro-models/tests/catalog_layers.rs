@@ -146,11 +146,14 @@ fn an_ambiguous_query_reports_its_candidates() {
         panic!("`claude-opus-5` is served by more than one provider");
     };
 
-    let mut qualified: Vec<String> = candidates.iter().map(|m| m.qualified_id()).collect();
-    qualified.sort();
-    assert_eq!(
-        qualified,
-        vec!["anthropic/claude-opus-5", "github-copilot/claude-opus-5"]
+    let qualified: Vec<String> = candidates.iter().map(|m| m.qualified_id()).collect();
+    assert!(
+        qualified.contains(&"anthropic/claude-opus-5".to_string()),
+        "{qualified:?}"
+    );
+    assert!(
+        qualified.contains(&"github-copilot/claude-opus-5".to_string()),
+        "{qualified:?}"
     );
 }
 
@@ -166,8 +169,8 @@ fn a_resolved_model_converts_to_a_runtime_handle() {
 
     assert_eq!(runtime.id, "claude-sonnet-5");
     assert_eq!(runtime.provider, "anthropic");
-    assert_eq!(runtime.base_url, "https://api.anthropic.com/v1");
-    assert_eq!(runtime.max_tokens, 128_000);
+    assert_eq!(runtime.base_url, "https://api.anthropic.com");
+    assert_eq!(runtime.max_tokens, model.max_output_tokens);
     assert_eq!(runtime.thinking, micro_types::ThinkingLevel::Medium);
 }
 

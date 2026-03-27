@@ -54,6 +54,21 @@ impl Pictures {
 
     /// Claim the rows an image needs, returning how many. `None` when this terminal cannot
     /// draw images at all, and the caller should describe it instead.
+    /// How many images have been reserved room for.
+    pub fn len(&self) -> usize {
+        self.pictures.len()
+    }
+
+    /// Forget every image reserved after `kept`, whose rows are being drawn again.
+    pub fn truncate(&mut self, kept: usize) {
+        // The rows a picture was given back are given up with it, so the next one reserved
+        // lands where the ones being redrawn used to be.
+        if let Some(first) = self.pictures.get(kept) {
+            self.reserved = first.order;
+        }
+        self.pictures.truncate(kept);
+    }
+
     pub fn reserve(&mut self, data: &str, width: usize) -> Option<usize> {
         let protocol = self.protocol?;
         let _ = protocol;

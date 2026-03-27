@@ -58,6 +58,23 @@ pub struct Loaded {
     pub diagnostics: Vec<Diagnostic>,
 }
 
+/// Read the skills at `path`, which may be a directory of them or one file.
+///
+/// For a path named on the command line rather than found in one of the usual places: a
+/// reader who points at a file means that file, and one who points at a directory means
+/// whatever is in it.
+pub async fn load_from_path(path: impl AsRef<Path>, source: &str) -> Loaded {
+    let path = path.as_ref();
+    if path.is_dir() {
+        return load_from_dir(path, source).await;
+    }
+
+    let mut loaded = Loaded::default();
+    let base = path.parent().unwrap_or(path);
+    read_skill(path, base, source, &mut loaded).await;
+    loaded
+}
+
 /// Read every skill under `dir`.
 ///
 /// A directory containing `SKILL.md` is itself a skill and is not searched further; one
@@ -75,12 +92,21 @@ pub async fn load_from_dir(dir: impl AsRef<Path>, source: &str) -> Loaded {
 ///
 /// A project's own skills come first, so one written for the work at hand takes precedence
 /// over a general one with the same name.
-pub async fn discover(workspace: impl AsRef<Path>, home: impl AsRef<Path>) -> Loaded {
+pub async fn discover(
+    workspace: impl AsRef<Path>,
+    home: impl AsRef<Path>,
+    trusted: bool,
+) -> Loaded {
     let mut loaded = Loaded::default();
-    for (dir, source) in [
-        (workspace.as_ref().join(".micro/skills"), "project"),
-        (home.as_ref().join("skills"), "user"),
-    ] {
+    // A project's own skills are offered only once the project has been trusted.
+    let project = match trusted {
+        true => Some((workspace.as_ref().join(".micro/skills"), "project")),
+        false => None,
+    };
+    for (dir, source) in project
+        .into_iter()
+        .chain(std::iter::once((home.as_ref().join("skills"), "user")))
+    {
         let found = load_from_dir(&dir, source).await;
         for skill in found.skills {
             // First one wins, which is what makes a project skill beat a user's.
@@ -356,7 +382,7 @@ mod tests {
             "---\nname: thing\ndescription: The user's.\n---\n",
         );
 
-        let loaded = discover(&workspace, &home).await;
+        let loaded = discover(&workspace, &home, true).await;
         assert_eq!(loaded.skills.len(), 1);
         assert_eq!(loaded.skills[0].description, "The project's.");
     }
@@ -392,3 +418,4 @@ mod tests {
         assert!(loaded.diagnostics.is_empty());
     }
 }
+

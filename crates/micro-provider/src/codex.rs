@@ -65,10 +65,31 @@ impl Transport {
     }
 }
 
+/// Which service answers the Responses protocol.
+///
+/// The protocol is the same either way. What differs is where it lives, what the
+/// credential is, and how the request identifies itself: the ChatGPT backend expects a
+/// subscription token and Codex's own client identity, the platform expects an API key
+/// and nothing else.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Backend {
+    /// `chatgpt.com/backend-api/codex`, reached with a ChatGPT subscription token.
+    ChatGpt,
+    /// The OpenAI platform, reached with an API key.
+    Platform,
+    /// Azure's hosting of the same protocol. The credential is presented as an
+    /// `api-key` header rather than a bearer, the version is named in the query, and a
+    /// model is reached through whatever the resource calls its deployment.
+    Azure,
+}
+
 #[derive(Clone)]
 pub struct Codex {
     client: reqwest::Client,
     transport: Transport,
+    backend: Backend,
+    /// Which service is answering, for the headers it expects to be told about.
+    provider: String,
 }
 
 impl Default for Codex {
@@ -82,6 +103,39 @@ impl Codex {
         Codex {
             client: crate::http_client(),
             transport: Transport::default(),
+            backend: Backend::ChatGpt,
+            provider: micro_auth::OPENAI_CODEX.to_string(),
+        }
+    }
+
+    /// The same protocol against the OpenAI platform rather than the ChatGPT backend.
+    pub fn platform() -> Self {
+        Codex {
+            client: crate::http_client(),
+            transport: Transport::default(),
+            backend: Backend::Platform,
+            provider: micro_auth::OPENAI.to_string(),
+        }
+    }
+
+    /// The same protocol as Azure hosts it.
+    pub fn azure() -> Self {
+        Codex {
+            client: crate::http_client(),
+            transport: Transport::default(),
+            backend: Backend::Azure,
+            provider: AZURE_PROVIDER.to_string(),
+        }
+    }
+
+    /// The platform's protocol as a named service serves it — a gateway answering the
+    /// Responses shape under its own name, with its own headers.
+    pub fn for_provider(provider: impl Into<String>) -> Self {
+        Codex {
+            client: crate::http_client(),
+            transport: Transport::default(),
+            backend: Backend::Platform,
+            provider: provider.into(),
         }
     }
 
@@ -99,7 +153,7 @@ impl Codex {
 
 impl Provider for Codex {
     fn name(&self) -> &str {
-        "openai-codex"
+        &self.provider
     }
 
     fn stream(
@@ -110,9 +164,13 @@ impl Provider for Codex {
     ) -> UnboundedReceiver<StreamEvent> {
         let (sender, receiver) = mpsc::unbounded_channel();
         let client = self.client.clone();
+        let backend = self.backend;
+        let provider = self.provider.clone();
 
         tokio::spawn(async move {
-            if let Err(message) = run(client, model, context, api_key, &sender).await {
+            if let Err(message) =
+                run(client, backend, provider, model, context, api_key, &sender).await
+            {
                 let _ = sender.send(StreamEvent::Error { message });
             }
         });
@@ -123,37 +181,72 @@ impl Provider for Codex {
 
 async fn run(
     client: reqwest::Client,
+    backend: Backend,
+    provider: String,
     model: Model,
     context: Context,
     api_key: String,
     sender: &UnboundedSender<StreamEvent>,
 ) -> Result<(), String> {
-    let account = account_id(&api_key)?;
-    // One id for the request, sent as both the session and the client request id, which is
-    // what lets the backend tie a retry to the attempt it repeats.
-    let request_id = format!("micro-{}", now_ms());
+    let service = provider.clone();
 
-    let response = client
-        .post(endpoint(&model.base_url))
-        .header("authorization", format!("Bearer {api_key}"))
-        .header("chatgpt-account-id", account)
-        .header("originator", "micro")
-        .header("user-agent", user_agent())
-        .header("openai-beta", "responses=experimental")
-        .header("session-id", &request_id)
-        .header("x-client-request-id", &request_id)
+    let request = client
+        .post(endpoint_for(backend, &model.base_url))
         .header("accept", "text/event-stream")
-        .header("content-type", "application/json")
-        .json(&build_payload(&model, &context))
+        .header("content-type", "application/json");
+    // Azure takes the credential as its own header; everywhere else it is a bearer.
+    let request = match backend {
+        Backend::Azure => request.header("api-key", &api_key),
+        _ => request.header("authorization", format!("Bearer {api_key}")),
+    };
+
+    // The ChatGPT backend answers a named client on a named account; the platform takes
+    // an API key and asks for nothing else.
+    let request = match backend {
+        Backend::ChatGpt => {
+            // One id for the request, sent as both the session and the client request id,
+            // which is what lets the backend tie a retry to the attempt it repeats.
+            let request_id = format!("micro-{}", now_ms());
+            request
+                .header("chatgpt-account-id", account_id(&api_key)?)
+                .header("originator", "micro")
+                .header("user-agent", user_agent())
+                .header("openai-beta", "responses=experimental")
+                .header("session-id", &request_id)
+                .header("x-client-request-id", request_id)
+        }
+        // The platform and Azure both take the credential and nothing else.
+        Backend::Platform | Backend::Azure => request,
+    };
+
+    // Whatever the service asks to be told about the client it is talking to, which the
+    // catalog records per model.
+    let mut request = request;
+    for (name, value) in &model.headers {
+        request = request.header(name.as_str(), value.as_str());
+    }
+    // Copilot bills and rate-limits differently depending on who started the request, and
+    // refuses an image unless the request says one is coming.
+    if crate::openai::is_copilot(&provider, &model.base_url) {
+        request = request
+            .header("x-initiator", crate::openai::initiator(&context.messages))
+            .header("openai-intent", "conversation-edits");
+        if crate::openai::carries_images(&context.messages) {
+            request = request.header("copilot-vision-request", "true");
+        }
+    }
+
+    let response = crate::with_carried_headers(request, &context, &model.base_url)
+        .json(&build_payload(backend, &model, &context)?)
         .send()
         .await
-        .map_err(|error| format!("Codex request failed: {error}"))?;
+        .map_err(|error| format!("{service} request failed: {error}"))?;
 
     let status = response.status();
     if !status.is_success() {
         let body = response.text().await.unwrap_or_default();
         return Err(format!(
-            "Codex returned {}: {}",
+            "{service} returned {}: {}",
             status.as_u16(),
             body.trim()
         ));
@@ -175,6 +268,79 @@ async fn run(
     }
 }
 
+/// Where a Responses request goes, which depends on which service is answering.
+fn endpoint_for(backend: Backend, base_url: &str) -> String {
+    match backend {
+        Backend::ChatGpt => endpoint(base_url),
+        Backend::Platform => {
+            let trimmed = base_url.trim_end_matches('/');
+            match trimmed.ends_with("/responses") {
+                true => trimmed.to_string(),
+                false => format!("{trimmed}/responses"),
+            }
+        }
+        Backend::Azure => azure_endpoint(base_url),
+    }
+}
+
+/// Where an Azure resource answers.
+///
+/// A resource is named by its host, and the protocol lives under `/openai/v1` on it. A
+/// base URL that already says so is left alone; one that names only the resource is
+/// completed. The version is asked for in the query, which is how Azure versions it.
+fn azure_endpoint(base_url: &str) -> String {
+    // A resource is one customer's own, so the catalog cannot record it. Naming it is
+    // what turns the placeholder address into a real one.
+    let named = std::env::var(AZURE_RESOURCE_ENV)
+        .ok()
+        .map(|resource| resource.trim().to_string())
+        .filter(|resource| !resource.is_empty())
+        .map(|resource| format!("https://{resource}.openai.azure.com/openai/v1"));
+    let base_url = named.as_deref().unwrap_or(base_url);
+    let trimmed = base_url.trim().trim_end_matches('/');
+    let (address, _) = trimmed.split_once('?').unwrap_or((trimmed, ""));
+    let address = address.trim_end_matches('/');
+
+    let root = if address.ends_with("/openai/v1") {
+        address.to_string()
+    } else if address.ends_with("/openai") {
+        format!("{address}/v1")
+    } else if address.ends_with("/responses") {
+        address
+            .trim_end_matches("/responses")
+            .trim_end_matches('/')
+            .to_string()
+    } else {
+        format!("{address}/openai/v1")
+    };
+
+    let version = std::env::var(AZURE_API_VERSION_ENV)
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| AZURE_API_VERSION.to_string());
+    format!("{root}/responses?api-version={version}")
+}
+
+/// What the resource calls the deployment serving a model.
+///
+/// Azure addresses a deployment rather than a model, and a resource may name one
+/// anything. The map says which is which; a model the map does not mention is assumed to
+/// be deployed under its own name.
+fn azure_deployment(model_id: &str) -> String {
+    let Ok(map) = std::env::var(AZURE_DEPLOYMENT_MAP_ENV) else {
+        return model_id.to_string();
+    };
+    for pair in map.split(',') {
+        let Some((id, deployment)) = pair.trim().split_once('=') else {
+            continue;
+        };
+        if id.trim() == model_id {
+            return deployment.trim().to_string();
+        }
+    }
+    model_id.to_string()
+}
+
 fn endpoint(base_url: &str) -> String {
     let trimmed = base_url.trim_end_matches('/');
     let trimmed = match trimmed.is_empty() {
@@ -191,7 +357,11 @@ fn endpoint(base_url: &str) -> String {
 }
 
 fn user_agent() -> String {
-    format!("micro ({} {})", std::env::consts::OS, std::env::consts::ARCH)
+    format!(
+        "micro ({} {})",
+        std::env::consts::OS,
+        std::env::consts::ARCH
+    )
 }
 
 /// The account a subscription token belongs to, read from the token's own claims.
@@ -240,7 +410,21 @@ fn base64_url_decode(text: &str) -> Option<Vec<u8>> {
 }
 
 /// The request, in the Responses shape the backend expects.
-fn build_payload(model: &Model, context: &Context) -> Value {
+/// The smallest output limit the platform accepts. Below this a request is refused
+/// rather than answered briefly.
+const MIN_OUTPUT_TOKENS: u32 = 16;
+
+/// The provider id Azure's hosting is listed under.
+pub const AZURE_PROVIDER: &str = "azure-openai-responses";
+/// Which version of the protocol Azure is asked for, when nothing says otherwise.
+const AZURE_API_VERSION: &str = "v1";
+/// Maps a model id to what the resource calls its deployment, as `id=deployment` pairs.
+const AZURE_DEPLOYMENT_MAP_ENV: &str = "AZURE_OPENAI_DEPLOYMENT_NAME_MAP";
+const AZURE_API_VERSION_ENV: &str = "AZURE_OPENAI_API_VERSION";
+/// The resource serving this account, which is what the address is built from.
+const AZURE_RESOURCE_ENV: &str = "AZURE_OPENAI_RESOURCE_NAME";
+
+fn build_payload(backend: Backend, model: &Model, context: &Context) -> Result<Value, String> {
     let mut payload = json!({
         "model": model.id,
         // The backend refuses anything else: a conversation it stored would be one micro
@@ -259,35 +443,61 @@ fn build_payload(model: &Model, context: &Context) -> Value {
     });
 
     if !context.tools.is_empty() {
-        payload["tools"] = Value::Array(
-            context
-                .tools
-                .iter()
-                .map(|tool| {
-                    json!({
-                        "type": "function",
-                        "name": tool.name,
-                        "description": tool.description,
-                        "parameters": tool.parameters,
-                    })
-                })
-                .collect(),
-        );
+        let mut tools: Vec<Value> = Vec::with_capacity(context.tools.len());
+        for tool in &context.tools {
+            let strict = crate::constrained_sampling::resolve_json_schema_strict_sampling(
+                tool,
+                model.compat.supports_strict_mode,
+            )?;
+            let parameters =
+                crate::constrained_sampling::json_schema_tool_parameters(tool, strict)?;
+            let mut described = json!({
+                "type": "function",
+                "name": tool.name,
+                "description": tool.description,
+                "parameters": parameters,
+            });
+            // Some services reject a tool definition carrying fields they do not know.
+            // Unlike the completions shape, a tool that did not resolve to strict is told
+            // `null` here rather than `false` — the Responses API default this backend
+            // asks for is "unset," not "explicitly off."
+            if model.compat.supports_strict_mode {
+                described["strict"] = match strict {
+                    Some(true) => Value::Bool(true),
+                    _ => Value::Null,
+                };
+            }
+            tools.push(described);
+        }
+        payload["tools"] = Value::Array(tools);
     }
 
     if let Some(effort) = reasoning_effort(model.thinking) {
         payload["reasoning"] = json!({ "effort": effort, "summary": "auto" });
     }
 
-    payload
+    // The ChatGPT backend decides its own output limit; the platform takes one, and
+    // refuses a request asking for less than it will produce.
+    if matches!(backend, Backend::Platform | Backend::Azure) {
+        payload["max_output_tokens"] = json!(model.max_tokens.max(MIN_OUTPUT_TOKENS));
+    }
+    // Azure is asked for a deployment, which is what a resource calls the model it serves.
+    if backend == Backend::Azure {
+        payload["model"] = json!(azure_deployment(&model.id));
+    }
+
+    Ok(payload)
 }
 
 fn reasoning_effort(level: ThinkingLevel) -> Option<&'static str> {
     match level {
         ThinkingLevel::Off => None,
+        ThinkingLevel::Minimal => Some("low"),
         ThinkingLevel::Low => Some("low"),
         ThinkingLevel::Medium => Some("medium"),
         ThinkingLevel::High => Some("high"),
+        ThinkingLevel::XHigh => Some("high"),
+        ThinkingLevel::Max => Some("high"),
     }
 }
 
@@ -516,7 +726,10 @@ impl Accumulator {
         delta: &str,
         sender: &UnboundedSender<StreamEvent>,
     ) {
-        let output_index = value.get("output_index").and_then(Value::as_u64).unwrap_or(0);
+        let output_index = value
+            .get("output_index")
+            .and_then(Value::as_u64)
+            .unwrap_or(0);
         let is_text = matches!(kind, Kind::Text);
         let position = self.slot_for(output_index, kind, sender);
         let slot = &mut self.blocks[position];
@@ -544,7 +757,10 @@ impl Accumulator {
         if delta.is_empty() {
             return;
         }
-        let output_index = value.get("output_index").and_then(Value::as_u64).unwrap_or(0);
+        let output_index = value
+            .get("output_index")
+            .and_then(Value::as_u64)
+            .unwrap_or(0);
         let position = self.slot_for(output_index, Kind::ToolCall, sender);
         let slot = &mut self.blocks[position];
         slot.buffer.push_str(&delta);
@@ -555,8 +771,13 @@ impl Accumulator {
     /// A slot the stream has just opened. A tool call is announced here, because this is
     /// where its name first arrives.
     fn open(&mut self, value: &Value, sender: &UnboundedSender<StreamEvent>) {
-        let Some(item) = value.get("item") else { return };
-        let output_index = value.get("output_index").and_then(Value::as_u64).unwrap_or(0);
+        let Some(item) = value.get("item") else {
+            return;
+        };
+        let output_index = value
+            .get("output_index")
+            .and_then(Value::as_u64)
+            .unwrap_or(0);
         let item_type = item.get("type").and_then(Value::as_str).unwrap_or_default();
 
         let kind = match item_type {
@@ -591,8 +812,13 @@ impl Accumulator {
     /// A slot the stream has finished. The item carries the whole thing, which is what is
     /// kept: a delta stream can be lossy, an item is not.
     fn close(&mut self, value: &Value, sender: &UnboundedSender<StreamEvent>) {
-        let Some(item) = value.get("item") else { return };
-        let output_index = value.get("output_index").and_then(Value::as_u64).unwrap_or(0);
+        let Some(item) = value.get("item") else {
+            return;
+        };
+        let output_index = value
+            .get("output_index")
+            .and_then(Value::as_u64)
+            .unwrap_or(0);
         let item_type = item.get("type").and_then(Value::as_str).unwrap_or_default();
 
         match item_type {
@@ -789,7 +1015,8 @@ mod tests {
             for chunk in bytes.chunks(3) {
                 let mut buffer = [0_u8; 3];
                 buffer[..chunk.len()].copy_from_slice(chunk);
-                let value = ((buffer[0] as u32) << 16) | ((buffer[1] as u32) << 8) | buffer[2] as u32;
+                let value =
+                    ((buffer[0] as u32) << 16) | ((buffer[1] as u32) << 8) | buffer[2] as u32;
                 let characters = chunk.len() + 1;
                 for position in 0..characters {
                     let shift = 18 - position * 6;
@@ -798,10 +1025,7 @@ mod tests {
             }
             out
         };
-        format!(
-            "header.{}.signature",
-            encode(claims.to_string().as_bytes())
-        )
+        format!("header.{}.signature", encode(claims.to_string().as_bytes()))
     }
 
     fn model() -> Model {
@@ -811,6 +1035,9 @@ mod tests {
             base_url: CODEX_BASE_URL.into(),
             max_tokens: 8192,
             thinking: ThinkingLevel::Off,
+            compat: Default::default(),
+            headers: Default::default(),
+            reasoning: Default::default(),
         }
     }
 
@@ -829,7 +1056,10 @@ mod tests {
         assert!(error.contains("no ChatGPT account"), "{error}");
 
         let error = account_id("not-a-token").expect_err("not a token");
-        assert!(error.contains("not a token this endpoint accepts"), "{error}");
+        assert!(
+            error.contains("not a token this endpoint accepts"),
+            "{error}"
+        );
     }
 
     #[test]
@@ -863,9 +1093,12 @@ mod tests {
                 name: "read".into(),
                 description: "read a file".into(),
                 parameters: json!({ "type": "object" }),
+                constrained_sampling: None,
             }],
+            headers: Vec::new(),
+            cache_key: None,
         };
-        let payload = build_payload(&model(), &context);
+        let payload = build_payload(Backend::ChatGpt, &model(), &context).unwrap();
 
         assert_eq!(payload["store"], false);
         assert_eq!(payload["stream"], true);
@@ -874,7 +1107,109 @@ mod tests {
         assert_eq!(payload["input"][0]["content"][0]["type"], "input_text");
         assert_eq!(payload["tools"][0]["type"], "function");
         assert_eq!(payload["tools"][0]["name"], "read");
+        // A tool that never asked for constrained sampling is still told `strict: null`
+        // rather than left silent or told `false` — this backend's default is "unset,"
+        // which is a different wire value than the completions shape's explicit `false`.
+        assert_eq!(payload["tools"][0]["strict"], Value::Null);
         assert!(payload.get("reasoning").is_none(), "effort was off");
+    }
+
+    fn tool_asking_for_json_schema_sampling(
+        strict: micro_types::JsonSchemaStrictness,
+    ) -> ToolDefinition {
+        ToolDefinition {
+            name: "grep".into(),
+            description: "search".into(),
+            parameters: json!({
+                "type": "object",
+                "properties": { "pattern": { "type": "string" } },
+                "required": ["pattern"],
+            }),
+            constrained_sampling: Some(micro_types::ConstrainedSampling::JsonSchema { strict }),
+        }
+    }
+
+    /// This backend shares the same strict-mode gate and default as plain OpenAI: assumed
+    /// supported unless the catalog says otherwise.
+    #[test]
+    fn a_tool_preferring_strict_sampling_gets_it_by_default() {
+        let context = Context {
+            tools: vec![tool_asking_for_json_schema_sampling(
+                micro_types::JsonSchemaStrictness::Prefer,
+            )],
+            ..Context::default()
+        };
+        let payload = build_payload(Backend::ChatGpt, &model(), &context).unwrap();
+
+        assert_eq!(payload["tools"][0]["strict"], true);
+        assert_eq!(
+            payload["tools"][0]["parameters"]["additionalProperties"],
+            false
+        );
+    }
+
+    /// A tool that prefers strict sampling but whose schema cannot be made strict falls
+    /// back the same way a tool that never asked does: `strict: null`, not `strict: false`
+    /// — this backend has no notion of "explicitly off," only "unresolved."
+    #[test]
+    fn a_schema_that_cannot_be_strict_falls_back_to_null_rather_than_false() {
+        let unstrictifiable = ToolDefinition {
+            name: "grep".into(),
+            description: "search".into(),
+            parameters: json!({
+                "type": "object",
+                "properties": { "target": { "$ref": "#/$defs/target" } },
+            }),
+            constrained_sampling: Some(micro_types::ConstrainedSampling::JsonSchema {
+                strict: micro_types::JsonSchemaStrictness::Prefer,
+            }),
+        };
+        let context = Context {
+            tools: vec![unstrictifiable],
+            ..Context::default()
+        };
+        let payload = build_payload(Backend::ChatGpt, &model(), &context).unwrap();
+
+        assert_eq!(payload["tools"][0]["strict"], Value::Null);
+    }
+
+    /// A service that does not understand `strict` is unaffected by a tool merely
+    /// preferring constrained sampling: no field is added, and the schema is untouched.
+    #[test]
+    fn an_unsupported_service_is_unaffected_by_a_tool_preferring_strict_sampling() {
+        let original_parameters = json!({
+            "type": "object",
+            "properties": { "pattern": { "type": "string" } },
+            "required": ["pattern"],
+        });
+        let mut unsupported = model();
+        unsupported.compat.supports_strict_mode = false;
+        let context = Context {
+            tools: vec![tool_asking_for_json_schema_sampling(
+                micro_types::JsonSchemaStrictness::Prefer,
+            )],
+            ..Context::default()
+        };
+        let payload = build_payload(Backend::ChatGpt, &unsupported, &context).unwrap();
+
+        assert!(payload["tools"][0].get("strict").is_none());
+        assert_eq!(payload["tools"][0]["parameters"], original_parameters);
+    }
+
+    /// `"require"` on a service that does not support strict sampling fails the request
+    /// rather than silently sending it under ordinary sampling.
+    #[test]
+    fn requiring_strict_sampling_on_an_unsupported_service_fails_the_request() {
+        let mut unsupported = model();
+        unsupported.compat.supports_strict_mode = false;
+        let context = Context {
+            tools: vec![tool_asking_for_json_schema_sampling(
+                micro_types::JsonSchemaStrictness::Require,
+            )],
+            ..Context::default()
+        };
+        let error = build_payload(Backend::ChatGpt, &unsupported, &context).unwrap_err();
+        assert!(error.contains("\"grep\""), "got {error:?}");
     }
 
     #[test]
@@ -882,13 +1217,17 @@ mod tests {
         let mut model = model();
         model.thinking = ThinkingLevel::High;
         let payload = build_payload(
+            Backend::ChatGpt,
             &model,
             &Context {
                 system_prompt: None,
                 messages: vec![Message::user("think about it")],
                 tools: Vec::new(),
+                headers: Vec::new(),
+                cache_key: None,
             },
-        );
+        )
+        .unwrap();
         assert_eq!(payload["reasoning"]["effort"], "high");
         assert_eq!(payload["reasoning"]["summary"], "auto");
         assert_eq!(payload["instructions"], "You are a helpful assistant.");
@@ -1069,5 +1408,144 @@ mod tests {
             Codex::new().with_transport(Transport::Auto).transport(),
             Transport::Auto
         );
+    }
+}
+
+#[cfg(test)]
+mod platform {
+    use super::*;
+
+    fn platform_model() -> Model {
+        Model {
+            id: "gpt-5.5".into(),
+            provider: "openai".into(),
+            base_url: "https://api.openai.com/v1".into(),
+            max_tokens: 32_000,
+            thinking: ThinkingLevel::Off,
+            reasoning: true,
+            compat: Default::default(),
+            headers: Default::default(),
+        }
+    }
+
+    /// The platform answers at `/responses`, not at the ChatGPT backend's path.
+    #[test]
+    fn the_platform_endpoint_is_responses() {
+        assert_eq!(
+            endpoint_for(Backend::Platform, "https://api.openai.com/v1"),
+            "https://api.openai.com/v1/responses"
+        );
+        // A base that already names it is left alone.
+        assert_eq!(
+            endpoint_for(Backend::Platform, "https://api.openai.com/v1/responses"),
+            "https://api.openai.com/v1/responses"
+        );
+        // The ChatGPT backend keeps its own path.
+        assert!(
+            endpoint_for(Backend::ChatGpt, "https://chatgpt.com/backend-api")
+                .ends_with("/codex/responses")
+        );
+    }
+
+    /// The platform takes an output limit and refuses one below its floor.
+    #[test]
+    fn the_platform_is_given_an_output_limit() {
+        let payload = build_payload(
+            Backend::Platform,
+            &platform_model(),
+            &Context {
+                system_prompt: None,
+                messages: vec![Message::user("hi")],
+                tools: Vec::new(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(payload["max_output_tokens"], 32_000);
+
+        let mut tiny = platform_model();
+        tiny.max_tokens = 1;
+        let payload = build_payload(
+            Backend::Platform,
+            &tiny,
+            &Context {
+                system_prompt: None,
+                messages: vec![Message::user("hi")],
+                tools: Vec::new(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            payload["max_output_tokens"], MIN_OUTPUT_TOKENS,
+            "raised to what the service will accept",
+        );
+    }
+
+    /// Both backends ask for the reasoning to come back encrypted, which is what lets it
+    /// be replayed on the next turn.
+    #[test]
+    fn reasoning_is_replayed_on_both_backends() {
+        for backend in [Backend::ChatGpt, Backend::Platform] {
+            let payload = build_payload(
+                backend,
+                &platform_model(),
+                &Context {
+                    system_prompt: None,
+                    messages: vec![Message::user("hi")],
+                    tools: Vec::new(),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            assert_eq!(payload["include"][0], "reasoning.encrypted_content");
+            assert_eq!(payload["store"], false, "nothing is stored either way");
+        }
+    }
+
+    /// The client says which service it speaks for, so an error names the right one.
+    #[test]
+    fn each_backend_names_itself() {
+        assert_eq!(Codex::new().name(), "openai-codex");
+        assert_eq!(Codex::platform().name(), "openai");
+    }
+}
+
+#[cfg(test)]
+mod azure {
+    use super::*;
+
+    /// A resource is named by its host; the protocol lives under `/openai/v1` on it, and
+    /// the version is asked for in the query.
+    #[test]
+    fn the_endpoint_is_completed_from_the_resource() {
+        assert_eq!(
+            azure_endpoint("https://my-resource.openai.azure.com"),
+            "https://my-resource.openai.azure.com/openai/v1/responses?api-version=v1"
+        );
+        // A base that already names the path is not given it twice.
+        assert_eq!(
+            azure_endpoint("https://my-resource.openai.azure.com/openai/v1"),
+            "https://my-resource.openai.azure.com/openai/v1/responses?api-version=v1"
+        );
+        assert_eq!(
+            azure_endpoint("https://my-resource.openai.azure.com/openai"),
+            "https://my-resource.openai.azure.com/openai/v1/responses?api-version=v1"
+        );
+    }
+
+    /// A model reaches a deployment, and a resource may call its deployment anything.
+    #[test]
+    fn a_model_is_addressed_by_its_deployment() {
+        // Nothing said, so the deployment is assumed to share the model's name.
+        assert_eq!(azure_deployment("gpt-5.5"), "gpt-5.5");
+    }
+
+    /// Azure takes the credential as its own header rather than as a bearer, and is asked
+    /// for a deployment rather than a model name.
+    #[test]
+    fn azure_is_told_apart_from_the_platform() {
+        assert_eq!(Codex::azure().name(), AZURE_PROVIDER);
+        assert_ne!(Codex::azure().name(), Codex::platform().name());
     }
 }

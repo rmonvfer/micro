@@ -13,10 +13,13 @@ use micro_types::now_ms;
 use micro_types::AssistantMessage;
 use micro_types::ContentBlock;
 use micro_types::Context;
+use micro_types::MaxTokensField;
 use micro_types::Message;
 use micro_types::Model;
+use micro_types::OffLevel;
 use micro_types::StopReason;
 use micro_types::StreamEvent;
+use micro_types::ThinkingFormat;
 use micro_types::ThinkingLevel;
 use micro_types::Usage;
 use serde_json::json;
@@ -28,95 +31,44 @@ use tokio::sync::mpsc::UnboundedReceiver;
 use tokio::sync::mpsc::UnboundedSender;
 
 pub(crate) const OPENAI_BASE_URL: &str = "https://api.openai.com/v1";
-pub(crate) const OPENROUTER_BASE_URL: &str = "https://openrouter.ai/api/v1";
-pub(crate) const COPILOT_BASE_URL: &str = "https://api.individual.githubcopilot.com";
 
 /// The last line of a chat-completions stream, which carries no JSON.
 const DONE_SENTINEL: &str = "[DONE]";
 
-/// What one service needs on top of the shared wire format.
-pub struct Flavor {
-    /// The provider id, used to select this flavor and to label its errors.
-    name: &'static str,
-    base_url: &'static str,
-    /// Newer OpenAI models take `max_completion_tokens`; everyone else takes `max_tokens`.
-    max_tokens_field: &'static str,
-    supports_stream_options: bool,
-    supports_reasoning_effort: bool,
-    headers: &'static [(&'static str, &'static str)],
-}
-
-static OPENAI: Flavor = Flavor {
-    name: "openai",
-    base_url: OPENAI_BASE_URL,
-    max_tokens_field: "max_completion_tokens",
-    supports_stream_options: true,
-    supports_reasoning_effort: true,
-    headers: &[],
-};
-
-/// OpenRouter attributes requests to the app that made them through these two headers,
-/// which is what puts micro on its leaderboards.
-static OPENROUTER: Flavor = Flavor {
-    name: "openrouter",
-    base_url: OPENROUTER_BASE_URL,
-    max_tokens_field: "max_tokens",
-    supports_stream_options: true,
-    supports_reasoning_effort: true,
-    headers: &[
-        ("http-referer", "https://github.com/agentmode/micro"),
-        ("x-title", "micro"),
-    ],
-};
-
-/// Copilot serves whichever editor its headers describe, and rejects requests that do not
-/// describe one. It exposes no reasoning-effort control.
-static COPILOT: Flavor = Flavor {
-    name: "github-copilot",
-    base_url: COPILOT_BASE_URL,
-    max_tokens_field: "max_tokens",
-    supports_stream_options: true,
-    supports_reasoning_effort: false,
-    headers: &[
-        ("user-agent", "GitHubCopilotChat/0.35.0"),
-        ("editor-version", "vscode/1.107.0"),
-        ("editor-plugin-version", "copilot-chat/0.35.0"),
-        ("copilot-integration-id", "vscode-chat"),
-        ("openai-intent", "conversation-edits"),
-    ],
-};
-
 #[derive(Clone)]
 pub struct OpenAi {
-    flavor: &'static Flavor,
+    /// The service being spoken to. What it accepts travels with each model; this names
+    /// it, for the handful of decisions that are the service's own and for its errors.
+    provider: String,
     client: reqwest::Client,
 }
 
 impl OpenAi {
-    /// OpenAI itself. Use [`OpenAi::openrouter`] or [`OpenAi::copilot`] for the services
-    /// that reimplement the same format.
+    /// OpenAI itself.
     pub fn new() -> Self {
-        OpenAi::with_flavor(&OPENAI)
+        OpenAi::for_provider(micro_auth::OPENAI)
     }
 
     pub fn openrouter() -> Self {
-        OpenAi::with_flavor(&OPENROUTER)
+        OpenAi::for_provider(micro_auth::OPENROUTER)
     }
 
     pub fn copilot() -> Self {
-        OpenAi::with_flavor(&COPILOT)
+        OpenAi::for_provider(micro_auth::GITHUB_COPILOT)
     }
 
-    fn with_flavor(flavor: &'static Flavor) -> Self {
+    /// A client for one service, whether or not micro has heard of it. Every service
+    /// answering this protocol is reached the same way; the model says what it accepts.
+    pub fn for_provider(provider: impl Into<String>) -> Self {
         OpenAi {
-            flavor,
+            provider: provider.into(),
             client: crate::http_client(),
         }
     }
 
-    /// The endpoint this flavor talks to, for callers assembling a [`Model`].
+    /// The endpoint OpenAI itself serves, for callers assembling a [`Model`].
     pub fn base_url(&self) -> &'static str {
-        self.flavor.base_url
+        OPENAI_BASE_URL
     }
 }
 
@@ -128,7 +80,7 @@ impl Default for OpenAi {
 
 impl Provider for OpenAi {
     fn name(&self) -> &str {
-        self.flavor.name
+        &self.provider
     }
 
     fn stream(
@@ -139,10 +91,10 @@ impl Provider for OpenAi {
     ) -> UnboundedReceiver<StreamEvent> {
         let (sender, receiver) = mpsc::unbounded_channel();
         let client = self.client.clone();
-        let flavor = self.flavor;
+        let provider = self.provider.clone();
 
         tokio::spawn(async move {
-            if let Err(message) = run(client, flavor, model, context, api_key, &sender).await {
+            if let Err(message) = run(client, provider, model, context, api_key, &sender).await {
                 let _ = sender.send(StreamEvent::Error { message });
             }
         });
@@ -153,48 +105,79 @@ impl Provider for OpenAi {
 
 async fn run(
     client: reqwest::Client,
-    flavor: &'static Flavor,
+    provider: String,
     model: Model,
     context: Context,
     api_key: String,
     sender: &UnboundedSender<StreamEvent>,
 ) -> Result<(), String> {
-    let payload = build_payload(flavor, &model, &context);
+    let payload = build_payload(&model, &context)?;
     let mut request = client
         .post(endpoint(&model.base_url))
         .bearer_auth(api_key)
         .header("content-type", "application/json")
         .header("accept", "text/event-stream");
-    for (name, value) in flavor.headers {
-        request = request.header(*name, *value);
+    // Whatever the service asks to be told about the client it is talking to, which the
+    // catalog records per model.
+    for (name, value) in &model.headers {
+        request = request.header(name.as_str(), value.as_str());
+    }
+    // Copilot bills and rate-limits differently depending on who started the request, and
+    // refuses an image unless the request says one is coming.
+    if is_copilot(&provider, &model.base_url) {
+        request = request
+            .header("x-initiator", initiator(&context.messages))
+            .header("openai-intent", "conversation-edits");
+        if carries_images(&context.messages) {
+            request = request.header("copilot-vision-request", "true");
+        }
+    }
+    // A service that keeps a cached prompt on one machine needs the next request in the
+    // conversation to reach that machine. Which headers say so differs by service.
+    if model.compat.send_session_affinity_headers {
+        if let Some(key) = context.cache_key.as_deref().filter(|key| !key.is_empty()) {
+            for (name, value) in affinity_headers(model.compat.session_affinity_format, key) {
+                request = request.header(name, value);
+            }
+        }
+    }
+    request = crate::with_attribution(request, &model.base_url);
+    // Anything the caller added wins, which is how an extension changes a header the
+    // provider would otherwise set for itself.
+    for (name, value) in &context.headers {
+        request = request.header(name.as_str(), value.as_str());
     }
 
     let response = request
         .json(&payload)
         .send()
         .await
-        .map_err(|error| format!("{} request failed: {error}", flavor.name))?;
+        .map_err(|error| format!("{provider} request failed: {error}"))?;
 
     let status = response.status();
     if !status.is_success() {
         let body = response.text().await.unwrap_or_default();
         return Err(format!(
-            "{} returned {}: {}",
-            flavor.name,
+            "{provider} returned {}: {}",
             status.as_u16(),
             body.trim()
         ));
     }
 
-    let mut state = Accumulator::new(flavor.name, &model);
+    let mut state = Accumulator::new(&provider, &model);
     read_sse(response, |event| state.handle(event, sender))
         .await
-        .map_err(|error| format!("{} stream failed: {error}", flavor.name))?;
+        .map_err(|error| format!("{provider} stream failed: {error}"))?;
 
     if !state.finished {
         state.finish(sender);
     }
     Ok(())
+}
+
+/// Whether this is Copilot, which wants to be told who started a request.
+pub(crate) fn is_copilot(provider: &str, base_url: &str) -> bool {
+    provider == micro_auth::GITHUB_COPILOT || base_url.contains("githubcopilot.com")
 }
 
 fn endpoint(base_url: &str) -> String {
@@ -233,7 +216,8 @@ struct OpenTool {
 }
 
 struct Accumulator {
-    label: &'static str,
+    /// The service, for the errors it reports mid-stream.
+    label: String,
     provider: String,
     model_id: String,
     blocks: Vec<ContentBlock>,
@@ -250,9 +234,9 @@ struct Accumulator {
 }
 
 impl Accumulator {
-    fn new(label: &'static str, model: &Model) -> Self {
+    fn new(label: impl Into<String>, model: &Model) -> Self {
         Accumulator {
-            label,
+            label: label.into(),
             provider: model.provider.clone(),
             model_id: model.id.clone(),
             blocks: Vec::new(),
@@ -290,7 +274,7 @@ impl Accumulator {
         };
 
         // Rate limits and upstream failures arrive as a chunk rather than a status code.
-        if let Some(message) = stream_error(self.label, &value) {
+        if let Some(message) = stream_error(&self.label, &value) {
             self.finished = true;
             let _ = sender.send(StreamEvent::Error { message });
             return;
@@ -521,56 +505,246 @@ fn map_finish_reason(reason: &str) -> StopReason {
     }
 }
 
-fn reasoning_effort(level: ThinkingLevel) -> Option<&'static str> {
-    match level {
-        ThinkingLevel::Off => None,
-        ThinkingLevel::Low => Some("low"),
-        ThinkingLevel::Medium => Some("medium"),
-        ThinkingLevel::High => Some("high"),
+/// Ask for reasoning effort in the shape this service accepts.
+///
+/// Every service that answers this protocol has its own spelling: a top-level field, a
+/// nested object, a switch, or nothing at all. The level a model does not offer is left
+/// out rather than sent under a name the service would reject.
+fn apply_thinking(payload: &mut Map<String, Value>, model: &Model) {
+    let compat = &model.compat;
+    if !model.reasoning {
+        return;
+    }
+
+    let asked = !matches!(model.thinking, ThinkingLevel::Off);
+    let effort = compat.level(model.thinking);
+    let off = compat.off();
+
+    match compat.thinking_format {
+        ThinkingFormat::Zai => {
+            payload.insert(
+                "thinking".into(),
+                match asked {
+                    true => json!({ "type": "enabled", "clear_thinking": false }),
+                    false => json!({ "type": "disabled" }),
+                },
+            );
+            if asked && compat.supports_reasoning_effort {
+                if let Some(effort) = effort {
+                    payload.insert("reasoning_effort".into(), json!(effort));
+                }
+            }
+        }
+        ThinkingFormat::Qwen => {
+            payload.insert("enable_thinking".into(), json!(asked));
+        }
+        ThinkingFormat::QwenChatTemplate | ThinkingFormat::ChatTemplate => {
+            payload.insert(
+                "chat_template_kwargs".into(),
+                json!({ "enable_thinking": asked, "preserve_thinking": true }),
+            );
+        }
+        ThinkingFormat::Deepseek => {
+            match asked {
+                true => {
+                    payload.insert("thinking".into(), json!({ "type": "enabled" }));
+                }
+                false => {
+                    if off != OffLevel::Unsupported {
+                        payload.insert("thinking".into(), json!({ "type": "disabled" }));
+                    }
+                }
+            }
+            if asked && compat.supports_reasoning_effort {
+                if let Some(effort) = effort {
+                    payload.insert("reasoning_effort".into(), json!(effort));
+                }
+            }
+        }
+        ThinkingFormat::Openrouter => {
+            // The gateway spells thinking being off as an effort of its own, so it is
+            // told even then.
+            let level = match asked {
+                true => effort,
+                false => off.or("none"),
+            };
+            if let Some(level) = level {
+                payload.insert("reasoning".into(), json!({ "effort": level }));
+            }
+        }
+        ThinkingFormat::AntLing => {
+            if asked {
+                if let Some(effort) = effort {
+                    payload.insert("reasoning".into(), json!({ "effort": effort }));
+                }
+            }
+        }
+        ThinkingFormat::Together => {
+            payload.insert("reasoning".into(), json!({ "enabled": asked }));
+            if asked && compat.supports_reasoning_effort {
+                if let Some(effort) = effort {
+                    payload.insert("reasoning_effort".into(), json!(effort));
+                }
+            }
+        }
+        ThinkingFormat::StringThinking => {
+            let level = match asked {
+                true => effort,
+                false => off.or("none"),
+            };
+            if let Some(level) = level {
+                payload.insert("thinking".into(), json!(level));
+            }
+        }
+        ThinkingFormat::Openai => {
+            if !compat.supports_reasoning_effort {
+                return;
+            }
+            // There is no name for off here: a model that has one says so, and one that
+            // does not is simply not asked to reason.
+            let level = match asked {
+                true => effort,
+                false => match off {
+                    OffLevel::Named(named) => Some(named),
+                    _ => None,
+                },
+            };
+            if let Some(level) = level {
+                payload.insert("reasoning_effort".into(), json!(level));
+            }
+        }
     }
 }
 
-pub(crate) fn build_payload(flavor: &Flavor, model: &Model, context: &Context) -> Value {
+/// The longest a prompt cache key may be. A longer one is refused rather than truncated
+/// by the provider, so it is cut here.
+const PROMPT_CACHE_KEY_MAX: usize = 64;
+
+pub(crate) fn build_payload(model: &Model, context: &Context) -> Result<Value, String> {
+    let compat = &model.compat;
     let mut payload = Map::new();
     payload.insert("model".into(), json!(model.id));
-    payload.insert("messages".into(), Value::Array(build_messages(context)));
+    payload.insert(
+        "messages".into(),
+        Value::Array(build_messages_for(
+            context,
+            model.compat.tool_call_id_length,
+        )),
+    );
     payload.insert("stream".into(), json!(true));
-    payload.insert(flavor.max_tokens_field.into(), json!(model.max_tokens));
+    payload.insert(
+        match compat.max_tokens_field {
+            MaxTokensField::MaxTokens => "max_tokens",
+            MaxTokensField::MaxCompletionTokens => "max_completion_tokens",
+        }
+        .into(),
+        json!(model.max_tokens),
+    );
 
-    if flavor.supports_stream_options {
+    if compat.supports_usage_in_streaming {
         payload.insert("stream_options".into(), json!({ "include_usage": true }));
     }
 
-    if flavor.supports_reasoning_effort {
-        if let Some(effort) = reasoning_effort(model.thinking) {
-            payload.insert("reasoning_effort".into(), json!(effort));
+    apply_thinking(&mut payload, model);
+
+    // Naming the conversation is what lets a prompt be cached against it and hit next
+    // turn. Clamped, because the field has a limit and a longer name is simply refused.
+    if model.base_url.contains("api.openai.com") {
+        if let Some(key) = &context.cache_key {
+            let clamped: String = key.chars().take(PROMPT_CACHE_KEY_MAX).collect();
+            payload.insert("prompt_cache_key".into(), json!(clamped));
         }
     }
 
-    if !context.tools.is_empty() {
-        let tools: Vec<Value> = context
-            .tools
-            .iter()
-            .map(|tool| {
-                json!({
-                    "type": "function",
-                    "function": {
-                        "name": tool.name,
-                        "description": tool.description,
-                        "parameters": tool.parameters,
-                    },
-                })
-            })
-            .collect();
-        payload.insert("tools".into(), Value::Array(tools));
+    // Nothing is stored on the provider's side: a conversation micro cannot account for
+    // is one it should not be leaving behind.
+    if compat.supports_store {
+        payload.insert("store".into(), json!(false));
     }
 
-    Value::Object(payload)
+    if !context.tools.is_empty() {
+        let mut tools: Vec<Value> = Vec::with_capacity(context.tools.len());
+        for tool in &context.tools {
+            let strict = crate::constrained_sampling::resolve_json_schema_strict_sampling(
+                tool,
+                compat.supports_strict_mode,
+            )?;
+            let parameters =
+                crate::constrained_sampling::json_schema_tool_parameters(tool, strict)?;
+            let mut function = json!({
+                "name": tool.name,
+                "description": tool.description,
+                "parameters": parameters,
+            });
+            // Some services reject a tool definition carrying fields they do not know.
+            if compat.supports_strict_mode {
+                function["strict"] = json!(strict.unwrap_or(false));
+            }
+            tools.push(json!({ "type": "function", "function": function }));
+        }
+        payload.insert("tools".into(), Value::Array(tools));
+        if compat.zai_tool_stream {
+            payload.insert("tool_stream".into(), json!(true));
+        }
+    } else if has_tool_history(&context.messages) {
+        // A conversation holding tool calls is refused by some endpoints unless the
+        // request still declares tools, even when there are none left to offer.
+        payload.insert("tools".into(), Value::Array(Vec::new()));
+    }
+
+    Ok(Value::Object(payload))
+}
+
+/// Who the request is on behalf of: the person, or the agent carrying on by itself.
+///
+/// Anything other than the user having just spoken is the agent continuing, which is what
+/// Copilot means by an agent-initiated request.
+pub(crate) fn initiator(messages: &[Message]) -> &'static str {
+    match messages.last() {
+        Some(Message::User { .. }) => "user",
+        _ => "agent",
+    }
+}
+
+/// Whether the conversation carries an image, in a prompt or in a tool's result.
+pub(crate) fn carries_images(messages: &[Message]) -> bool {
+    let has_image = |content: &[micro_types::ContentBlock]| {
+        content
+            .iter()
+            .any(|block| matches!(block, micro_types::ContentBlock::Image { .. }))
+    };
+    messages.iter().any(|message| match message {
+        Message::User { content, .. } => has_image(content),
+        Message::ToolResult { content, .. } => has_image(content),
+        Message::Assistant(_) => false,
+    })
+}
+
+/// Whether anything in the conversation was a tool call or its result.
+fn has_tool_history(messages: &[Message]) -> bool {
+    messages.iter().any(|message| match message {
+        Message::ToolResult { .. } => true,
+        Message::Assistant(assistant) => !assistant.tool_calls().is_empty(),
+        Message::User { .. } => false,
+    })
 }
 
 /// Convert the conversation to the chat-completions shape: the system prompt as the
 /// leading message, and every tool result as its own `tool` turn keyed by call id.
-fn build_messages(context: &Context) -> Vec<Value> {
+/// The same, with a limit on how long a tool call's id may be.
+///
+/// Mistral takes an id of exactly nine alphanumeric characters and refuses anything else.
+/// The ids are rewritten on the way out and the calls and their results are rewritten to
+/// match, so a conversation stays consistent with itself.
+fn build_messages_for(context: &Context, id_length: Option<usize>) -> Vec<Value> {
+    let mut wire = build_messages_inner(context);
+    if let Some(length) = id_length {
+        shorten_tool_call_ids(&mut wire, length);
+    }
+    wire
+}
+
+fn build_messages_inner(context: &Context) -> Vec<Value> {
     let mut wire: Vec<Value> = Vec::new();
 
     if let Some(system) = &context.system_prompt {
@@ -701,14 +875,21 @@ mod tests {
     use super::*;
     use micro_types::ToolDefinition;
 
+    /// A model as the catalog would hand it over, so each test speaks to the service it
+    /// names rather than to a hand-written approximation of one.
+    fn served_by(provider: &str, id: &str) -> Model {
+        let catalog = micro_models::Catalog::bundled();
+        let model = catalog
+            .by_provider(provider)
+            .find(|model| model.id == id)
+            .unwrap_or_else(|| panic!("{provider} serves {id}"));
+        let mut runtime = model.to_runtime(ThinkingLevel::Off);
+        runtime.max_tokens = 4_096;
+        runtime
+    }
+
     fn model() -> Model {
-        Model {
-            id: "gpt-5".into(),
-            provider: "openrouter".into(),
-            base_url: OPENROUTER_BASE_URL.into(),
-            max_tokens: 4_096,
-            thinking: ThinkingLevel::Off,
-        }
+        served_by("openrouter", "openai/gpt-5.6-terra")
     }
 
     /// Drive the accumulator with the chunks a service would send, and collect what a
@@ -766,10 +947,11 @@ mod tests {
                 name: "grep".into(),
                 description: "search".into(),
                 parameters: parameters.clone(),
+                constrained_sampling: None,
             }],
             ..Context::default()
         };
-        let payload = build_payload(&OPENAI, &model(), &context);
+        let payload = build_payload(&served_by("openai", "gpt-5.6-terra"), &context).unwrap();
 
         assert_eq!(payload["tools"][0]["function"]["parameters"], parameters);
     }
@@ -777,7 +959,7 @@ mod tests {
     #[test]
     fn endpoint_is_not_doubled_up() {
         assert_eq!(
-            endpoint(OPENROUTER_BASE_URL),
+            endpoint("https://openrouter.ai/api/v1"),
             "https://openrouter.ai/api/v1/chat/completions"
         );
         assert_eq!(
@@ -786,30 +968,68 @@ mod tests {
         );
     }
 
+    /// Which field carries the limit is the service's own business.
     #[test]
-    fn each_flavor_spells_its_output_limit_its_own_way() {
-        let payload = build_payload(&OPENROUTER, &model(), &Context::default());
+    fn each_service_spells_its_output_limit_its_own_way() {
+        let payload = build_payload(
+            &served_by("together", "openai/gpt-oss-120b"),
+            &Context::default(),
+        )
+        .unwrap();
         assert_eq!(payload["max_tokens"], 4_096);
         assert_eq!(payload["stream"], true);
         assert_eq!(payload["stream_options"]["include_usage"], true);
 
-        let payload = build_payload(&OPENAI, &model(), &Context::default());
+        let payload =
+            build_payload(&served_by("openai", "gpt-5.6-terra"), &Context::default()).unwrap();
         assert_eq!(payload["max_completion_tokens"], 4_096);
         assert!(payload.get("max_tokens").is_none());
     }
 
+    /// Thinking being off is not a level every service has a name for. A model that
+    /// spells it out is sent that spelling; one that says nothing is sent nothing.
     #[test]
-    fn reasoning_effort_is_sent_only_where_it_is_supported() {
-        let thinking = model().with_thinking(ThinkingLevel::High);
-
-        assert_eq!(
-            build_payload(&OPENROUTER, &thinking, &Context::default())["reasoning_effort"],
-            "high"
-        );
-        assert!(build_payload(&COPILOT, &thinking, &Context::default())
+    fn a_service_is_only_told_thinking_is_off_when_it_has_a_word_for_it() {
+        let unsaid = served_by("openai", "o1");
+        assert!(build_payload(&unsaid, &Context::default())
+            .unwrap()
             .get("reasoning_effort")
             .is_none());
-        assert!(build_payload(&OPENROUTER, &model(), &Context::default())
+
+        // This one names it, and is told.
+        let named = served_by("openai", "gpt-5.6-terra");
+        assert_eq!(named.compat.off(), OffLevel::Named("none".into()));
+        assert_eq!(
+            build_payload(&named, &Context::default()).unwrap()["reasoning_effort"],
+            "none"
+        );
+
+        // A gateway has a word for it of its own, so it is told either way.
+        assert_eq!(
+            build_payload(&model(), &Context::default()).unwrap()["reasoning"]["effort"],
+            "none"
+        );
+    }
+
+    /// OpenRouter normalizes reasoning into an object of its own; OpenAI takes a field.
+    #[test]
+    fn reasoning_is_asked_for_in_the_shape_the_service_accepts() {
+        let openrouter = model().with_thinking(ThinkingLevel::High);
+        assert_eq!(
+            build_payload(&openrouter, &Context::default()).unwrap()["reasoning"]["effort"],
+            "high"
+        );
+
+        let openai = served_by("openai", "gpt-5.6-terra").with_thinking(ThinkingLevel::High);
+        assert_eq!(
+            build_payload(&openai, &Context::default()).unwrap()["reasoning_effort"],
+            "high"
+        );
+
+        // A service that offers no reasoning control is not asked for one.
+        let copilot = served_by("github-copilot", "gpt-4.1").with_thinking(ThinkingLevel::High);
+        assert!(build_payload(&copilot, &Context::default())
+            .unwrap()
             .get("reasoning_effort")
             .is_none());
     }
@@ -821,10 +1041,11 @@ mod tests {
                 name: "read".into(),
                 description: "read a file".into(),
                 parameters: json!({ "type": "object" }),
+                constrained_sampling: None,
             }],
             ..Context::default()
         };
-        let payload = build_payload(&OPENROUTER, &model(), &context);
+        let payload = build_payload(&model(), &context).unwrap();
 
         assert_eq!(payload["tools"][0]["type"], "function");
         assert_eq!(payload["tools"][0]["function"]["name"], "read");
@@ -832,6 +1053,92 @@ mod tests {
             payload["tools"][0]["function"]["parameters"]["type"],
             "object"
         );
+    }
+
+    /// A model whose service does not understand `strict` at all — the gate
+    /// `constrained_sampling` runs through before it can change anything about a request.
+    fn model_without_strict_mode() -> Model {
+        let mut model = model();
+        model.compat.supports_strict_mode = false;
+        model
+    }
+
+    fn tool_asking_for_json_schema_sampling(
+        strict: micro_types::JsonSchemaStrictness,
+    ) -> ToolDefinition {
+        ToolDefinition {
+            name: "grep".into(),
+            description: "search".into(),
+            parameters: json!({
+                "type": "object",
+                "properties": { "pattern": { "type": "string" } },
+                "required": ["pattern"],
+            }),
+            constrained_sampling: Some(micro_types::ConstrainedSampling::JsonSchema { strict }),
+        }
+    }
+
+    /// A tool asking to prefer strict sampling gets it, and its schema is rewritten into
+    /// the strict subset, once the provider says it understands `strict`.
+    #[test]
+    fn a_supported_provider_sends_strict_sampling_a_tool_asked_to_prefer() {
+        let context = Context {
+            tools: vec![tool_asking_for_json_schema_sampling(
+                micro_types::JsonSchemaStrictness::Prefer,
+            )],
+            ..Context::default()
+        };
+        let payload = build_payload(&model(), &context).unwrap();
+
+        assert_eq!(payload["tools"][0]["function"]["strict"], true);
+        assert_eq!(
+            payload["tools"][0]["function"]["parameters"]["additionalProperties"],
+            false
+        );
+    }
+
+    /// `supports_strict_mode: false` is exactly the gate the field name says: a tool that
+    /// only prefers strict sampling gets ordinary sampling instead, silently, and its
+    /// schema is not touched.
+    #[test]
+    fn an_unsupported_provider_is_unaffected_by_a_tool_preferring_strict_sampling() {
+        let original_parameters = json!({
+            "type": "object",
+            "properties": { "pattern": { "type": "string" } },
+            "required": ["pattern"],
+        });
+        let context = Context {
+            tools: vec![tool_asking_for_json_schema_sampling(
+                micro_types::JsonSchemaStrictness::Prefer,
+            )],
+            ..Context::default()
+        };
+        let payload = build_payload(&model_without_strict_mode(), &context).unwrap();
+
+        assert!(
+            payload["tools"][0]["function"].get("strict").is_none(),
+            "a service that was never told about strict fields is not sent one"
+        );
+        assert_eq!(
+            payload["tools"][0]["function"]["parameters"],
+            original_parameters,
+            "the schema is exactly what the tool wrote, untouched"
+        );
+    }
+
+    /// `"require"` is a stronger request than `"prefer"`: offering the tool at all without
+    /// strict sampling would go back on what the caller asked for, so the request fails
+    /// instead of silently downgrading.
+    #[test]
+    fn requiring_strict_sampling_on_an_unsupported_provider_fails_the_request() {
+        let context = Context {
+            tools: vec![tool_asking_for_json_schema_sampling(
+                micro_types::JsonSchemaStrictness::Require,
+            )],
+            ..Context::default()
+        };
+        let error = build_payload(&model_without_strict_mode(), &context).unwrap_err();
+        assert!(error.contains("\"grep\""), "got {error:?}");
     }
 
     #[test]
@@ -858,8 +1165,10 @@ mod tests {
                 Message::tool_result("call_1", "read", "contents", false),
             ],
             tools: Vec::new(),
+            headers: Vec::new(),
+            cache_key: None,
         };
-        let wire = build_messages(&context);
+        let wire = build_messages_for(&context, None);
 
         assert_eq!(wire[0]["role"], "system");
         assert_eq!(wire[1]["role"], "user");
@@ -1105,22 +1414,278 @@ mod tests {
         assert!(stream_error("openrouter", &json!({ "error": null })).is_none());
     }
 
+    /// Copilot serves whichever editor its headers describe, and the catalog is where
+    /// that description lives.
     #[test]
     fn copilot_describes_the_editor_it_serves() {
-        let headers: BTreeMap<_, _> = COPILOT.headers.iter().copied().collect();
+        let headers = served_by("github-copilot", "gpt-4.1").headers;
 
-        assert_eq!(headers["copilot-integration-id"], "vscode-chat");
-        assert_eq!(headers["editor-version"], "vscode/1.107.0");
-        assert_eq!(headers["editor-plugin-version"], "copilot-chat/0.35.0");
-        assert_eq!(headers["user-agent"], "GitHubCopilotChat/0.35.0");
-        assert_eq!(headers["openai-intent"], "conversation-edits");
+        assert_eq!(headers["Copilot-Integration-Id"], "vscode-chat");
+        assert_eq!(headers["Editor-Version"], "vscode/1.107.0");
+        assert_eq!(headers["Editor-Plugin-Version"], "copilot-chat/0.35.0");
+        assert_eq!(headers["User-Agent"], "GitHubCopilotChat/0.35.0");
+    }
+
+    /// Only Copilot is told who started a request, and it is told on every request.
+    #[test]
+    fn copilot_is_recognised_by_name_and_by_address() {
+        assert!(is_copilot("github-copilot", "https://example.test"));
+        assert!(is_copilot(
+            "elsewhere",
+            "https://api.individual.githubcopilot.com"
+        ));
+        assert!(!is_copilot("openrouter", "https://openrouter.ai/api/v1"));
+    }
+
+    /// Naming the conversation is what makes a cached prompt hit on the next turn.
+    #[test]
+    fn a_conversation_is_named_so_its_prompt_can_be_cached() {
+        let context = Context {
+            cache_key: Some("session-1786".into()),
+            ..Context::default()
+        };
+
+        let cached = build_payload(&served_by("openai", "gpt-5.6-terra"), &context).unwrap();
+        assert_eq!(cached["prompt_cache_key"], "session-1786");
+        // Nothing is left behind on the provider's side.
+        assert_eq!(cached["store"], false);
+
+        // A gateway keeps a prompt only for the few minutes it takes to answer, so
+        // naming the conversation buys nothing and is left out.
+        let elsewhere = build_payload(&model(), &context).unwrap();
+        assert!(elsewhere.get("prompt_cache_key").is_none());
+        assert_eq!(elsewhere["store"], false);
+
+        // A service that does not understand being told not to store is not told.
+        let reimplementation =
+            build_payload(&served_by("cerebras", "gpt-oss-120b"), &context).unwrap();
+        assert!(reimplementation.get("store").is_none());
+    }
+
+    /// The field has a limit, and a longer name is refused rather than truncated, so it is
+    /// cut before it is sent.
+    #[test]
+    fn a_name_too_long_to_send_is_cut() {
+        let context = Context {
+            cache_key: Some("x".repeat(200)),
+            ..Context::default()
+        };
+        let payload = build_payload(&served_by("openai", "gpt-5.6-terra"), &context).unwrap();
+        assert_eq!(
+            payload["prompt_cache_key"].as_str().unwrap().len(),
+            PROMPT_CACHE_KEY_MAX
+        );
+    }
+
+    /// A conversation holding tool calls still declares tools, even when there are none
+    /// left to offer: some endpoints refuse it otherwise.
+    #[test]
+    fn a_conversation_with_tool_history_still_declares_tools() {
+        let context = Context {
+            messages: vec![
+                Message::user("read it"),
+                Message::tool_result("call_1", "read", "done", false),
+            ],
+            ..Context::default()
+        };
+        let payload = build_payload(&served_by("openai", "gpt-5.6-terra"), &context).unwrap();
+        assert_eq!(payload["tools"], serde_json::json!([]));
+
+        // A conversation with no tools in it at all says nothing about them.
+        let plain =
+            build_payload(&served_by("openai", "gpt-5.6-terra"), &Context::default()).unwrap();
+        assert!(plain.get("tools").is_none());
+    }
+
+    /// Copilot bills a request the user started differently from one the agent continued.
+    #[test]
+    fn copilot_is_told_who_started_the_request() {
+        assert_eq!(initiator(&[Message::user("hi")]), "user");
+        assert_eq!(
+            initiator(&[
+                Message::user("hi"),
+                Message::tool_result("call_1", "read", "done", false)
+            ]),
+            "agent"
+        );
+        assert_eq!(initiator(&[]), "agent");
     }
 
     #[test]
-    fn openrouter_identifies_the_app_making_the_request() {
-        let headers: BTreeMap<_, _> = OPENROUTER.headers.iter().copied().collect();
+    fn an_image_anywhere_in_the_conversation_is_declared() {
+        let image = micro_types::ContentBlock::Image {
+            data: "AAAA".into(),
+            mime_type: "image/png".into(),
+        };
 
-        assert_eq!(headers["x-title"], "micro");
-        assert!(headers["http-referer"].starts_with("https://"));
+        assert!(!carries_images(&[Message::user("no pictures")]));
+        assert!(carries_images(&[Message::User {
+            content: vec![image.clone()],
+            timestamp: 0,
+        }]));
+        // A tool that returned one counts too.
+        assert!(carries_images(&[Message::ToolResult {
+            tool_call_id: "call_1".into(),
+            tool_name: "read".into(),
+            content: vec![image],
+            is_error: false,
+            timestamp: 0,
+        }]));
+    }
+}
+
+/// The headers that tie a request to the conversation it belongs to.
+///
+/// A service caching a prompt holds it on one machine; these are how the next request in
+/// the same conversation reaches that machine rather than a cold one. Each service spells
+/// it differently, and sending the wrong spelling simply misses the cache.
+pub(crate) fn affinity_headers(
+    format: micro_types::SessionAffinity,
+    key: &str,
+) -> Vec<(&'static str, String)> {
+    use micro_types::SessionAffinity;
+    match format {
+        SessionAffinity::Openai => vec![
+            ("session_id", key.to_string()),
+            ("x-client-request-id", key.to_string()),
+            ("x-session-affinity", key.to_string()),
+        ],
+        SessionAffinity::OpenaiNosession => vec![
+            ("x-client-request-id", key.to_string()),
+            ("x-session-affinity", key.to_string()),
+        ],
+        SessionAffinity::Openrouter => vec![("x-session-id", key.to_string())],
+        SessionAffinity::Mistral => vec![("x-affinity", key.to_string())],
+    }
+}
+
+#[cfg(test)]
+mod affinity {
+    use super::*;
+    use micro_types::SessionAffinity;
+
+    /// Each service spells it its own way, and the wrong spelling just misses the cache.
+    #[test]
+    fn each_service_is_told_in_its_own_words() {
+        let named = |format| {
+            affinity_headers(format, "session-7")
+                .into_iter()
+                .map(|(name, _)| name)
+                .collect::<Vec<_>>()
+        };
+
+        assert_eq!(
+            named(SessionAffinity::Openai),
+            vec!["session_id", "x-client-request-id", "x-session-affinity"]
+        );
+        assert_eq!(
+            named(SessionAffinity::OpenaiNosession),
+            vec!["x-client-request-id", "x-session-affinity"]
+        );
+        assert_eq!(named(SessionAffinity::Openrouter), vec!["x-session-id"]);
+        assert_eq!(named(SessionAffinity::Mistral), vec!["x-affinity"]);
+    }
+
+    #[test]
+    fn the_conversation_is_what_is_named() {
+        let sent = affinity_headers(SessionAffinity::Mistral, "session-7");
+        assert_eq!(sent[0].1, "session-7");
+    }
+}
+
+/// Cut every tool call id down to what the service will take.
+///
+/// A call and the result answering it have to keep naming each other, so both sides are
+/// rewritten together. Two ids that shorten to the same thing would break that pairing, so
+/// a collision is given a different suffix until it is its own.
+fn shorten_tool_call_ids(wire: &mut [Value], length: usize) {
+    let mut mapped: std::collections::BTreeMap<String, String> = Default::default();
+    let mut taken: std::collections::BTreeSet<String> = Default::default();
+
+    let mut shorten = |id: &str| -> String {
+        if let Some(known) = mapped.get(id) {
+            return known.clone();
+        }
+        let plain: String = id.chars().filter(|c| c.is_ascii_alphanumeric()).collect();
+        let mut candidate: String = plain.chars().take(length).collect();
+        let mut attempt = 0u32;
+        while candidate.len() < length || taken.contains(&candidate) {
+            attempt += 1;
+            let seed = format!("{plain}{attempt}");
+            candidate = seed.chars().rev().take(length).collect();
+        }
+        taken.insert(candidate.clone());
+        mapped.insert(id.to_string(), candidate.clone());
+        candidate
+    };
+
+    for message in wire.iter_mut() {
+        if let Some(id) = message.get("tool_call_id").and_then(Value::as_str) {
+            let short = shorten(id);
+            message["tool_call_id"] = Value::String(short);
+        }
+        let Some(calls) = message.get_mut("tool_calls").and_then(Value::as_array_mut) else {
+            continue;
+        };
+        for call in calls {
+            if let Some(id) = call.get("id").and_then(Value::as_str) {
+                let short = shorten(id);
+                call["id"] = Value::String(short);
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod short_ids {
+    use super::*;
+
+    /// A call and the result answering it keep naming each other after both are cut down.
+    #[test]
+    fn a_call_and_its_result_stay_paired() {
+        let mut wire = vec![
+            json!({ "role": "assistant", "tool_calls": [{ "id": "call_abc123def456", "type": "function" }] }),
+            json!({ "role": "tool", "tool_call_id": "call_abc123def456", "content": "done" }),
+        ];
+        shorten_tool_call_ids(&mut wire, 9);
+
+        let called = wire[0]["tool_calls"][0]["id"].as_str().unwrap();
+        let answered = wire[1]["tool_call_id"].as_str().unwrap();
+        assert_eq!(called, answered, "still the same call");
+        assert_eq!(called.len(), 9);
+        assert!(called.chars().all(|c| c.is_ascii_alphanumeric()));
+    }
+
+    /// Two ids that would cut down to the same thing are kept apart, or the model would
+    /// see one call answered twice.
+    #[test]
+    fn two_calls_never_become_one() {
+        let mut wire = vec![json!({ "role": "assistant", "tool_calls": [
+                { "id": "call_same_prefix_one" },
+                { "id": "call_same_prefix_two" }
+            ] })];
+        shorten_tool_call_ids(&mut wire, 9);
+
+        let first = wire[0]["tool_calls"][0]["id"].as_str().unwrap();
+        let second = wire[0]["tool_calls"][1]["id"].as_str().unwrap();
+        assert_ne!(first, second);
+        assert_eq!(first.len(), 9);
+        assert_eq!(second.len(), 9);
+    }
+
+    /// A service that takes any id is left alone.
+    #[test]
+    fn an_unlimited_service_keeps_its_ids() {
+        let context = Context {
+            messages: vec![Message::tool_result(
+                "call_abc123def456",
+                "read",
+                "ok",
+                false,
+            )],
+            ..Default::default()
+        };
+        let wire = build_messages_for(&context, None);
+        assert_eq!(wire[0]["tool_call_id"], "call_abc123def456");
     }
 }

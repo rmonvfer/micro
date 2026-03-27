@@ -1,7 +1,7 @@
 # micro
 
-A coding agent that runs in a terminal. It reads and edits files in a workspace you choose,
-runs shell commands when you let it, and asks before doing anything it cannot take back.
+A coding agent that runs in a terminal. It reads and edits files in a workspace you choose
+and runs shell commands there, once you have said the project may run its own code.
 One native binary, no runtime to install.
 
 ```bash
@@ -61,27 +61,23 @@ Every run is written to `~/.micro/sessions/` as it happens. `micro sessions list
 those from the current workspace, `--all` shows every one, and `--resume <ID>` or
 `--continue` picks a conversation back up where it stopped.
 
-## Approval
+## Trusting a project
 
-The agent asks before it acts, and how much it asks is the `--approve` mode.
+A project can carry things it asks micro to run: its own settings, the extensions it ships,
+the skills and prompts it offers. Reading a project is one thing; running what it contains
+is another, and that is the one thing micro asks about.
 
-**cautious**, the default, lets it read freely — `read`, `ls`, `grep`, `find` — and asks
-about everything that changes a file or runs a command. It is the only mode that is safe
-without knowing anything about the workspace. **workspace** additionally lets it write and
-edit inside the workspace root, which the file tools already confine it to, while still
-asking about every shell command, because a command can reach anywhere. **unrestricted**
-allows everything except the handful of commands that cannot be undone.
+A project carrying none of it — no `.micro/` directory — is used without a question, which
+is most of them. One that does is answered by whatever was decided about it before, then by
+the `default_project_trust` setting (`ask`, `always` or `never`), and only then by asking.
+With nobody at a terminal there is nobody to ask, so `--print` and `--rpc` leave an
+undecided project alone rather than running its code unasked. `/trust` settles it either
+way, and the decision is remembered in `~/.micro/trust.json`. `--approve` trusts the
+project for one run and `--no-approve` refuses it for one run; neither is written down,
+which is what a scripted run wants.
 
-A shell command gets more than a string comparison. The command line is split into the
-programs it actually runs and each is judged on its own, so a rule permitting `git status`
-says nothing about `git status; rm -rf ~`. Anything the parser will not vouch for —
-substitution, subshells, expansion — is escalated rather than assumed harmless.
-
-Only `--print` can ask you a question: the interface holds the terminal in raw mode and
-cannot prompt, so there it refuses the call and explains why instead of running it
-unapproved. Standing rules live in `~/.micro/policy.json`, and answering "allow for the
-session" remembers exactly that invocation and nothing broader. See
-[docs/configuration.md](docs/configuration.md).
+Tool calls themselves are not gated: once micro is running, it acts. `--tools` narrows what
+the model is offered to a named list, and `--exclude-tools` withholds particular ones.
 
 ## How a request flows
 
@@ -97,8 +93,7 @@ complete, the agent runs whatever tools it asked for, appends each result to the
 conversation, and goes around again until the model stops asking for tools.
 
 The crates either side of that path do one thing each. `micro-types` holds the conversation
-model every layer speaks. `micro-tools` holds the capabilities the model can invoke;
-`micro-policy` wraps each of them in the approval gate. `micro-models` is the model catalog,
+model every layer speaks. `micro-tools` holds the capabilities the model can invoke. `micro-models` is the model catalog,
 `micro-auth` the credentials, `micro-context` the project instructions and the compaction
 that keeps a long conversation inside the context window, and `micro-session` the durable
 log. `micro-tui` draws the interface and `micro-testkit` provides the fakes the agent loop

@@ -16,6 +16,8 @@ serde_json = { workspace = true }
 tokio = { workspace = true }
 
 [dev-dependencies]
+micro-auth = { workspace = true }
+
 # `test-util` lets the retry tests run the agent's backoff on paused virtual time
 # instead of waiting out the real delays.
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "test-util"] }

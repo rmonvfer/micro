@@ -117,7 +117,10 @@ pub fn parse_openrouter(body: &str) -> Result<Vec<ModelDef>> {
                     output: per_million(pricing.completion.as_deref()),
                     cache_read: per_million(pricing.input_cache_read.as_deref()),
                     cache_write: per_million(pricing.input_cache_write.as_deref()),
+                    tiers: Vec::new(),
                 },
+                compat: Default::default(),
+                thinking: Default::default(),
             }
         })
         .collect();
@@ -162,6 +165,8 @@ pub fn parse_copilot(body: &str, base_url: &str) -> Result<Vec<ModelDef>> {
                 headers: BTreeMap::new(),
                 aliases: Vec::new(),
                 cost: ModelCost::default(),
+                compat: Default::default(),
+                thinking: Default::default(),
             }
         })
         .collect();
@@ -543,7 +548,11 @@ mod tests {
     #[test]
     fn merging_a_copilot_listing_keeps_bundled_pricing_and_headers() {
         let mut catalog = Catalog::bundled();
-        let priced_before = catalog.get("github-copilot", "claude-opus-5").unwrap().cost;
+        let priced_before = catalog
+            .get("github-copilot", "claude-opus-5")
+            .unwrap()
+            .cost
+            .clone();
 
         catalog.merge_listing(parse_copilot(COPILOT_SAMPLE, COPILOT_BASE_URL).unwrap());
 
@@ -560,7 +569,7 @@ mod tests {
         catalog
             .apply_overrides(
                 r#"{"providers": {"openrouter": {"models": [
-                    {"id": "anthropic/claude-opus-5", "cost": {"input": 999.0, "output": 999.0}}
+                    {"id": "anthropic/claude-opus-5", "aliases": ["opus"], "cost": {"input": 999.0, "output": 999.0}}
                 ]}}}"#,
             )
             .unwrap();

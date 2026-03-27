@@ -9,7 +9,7 @@ use crate::AuthError;
 use crate::AuthStore;
 use crate::Credential;
 use crate::Result;
-use crate::PROVIDERS;
+use crate::providers;
 use serde_json::Value;
 use std::collections::BTreeMap;
 use std::fmt;
@@ -171,12 +171,17 @@ impl AuthStore {
             })?;
 
         let mut entries = Vec::new();
-        let mut credentials = self.lock();
+        let mut cache = self.lock();
+        // Importing writes the file like any other change, so it takes the same lock and
+        // works from what is on disk now rather than what was there at startup.
+        let _held = crate::lockfile::FileLock::acquire(&self.path)
+            .map_err(|error| crate::storage_error(&self.path, error))?;
+        let mut credentials = crate::load(&self.path)?;
         let mut changed = false;
 
         for (name, value) in source {
             let provider = canonical_provider(&name).to_string();
-            let outcome = if !PROVIDERS.contains(&provider.as_str()) {
+            let outcome = if !providers().contains(&provider.as_str()) {
                 ImportOutcome::Unsupported
             } else {
                 match serde_json::from_value::<Credential>(value) {
@@ -203,8 +208,10 @@ impl AuthStore {
 
         if changed {
             save(&self.path, &credentials)?;
+            cache.revision = crate::revision_of(&self.path);
         }
-        drop(credentials);
+        cache.credentials = credentials;
+        drop(cache);
 
         entries.sort_by(|left, right| left.provider.cmp(&right.provider));
         Ok(ImportReport {
@@ -320,8 +327,8 @@ mod tests {
         );
         let report = fixture.store.import_from(&fixture.source, false).unwrap();
 
-        assert_eq!(outcome(&report, "gemini"), ImportOutcome::Imported);
-        assert_eq!(fixture.store.providers(), vec!["gemini"]);
+        assert_eq!(outcome(&report, "google"), ImportOutcome::Imported);
+        assert_eq!(fixture.store.providers(), vec!["google"]);
     }
 
     #[test]
@@ -355,13 +362,13 @@ mod tests {
         let fixture = fixture(
             "unsupported",
             r#"{
-                "zai": { "type": "api_key", "key": "fixture-zai" },
+                "not-a-service": { "type": "api_key", "key": "fixture" },
                 "openrouter": { "type": "api_key", "key": "fixture-openrouter" }
             }"#,
         );
         let report = fixture.store.import_from(&fixture.source, false).unwrap();
 
-        assert_eq!(outcome(&report, "zai"), ImportOutcome::Unsupported);
+        assert_eq!(outcome(&report, "not-a-service"), ImportOutcome::Unsupported);
         assert_eq!(report.imported(), 1);
         assert_eq!(fixture.store.providers(), vec!["openrouter"]);
     }
@@ -379,7 +386,7 @@ mod tests {
         let report = fixture.store.import_from(&fixture.source, false).unwrap();
 
         assert_eq!(outcome(&report, "anthropic"), ImportOutcome::Unreadable);
-        assert_eq!(outcome(&report, "gemini"), ImportOutcome::Unreadable);
+        assert_eq!(outcome(&report, "google"), ImportOutcome::Unreadable);
         assert_eq!(outcome(&report, "openrouter"), ImportOutcome::Imported);
         assert_eq!(fixture.store.providers(), vec!["openrouter"]);
     }
@@ -425,7 +432,7 @@ mod tests {
     fn nothing_is_written_when_nothing_is_imported() {
         let fixture = fixture(
             "no-write",
-            r#"{ "zai": { "type": "api_key", "key": "x" } }"#,
+            r#"{ "not-a-service": { "type": "api_key", "key": "x" } }"#,
         );
         fixture.store.import_from(&fixture.source, false).unwrap();
 

@@ -13,8 +13,12 @@ pub enum Action {
     Ignored,
     /// Ctrl+C: abort the running turn, or leave when there is nothing to abort.
     Interrupt,
-    /// Ctrl+D: leave.
-    Quit,
+    /// Ctrl+D: leave when there is nothing written, delete forward when there is.
+    ///
+    /// The same key means both because that is what a readline prompt has always meant,
+    /// and a half-written message is not something to lose to a keystroke reaching for
+    /// the character in front of the cursor.
+    QuitOrDelete,
     Submit,
     Insert(String),
     Newline,
@@ -50,13 +54,17 @@ pub enum Action {
     /// Move the conversation a page at a time.
     PageUp,
     PageDown,
-    /// Move it by a few lines, from the wheel.
-    ScrollUp(usize),
-    ScrollDown(usize),
+    /// Move the conversation by a few lines, from the wheel or arrows.
+    ScrollUp,
+    ScrollDown,
     /// Arm jump-to-char: the next printable key moves the cursor to it.
-    ArmJump { forward: bool },
+    ArmJump {
+        forward: bool,
+    },
     /// Step to the next or previous model in the catalog.
-    CycleModel { forward: bool },
+    CycleModel {
+        forward: bool,
+    },
     /// Open the model picker.
     SelectModel,
     /// Put the last answer on the system clipboard.
@@ -81,9 +89,6 @@ pub enum Action {
     Resize,
 }
 
-/// Lines one notch of the wheel moves.
-const WHEEL_LINES: usize = 3;
-
 /// The intent behind a terminal event.
 pub fn action_for(event: &Event) -> Action {
     match event {
@@ -93,10 +98,14 @@ pub fn action_for(event: &Event) -> Action {
         // A paste is its own action: it is cleaned, and a large one is held aside behind a
         // marker rather than filling the prompt.
         Event::Paste(text) => Action::Paste(text.clone()),
-        // The screen is ours now, so the wheel is ours to handle.
+        // The mouse is the terminal's, so nothing here asks for it. Taking it would buy
+        // the wheel and cost selection, and micro has no selection of its own to put in
+        // its place: a conversation you cannot copy out of is worse than one you scroll
+        // with the keyboard. Wheel events still arrive from a terminal that sends them
+        // unasked, and are answered when they do.
         Event::Mouse(mouse) => match mouse.kind {
-            crossterm::event::MouseEventKind::ScrollUp => Action::ScrollUp(WHEEL_LINES),
-            crossterm::event::MouseEventKind::ScrollDown => Action::ScrollDown(WHEEL_LINES),
+            crossterm::event::MouseEventKind::ScrollUp => Action::ScrollUp,
+            crossterm::event::MouseEventKind::ScrollDown => Action::ScrollDown,
             _ => Action::Ignored,
         },
         Event::Resize(..) => Action::Resize,
@@ -166,7 +175,7 @@ fn key_action(key: &KeyEvent) -> Action {
 fn control_action(character: char) -> Action {
     match character.to_ascii_lowercase() {
         'c' => Action::Interrupt,
-        'd' => Action::Quit,
+        'd' => Action::QuitOrDelete,
         'a' => Action::MoveLineStart,
         'e' => Action::MoveLineEnd,
         'b' => Action::MoveLeft,
@@ -202,6 +211,110 @@ fn alt_action(character: char) -> Action {
         '\u{7f}' => Action::DeleteWordBefore,
         _ => Action::Ignored,
     }
+}
+
+/// A key press as a person writes it: `ctrl+h`, `alt+enter`, `shift+f5`.
+///
+/// The spelling ohm uses for a registered shortcut, so a key an extension asked for is
+/// recognised by the name it asked for it under.
+pub fn key_name(event: &Event) -> Option<String> {
+    let Event::Key(key) = event else {
+        return None;
+    };
+    if key.kind == KeyEventKind::Release {
+        return None;
+    }
+
+    let mut parts = Vec::new();
+    if key.modifiers.contains(KeyModifiers::CONTROL) {
+        parts.push("ctrl".to_string());
+    }
+    if key.modifiers.contains(KeyModifiers::ALT) {
+        parts.push("alt".to_string());
+    }
+    // Shift is written only where it is not already in the character: `shift+f5`, but `A`
+    // rather than `shift+a`.
+    let named = match key.code {
+        KeyCode::Char(character) => character.to_ascii_lowercase().to_string(),
+        KeyCode::Enter => "enter".to_string(),
+        KeyCode::Tab | KeyCode::BackTab => "tab".to_string(),
+        KeyCode::Esc => "escape".to_string(),
+        KeyCode::Backspace => "backspace".to_string(),
+        KeyCode::Delete => "delete".to_string(),
+        KeyCode::Up => "up".to_string(),
+        KeyCode::Down => "down".to_string(),
+        KeyCode::Left => "left".to_string(),
+        KeyCode::Right => "right".to_string(),
+        KeyCode::Home => "home".to_string(),
+        KeyCode::End => "end".to_string(),
+        KeyCode::PageUp => "pageup".to_string(),
+        KeyCode::PageDown => "pagedown".to_string(),
+        KeyCode::F(number) => format!("f{number}"),
+        _ => return None,
+    };
+    if key.modifiers.contains(KeyModifiers::SHIFT) && !matches!(key.code, KeyCode::Char(_)) {
+        parts.push("shift".to_string());
+    }
+    parts.push(named);
+    Some(parts.join("+"))
+}
+
+/// A key press as the terminal would have sent it: the bytes a program reading raw stdin
+/// sees, which is what `ctx.ui.onTerminalInput` hands an extension.
+///
+/// crossterm keeps only the key it parsed those bytes into, not the bytes themselves, so
+/// this reconstructs the common ones — a printable character as its own UTF-8, a control
+/// key as the escape sequence a terminal emits for it — rather than replaying what was
+/// actually typed. `None` for anything with no terminal representation worth reconstructing
+/// (a mouse event, a resize), which is not offered to an extension in the first place.
+pub fn key_to_data(event: &Event) -> Option<String> {
+    let Event::Key(key) = event else {
+        return None;
+    };
+    if key.kind == KeyEventKind::Release {
+        return None;
+    }
+
+    let control = key.modifiers.contains(KeyModifiers::CONTROL);
+    let alt = key.modifiers.contains(KeyModifiers::ALT);
+
+    let plain = match key.code {
+        KeyCode::Char(character) if control => {
+            // A terminal sends a lowercase letter under control as the control byte for
+            // it: ctrl+a is 0x01 through ctrl+z is 0x1a, following the letter's position
+            // in the alphabet.
+            let lower = character.to_ascii_lowercase();
+            if lower.is_ascii_lowercase() {
+                let byte = (lower as u8) - b'a' + 1;
+                (byte as char).to_string()
+            } else {
+                character.to_string()
+            }
+        }
+        KeyCode::Char(character) => character.to_string(),
+        KeyCode::Enter => "\r".to_string(),
+        KeyCode::Tab => "\t".to_string(),
+        KeyCode::BackTab => "\x1b[Z".to_string(),
+        KeyCode::Esc => "\x1b".to_string(),
+        KeyCode::Backspace => "\x7f".to_string(),
+        KeyCode::Delete => "\x1b[3~".to_string(),
+        KeyCode::Up => "\x1b[A".to_string(),
+        KeyCode::Down => "\x1b[B".to_string(),
+        KeyCode::Right => "\x1b[C".to_string(),
+        KeyCode::Left => "\x1b[D".to_string(),
+        KeyCode::Home => "\x1b[H".to_string(),
+        KeyCode::End => "\x1b[F".to_string(),
+        KeyCode::PageUp => "\x1b[5~".to_string(),
+        KeyCode::PageDown => "\x1b[6~".to_string(),
+        _ => return None,
+    };
+
+    // Alt is sent as the escape character ahead of the key it modifies, the way a terminal
+    // in the common 8-bit-clean convention sends it.
+    Some(match alt {
+        true => format!("\x1b{plain}"),
+        false => plain,
+    })
 }
 
 #[cfg(test)]
@@ -283,15 +396,49 @@ mod tests {
         assert_eq!(action_for(&plain(KeyCode::Down)), Action::MoveDown);
     }
 
-    /// The page keys move the cursor inside the prompt, the way ohm binds them. The
-    /// transcript is the terminal's to scroll, with its own wheel and its own keys.
+    /// The page keys move the conversation; the prompt is for editing, not reading.
     #[test]
-    fn the_page_keys_move_within_the_prompt() {
+    fn the_page_keys_scroll_the_conversation() {
         assert_eq!(action_for(&plain(KeyCode::PageUp)), Action::PageUp);
         assert_eq!(action_for(&plain(KeyCode::PageDown)), Action::PageDown);
         assert_eq!(
             action_for(&key(KeyCode::Home, KeyModifiers::CONTROL)),
             Action::MoveLineStart
+        );
+    }
+
+    #[test]
+    fn the_wheel_scrolls_the_conversation() {
+        use crossterm::event::MouseEvent;
+        use crossterm::event::MouseEventKind;
+
+        assert_eq!(
+            action_for(&Event::Mouse(MouseEvent {
+                kind: MouseEventKind::ScrollUp,
+                column: 0,
+                row: 0,
+                modifiers: KeyModifiers::NONE,
+            })),
+            Action::ScrollUp
+        );
+        assert_eq!(
+            action_for(&Event::Mouse(MouseEvent {
+                kind: MouseEventKind::ScrollDown,
+                column: 0,
+                row: 0,
+                modifiers: KeyModifiers::NONE,
+            })),
+            Action::ScrollDown
+        );
+        assert_eq!(
+            action_for(&Event::Mouse(MouseEvent {
+                kind: MouseEventKind::Down(crossterm::event::MouseButton::Left),
+                column: 0,
+                row: 0,
+                modifiers: KeyModifiers::NONE,
+            })),
+            Action::Ignored,
+            "a click is still the terminal's to select with"
         );
     }
 
@@ -326,5 +473,78 @@ mod tests {
     #[test]
     fn a_resize_asks_for_a_repaint() {
         assert_eq!(action_for(&Event::Resize(80, 24)), Action::Resize);
+    }
+
+    #[test]
+    fn a_key_is_named_the_way_a_shortcut_asks_for_it() {
+        assert_eq!(
+            key_name(&key(KeyCode::Char('h'), KeyModifiers::CONTROL)).as_deref(),
+            Some("ctrl+h")
+        );
+        assert_eq!(
+            key_name(&key(KeyCode::Enter, KeyModifiers::ALT)).as_deref(),
+            Some("alt+enter")
+        );
+        assert_eq!(
+            key_name(&key(KeyCode::F(5), KeyModifiers::SHIFT)).as_deref(),
+            Some("shift+f5")
+        );
+        assert_eq!(key_name(&plain(KeyCode::Esc)).as_deref(), Some("escape"));
+        // A capital letter is the character, not a modifier and a letter.
+        assert_eq!(
+            key_name(&key(KeyCode::Char('A'), KeyModifiers::SHIFT)).as_deref(),
+            Some("a")
+        );
+    }
+
+    #[test]
+    fn a_plain_character_becomes_its_own_utf8() {
+        assert_eq!(
+            key_to_data(&plain(KeyCode::Char('j'))).as_deref(),
+            Some("j")
+        );
+        assert_eq!(
+            key_to_data(&key(KeyCode::Char('J'), KeyModifiers::SHIFT)).as_deref(),
+            Some("J")
+        );
+    }
+
+    #[test]
+    fn a_control_letter_becomes_its_control_byte() {
+        assert_eq!(
+            key_to_data(&key(KeyCode::Char('a'), KeyModifiers::CONTROL)).as_deref(),
+            Some("\x01")
+        );
+        assert_eq!(
+            key_to_data(&key(KeyCode::Char('z'), KeyModifiers::CONTROL)).as_deref(),
+            Some("\x1a")
+        );
+    }
+
+    #[test]
+    fn named_keys_become_the_escape_sequences_a_terminal_sends() {
+        assert_eq!(key_to_data(&plain(KeyCode::Enter)).as_deref(), Some("\r"));
+        assert_eq!(key_to_data(&plain(KeyCode::Esc)).as_deref(), Some("\x1b"));
+        assert_eq!(key_to_data(&plain(KeyCode::Up)).as_deref(), Some("\x1b[A"));
+        assert_eq!(
+            key_to_data(&plain(KeyCode::Backspace)).as_deref(),
+            Some("\x7f")
+        );
+    }
+
+    #[test]
+    fn alt_prefixes_the_escape_character() {
+        assert_eq!(
+            key_to_data(&key(KeyCode::Char('b'), KeyModifiers::ALT)).as_deref(),
+            Some("\x1bb")
+        );
+    }
+
+    #[test]
+    fn a_release_and_a_non_key_event_have_no_data() {
+        let mut event = KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE);
+        event.kind = KeyEventKind::Release;
+        assert_eq!(key_to_data(&Event::Key(event)), None);
+        assert_eq!(key_to_data(&Event::Resize(80, 24)), None);
     }
 }

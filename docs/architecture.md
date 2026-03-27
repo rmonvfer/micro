@@ -16,8 +16,8 @@ capabilities the model can invoke. `micro-auth` holds credentials. `micro-contex
 project instructions and compacts a conversation that is outgrowing its window.
 `micro-models` is the catalog of which models exist, what they cost, and where they live.
 
-`micro-policy` depends on `micro-tools` and decides what may run. `micro-agent` depends on
-the provider, the tools, and the context crates, and runs the loop that ties them together.
+`micro-agent` depends on the provider, the tools, and the context crates, and runs the loop
+that ties them together.
 `micro-session` writes conversations to disk. `micro-tui` draws the interface over an agent.
 `micro-cli` is the entry point that assembles all of it. `micro-testkit` provides the test
 doubles the agent loop is exercised against, and `micro-config` and `micro-commands` hold
@@ -54,30 +54,25 @@ truncated mid-JSON can still parse into something plausible, and running that is
 asking the model to try again. That judgment lives in one place because the providers do not
 get a vote.
 
-## The policy gate wraps tools at one point
+## Trusting a project is decided once, before its code is read
 
-`micro-policy` could have been a check the agent performs before dispatching a call. It is
-instead a decorator around the tool itself:
+A project can carry code micro would otherwise run without being asked: the extensions it
+ships, the skills and prompts it offers, the settings it sets. That decision is made once,
+in `main`, before anything of the project's is loaded:
 
 ```rust
-let tools = micro_policy::gated_tools(micro_tools::builtin_tools(root), engine);
+let trusted = project_trusted(&root, &settings, !cli.print && !cli.rpc).await;
+let built = runtime::build(&root, &selection, resume, &settings, trusted).await?;
 ```
 
-`Gated` implements `Tool` by wrapping a `Tool`, so the agent receives an ordinary tool list
-and has no approval logic in it at all. The gate sits on the single path a call takes, which
-means there is no second path that could miss it. A future caller that assembles its own
-tool list gets the check by wrapping, not by remembering to ask.
+Loading is where the gate belongs rather than at each point of use, because a skill that was
+never read cannot steer a turn and an extension that was never started cannot register a
+tool. Discovery takes the answer and skips the project's own directory, so nothing
+downstream needs to know a decision was made.
 
-Keeping it out of the agent also keeps the interface out of the policy. `PolicyEngine`
-resolves rules to Allow, Deny, or Ask, and when it lands on Ask it delegates to an injected
-`Approver`. The crate draws nothing and reads no keys, so the same rules serve a terminal
-prompt, an interface that refuses because it cannot prompt, and a test that answers from a
-script.
-
-The decision itself is layered from most specific to least: an exact rule for this
-invocation, then a prefix rule, then a rule for the tool, then what the mode says. A command
-that cannot be undone is refused ahead of all of that, and only an exact rule naming that
-precise command overrides it.
+A project carrying none of it is not asked about at all, which is what keeps the question
+rare enough to mean something. Tool calls are not gated: `micro-tools` hands the agent a
+list, `--tools` and `--exclude-tools` decide what is on it, and everything on it runs.
 
 ## Persistence goes through a recorder channel
 
@@ -99,11 +94,12 @@ The channel also decouples the two rates. The agent never waits on a filesystem 
 the writer never holds up a turn. Dropping the agent closes the sender, which ends the
 writer, which is how the process knows every message reached the log before it exits.
 
-The same separation explains why compaction does not touch the log. When a conversation
-approaches the context window, `micro-context` replaces its older half with a summary, but
-only in the agent's live message list — what was already recorded stays recorded. The
-transcript on disk is a full record; compaction is a property of the process's context.
-A resumed session gets the whole history back and compacts again from scratch.
+Compaction is written down rather than only applied. When a conversation approaches the
+context window, `micro-context` replaces its older half with a summary, and the summary is
+recorded beside the log along with where the conversation now starts reading from. Nothing
+is deleted — every message stays on disk, and the tree still shows the stretch the summary
+stands for — but a resumed session opens on the summary instead of paying to write the
+same one again.
 
 ## Stream events carry deltas
 

@@ -26,6 +26,9 @@ struct Inner {
     queued: Mutex<VecDeque<Result<String, String>>>,
     standing: Mutex<Result<String, String>>,
     calls: Mutex<Vec<Value>>,
+    /// What [`Tool::execution_mode`] reports. `None` by default, matching a tool with no
+    /// opinion on how its calls are scheduled against the rest of a turn's.
+    execution_mode: Option<micro_types::ToolExecutionMode>,
 }
 
 impl FakeTool {
@@ -38,10 +41,12 @@ impl FakeTool {
                     description: format!("test double for {name}"),
                     name,
                     parameters: json!({ "type": "object", "properties": {} }),
+                    constrained_sampling: None,
                 },
                 queued: Mutex::new(VecDeque::new()),
                 standing: Mutex::new(Ok("ok".to_string())),
                 calls: Mutex::new(Vec::new()),
+                execution_mode: None,
             }),
         }
     }
@@ -52,6 +57,17 @@ impl FakeTool {
 
     pub fn with_parameters(self, parameters: Value) -> Self {
         self.mutate(|definition| definition.parameters = parameters)
+    }
+
+    /// Declare how this tool's calls are scheduled against the rest of a turn's, the way
+    /// an extension's `executionMode` does.
+    pub fn with_execution_mode(self, mode: micro_types::ToolExecutionMode) -> Self {
+        let mut inner = Arc::try_unwrap(self.inner)
+            .unwrap_or_else(|_| panic!("configure a FakeTool before sharing it with an agent"));
+        inner.execution_mode = Some(mode);
+        FakeTool {
+            inner: Arc::new(inner),
+        }
     }
 
     /// Succeed with `output` on every call.
@@ -123,6 +139,10 @@ impl Tool for FakeTool {
         self.inner.definition.clone()
     }
 
+    fn execution_mode(&self) -> Option<micro_types::ToolExecutionMode> {
+        self.inner.execution_mode
+    }
+
     async fn execute(&self, arguments: &Value) -> Result<String, String> {
         self.inner
             .calls
@@ -176,6 +196,22 @@ mod tests {
         assert_eq!(tool.execute(&json!({})).await, Ok("first".into()));
         assert_eq!(tool.execute(&json!({})).await, Err("second failed".into()));
         assert_eq!(tool.execute(&json!({})).await, Ok("fallback".into()));
+    }
+
+    #[test]
+    fn a_default_tool_has_no_opinion_on_how_it_is_scheduled() {
+        let tool = FakeTool::new("read");
+        assert_eq!(tool.execution_mode(), None);
+    }
+
+    #[test]
+    fn a_configured_execution_mode_is_reported() {
+        let tool = FakeTool::new("write")
+            .with_execution_mode(micro_types::ToolExecutionMode::Sequential);
+        assert_eq!(
+            tool.execution_mode(),
+            Some(micro_types::ToolExecutionMode::Sequential)
+        );
     }
 
     #[test]

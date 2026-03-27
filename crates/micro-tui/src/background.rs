@@ -9,6 +9,13 @@
 //! reply reaching the event stream would arrive as `Alt+]` followed by every character of
 //! `11;rgb:...` typed into the prompt. Reading the reply off the terminal ourselves, before
 //! anything else is listening, is what keeps it out of the editor.
+//!
+//! Which is why the terminal is asked exactly once, at startup, and the answer kept. A
+//! session can ask for the automatic palette again — `/theme auto` — long after the event
+//! stream has taken the input, and a second round trip then would be read by two readers at
+//! once: some of the reply would land in the prompt, and some of what the user typed would
+//! be eaten as though it were the reply. A terminal's background does not change under a
+//! running program often enough to be worth that.
 
 use crate::theme::theme_for_rgb;
 use crate::theme::Confidence;
@@ -53,7 +60,7 @@ pub fn detect_theme() -> Theme {
         return Theme::from_env();
     }
 
-    match query(TIMEOUT) {
+    match asked() {
         Some(rgb) => Theme::resolve_setting(
             setting.as_deref(),
             Detection {
@@ -64,6 +71,25 @@ pub fn detect_theme() -> Theme {
         None => Theme::from_env(),
     }
 }
+
+/// What the terminal said its background was, asking it the first time and remembering.
+///
+/// Called again once the event stream is running, this hands back what was learned at
+/// startup rather than asking a second time, because by then the input belongs to somebody
+/// else.
+fn asked() -> Option<(u8, u8, u8)> {
+    *ANSWER.get_or_init(|| query(TIMEOUT))
+}
+
+/// Ask the terminal now, while nothing else is reading, so that asking later is free.
+///
+/// Called once before the event stream is built. Doing it here rather than leaving it to
+/// the first caller is what makes `/theme auto` mid-session safe.
+pub fn prime() {
+    let _ = asked();
+}
+
+static ANSWER: std::sync::OnceLock<Option<(u8, u8, u8)>> = std::sync::OnceLock::new();
 
 /// Whether the terminal has to be asked at all.
 ///

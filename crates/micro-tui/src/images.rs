@@ -95,7 +95,9 @@ pub fn cell_size(
     let scale = scale.min(1.0);
 
     let columns = ((width_px * scale) / CELL_WIDTH_PX as f64).round().max(1.0) as usize;
-    let rows = ((height_px * scale) / CELL_HEIGHT_PX as f64).round().max(1.0) as usize;
+    let rows = ((height_px * scale) / CELL_HEIGHT_PX as f64)
+        .round()
+        .max(1.0) as usize;
     (columns.min(max_columns), rows.max(1))
 }
 
@@ -138,7 +140,11 @@ mod tests {
         let encoded = encode_kitty(&data, 10, 5);
 
         assert_eq!(encoded.matches("\x1b_G").count(), 3);
-        assert_eq!(encoded.matches("m=1;").count(), 2, "two chunks have more to come");
+        assert_eq!(
+            encoded.matches("m=1;").count(),
+            2,
+            "two chunks have more to come"
+        );
         assert_eq!(encoded.matches("m=0;").count(), 1, "and the last says so");
     }
 
@@ -164,7 +170,10 @@ mod tests {
         // Twice as wide as it is tall, in a space too narrow for it.
         let (columns, rows) = cell_size(900, 450, 50, None);
         assert_eq!(columns, 50);
-        assert_eq!(rows, 13, "half the width in pixels, and cells are twice as tall");
+        assert_eq!(
+            rows, 13,
+            "half the width in pixels, and cells are twice as tall"
+        );
     }
 
     #[test]

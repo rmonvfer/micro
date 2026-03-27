@@ -1,13 +1,25 @@
 //! The conversation model shared by every layer: content blocks, messages, usage,
 //! and the events a provider emits while a response streams in.
 
+mod compat;
 mod events;
 mod model;
+mod tool;
 
+pub use compat::CacheControlFormat;
+pub use compat::Compat;
+pub use compat::MaxTokensField;
+pub use compat::OffLevel;
+pub use compat::SessionAffinity;
+pub use compat::ThinkingFormat;
 pub use events::AgentEvent;
 pub use events::StreamEvent;
 pub use model::Model;
 pub use model::ThinkingLevel;
+pub use tool::ConstrainedSampling;
+pub use tool::GrammarVariants;
+pub use tool::JsonSchemaStrictness;
+pub use tool::ToolExecutionMode;
 
 use serde::Deserialize;
 use serde::Serialize;
@@ -180,10 +192,26 @@ impl Message {
         text: impl Into<String>,
         is_error: bool,
     ) -> Self {
+        Message::tool_result_content(
+            tool_call_id,
+            tool_name,
+            vec![ContentBlock::text(text)],
+            is_error,
+        )
+    }
+
+    /// A result the model reads as content rather than as text, which is how a tool hands
+    /// back something looked at instead of read.
+    pub fn tool_result_content(
+        tool_call_id: impl Into<String>,
+        tool_name: impl Into<String>,
+        content: Vec<ContentBlock>,
+        is_error: bool,
+    ) -> Self {
         Message::ToolResult {
             tool_call_id: tool_call_id.into(),
             tool_name: tool_name.into(),
-            content: vec![ContentBlock::text(text)],
+            content,
             is_error,
             timestamp: now_ms(),
         }
@@ -204,6 +232,11 @@ pub struct ToolDefinition {
     pub name: String,
     pub description: String,
     pub parameters: Value,
+    /// A provider-side sampling directive for this tool's arguments. `None` is by far the
+    /// common case: a provider crate reads this only for the small number of tools that
+    /// ask for it, and leaves everything else to ordinary sampling.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub constrained_sampling: Option<ConstrainedSampling>,
 }
 
 /// Everything a provider needs to issue one request.
@@ -212,6 +245,12 @@ pub struct Context {
     pub system_prompt: Option<String>,
     pub messages: Vec<Message>,
     pub tools: Vec<ToolDefinition>,
+    /// Headers to send along with the request, beyond the ones the provider sets itself.
+    /// A header named here replaces the provider's own.
+    pub headers: Vec<(String, String)>,
+    /// What this conversation is called, for a provider that caches a prompt against it.
+    /// Sending the same key for the same conversation is what makes a cache hit possible.
+    pub cache_key: Option<String>,
 }
 
 #[cfg(test)]

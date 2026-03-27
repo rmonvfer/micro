@@ -1,10 +1,15 @@
 //! The tools the model can call, and the trait every tool implements.
 
 mod bash;
+mod deferred;
 mod files;
+mod fuzzy;
+mod mutations;
 mod search;
 
 pub use bash::Bash;
+pub use deferred::Deferred;
+pub use deferred::ToolSearch;
 pub use files::Edit;
 pub use files::Ls;
 pub use files::MultiEdit;
@@ -14,7 +19,9 @@ pub use search::Find;
 pub use search::Grep;
 
 use async_trait::async_trait;
+use micro_types::ContentBlock;
 use micro_types::ToolDefinition;
+use micro_types::ToolExecutionMode;
 use serde_json::Value;
 use std::path::Path;
 use std::path::PathBuf;
@@ -29,7 +36,77 @@ pub const MAX_OUTPUT_CHARS: usize = 30_000;
 pub trait Tool: Send + Sync {
     fn definition(&self) -> ToolDefinition;
 
+    /// Whether this tool is left out of the list the model is given, to be found by
+    /// searching instead. Almost everything is worth describing up front, which is the
+    /// default; see [`Deferred`] for when it is not.
+    fn deferred(&self) -> bool {
+        false
+    }
+
+    /// Whether this tool must run alone among a turn's tool calls, or may run alongside
+    /// them.
+    ///
+    /// `None` is the common case: the tool has no opinion, and whichever default the
+    /// turn's own caller runs a batch under applies. A tool overrides this only when
+    /// running it at the same time as something else in the same turn would be wrong —
+    /// two calls that would race over the same state, say.
+    fn execution_mode(&self) -> Option<ToolExecutionMode> {
+        None
+    }
+
     async fn execute(&self, arguments: &Value) -> Result<String, String>;
+
+    /// Run, reporting what is happening as it happens.
+    ///
+    /// A tool that has nothing to report until it finishes takes the default: the same
+    /// run, with nothing said along the way.
+    async fn execute_reporting(
+        &self,
+        arguments: &Value,
+        progress: &Progress,
+    ) -> Result<String, String> {
+        let _ = progress;
+        self.execute(arguments).await
+    }
+
+    /// Run, answering with content the model reads rather than with text alone.
+    ///
+    /// Almost everything a tool has to say is text, which is the default. A tool that
+    /// hands back something the model looks at rather than reads — an image — says so
+    /// here, and the blocks travel to the provider as they are.
+    async fn execute_content(
+        &self,
+        arguments: &Value,
+        progress: &Progress,
+    ) -> Result<Vec<ContentBlock>, String> {
+        self.execute_reporting(arguments, progress)
+            .await
+            .map(|text| vec![ContentBlock::text(text)])
+    }
+}
+
+/// Where a tool says what it is doing while it does it.
+///
+/// A sink with nowhere to send drops what it is given, so a tool never has to ask whether
+/// anyone is listening.
+#[derive(Clone, Default)]
+pub struct Progress {
+    sender: Option<tokio::sync::mpsc::UnboundedSender<String>>,
+}
+
+impl Progress {
+    pub fn new(sender: tokio::sync::mpsc::UnboundedSender<String>) -> Self {
+        Progress {
+            sender: Some(sender),
+        }
+    }
+
+    /// Say what has happened so far. Whoever is listening decides what to do with it.
+    pub fn report(&self, text: impl Into<String>) {
+        if let Some(sender) = &self.sender {
+            let _ = sender.send(text.into());
+        }
+    }
 }
 
 /// The default tool set, rooted at `root`.

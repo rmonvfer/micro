@@ -7,6 +7,7 @@
 
 pub mod copilot;
 mod import;
+mod lockfile;
 
 pub use import::agent47_available;
 pub use import::agent47_path;
@@ -27,7 +28,7 @@ use std::time::SystemTime;
 use std::time::UNIX_EPOCH;
 
 pub const ANTHROPIC: &str = "anthropic";
-pub const GEMINI: &str = "gemini";
+pub const GOOGLE: &str = "google";
 pub const GITHUB_COPILOT: &str = "github-copilot";
 pub const OPENAI: &str = "openai";
 pub const OPENROUTER: &str = "openrouter";
@@ -35,23 +36,49 @@ pub const OPENROUTER: &str = "openrouter";
 /// platform API key. Kept apart from `openai` because the credential is not interchangeable.
 pub const OPENAI_CODEX: &str = "openai-codex";
 
-/// Every provider micro can authenticate, in the order a picker should show them. These
-/// are the canonical ids: the keys in the credential file, and the names a UI hands back.
-pub const PROVIDERS: &[&str] = &[
-    ANTHROPIC,
-    OPENROUTER,
-    GITHUB_COPILOT,
-    GEMINI,
-    OPENAI,
-    OPENAI_CODEX,
-];
+/// One service micro can authenticate.
+#[derive(Debug, Clone, Deserialize)]
+pub struct ProviderEntry {
+    /// The canonical id: the key its credential is stored under, and the name a UI
+    /// hands back.
+    pub id: String,
+    /// The name to show a person.
+    pub name: String,
+    /// Environment variables that supply its key, in the order they are tried.
+    pub env: Vec<String>,
+    /// What to call the credential when asking for it.
+    pub key: String,
+}
+
+/// Every provider micro can authenticate, generated alongside the model catalog so the
+/// two always name the same services.
+static TABLE: &str = include_str!("../data/providers.json");
+
+pub fn provider_table() -> &'static [ProviderEntry] {
+    static PARSED: std::sync::OnceLock<Vec<ProviderEntry>> = std::sync::OnceLock::new();
+    PARSED.get_or_init(|| serde_json::from_str(TABLE).expect("the generated provider table parses"))
+}
+
+/// One provider by any name it answers to.
+pub fn provider_entry(name: &str) -> Option<&'static ProviderEntry> {
+    let id = canonical_provider(name);
+    provider_table().iter().find(|entry| entry.id == id)
+}
+
+/// Every provider id, in the order a picker should show them.
+pub fn providers() -> Vec<&'static str> {
+    provider_table()
+        .iter()
+        .map(|entry| entry.id.as_str())
+        .collect()
+}
 
 /// Other names a user might type, mapped onto the canonical id.
 const ALIASES: &[(&str, &str)] = &[
     ("claude", ANTHROPIC),
     ("copilot", GITHUB_COPILOT),
     ("github", GITHUB_COPILOT),
-    ("google", GEMINI),
+    ("gemini", GOOGLE),
     ("codex", OPENAI_CODEX),
     ("chatgpt", OPENAI_CODEX),
 ];
@@ -65,9 +92,9 @@ pub fn canonical_provider(name: &str) -> &str {
             return canonical;
         }
     }
-    for canonical in PROVIDERS {
-        if trimmed.eq_ignore_ascii_case(canonical) {
-            return canonical;
+    for entry in provider_table() {
+        if trimmed.eq_ignore_ascii_case(&entry.id) {
+            return entry.id.as_str();
         }
     }
     trimmed
@@ -231,10 +258,27 @@ impl ProviderStatus {
     }
 }
 
+/// What was read from the file, and the state of the file it was read from.
+///
+/// The revision is how a read notices that another process has written since, so a
+/// long-lived session sees a credential stored by `micro auth login` beside it.
+#[derive(Default)]
+struct Cache {
+    credentials: BTreeMap<String, Credential>,
+    revision: Option<Revision>,
+}
+
+/// Enough of the file's state to tell one version of it from the next.
+#[derive(PartialEq, Eq, Clone, Copy)]
+struct Revision {
+    modified: Option<std::time::SystemTime>,
+    length: u64,
+}
+
 /// The credential file, kept in memory and rewritten whenever an entry changes.
 pub struct AuthStore {
     path: PathBuf,
-    credentials: Mutex<BTreeMap<String, Credential>>,
+    cache: Mutex<Cache>,
     http: reqwest::Client,
 }
 
@@ -247,9 +291,13 @@ impl AuthStore {
     pub fn open_at(path: impl Into<PathBuf>) -> Result<Self> {
         let path = path.into();
         let credentials = load(&path)?;
+        let revision = revision_of(&path);
         Ok(AuthStore {
             path,
-            credentials: Mutex::new(credentials),
+            cache: Mutex::new(Cache {
+                credentials,
+                revision,
+            }),
             http: reqwest::Client::new(),
         })
     }
@@ -259,24 +307,48 @@ impl AuthStore {
     }
 
     pub fn get(&self, provider: &str) -> Option<Credential> {
-        self.lock().get(canonical_provider(provider)).cloned()
+        let mut cache = self.lock();
+        refresh(&self.path, &mut cache);
+        cache.credentials.get(canonical_provider(provider)).cloned()
     }
 
     pub fn set(&self, provider: &str, credential: Credential) -> Result<()> {
-        let mut credentials = self.lock();
-        credentials.insert(canonical_provider(provider).to_string(), credential);
-        save(&self.path, &credentials)
+        let provider = canonical_provider(provider).to_string();
+        self.mutate(move |credentials| {
+            credentials.insert(provider, credential);
+        })
     }
 
     pub fn remove(&self, provider: &str) -> Result<()> {
-        let mut credentials = self.lock();
-        credentials.remove(canonical_provider(provider));
-        save(&self.path, &credentials)
+        let provider = canonical_provider(provider).to_string();
+        self.mutate(move |credentials| {
+            credentials.remove(&provider);
+        })
     }
 
     /// Every provider with a stored credential, sorted.
     pub fn providers(&self) -> Vec<String> {
-        self.lock().keys().cloned().collect()
+        let mut cache = self.lock();
+        refresh(&self.path, &mut cache);
+        cache.credentials.keys().cloned().collect()
+    }
+
+    /// Change the file while holding it against every other process.
+    ///
+    /// The file is read again inside the lock rather than trusted from startup, so a
+    /// credential stored since then is carried forward instead of being written over.
+    fn mutate(&self, change: impl FnOnce(&mut BTreeMap<String, Credential>)) -> Result<()> {
+        let mut cache = self.lock();
+        let _held = lockfile::FileLock::acquire(&self.path)
+            .map_err(|error| storage_error(&self.path, error))?;
+
+        let mut latest = load(&self.path)?;
+        change(&mut latest);
+        save(&self.path, &latest)?;
+
+        cache.credentials = latest;
+        cache.revision = revision_of(&self.path);
+        Ok(())
     }
 
     /// A credential ready to send: stored if present, otherwise from the environment,
@@ -365,13 +437,14 @@ impl AuthStore {
     /// Where every provider stands, for a UI to render. Reads the environment but never
     /// the network, so it is safe to call on every frame.
     pub fn status(&self) -> Vec<ProviderStatus> {
+        let known = providers();
         let stored = self.providers();
         let extra = stored
             .iter()
             .map(String::as_str)
-            .filter(|provider| !PROVIDERS.contains(provider));
+            .filter(|provider| !known.contains(provider));
 
-        PROVIDERS
+        known
             .iter()
             .copied()
             .chain(extra)
@@ -432,10 +505,35 @@ impl AuthStore {
         }
     }
 
-    fn lock(&self) -> std::sync::MutexGuard<'_, BTreeMap<String, Credential>> {
-        self.credentials
+    fn lock(&self) -> std::sync::MutexGuard<'_, Cache> {
+        self.cache
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+}
+
+/// The file's current state, or nothing when there is no file yet.
+fn revision_of(path: &Path) -> Option<Revision> {
+    let metadata = fs::metadata(path).ok()?;
+    Some(Revision {
+        modified: metadata.modified().ok(),
+        length: metadata.len(),
+    })
+}
+
+/// Read the file again if another process has written it since it was last read.
+///
+/// A failed read leaves what is already held rather than emptying it: a file being
+/// replaced by another process is briefly unreadable, and that is not the same as a
+/// credential having been removed.
+fn refresh(path: &Path, cache: &mut Cache) {
+    let current = revision_of(path);
+    if current == cache.revision {
+        return;
+    }
+    if let Ok(latest) = load(path) {
+        cache.credentials = latest;
+        cache.revision = current;
     }
 }
 
@@ -477,30 +575,17 @@ fn from_env(provider: &str, value: String) -> Credential {
     }
 }
 
-const PROVIDER_ENV: &[(&str, &[&str])] = &[
-    (ANTHROPIC, &["ANTHROPIC_API_KEY"]),
-    (GEMINI, &["GEMINI_API_KEY", "GOOGLE_API_KEY"]),
-    (
-        GITHUB_COPILOT,
-        &["COPILOT_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_TOKEN"],
-    ),
-    (OPENAI, &["OPENAI_API_KEY"]),
-    (OPENROUTER, &["OPENROUTER_API_KEY"]),
-];
-
-/// Environment variables to try for a provider, in order. A provider without an entry
-/// gets the conventional `<PROVIDER>_API_KEY`.
+/// Environment variables to try for a provider, in order. A provider the table does not
+/// name gets the conventional `<PROVIDER>_API_KEY`, which is what an extension declaring
+/// its own provider relies on.
 pub fn env_names(provider: &str) -> Vec<String> {
-    let provider = canonical_provider(provider);
-    for (name, names) in PROVIDER_ENV {
-        if *name == provider {
-            return names.iter().map(|name| name.to_string()).collect();
-        }
+    match provider_entry(provider) {
+        Some(entry) if !entry.env.is_empty() => entry.env.clone(),
+        _ => vec![format!(
+            "{}_API_KEY",
+            canonical_provider(provider).to_uppercase().replace('-', "_")
+        )],
     }
-    vec![format!(
-        "{}_API_KEY",
-        provider.to_uppercase().replace('-', "_")
-    )]
 }
 
 fn env_value(provider: &str, get: impl Fn(&str) -> Option<String>) -> Option<String> {
@@ -654,6 +739,53 @@ mod tests {
         })
     }
 
+    /// Two processes writing different providers both keep their work.
+    ///
+    /// Each store reads the file when it opens. Without a lock and a fresh read at write
+    /// time, the second one writes the map it read at startup and the first one's
+    /// credential is gone with nothing to show that it ever arrived.
+    #[test]
+    fn a_write_carries_forward_what_another_store_wrote() {
+        let path = scratch("concurrent").join("auth.json");
+
+        let session = AuthStore::open_at(&path).unwrap();
+        let login = AuthStore::open_at(&path).unwrap();
+
+        session.set("anthropic", Credential::api_key("from-session")).unwrap();
+        login.set("openai", Credential::api_key("from-login")).unwrap();
+
+        let read_back = AuthStore::open_at(&path).unwrap();
+        assert_eq!(
+            read_back.get("anthropic"),
+            Some(Credential::api_key("from-session")),
+            "the first write survived the second",
+        );
+        assert_eq!(
+            read_back.get("openai"),
+            Some(Credential::api_key("from-login")),
+        );
+    }
+
+    /// A store that has been open a while notices a credential stored beside it.
+    #[test]
+    fn a_read_sees_what_another_store_wrote() {
+        let path = scratch("reload").join("auth.json");
+
+        let session = AuthStore::open_at(&path).unwrap();
+        assert_eq!(session.get("anthropic"), None);
+
+        AuthStore::open_at(&path)
+            .unwrap()
+            .set("anthropic", Credential::api_key("signed-in"))
+            .unwrap();
+
+        assert_eq!(
+            session.get("anthropic"),
+            Some(Credential::api_key("signed-in")),
+            "the long-lived store re-read rather than serving its startup snapshot",
+        );
+    }
+
     #[test]
     fn micro_dir_overrides_the_home_directory() {
         assert_eq!(
@@ -784,11 +916,20 @@ mod tests {
     #[test]
     fn each_provider_has_its_conventional_environment_variables() {
         assert_eq!(env_names(OPENROUTER), vec!["OPENROUTER_API_KEY"]);
-        assert_eq!(env_names(GEMINI), vec!["GEMINI_API_KEY", "GOOGLE_API_KEY"]);
+        assert_eq!(env_names(GOOGLE), vec!["GEMINI_API_KEY"]);
+        assert_eq!(env_names(GITHUB_COPILOT), vec!["COPILOT_GITHUB_TOKEN"]);
+        // A bearer token is tried first, since it is what points micro at a gateway and
+        // is set deliberately; then a subscription token, which a signed-in plan issues;
+        // then a platform key.
         assert_eq!(
-            env_names(GITHUB_COPILOT),
-            vec!["COPILOT_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_TOKEN"]
+            env_names(ANTHROPIC),
+            vec![
+                "ANTHROPIC_AUTH_TOKEN",
+                "ANTHROPIC_OAUTH_TOKEN",
+                "ANTHROPIC_API_KEY"
+            ]
         );
+        // A provider the table does not name still has a conventional variable.
         assert_eq!(env_names("z-ai"), vec!["Z_AI_API_KEY"]);
     }
 
@@ -796,9 +937,9 @@ mod tests {
     fn spoken_names_fold_onto_the_canonical_id() {
         assert_eq!(canonical_provider("copilot"), GITHUB_COPILOT);
         assert_eq!(canonical_provider("Copilot"), GITHUB_COPILOT);
-        assert_eq!(canonical_provider("google"), GEMINI);
+        assert_eq!(canonical_provider("gemini"), GOOGLE);
         assert_eq!(canonical_provider("claude"), ANTHROPIC);
-        assert_eq!(canonical_provider(" gemini "), GEMINI);
+        assert_eq!(canonical_provider(" google "), GOOGLE);
         assert_eq!(canonical_provider("cerebras"), "cerebras");
     }
 
@@ -806,7 +947,7 @@ mod tests {
     fn only_copilot_logs_in_through_a_browser() {
         assert_eq!(auth_method(GITHUB_COPILOT), AuthMethod::OAuth);
         assert_eq!(auth_method("copilot"), AuthMethod::OAuth);
-        for provider in [ANTHROPIC, OPENROUTER, GEMINI, OPENAI] {
+        for provider in [ANTHROPIC, OPENROUTER, GOOGLE, OPENAI] {
             assert_eq!(auth_method(provider), AuthMethod::ApiKey);
         }
     }
@@ -816,7 +957,7 @@ mod tests {
         let store = AuthStore::open_at(scratch("aliases").join("auth.json")).unwrap();
         store.store_api_key("Google", "gemini-key").unwrap();
 
-        assert_eq!(store.providers(), vec![GEMINI.to_string()]);
+        assert_eq!(store.providers(), vec![GOOGLE.to_string()]);
         assert_eq!(store.get("gemini").unwrap().token(), "gemini-key");
         assert_eq!(store.get("google").unwrap().token(), "gemini-key");
     }
@@ -845,24 +986,19 @@ mod tests {
     fn status_covers_every_known_provider_and_reports_where_its_credential_lives() {
         let store = AuthStore::open_at(scratch("status").join("auth.json")).unwrap();
         store.store_api_key(OPENROUTER, "sk-or").unwrap();
-        store.set("cerebras", Credential::api_key("sk-c")).unwrap();
+        store.set("a-proxy", Credential::api_key("sk-c")).unwrap();
 
         let status = store.status();
         let ids: Vec<&str> = status.iter().map(|entry| entry.provider.as_str()).collect();
-        assert_eq!(
-            ids,
-            vec![
-                ANTHROPIC,
-                OPENROUTER,
-                GITHUB_COPILOT,
-                GEMINI,
-                OPENAI,
-                OPENAI_CODEX,
-                "cerebras"
-            ]
-        );
+        let mut expected = providers();
+        // A provider carrying a credential but absent from the table is reported after it.
+        expected.push("a-proxy");
+        assert_eq!(ids, expected);
 
-        let openrouter = &status[1];
+        let openrouter = status
+            .iter()
+            .find(|entry| entry.provider == OPENROUTER)
+            .expect("openrouter is reported");
         assert_eq!(openrouter.source, CredentialSource::Stored);
         assert!(openrouter.is_authenticated());
         assert!(!openrouter.needs_refresh);
@@ -893,19 +1029,19 @@ mod tests {
             panic!("expected an api-key login");
         };
 
-        assert_eq!(provider, GEMINI);
-        assert_eq!(env_names, vec!["GEMINI_API_KEY", "GOOGLE_API_KEY"]);
+        assert_eq!(provider, GOOGLE);
+        assert_eq!(env_names, vec!["GEMINI_API_KEY"]);
     }
 
     #[test]
     fn the_environment_is_read_in_order_and_blanks_are_skipped() {
         let environment = HashMap::from([
-            ("GH_TOKEN".to_string(), "  ".to_string()),
-            ("GITHUB_TOKEN".to_string(), "gho_from_env".to_string()),
+            ("ANTHROPIC_OAUTH_TOKEN".to_string(), "  ".to_string()),
+            ("ANTHROPIC_API_KEY".to_string(), "sk-ant-from-env".to_string()),
         ]);
         let get = |name: &str| environment.get(name).cloned();
 
-        assert_eq!(env_value(GITHUB_COPILOT, get), Some("gho_from_env".into()));
+        assert_eq!(env_value(ANTHROPIC, get), Some("sk-ant-from-env".into()));
         assert_eq!(env_value(OPENROUTER, get), None);
     }
 

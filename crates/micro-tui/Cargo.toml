@@ -6,9 +6,10 @@ license.workspace = true
 
 [dependencies]
 micro-agent = { workspace = true }
+micro-auth = { workspace = true }
 micro-commands = { workspace = true }
+micro-models = { workspace = true }
 micro-config = { workspace = true }
-micro-policy = { workspace = true }
 micro-session = { workspace = true }
 micro-context = { workspace = true }
 micro-types = { workspace = true }
@@ -16,10 +17,15 @@ micro-types = { workspace = true }
 anyhow = { workspace = true }
 async-trait = { workspace = true }
 crossterm = { workspace = true }
+ignore = "0.4"
 futures = { workspace = true }
 ratatui = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true }
+micro-mermaid = { path = "../micro-mermaid" }
+typst = "0.13.1"
+typst-as-lib = { version = "0.13.0", features = ["typst-kit-fonts", "typst-kit-embed-fonts"] }
+typst-render = "0.13.1"
 unicode-segmentation = "1"
 unicode-width = "0.2"
 
