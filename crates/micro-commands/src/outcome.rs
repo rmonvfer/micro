@@ -16,6 +16,22 @@ pub enum MessageKind {
 }
 
 /// Which palette to paint in, or a return to letting the terminal decide.
+/// What `/remote` was asked to do.
+///
+/// Pairing and publishing are separate on purpose. A phone is paired once, to the
+/// machine rather than to a session; after that, putting a session on it is not a thing
+/// anyone should have to hold a phone up to a screen for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RemoteAction {
+    /// Put this session on the paired phone.
+    Publish,
+    /// Bond a phone to this machine, showing it what it needs.
+    Pair {
+        /// Whether to draw the link as a scannable code rather than as text.
+        qr: bool,
+    },
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ThemeChoice {
     Dark,
@@ -51,6 +67,10 @@ pub enum CommandOutcome {
     SetTheme {
         theme: ThemeChoice,
     },
+    /// Change how much of the terminal the interface occupies.
+    SetTuiMode {
+        mode: micro_config::TuiMode,
+    },
     /// Put the last answer on the system clipboard.
     CopyLastAnswer,
     /// Write the conversation to a file, or to a chosen name when one is given.
@@ -77,6 +97,10 @@ pub enum CommandOutcome {
     },
     /// Publish the conversation, and say where it went.
     Share,
+    /// Put this session on the phone that has been paired, or pair one.
+    RemoteControl {
+        action: RemoteAction,
+    },
     /// Offer a choice. Each item carries the line to dispatch once it is picked, so a
     /// caller can render a picker without knowing what it is choosing between.
     Choose(Picker),
@@ -337,21 +361,27 @@ impl fmt::Debug for CommandOutcome {
                 .debug_struct("SetTheme")
                 .field("theme", theme)
                 .finish(),
+            CommandOutcome::SetTuiMode { mode } => formatter
+                .debug_struct("SetTuiMode")
+                .field("mode", mode)
+                .finish(),
             CommandOutcome::CopyLastAnswer => formatter.write_str("CopyLastAnswer"),
             CommandOutcome::Branch { entry_id } => formatter
                 .debug_struct("Branch")
                 .field("entry_id", entry_id)
                 .finish(),
-            CommandOutcome::Rename { title } => {
-                formatter.debug_struct("Rename").field("title", title).finish()
-            }
+            CommandOutcome::Rename { title } => formatter
+                .debug_struct("Rename")
+                .field("title", title)
+                .finish(),
             CommandOutcome::Trust { trusted } => formatter
                 .debug_struct("Trust")
                 .field("trusted", trusted)
                 .finish(),
-            CommandOutcome::Export { path } => {
-                formatter.debug_struct("Export").field("path", path).finish()
-            }
+            CommandOutcome::Export { path } => formatter
+                .debug_struct("Export")
+                .field("path", path)
+                .finish(),
             CommandOutcome::Choose(picker) => {
                 formatter.debug_tuple("Choose").field(picker).finish()
             }
@@ -383,10 +413,14 @@ impl fmt::Debug for CommandOutcome {
                 .field("whole", whole)
                 .finish(),
             CommandOutcome::Reload => formatter.write_str("Reload"),
-            CommandOutcome::Import { path } => {
-                formatter.debug_struct("Import").field("path", path).finish()
-            }
+            CommandOutcome::Import { path } => formatter
+                .debug_struct("Import")
+                .field("path", path)
+                .finish(),
             CommandOutcome::Share => formatter.write_str("Share"),
+            CommandOutcome::RemoteControl { action } => {
+                write!(formatter, "RemoteControl {{ action: {action:?} }}")
+            }
             CommandOutcome::Send { .. } => formatter.write_str("Send"),
             CommandOutcome::Compact => formatter.write_str("Compact"),
             CommandOutcome::Clear => formatter.write_str("Clear"),

@@ -118,6 +118,70 @@ then an environment variable, then this file. The variables are `MICRO_MODEL`,
 The `micro` binary reads `MICRO_MODEL` and `MICRO_PROVIDER`, and takes the rest from
 `--model`, `--provider`, and `--thinking` on the command line.
 
+Any setting at all can be named for one run with `-c key=value`, which writes into this
+file's contents as they are read rather than into the file itself: `-c mermaid=off`,
+`-c image_width_cells=40`. The value is read as JSON, so `false` is a boolean and `40` is
+a number; anything that is not JSON is taken as a string, which is what makes
+`-c theme=dracula` work unquoted. The key is a dotted path, which today reaches a key a
+newer version wrote, since the settings above are all flat. Repeat the flag to set more
+than one, and a later assignment beats an earlier one. A mistyped assignment stops the run
+rather than falling back to the stored settings.
+
+## mcp_servers
+
+Programs that provide tools over the Model Context Protocol. Each entry names a server,
+and its tools reach the model as `mcp__<server>__<tool>` alongside micro's own.
+
+```json
+{
+  "mcp_servers": {
+    "github": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-github"],
+      "env": { "GITHUB_TOKEN": "..." }
+    },
+    "notes": { "command": "/usr/local/bin/notes-mcp", "enabled": false }
+  }
+}
+```
+
+`command` is the only required key. `args`, `env`, and `cwd` say how to run it; `env` adds
+to the environment the server inherits rather than replacing it. `enabled` is true unless
+it says otherwise, so a server can be turned off without being deleted. `startup_timeout`
+and `tool_timeout` are in seconds, and default to 20 and 120: unlike a shell command there
+is no output to watch while an MCP call runs, so a wedged server costs one call rather than
+the session.
+
+A server that will not start is named and skipped. The run goes ahead with the tools that
+did load, since a broken entry should cost its own tools and nothing else.
+
+## tool_search_threshold
+
+Every tool on offer is described to the model on every request, so a few MCP servers
+between them can cost more of the context window than the conversation does. Past this
+many tools beyond the built-in ones, the extra ones stop being described and a
+`tool_search` tool is offered in their place: the model searches for what it needs by name
+or by what it does, gets back the same descriptions, and calls them as usual. One exchange
+in place of a standing charge.
+
+The default is 15. Zero describes every tool however many there are. The built-in tools are
+always described, since deferring those would cost a search before the model could read a
+file.
+
+## sandbox
+
+What the commands a session runs are allowed to touch: `read-only`, `workspace-write`, or
+`full`. The default is `workspace-write` — the workspace is writable, nothing else is, and
+the network is off.
+
+```json
+{ "sandbox": "workspace-write" }
+```
+
+A project can settle it for its own sessions in `.micro/settings.json`, once the project has
+been trusted, and `--sandbox` on the command line beats both. `docs/sandbox.md` describes
+what each policy enforces, on which platforms, and how to check it.
+
 ## sessions/
 
 One conversation per session, as two files: a JSONL log with one serialized message per

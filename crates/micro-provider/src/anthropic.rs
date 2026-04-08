@@ -78,6 +78,16 @@ impl Provider for Anthropic {
 
         receiver
     }
+
+    /// A request as an API key sends it.
+    ///
+    /// The one thing here a credential decides is the spelling of the tool names: a
+    /// subscription token is issued to a named client and a request made with one names
+    /// that client's tools. A reading of the request has no credential in hand, so it
+    /// reads the request as it stands without one.
+    fn payload(&self, model: &Model, context: &Context) -> Value {
+        build_payload(model, context, false).unwrap_or(Value::Null)
+    }
 }
 
 /// The tools Claude Code declares, in the casing it declares them with.
@@ -905,8 +915,7 @@ mod tests {
             "a service that was never told about strict fields is not sent one"
         );
         assert_eq!(
-            payload["tools"][0]["input_schema"],
-            original_parameters,
+            payload["tools"][0]["input_schema"], original_parameters,
             "the schema is exactly what the tool wrote, untouched"
         );
     }
@@ -1142,8 +1151,8 @@ mod tests {
 
         let thinking =
             Model::anthropic("claude-opus-5").with_thinking(micro_types::ThinkingLevel::Medium);
-        let payload = build_payload(&thinking, &context_with(vec![Message::user("hi")]), false)
-            .unwrap();
+        let payload =
+            build_payload(&thinking, &context_with(vec![Message::user("hi")]), false).unwrap();
         assert_eq!(payload["thinking"]["type"], "enabled");
         assert!(payload["thinking"]["budget_tokens"].as_u64().unwrap() > 0);
     }
@@ -1157,8 +1166,8 @@ mod tests {
             Model::anthropic("claude-opus-5").with_thinking(micro_types::ThinkingLevel::High);
         model.compat.force_adaptive_thinking = true;
 
-        let payload = build_payload(&model, &context_with(vec![Message::user("hi")]), false)
-            .unwrap();
+        let payload =
+            build_payload(&model, &context_with(vec![Message::user("hi")]), false).unwrap();
         assert_eq!(payload["thinking"]["type"], "adaptive");
         assert_eq!(payload["thinking"]["display"], "summarized");
         assert_eq!(payload["output_config"]["effort"], "high");
@@ -1175,8 +1184,8 @@ mod tests {
         let mut model = Model::anthropic("claude-opus-5");
         model.compat.force_adaptive_thinking = true;
 
-        let payload = build_payload(&model, &context_with(vec![Message::user("hi")]), false)
-            .unwrap();
+        let payload =
+            build_payload(&model, &context_with(vec![Message::user("hi")]), false).unwrap();
         assert_eq!(payload["thinking"]["type"], "disabled");
         assert!(payload.get("output_config").is_none());
     }

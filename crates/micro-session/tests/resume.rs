@@ -30,7 +30,10 @@ async fn a_compacted_session_reopens_on_its_summary() {
             .await
             .unwrap();
     }
-    session.compacted("what came before", 2).await.unwrap();
+    session
+        .compacted("what came before", 2, Default::default())
+        .await
+        .unwrap();
     session.append(&Message::user("after")).await.unwrap();
 
     let id = session.id().to_string();

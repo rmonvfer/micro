@@ -999,6 +999,10 @@ impl Provider for PausedProvider {
             .take()
             .expect("stream() is called once per turn")
     }
+
+    fn payload(&self, _model: &Model, _context: &Context) -> serde_json::Value {
+        serde_json::Value::Null
+    }
 }
 
 /// A turn abandoned mid-answer still reports that the run ended.

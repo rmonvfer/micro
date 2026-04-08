@@ -79,6 +79,30 @@ which is what a scripted run wants.
 Tool calls themselves are not gated: once micro is running, it acts. `--tools` narrows what
 the model is offered to a named list, and `--exclude-tools` withholds particular ones.
 
+## Reaching a session from your phone
+
+A session can be watched and driven from a phone while the terminal stays fully usable.
+Pair a phone with the machine once:
+
+```
+/remote pair          # prints a link to open in the app
+/remote pair qr       # draws it as a code to scan instead
+```
+
+From then on, `/remote` puts a session on that phone — no link, no code. It appears in the
+app's session list beside every other session this machine has offered, with the ones that
+are still live marked as such. Open one and you can read the conversation as it streams,
+send a prompt, steer the turn that is running, queue a follow-up, stop it, and change the
+model or the thinking level. Everything the phone submits goes in the way a typed line
+does, so a command it sends runs as that command and shows up in the terminal's own
+transcript.
+
+Nothing in between can read any of it. The phone and the machine derive keys from a secret
+they share and the relay never holds; what crosses the relay is ciphertext it routes
+without being able to open. `micro remote pair` writes that secret to
+`~/.micro/remote-control.json`, readable only by you. `MICRO_REMOTE_RELAY_URL` points the
+pairing at a relay of your own.
+
 ## How a request flows
 
 `micro-cli` resolves a model from the catalog, a credential from the store, and a workspace
@@ -96,9 +120,13 @@ The crates either side of that path do one thing each. `micro-types` holds the c
 model every layer speaks. `micro-tools` holds the capabilities the model can invoke. `micro-models` is the model catalog,
 `micro-auth` the credentials, `micro-context` the project instructions and the compaction
 that keeps a long conversation inside the context window, and `micro-session` the durable
-log. `micro-tui` draws the interface and `micro-testkit` provides the fakes the agent loop
-is tested against. Nothing depends on a layer above it, so the provider crate has no idea
+log. `micro-tui` draws the interface, `micro-remote` carries a session to a phone, and
+`micro-testkit` provides the fakes the agent loop is tested against. Nothing depends on a layer above it, so the provider crate has no idea
 tools exist and the tools have no idea a model is calling them.
 
 [docs/architecture.md](docs/architecture.md) covers why the seams fall where they do.
 [docs/providers.md](docs/providers.md) covers the providers and the model catalog.
+[docs/extensions.md](docs/extensions.md) covers writing and installing an extension, and
+what an extension written for pi can expect here.
+[docs/extension-testing.md](docs/extension-testing.md) covers the two harnesses that check
+extensions, and why one of them drives a real terminal.

@@ -88,25 +88,43 @@ pub async fn load_from_dir(dir: impl AsRef<Path>, source: &str) -> Loaded {
     loaded
 }
 
+/// Where a user's shared skills live, if a home directory is known.
+///
+/// These sit under the home directory rather than under micro's own, which `MICRO_DIR` is
+/// free to move somewhere else entirely. Reading the environment happens here, at the
+/// edge, so [`discover`] stays a function of its arguments.
+pub fn user_agents_dir() -> Option<PathBuf> {
+    std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".agents/skills"))
+}
+
 /// Read the skills a workspace and a user have between them.
 ///
 /// A project's own skills come first, so one written for the work at hand takes precedence
 /// over a general one with the same name.
+///
+/// Each of the two is looked for in two places: micro's own directory, and `.agents/skills`
+/// beside it. The second is where several agents now look, so a skill written once is
+/// found by all of them without being copied. micro's own directory is read first, so a
+/// name that is in both is micro's.
 pub async fn discover(
     workspace: impl AsRef<Path>,
     home: impl AsRef<Path>,
+    agents: Option<PathBuf>,
     trusted: bool,
 ) -> Loaded {
     let mut loaded = Loaded::default();
+    let mut roots: Vec<(PathBuf, &str)> = Vec::new();
+
     // A project's own skills are offered only once the project has been trusted.
-    let project = match trusted {
-        true => Some((workspace.as_ref().join(".micro/skills"), "project")),
-        false => None,
-    };
-    for (dir, source) in project
-        .into_iter()
-        .chain(std::iter::once((home.as_ref().join("skills"), "user")))
-    {
+    if trusted {
+        roots.push((workspace.as_ref().join(".micro/skills"), "project"));
+        roots.push((workspace.as_ref().join(".agents/skills"), "project"));
+    }
+
+    roots.push((home.as_ref().join("skills"), "user"));
+    roots.extend(agents.map(|dir| (dir, "user")));
+
+    for (dir, source) in roots {
         let found = load_from_dir(&dir, source).await;
         for skill in found.skills {
             // First one wins, which is what makes a project skill beat a user's.
@@ -262,7 +280,10 @@ fn validate_description(description: &str) -> Vec<String> {
 /// Only names and descriptions: a skill's body is read when it is used, which is what keeps
 /// a shelf of them from crowding out the conversation.
 pub fn system_prompt_section(skills: &[Skill]) -> Option<String> {
-    let usable: Vec<&Skill> = skills.iter().filter(|skill| skill.model_invocable).collect();
+    let usable: Vec<&Skill> = skills
+        .iter()
+        .filter(|skill| skill.model_invocable)
+        .collect();
     if usable.is_empty() {
         return None;
     }
@@ -293,7 +314,8 @@ mod tests {
         std::fs::write(path, body).unwrap();
     }
 
-    const GOOD: &str = "---\nname: review-code\ndescription: Review a diff for defects.\n---\n\nDo the thing.\n";
+    const GOOD: &str =
+        "---\nname: review-code\ndescription: Review a diff for defects.\n---\n\nDo the thing.\n";
 
     #[tokio::test]
     async fn a_skill_directory_is_read_as_one_skill() {
@@ -354,7 +376,9 @@ mod tests {
 
         let loaded = load_from_dir(&root, "project").await;
         assert!(loaded.skills.is_empty());
-        assert!(loaded.diagnostics[0].message.contains("description is required"));
+        assert!(loaded.diagnostics[0]
+            .message
+            .contains("description is required"));
     }
 
     #[test]
@@ -382,9 +406,73 @@ mod tests {
             "---\nname: thing\ndescription: The user's.\n---\n",
         );
 
-        let loaded = discover(&workspace, &home, true).await;
+        let loaded = discover(&workspace, &home, None, true).await;
         assert_eq!(loaded.skills.len(), 1);
         assert_eq!(loaded.skills[0].description, "The project's.");
+    }
+
+    /// A skill written once under `.agents/skills` is found without being copied into
+    /// micro's own directory, at both the project and the user level.
+    #[tokio::test]
+    async fn skills_are_read_from_the_shared_directory_too() {
+        let root = scratch("shared");
+        let workspace = root.join("work");
+        let home = root.join("home");
+        let agents = root.join("agents");
+        write(
+            &workspace.join(".agents/skills/project-one/SKILL.md"),
+            "---\nname: project-one\ndescription: Shared, in the project.\n---\n",
+        );
+        write(
+            &agents.join("user-one/SKILL.md"),
+            "---\nname: user-one\ndescription: Shared, for the user.\n---\n",
+        );
+
+        let loaded = discover(&workspace, &home, Some(agents), true).await;
+
+        let names: Vec<&str> = loaded.skills.iter().map(|s| s.name.as_str()).collect();
+        assert_eq!(names, ["project-one", "user-one"]);
+    }
+
+    /// micro's own directory is read first, so a name in both is micro's.
+    #[tokio::test]
+    async fn micros_own_directory_wins_over_the_shared_one() {
+        let root = scratch("shared-precedence");
+        let workspace = root.join("work");
+        let home = root.join("home");
+        write(
+            &workspace.join(".micro/skills/thing/SKILL.md"),
+            "---\nname: thing\ndescription: micro's own.\n---\n",
+        );
+        write(
+            &workspace.join(".agents/skills/thing/SKILL.md"),
+            "---\nname: thing\ndescription: The shared one.\n---\n",
+        );
+
+        let loaded = discover(&workspace, &home, None, true).await;
+        assert_eq!(loaded.skills.len(), 1);
+        assert_eq!(loaded.skills[0].description, "micro's own.");
+    }
+
+    /// A project's shared skills are project files too, so they wait on trust the same way.
+    #[tokio::test]
+    async fn the_projects_shared_skills_wait_on_trust() {
+        let root = scratch("shared-trust");
+        let workspace = root.join("work");
+        let home = root.join("home");
+        write(
+            &workspace.join(".agents/skills/thing/SKILL.md"),
+            "---\nname: thing\ndescription: The project's.\n---\n",
+        );
+
+        assert!(discover(&workspace, &home, None, false)
+            .await
+            .skills
+            .is_empty());
+        assert_eq!(
+            discover(&workspace, &home, None, true).await.skills.len(),
+            1
+        );
     }
 
     #[tokio::test]
@@ -418,4 +506,3 @@ mod tests {
         assert!(loaded.diagnostics.is_empty());
     }
 }
-

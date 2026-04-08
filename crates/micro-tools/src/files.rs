@@ -3,6 +3,7 @@
 use crate::required_str;
 use crate::resolve_path;
 use crate::truncate;
+use crate::Guard;
 use crate::Tool;
 use async_trait::async_trait;
 use micro_types::ToolDefinition;
@@ -16,11 +17,12 @@ const DEFAULT_LS_LIMIT: usize = 500;
 
 pub struct Read {
     root: PathBuf,
+    guard: Guard,
 }
 
 impl Read {
-    pub fn new(root: PathBuf) -> Self {
-        Read { root }
+    pub fn new(root: PathBuf, guard: Guard) -> Self {
+        Read { root, guard }
     }
 }
 
@@ -51,6 +53,7 @@ impl Tool for Read {
         _progress: &crate::Progress,
     ) -> Result<Vec<micro_types::ContentBlock>, String> {
         let path = resolve_path(&self.root, &required_str(arguments, "path")?)?;
+        self.guard.read(&path)?;
 
         // An image is something the model looks at, not something it reads. Handing back
         // the bytes as text would only fail to decode.
@@ -77,6 +80,7 @@ impl Tool for Read {
 
     async fn execute(&self, arguments: &Value) -> Result<String, String> {
         let path = resolve_path(&self.root, &required_str(arguments, "path")?)?;
+        self.guard.read(&path)?;
         let contents = tokio::fs::read_to_string(&path)
             .await
             .map_err(|error| format!("cannot read {}: {error}", path.display()))?;
@@ -108,11 +112,12 @@ impl Tool for Read {
 
 pub struct Write {
     root: PathBuf,
+    guard: Guard,
 }
 
 impl Write {
-    pub fn new(root: PathBuf) -> Self {
-        Write { root }
+    pub fn new(root: PathBuf, guard: Guard) -> Self {
+        Write { root, guard }
     }
 }
 
@@ -138,6 +143,7 @@ impl Tool for Write {
 
     async fn execute(&self, arguments: &Value) -> Result<String, String> {
         let path = resolve_path(&self.root, &required_str(arguments, "path")?)?;
+        self.guard.write(&path)?;
         let content = required_str(arguments, "content")?;
         let _held = crate::mutations::hold(&path).await;
 
@@ -160,11 +166,12 @@ impl Tool for Write {
 
 pub struct Edit {
     root: PathBuf,
+    guard: Guard,
 }
 
 impl Edit {
-    pub fn new(root: PathBuf) -> Self {
-        Edit { root }
+    pub fn new(root: PathBuf, guard: Guard) -> Self {
+        Edit { root, guard }
     }
 }
 
@@ -191,6 +198,7 @@ impl Tool for Edit {
 
     async fn execute(&self, arguments: &Value) -> Result<String, String> {
         let path = resolve_path(&self.root, &required_str(arguments, "path")?)?;
+        self.guard.write(&path)?;
         let old_string = required_str(arguments, "old_string")?;
         let new_string = required_str(arguments, "new_string")?;
 
@@ -243,11 +251,12 @@ impl Tool for Edit {
 
 pub struct MultiEdit {
     root: PathBuf,
+    guard: Guard,
 }
 
 impl MultiEdit {
-    pub fn new(root: PathBuf) -> Self {
-        MultiEdit { root }
+    pub fn new(root: PathBuf, guard: Guard) -> Self {
+        MultiEdit { root, guard }
     }
 }
 
@@ -286,6 +295,7 @@ impl Tool for MultiEdit {
 
     async fn execute(&self, arguments: &Value) -> Result<String, String> {
         let path = resolve_path(&self.root, &required_str(arguments, "path")?)?;
+        self.guard.write(&path)?;
         let edits = arguments
             .get("edits")
             .and_then(Value::as_array)
@@ -357,11 +367,12 @@ impl Tool for MultiEdit {
 
 pub struct Ls {
     root: PathBuf,
+    guard: Guard,
 }
 
 impl Ls {
-    pub fn new(root: PathBuf) -> Self {
-        Ls { root }
+    pub fn new(root: PathBuf, guard: Guard) -> Self {
+        Ls { root, guard }
     }
 }
 
@@ -390,6 +401,7 @@ impl Tool for Ls {
     async fn execute(&self, arguments: &Value) -> Result<String, String> {
         let requested = arguments.get("path").and_then(Value::as_str).unwrap_or(".");
         let path = resolve_path(&self.root, requested)?;
+        self.guard.read(&path)?;
         let limit = arguments
             .get("limit")
             .and_then(Value::as_u64)
@@ -447,7 +459,7 @@ mod tests {
         let root = scratch("read");
         std::fs::write(root.join("a.txt"), "one\ntwo\nthree\n").unwrap();
 
-        let tool = Read::new(root);
+        let tool = Read::new(root.clone(), Guard::for_workspace(&root));
         let output = tool
             .execute(&json!({ "path": "a.txt", "offset": 2 }))
             .await
@@ -461,7 +473,7 @@ mod tests {
     #[tokio::test]
     async fn write_creates_missing_parent_directories() {
         let root = scratch("write");
-        let tool = Write::new(root.clone());
+        let tool = Write::new(root.clone(), Guard::for_workspace(&root));
 
         tool.execute(&json!({ "path": "nested/deep/a.txt", "content": "hi" }))
             .await
@@ -478,7 +490,7 @@ mod tests {
         let root = scratch("edit-unique");
         std::fs::write(root.join("a.txt"), "keep\nreplace me\nkeep\n").unwrap();
 
-        Edit::new(root.clone())
+        Edit::new(root.clone(), Guard::for_workspace(&root))
             .execute(&json!({
                 "path": "a.txt",
                 "old_string": "replace me",
@@ -498,7 +510,7 @@ mod tests {
         let root = scratch("edit-ambiguous");
         std::fs::write(root.join("a.txt"), "dup\ndup\n").unwrap();
 
-        let error = Edit::new(root.clone())
+        let error = Edit::new(root.clone(), Guard::for_workspace(&root))
             .execute(&json!({ "path": "a.txt", "old_string": "dup", "new_string": "x" }))
             .await
             .unwrap_err();
@@ -515,7 +527,7 @@ mod tests {
         let root = scratch("multi-edit-order");
         std::fs::write(root.join("a.rs"), "let alpha = 1;\nlet beta = 2;\n").unwrap();
 
-        let output = MultiEdit::new(root.clone())
+        let output = MultiEdit::new(root.clone(), Guard::for_workspace(&root))
             .execute(&json!({
                 "path": "a.rs",
                 "edits": [
@@ -538,7 +550,7 @@ mod tests {
         let root = scratch("multi-edit-chain");
         std::fs::write(root.join("a.rs"), "one\n").unwrap();
 
-        MultiEdit::new(root.clone())
+        MultiEdit::new(root.clone(), Guard::for_workspace(&root))
             .execute(&json!({
                 "path": "a.rs",
                 "edits": [
@@ -561,7 +573,7 @@ mod tests {
         let original = "let alpha = 1;\nlet beta = 2;\n";
         std::fs::write(root.join("a.rs"), original).unwrap();
 
-        let error = MultiEdit::new(root.clone())
+        let error = MultiEdit::new(root.clone(), Guard::for_workspace(&root))
             .execute(&json!({
                 "path": "a.rs",
                 "edits": [
@@ -586,7 +598,7 @@ mod tests {
         let original = "dup\ndup\nunique\n";
         std::fs::write(root.join("a.rs"), original).unwrap();
 
-        let error = MultiEdit::new(root.clone())
+        let error = MultiEdit::new(root.clone(), Guard::for_workspace(&root))
             .execute(&json!({
                 "path": "a.rs",
                 "edits": [
@@ -609,7 +621,7 @@ mod tests {
     async fn multi_edit_rejects_a_degenerate_edit_list() {
         let root = scratch("multi-edit-degenerate");
         std::fs::write(root.join("a.rs"), "keep\n").unwrap();
-        let tool = MultiEdit::new(root.clone());
+        let tool = MultiEdit::new(root.clone(), Guard::for_workspace(&root));
 
         let empty = tool
             .execute(&json!({ "path": "a.rs", "edits": [] }))
@@ -647,14 +659,17 @@ mod tests {
         std::fs::create_dir(root.join("zdir")).unwrap();
         std::fs::write(root.join("afile"), "").unwrap();
 
-        let output = Ls::new(root).execute(&json!({})).await.unwrap();
+        let output = Ls::new(root.clone(), Guard::for_workspace(&root))
+            .execute(&json!({}))
+            .await
+            .unwrap();
         assert_eq!(output, "afile\nzdir/");
     }
 
     #[tokio::test]
     async fn tools_reject_paths_outside_the_workspace() {
         let root = scratch("escape");
-        let error = Read::new(root)
+        let error = Read::new(root.clone(), Guard::for_workspace(&root))
             .execute(&json!({ "path": "../../etc/passwd" }))
             .await
             .unwrap_err();
@@ -704,7 +719,7 @@ mod images {
         let root = scratch("png");
         std::fs::write(root.join("shot.png"), TINY_PNG).unwrap();
 
-        let content = Read::new(root)
+        let content = Read::new(root.clone(), Guard::for_workspace(&root))
             .execute_content(&json!({ "path": "shot.png" }), &Progress::default())
             .await
             .expect("an image reads");
@@ -728,7 +743,7 @@ mod images {
         let root = scratch("text");
         std::fs::write(root.join("a.txt"), "hello\n").unwrap();
 
-        let content = Read::new(root)
+        let content = Read::new(root.clone(), Guard::for_workspace(&root))
             .execute_content(&json!({ "path": "a.txt" }), &Progress::default())
             .await
             .unwrap();
@@ -771,7 +786,7 @@ mod forgiving_edits {
         let root = scratch("quotes");
         std::fs::write(root.join("a.rs"), "let name = \"micro\";\n").unwrap();
 
-        let said = Edit::new(root.clone())
+        let said = Edit::new(root.clone(), Guard::for_workspace(&root))
             .execute(&json!({
                 "path": "a.rs",
                 "old_string": "let name = \u{201C}micro\u{201D};",
@@ -791,7 +806,7 @@ mod forgiving_edits {
         let root = scratch("dash");
         std::fs::write(root.join("run.sh"), "cargo test --workspace\n").unwrap();
 
-        Edit::new(root.clone())
+        Edit::new(root.clone(), Guard::for_workspace(&root))
             .execute(&json!({
                 "path": "run.sh",
                 "old_string": "cargo test \u{2013}-workspace",
@@ -811,7 +826,7 @@ mod forgiving_edits {
         let root = scratch("absent");
         std::fs::write(root.join("a.rs"), "let a = 1;\n").unwrap();
 
-        let error = Edit::new(root)
+        let error = Edit::new(root.clone(), Guard::for_workspace(&root))
             .execute(&json!({
                 "path": "a.rs",
                 "old_string": "let c = 3;",
@@ -820,5 +835,121 @@ mod forgiving_edits {
             .await
             .unwrap_err();
         assert!(error.contains("not found"), "{error}");
+    }
+}
+
+/// What the policy does to a file tool.
+///
+/// These tools open paths in this process, so nothing outside it is in a position to stop
+/// them: the check is the enforcement, and the message it fails with is the whole of what
+/// the model has to go on.
+#[cfg(test)]
+mod policy {
+    use super::*;
+    use micro_sandbox::Sandbox;
+    use micro_sandbox::SandboxPolicy;
+    use micro_types::LedgerEvent;
+
+    fn workspace(name: &str) -> (PathBuf, PathBuf) {
+        let dir = std::env::temp_dir().join(format!("micro-tools-policy-{name}"));
+        let _ = std::fs::remove_dir_all(&dir);
+        let workspace = dir.join("workspace");
+        std::fs::create_dir_all(&workspace).unwrap();
+        (
+            dir.canonicalize().unwrap(),
+            workspace.canonicalize().unwrap(),
+        )
+    }
+
+    /// A workspace with a symlink out of it, which is the one way a path can pass the
+    /// lexical check and still land somewhere the policy does not allow.
+    #[tokio::test]
+    async fn a_write_that_leaves_the_workspace_by_symlink_is_refused_by_name() {
+        let (dir, root) = workspace("symlink");
+        let outside = dir.join("outside");
+        std::fs::create_dir_all(&outside).unwrap();
+        std::os::unix::fs::symlink(&outside, root.join("escape")).unwrap();
+
+        let (sender, mut events) = tokio::sync::mpsc::unbounded_channel();
+        let guard =
+            Guard::new(Sandbox::new(SandboxPolicy::workspace_write(), &root)).recording(sender);
+
+        let error = Write::new(root, guard)
+            .execute(&json!({ "path": "escape/loot.txt", "content": "taken" }))
+            .await
+            .expect_err("the policy does not allow this");
+
+        assert!(error.contains("workspace-write"), "{error}");
+        assert!(!outside.join("loot.txt").exists(), "nothing was written");
+        assert!(
+            matches!(
+                events.try_recv(),
+                Ok(LedgerEvent::SandboxDecision { allowed: false, .. })
+            ),
+            "the refusal was recorded"
+        );
+    }
+
+    /// Under `read-only` the workspace itself is off limits, and reading it is not.
+    #[tokio::test]
+    async fn read_only_stops_every_write_and_no_read() {
+        let (_dir, root) = workspace("read-only");
+        std::fs::write(root.join("notes.txt"), "kept\n").unwrap();
+        let guard = Guard::new(Sandbox::new(SandboxPolicy::ReadOnly, &root));
+
+        let refused = Write::new(root.clone(), guard.clone())
+            .execute(&json!({ "path": "notes.txt", "content": "changed" }))
+            .await
+            .expect_err("read-only writes nothing");
+        assert!(refused.contains("read-only"), "{refused}");
+
+        let edit = Edit::new(root.clone(), guard.clone())
+            .execute(&json!({ "path": "notes.txt", "old_string": "kept", "new_string": "gone" }))
+            .await
+            .expect_err("nor by editing");
+        assert!(edit.contains("read-only"), "{edit}");
+
+        Read::new(root.clone(), guard)
+            .execute(&json!({ "path": "notes.txt" }))
+            .await
+            .expect("reading is allowed under every policy");
+        assert_eq!(
+            std::fs::read_to_string(root.join("notes.txt")).unwrap(),
+            "kept\n"
+        );
+    }
+
+    /// The policy does not narrow what the workspace was already good for: a tool inside
+    /// it works exactly as it did.
+    #[tokio::test]
+    async fn the_workspace_itself_is_untouched_by_the_default_policy() {
+        let (_dir, root) = workspace("inside");
+        let guard = Guard::for_workspace(&root);
+
+        Write::new(root.clone(), guard.clone())
+            .execute(&json!({ "path": "nested/a.txt", "content": "hi" }))
+            .await
+            .expect("the workspace is writable");
+        assert_eq!(
+            std::fs::read_to_string(root.join("nested/a.txt")).unwrap(),
+            "hi"
+        );
+
+        let listing = Ls::new(root, guard).execute(&json!({})).await.unwrap();
+        assert!(listing.contains("nested/"), "{listing}");
+    }
+
+    /// `.git` stays read-only inside a writable workspace: what runs on the next commit is
+    /// not something a session gets to rewrite.
+    #[tokio::test]
+    async fn the_git_directory_stays_read_only_inside_a_writable_workspace() {
+        let (_dir, root) = workspace("git");
+        std::fs::create_dir_all(root.join(".git/hooks")).unwrap();
+
+        let error = Write::new(root.clone(), Guard::for_workspace(&root))
+            .execute(&json!({ "path": ".git/hooks/pre-commit", "content": "#!/bin/sh\n" }))
+            .await
+            .expect_err("hooks are not writable");
+        assert!(error.contains("read-only"), "{error}");
     }
 }

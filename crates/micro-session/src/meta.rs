@@ -13,6 +13,10 @@ pub const MAX_TITLE_CHARS: usize = 60;
 /// Everything a listing needs about a session without opening its message log.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SessionMeta {
+    /// The schema this record was written against, so a later reader knows what it is
+    /// looking at. A sidecar written before sessions were versioned reads as version zero.
+    #[serde(default)]
+    pub v: u32,
     pub id: String,
     pub created_at: i64,
     pub updated_at: i64,
@@ -24,12 +28,23 @@ pub struct SessionMeta {
     /// The session this one was forked from, when it did not start from scratch.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent: Option<String>,
+    /// Who the session belongs to, when it belongs to anyone beyond the person who ran it.
+    ///
+    /// Nothing in micro fills these in and nothing is sent anywhere. They are here because
+    /// an exported ledger is a record somebody may need to file against an organization or
+    /// against the agent that produced it, and a field that arrives later cannot be
+    /// backfilled onto sessions already written.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub org_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_id: Option<String>,
 }
 
 impl SessionMeta {
     pub(crate) fn new(id: String, workspace: PathBuf, model_id: String) -> Self {
         let now = now_ms();
         SessionMeta {
+            v: micro_types::SCHEMA_VERSION,
             id,
             created_at: now,
             updated_at: now,
@@ -38,6 +53,8 @@ impl SessionMeta {
             title: String::new(),
             message_count: 0,
             parent: None,
+            org_id: None,
+            agent_id: None,
         }
     }
 

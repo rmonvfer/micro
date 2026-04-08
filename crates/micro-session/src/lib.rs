@@ -4,22 +4,38 @@
 //! each message is produced, plus a sidecar metadata file listings read instead of
 //! replaying the log. The log is never rewritten, so a crash costs at most the line
 //! being written and [`SessionStore::load`] skips whatever it cannot parse.
+//!
+//! The same log carries the ledger: everything a run did that is not something that was
+//! said, written as [`LedgerLine`] envelopes between the messages. Content a fact refers
+//! to rather than contains — a system prompt, a set of tool definitions — is stored beside
+//! the log under the hash of its bytes, so a prompt that stood unchanged for a hundred
+//! turns is on disk once.
 
 mod error;
-mod tree;
 mod meta;
+mod tree;
 
 pub use error::Result;
 pub use error::SessionError;
 pub use meta::SessionMeta;
+pub use meta::MAX_TITLE_CHARS;
 pub use tree::Compaction;
 pub use tree::CustomEntry;
 pub use tree::Entry;
+pub use tree::LedgerLine;
 pub use tree::Row;
 pub use tree::Tree;
-pub use meta::MAX_TITLE_CHARS;
 
+use micro_types::content_hash;
+use micro_types::CompactionCost;
+use micro_types::LedgerEvent;
 use micro_types::Message;
+use micro_types::Model;
+use micro_types::PrefixSpan;
+use micro_types::StopReason;
+use micro_types::ToolDefinition;
+use micro_types::Usage;
+use micro_types::SCHEMA_VERSION;
 use std::io::ErrorKind;
 use std::path::Path;
 use std::path::PathBuf;
@@ -78,8 +94,10 @@ impl SessionStore {
             log,
             log_path: self.log_path(&id),
             meta_path: self.meta_path(&id),
+            blobs_path: self.blobs_path(&id),
             meta,
             tree: Tree::new(),
+            next_seq: 1,
         };
         session.write_meta().await?;
         Ok(session)
@@ -101,7 +119,16 @@ impl SessionStore {
             log,
             log_path: self.log_path(id),
             meta_path: self.meta_path(id),
+            blobs_path: self.blobs_path(id),
             meta,
+            // Numbering carries on from the highest sequence the log already holds, so a
+            // fact recorded after a resume sorts after everything recorded before it.
+            next_seq: tree
+                .ledger()
+                .iter()
+                .map(|recorded| recorded.seq)
+                .max()
+                .map_or(1, |highest| highest + 1),
             tree,
         };
 
@@ -112,9 +139,11 @@ impl SessionStore {
         }
 
         // A crash between the log write and the metadata write, or a skipped line, leaves
-        // the recorded count ahead of what the log actually yields. The log is the truth.
-        if session.meta.message_count != messages.len() {
-            session.meta.message_count = messages.len();
+        // the recorded count out of step with what the log yields. The count describes all
+        // recorded conversation entries, including entries left on another branch.
+        let entry_count = session.tree.entries().len();
+        if session.meta.message_count != entry_count {
+            session.meta.message_count = entry_count;
             session.write_meta().await?;
         }
 
@@ -129,6 +158,128 @@ impl SessionStore {
     pub async fn meta(&self, id: &str) -> Result<SessionMeta> {
         validate_id(id)?;
         self.meta_for(id).await
+    }
+
+    /// A session's log exactly as it is on disk, for a caller handing over the whole
+    /// ledger rather than reading anything out of it.
+    pub async fn raw_log(&self, id: &str) -> Result<String> {
+        validate_id(id)?;
+        self.read_log(id).await
+    }
+
+    /// A piece of content a ledger event named by hash.
+    pub async fn blob(&self, id: &str, hash: &str) -> Result<Vec<u8>> {
+        validate_id(id)?;
+        validate_id(hash)?;
+        let path = self.blobs_path(id).join(hash);
+        tokio::fs::read(&path)
+            .await
+            .map_err(|source| match source.kind() {
+                ErrorKind::NotFound => SessionError::MissingBlob {
+                    id: id.to_string(),
+                    hash: hash.to_string(),
+                },
+                _ => SessionError::io(path, source),
+            })
+    }
+
+    /// What the model was shown at one turn, put back together from the log.
+    ///
+    /// The conversation is read as it stood when the turn was recorded rather than as it
+    /// stands now: the log is replayed in order and stopped at the line the request was
+    /// written on, so a branch taken afterwards, or a summary written since, does not
+    /// change what an earlier turn is said to have seen.
+    ///
+    /// A turn re-issued after a transient failure was recorded once per attempt. The last
+    /// of them is the one that produced the answer, so it is the one described here.
+    pub async fn reconstruct_turn(&self, id: &str, turn: u64) -> Result<ReconstructedTurn> {
+        validate_id(id)?;
+        let raw = self.read_log(id).await?;
+        let (lines, _) = parse_log(&raw);
+
+        let mut tree = Tree::new();
+        let mut request = None;
+        let mut usage = None;
+        for line in lines {
+            if let tree::Line::Ledger(recorded) = &line {
+                match &recorded.event {
+                    LedgerEvent::TurnRequest { turn: at, .. } if *at == turn => {
+                        let event = recorded.event.clone();
+                        request = Some((event, tree.path(), tree.path_entry_ids()));
+                    }
+                    LedgerEvent::TurnUsage {
+                        turn: at,
+                        usage: reported,
+                        stop_reason,
+                        ..
+                    } if *at == turn => usage = Some((*reported, *stop_reason)),
+                    _ => {}
+                }
+            }
+            tree.apply(line);
+        }
+
+        let Some((event, messages, entry_ids)) = request else {
+            return Err(SessionError::NoSuchTurn {
+                id: id.to_string(),
+                turn,
+            });
+        };
+        let LedgerEvent::TurnRequest {
+            provider,
+            model,
+            prefix_hash,
+            request_hash,
+            system_prompt_blob,
+            tools_blob,
+            model_blob,
+            prefix_spans,
+            attempt,
+            ..
+        } = event
+        else {
+            unreachable!("only a turn request is collected above");
+        };
+
+        let system_prompt = match &system_prompt_blob {
+            Some(hash) => Some(self.text_blob(id, hash).await?),
+            None => None,
+        };
+        let tools = self.parsed_blob(id, &tools_blob).await?;
+        let described = self.parsed_blob(id, &model_blob).await?;
+
+        Ok(ReconstructedTurn {
+            turn,
+            attempt,
+            provider,
+            model_id: model,
+            model: described,
+            prefix_hash,
+            request_hash,
+            prefix_spans,
+            system_prompt,
+            tools,
+            messages,
+            message_entry_ids: entry_ids,
+            usage: usage.map(|(usage, _)| usage),
+            stop_reason: usage.map(|(_, stop_reason)| stop_reason),
+        })
+    }
+
+    /// A blob read as the text it was stored as.
+    async fn text_blob(&self, id: &str, hash: &str) -> Result<String> {
+        let raw = self.blob(id, hash).await?;
+        String::from_utf8(raw).map_err(|_| SessionError::MissingBlob {
+            id: id.to_string(),
+            hash: hash.to_string(),
+        })
+    }
+
+    /// A blob read back as whatever it was serialized from.
+    async fn parsed_blob<T: serde::de::DeserializeOwned>(&self, id: &str, hash: &str) -> Result<T> {
+        let raw = self.blob(id, hash).await?;
+        serde_json::from_slice(&raw)
+            .map_err(|source| SessionError::json(self.blobs_path(id).join(hash), source))
     }
 
     /// Every session in the store, newest first.
@@ -153,6 +304,10 @@ impl SessionStore {
             }
             Err(source) => return Err(SessionError::io(log_path, source)),
         }
+
+        // What the session's facts referred to goes with them; a blob is worth keeping
+        // only for as long as something names it.
+        let _ = tokio::fs::remove_dir_all(self.blobs_path(id)).await;
 
         let meta_path = self.meta_path(id);
         match tokio::fs::remove_file(&meta_path).await {
@@ -264,19 +419,65 @@ impl SessionStore {
     }
 
     /// Reads a session's metadata, rebuilding it from the log when the sidecar is missing
-    /// or unreadable so a lost sidecar never hides a session.
+    /// or unreadable and reconciling stale listing fields when valid entries remain in the
+    /// log. A damaged log leaves its last readable metadata intact.
     async fn meta_for(&self, id: &str) -> Result<SessionMeta> {
         let path = self.meta_path(id);
         match tokio::fs::read(&path).await {
             Ok(raw) => {
                 if let Ok(meta) = serde_json::from_slice::<SessionMeta>(&raw) {
-                    return Ok(meta);
+                    return self.reconcile_meta(id, meta).await;
                 }
             }
             Err(error) if error.kind() == ErrorKind::NotFound => {}
             Err(source) => return Err(SessionError::io(path, source)),
         }
         self.rebuild_meta(id).await
+    }
+
+    /// Bring a readable log's derived title and entry count back into step with its sidecar.
+    ///
+    /// A title supplied through `/name` wins over the title derived from the first prompt.
+    /// When no valid entry is left in the log, metadata is retained because it is the only
+    /// trustworthy record remaining.
+    async fn reconcile_meta(&self, id: &str, mut meta: SessionMeta) -> Result<SessionMeta> {
+        let raw = self.read_log(id).await?;
+        let (lines, _) = parse_log(&raw);
+        let tree = Tree::from_lines(lines);
+        if tree.entries().is_empty() {
+            return Ok(meta);
+        }
+
+        let mut derived = SessionMeta::new(
+            id.to_string(),
+            meta.workspace.clone(),
+            meta.model_id.clone(),
+        );
+        for entry in tree.entries() {
+            derived.record(&entry.message);
+        }
+
+        let mut changed = false;
+        if meta.message_count != derived.message_count {
+            meta.message_count = derived.message_count;
+            changed = true;
+        }
+        if meta.title.trim().is_empty() && !derived.title.is_empty() {
+            meta.title = derived.title;
+            changed = true;
+        }
+        if let Ok(file_meta) = tokio::fs::metadata(self.log_path(id)).await {
+            if let Some(modified) = file_meta.modified().ok().map(to_millis) {
+                if modified > meta.updated_at {
+                    meta.updated_at = modified;
+                    changed = true;
+                }
+            }
+        }
+        if changed {
+            write_meta(&self.meta_path(id), &meta).await?;
+        }
+        Ok(meta)
     }
 
     /// Reconstructs what the log and the filesystem still know: the title, the message
@@ -367,6 +568,38 @@ impl SessionStore {
     fn meta_path(&self, id: &str) -> PathBuf {
         self.root.join(format!("{id}.meta.json"))
     }
+
+    /// Where one session's content-addressed blobs live: a sibling of its log, named the
+    /// same way its metadata is.
+    fn blobs_path(&self, id: &str) -> PathBuf {
+        self.root.join(format!("{id}.blobs"))
+    }
+}
+
+/// What the model was shown at one turn, and what came back.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ReconstructedTurn {
+    pub turn: u64,
+    /// Which try produced this record. Above one, the earlier attempts failed in a way
+    /// worth re-issuing the request for.
+    pub attempt: u32,
+    pub provider: String,
+    pub model_id: String,
+    /// The model as it was configured for the request, which is what makes the body
+    /// rebuildable rather than merely describable.
+    pub model: Model,
+    pub prefix_hash: String,
+    pub request_hash: String,
+    /// Where each stretch of the system prompt came from.
+    pub prefix_spans: Vec<PrefixSpan>,
+    pub system_prompt: Option<String>,
+    pub tools: Vec<ToolDefinition>,
+    /// The conversation as it stood when the request went out.
+    pub messages: Vec<Message>,
+    pub message_entry_ids: Vec<String>,
+    /// What the provider said the turn cost, once it answered.
+    pub usage: Option<Usage>,
+    pub stop_reason: Option<StopReason>,
 }
 
 /// An open session. Appends land at the end of the log immediately; nothing earlier in
@@ -376,10 +609,14 @@ pub struct Session {
     log: File,
     log_path: PathBuf,
     meta_path: PathBuf,
+    /// Where content a ledger event names by hash is kept.
+    blobs_path: PathBuf,
     meta: SessionMeta,
     /// The shape of the conversation, so an appended message knows what it followed and a
     /// branch can be taken from anywhere in it.
     tree: Tree,
+    /// The number the next fact recorded here is given.
+    next_seq: u64,
 }
 
 impl Session {
@@ -395,9 +632,18 @@ impl Session {
     /// Continue from an earlier entry, keeping everything that came after it.
     ///
     /// The next message appended hangs off that entry instead of the end, which is what
-    /// makes a second answer to the same question a branch rather than a replacement.
-    pub fn branch_from(&mut self, id: &str) -> bool {
-        self.tree.branch_from(id)
+    /// makes a second answer to the same question a branch rather than a replacement. The
+    /// move is recorded, so reopening the session continues from where the conversation
+    /// was left rather than from whatever was written last.
+    pub async fn branch_from(&mut self, id: &str) -> Result<bool> {
+        if !self.tree.branch_from(id) {
+            return Ok(false);
+        }
+        self.append_event(LedgerEvent::HeadMoved {
+            entry_id: id.to_string(),
+        })
+        .await?;
+        Ok(true)
     }
 
     /// The conversation along the current branch, which is what the model is shown.
@@ -407,6 +653,13 @@ impl Session {
 
     pub fn meta(&self) -> &SessionMeta {
         &self.meta
+    }
+
+    /// Record the model that will serve future turns in this session.
+    pub async fn set_model_id(&mut self, model_id: impl Into<String>) -> Result<()> {
+        self.meta.model_id = model_id.into();
+        self.meta.updated_at = micro_types::now_ms();
+        self.write_meta().await
     }
 
     /// Give the session a title of its own, in place of the one taken from the first
@@ -430,12 +683,97 @@ impl Session {
 
     /// Record that a stretch of the conversation has been summarized.
     ///
-    /// `kept` is how many of the most recent messages are still part of the conversation.
-    /// Nothing is removed from the log; what is written is where the conversation now
-    /// starts reading from, so reopening the session costs no summarizing.
-    pub async fn compacted(&mut self, summary: &str, kept: usize) -> Result<()> {
+    /// `kept` is how many of the most recent messages are still part of the conversation,
+    /// and `cost` is what the request that wrote the summary was billed. Nothing is removed
+    /// from the log; what is written is where the conversation now starts reading from, so
+    /// reopening the session costs no summarizing.
+    pub async fn compacted(
+        &mut self,
+        summary: &str,
+        kept: usize,
+        cost: CompactionCost,
+    ) -> Result<()> {
         let compaction = self.tree.push_compaction(summary, kept);
-        self.write_line(&compaction).await
+        self.write_line(&compaction).await?;
+        // Recorded twice over, and for two different readers: the compaction line is what
+        // the conversation is read through when the session reopens, and the ledger event
+        // is what says a compaction happened here to anything accounting for the session.
+        let summary_blob = self.store_blob(summary.as_bytes()).await?;
+        self.append_event(LedgerEvent::Compaction {
+            summary_blob,
+            kept,
+            cost,
+        })
+        .await
+        .map(|_| ())
+    }
+
+    /// Every fact recorded beside the conversation, oldest first.
+    pub fn events(&self) -> &[LedgerLine] {
+        self.tree.ledger()
+    }
+
+    /// Record one fact about the run, in the envelope every ledger line is written in.
+    ///
+    /// The sequence number is assigned here and nowhere else: it is what orders facts
+    /// against each other across a session, including across the reopenings that split one
+    /// conversation over several runs.
+    pub async fn append_event(&mut self, event: LedgerEvent) -> Result<u64> {
+        let mut event = event;
+        self.stamp(&mut event);
+
+        let seq = self.next_seq;
+        let recorded = LedgerLine {
+            v: SCHEMA_VERSION,
+            seq,
+            ts: micro_types::now_ms(),
+            event,
+        };
+        self.write_line(&recorded).await?;
+        self.next_seq += 1;
+        self.tree.apply(tree::Line::Ledger(recorded));
+        Ok(seq)
+    }
+
+    /// Fill in what only the session can know.
+    ///
+    /// A turn request names the entries the conversation stood at when it went out.
+    /// Whoever produced the request has the messages but not their ids — the tree assigns
+    /// those as they are written — so the names are put on here, where the tree is.
+    fn stamp(&self, event: &mut LedgerEvent) {
+        if let LedgerEvent::TurnRequest {
+            message_entry_ids, ..
+        } = event
+        {
+            if message_entry_ids.is_empty() {
+                *message_entry_ids = self.tree.path_entry_ids();
+            }
+        }
+    }
+
+    /// File a piece of content under the hash of its bytes, and answer with that name.
+    ///
+    /// Write-once, because the name is the content: a blob that is already there holds
+    /// exactly these bytes and is left alone. Written through a temporary file, so a crash
+    /// mid-write cannot leave a blob whose name lies about what is in it.
+    pub async fn store_blob(&self, content: &[u8]) -> Result<String> {
+        let hash = content_hash(content);
+        let path = self.blobs_path.join(&hash);
+        if tokio::fs::metadata(&path).await.is_ok() {
+            return Ok(hash);
+        }
+
+        tokio::fs::create_dir_all(&self.blobs_path)
+            .await
+            .map_err(|source| SessionError::io(&self.blobs_path, source))?;
+        let temporary = path.with_extension("tmp");
+        tokio::fs::write(&temporary, content)
+            .await
+            .map_err(|source| SessionError::io(&temporary, source))?;
+        tokio::fs::rename(&temporary, &path)
+            .await
+            .map_err(|source| SessionError::io(&path, source))?;
+        Ok(hash)
     }
 
     /// Name an entry, or take its name away.
@@ -453,8 +791,8 @@ impl Session {
 
     /// Append one line to the log, whatever kind of line it is.
     async fn write_line(&mut self, value: &impl serde::Serialize) -> Result<()> {
-        let mut line =
-            serde_json::to_vec(value).map_err(|source| SessionError::json(&self.log_path, source))?;
+        let mut line = serde_json::to_vec(value)
+            .map_err(|source| SessionError::json(&self.log_path, source))?;
         line.push(b'\n');
         self.log
             .write_all(&line)
@@ -701,12 +1039,21 @@ mod tests {
     async fn a_branch_survives_being_reopened() {
         let store = SessionStore::new(scratch("branching"));
         let mut session = store.create("/work", "m").await.expect("created");
-        session.append(&Message::user("question")).await.expect("wrote");
-        session.append(&Message::user("first answer")).await.expect("wrote");
+        session
+            .append(&Message::user("question"))
+            .await
+            .expect("wrote");
+        session
+            .append(&Message::user("first answer"))
+            .await
+            .expect("wrote");
 
         // Go back to the question and answer it differently.
-        assert!(session.branch_from("1"));
-        session.append(&Message::user("second answer")).await.expect("wrote");
+        assert!(session.branch_from("1").await.expect("moved"));
+        session
+            .append(&Message::user("second answer"))
+            .await
+            .expect("wrote");
         let id = session.id().to_string();
         drop(session);
 
@@ -967,6 +1314,42 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn listing_repairs_stale_title_and_message_count() {
+        let store = SessionStore::new(scratch("reconcile-metadata"));
+        let mut session = store.create("/work", "claude-opus-5").await.unwrap();
+        let id = session.id().to_string();
+        session
+            .append(&Message::user("repair the explorer"))
+            .await
+            .unwrap();
+        session.append(&assistant("done")).await.unwrap();
+
+        let stale = SessionMeta {
+            v: micro_types::SCHEMA_VERSION,
+            id: id.clone(),
+            created_at: 1,
+            updated_at: 1,
+            workspace: PathBuf::from("/work"),
+            model_id: "claude-opus-5".into(),
+            title: String::new(),
+            message_count: 0,
+            parent: None,
+            org_id: None,
+            agent_id: None,
+        };
+        write_meta(&store.meta_path(&id), &stale).await.unwrap();
+
+        let listed = store.list().await.unwrap();
+        assert_eq!(listed[0].title, "repair the explorer");
+        assert_eq!(listed[0].message_count, 2);
+
+        let repaired: SessionMeta =
+            serde_json::from_slice(&std::fs::read(store.meta_path(&id)).unwrap()).unwrap();
+        assert_eq!(repaired.title, "repair the explorer");
+        assert_eq!(repaired.message_count, 2);
+    }
+
+    #[tokio::test]
     async fn listing_an_empty_or_missing_store_yields_nothing() {
         let store = SessionStore::new(scratch("empty").join("never-created"));
         assert!(store.list().await.unwrap().is_empty());
@@ -1048,6 +1431,221 @@ mod tests {
         session.append_all(&[]).await.unwrap();
         assert_eq!(session.meta().message_count, 0);
         assert_eq!(std::fs::read(session.path()).unwrap().len(), 0);
+    }
+
+    /// A ledger line is written between the messages and read back as what it was, and
+    /// the conversation around it is untouched by it.
+    #[tokio::test]
+    async fn a_recorded_fact_survives_being_reopened() {
+        let store = SessionStore::new(scratch("ledger-round-trip"));
+        let mut session = store.create("/work", "opus").await.unwrap();
+        let id = session.id().to_string();
+
+        session.append(&Message::user("go")).await.unwrap();
+        session
+            .append_event(LedgerEvent::Marker {
+                data: serde_json::json!({ "note": "sandbox off" }),
+            })
+            .await
+            .unwrap();
+        session.append(&assistant("done")).await.unwrap();
+
+        let loaded = store.load(&id).await.unwrap();
+        assert_eq!(loaded.skipped_lines, 0);
+        assert_eq!(loaded.messages.len(), 2, "the ledger stays out of the talk");
+        assert_eq!(loaded.session.events().len(), 1);
+        assert_eq!(loaded.session.events()[0].v, micro_types::SCHEMA_VERSION);
+        assert_eq!(
+            loaded.session.events()[0].event,
+            LedgerEvent::Marker {
+                data: serde_json::json!({ "note": "sandbox off" }),
+            }
+        );
+    }
+
+    /// Numbering is what orders facts against each other, so it has to carry on across a
+    /// reopening rather than start over and leave two facts claiming the same place.
+    #[tokio::test]
+    async fn sequence_numbers_carry_on_after_a_reload() {
+        let store = SessionStore::new(scratch("ledger-seq"));
+        let mut session = store.create("/work", "opus").await.unwrap();
+        let id = session.id().to_string();
+
+        for _ in 0..3 {
+            session
+                .append_event(LedgerEvent::Marker {
+                    data: serde_json::Value::Null,
+                })
+                .await
+                .unwrap();
+        }
+        drop(session);
+
+        let mut reopened = store.load(&id).await.unwrap();
+        assert_eq!(
+            reopened
+                .session
+                .append_event(LedgerEvent::Marker {
+                    data: serde_json::Value::Null
+                })
+                .await
+                .unwrap(),
+            4
+        );
+
+        let seqs: Vec<u64> = store
+            .load(&id)
+            .await
+            .unwrap()
+            .session
+            .events()
+            .iter()
+            .map(|recorded| recorded.seq)
+            .collect();
+        assert_eq!(seqs, vec![1, 2, 3, 4]);
+    }
+
+    /// A session written before any of this existed holds messages and nothing else. It
+    /// has to open exactly as it always did, with no facts invented for it.
+    #[tokio::test]
+    async fn a_session_written_before_the_ledger_still_loads() {
+        let store = SessionStore::new(scratch("legacy"));
+        let session = store.create("/work", "opus").await.unwrap();
+        let id = session.id().to_string();
+        let path = session.path().to_path_buf();
+        drop(session);
+
+        // Bare messages, the shape the very first sessions were written in.
+        let mut written = String::new();
+        for message in [Message::user("first"), assistant("second")] {
+            written.push_str(&serde_json::to_string(&message).unwrap());
+            written.push('\n');
+        }
+        std::fs::write(&path, written).unwrap();
+
+        let loaded = store.load(&id).await.unwrap();
+        assert_eq!(loaded.messages.len(), 2);
+        assert_eq!(loaded.skipped_lines, 0);
+        assert!(loaded.session.events().is_empty());
+        assert!(matches!(
+            store.reconstruct_turn(&id, 1).await.unwrap_err(),
+            SessionError::NoSuchTurn { .. }
+        ));
+    }
+
+    /// Content a fact refers to is stored once under the hash of its bytes: two turns
+    /// naming the same system prompt name the same blob, and nothing is written twice.
+    #[tokio::test]
+    async fn content_is_stored_once_under_the_hash_of_its_bytes() {
+        let store = SessionStore::new(scratch("blobs"));
+        let session = store.create("/work", "opus").await.unwrap();
+        let id = session.id().to_string();
+
+        let first = session.store_blob(b"you are micro").await.unwrap();
+        let again = session.store_blob(b"you are micro").await.unwrap();
+        let other = session.store_blob(b"you are something else").await.unwrap();
+
+        assert_eq!(first, again);
+        assert_ne!(first, other);
+        assert_eq!(store.blob(&id, &first).await.unwrap(), b"you are micro");
+        assert!(matches!(
+            store.blob(&id, "0badc0de").await.unwrap_err(),
+            SessionError::MissingBlob { .. }
+        ));
+    }
+
+    /// What a turn saw is the conversation as it stood when the request went out, not as
+    /// it stands now: a branch taken afterwards cannot rewrite an earlier turn's record.
+    #[tokio::test]
+    async fn a_turn_is_rebuilt_as_the_conversation_stood_then() {
+        let store = SessionStore::new(scratch("reconstruct"));
+        let mut session = store.create("/work", "opus").await.unwrap();
+        let id = session.id().to_string();
+
+        let asked = Message::user("first");
+        session.append(&asked).await.unwrap();
+        let system_prompt_blob = session.store_blob(b"you are micro").await.unwrap();
+        let tools_blob = session.store_blob(b"[]").await.unwrap();
+        let model = Model::anthropic("claude-opus-5");
+        let model_blob = session
+            .store_blob(&serde_json::to_vec(&model).unwrap())
+            .await
+            .unwrap();
+        session
+            .append_event(LedgerEvent::TurnRequest {
+                turn: 1,
+                provider: "anthropic".into(),
+                model: "claude-opus-5".into(),
+                prefix_hash: "aa".into(),
+                request_hash: "bb".into(),
+                system_prompt_blob: Some(system_prompt_blob),
+                tools_blob,
+                model_blob,
+                prefix_spans: Vec::new(),
+                message_entry_ids: Vec::new(),
+                attempt: 1,
+            })
+            .await
+            .unwrap();
+        session.append(&assistant("answered")).await.unwrap();
+        session
+            .append_event(LedgerEvent::TurnUsage {
+                turn: 1,
+                usage: Usage {
+                    input: 7,
+                    output: 3,
+                    cache_read: 0,
+                    cache_write: 0,
+                },
+                stop_reason: StopReason::Stop,
+                provider: "anthropic".into(),
+                model: "claude-opus-5".into(),
+            })
+            .await
+            .unwrap();
+        // Everything after the turn: another branch, and more conversation on it.
+        session.branch_from("1").await.unwrap();
+        session.append(&Message::user("second")).await.unwrap();
+
+        let rebuilt = store.reconstruct_turn(&id, 1).await.unwrap();
+        assert_eq!(rebuilt.messages, vec![asked]);
+        assert_eq!(rebuilt.message_entry_ids, vec!["1".to_string()]);
+        assert_eq!(rebuilt.system_prompt.as_deref(), Some("you are micro"));
+        assert!(rebuilt.tools.is_empty());
+        assert_eq!(rebuilt.model, model);
+        assert_eq!(rebuilt.usage.map(|usage| usage.input), Some(7));
+        assert_eq!(rebuilt.stop_reason, Some(StopReason::Stop));
+    }
+
+    /// Moving the conversation back to an earlier entry is a fact about the session, so
+    /// reopening it continues from where it was left rather than from the last line.
+    #[tokio::test]
+    async fn moving_the_head_is_recorded() {
+        let store = SessionStore::new(scratch("head-moved"));
+        let mut session = store.create("/work", "opus").await.unwrap();
+        let id = session.id().to_string();
+
+        session.append(&Message::user("question")).await.unwrap();
+        session.append(&assistant("answer")).await.unwrap();
+        assert!(session.branch_from("1").await.unwrap());
+        assert!(
+            !session.branch_from("nowhere").await.unwrap(),
+            "a stale id records nothing"
+        );
+        drop(session);
+
+        let events = store.load(&id).await.unwrap();
+        assert_eq!(
+            events
+                .session
+                .events()
+                .iter()
+                .map(|recorded| recorded.event.clone())
+                .collect::<Vec<_>>(),
+            vec![LedgerEvent::HeadMoved {
+                entry_id: "1".into()
+            }]
+        );
     }
 
     #[test]

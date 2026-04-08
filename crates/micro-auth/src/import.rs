@@ -4,12 +4,12 @@
 //! provider names folded onto micro's own. The source file is only ever read.
 
 use crate::canonical_provider;
+use crate::providers;
 use crate::save;
 use crate::AuthError;
 use crate::AuthStore;
 use crate::Credential;
 use crate::Result;
-use crate::providers;
 use serde_json::Value;
 use std::collections::BTreeMap;
 use std::fmt;
@@ -368,7 +368,10 @@ mod tests {
         );
         let report = fixture.store.import_from(&fixture.source, false).unwrap();
 
-        assert_eq!(outcome(&report, "not-a-service"), ImportOutcome::Unsupported);
+        assert_eq!(
+            outcome(&report, "not-a-service"),
+            ImportOutcome::Unsupported
+        );
         assert_eq!(report.imported(), 1);
         assert_eq!(fixture.store.providers(), vec!["openrouter"]);
     }

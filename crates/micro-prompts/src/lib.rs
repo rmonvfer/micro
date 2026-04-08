@@ -318,13 +318,19 @@ mod tests {
 
     #[test]
     fn quoting_keeps_an_argument_whole() {
-        assert_eq!(args(r#"one "two three" four"#), vec!["one", "two three", "four"]);
+        assert_eq!(
+            args(r#"one "two three" four"#),
+            vec!["one", "two three", "four"]
+        );
         assert_eq!(args("'single quoted'"), vec!["single quoted"]);
     }
 
     #[test]
     fn a_positional_argument_is_substituted() {
-        assert_eq!(substitute("fix $1 please", &args("auth")), "fix auth please");
+        assert_eq!(
+            substitute("fix $1 please", &args("auth")),
+            "fix auth please"
+        );
         // One that was not given leaves nothing behind.
         assert_eq!(substitute("fix $2", &args("auth")), "fix ");
     }
@@ -358,7 +364,10 @@ mod tests {
     /// `$1` rather than being read again.
     #[test]
     fn an_argument_is_not_substituted_into_twice() {
-        assert_eq!(substitute("say $1", &args(r#""$2 and $@""#)), "say $2 and $@");
+        assert_eq!(
+            substitute("say $1", &args(r#""$2 and $@""#)),
+            "say $2 and $@"
+        );
     }
 
     #[test]
@@ -370,15 +379,22 @@ mod tests {
 
     #[test]
     fn a_template_describes_itself_or_its_first_line() {
-        let described = "---\ndescription: Review a pull request\nargument-hint: <number>\n---\nDo the thing\n";
+        let described =
+            "---\ndescription: Review a pull request\nargument-hint: <number>\n---\nDo the thing\n";
         let parsed = parse_frontmatter(described);
         assert_eq!(parsed.field("description"), Some("Review a pull request"));
 
-        assert_eq!(derive_description("# Fix the failing tests\n\nmore"), "# Fix the failing tests");
+        assert_eq!(
+            derive_description("# Fix the failing tests\n\nmore"),
+            "# Fix the failing tests"
+        );
         assert_eq!(derive_description("   \n\n"), "");
         let long = "x".repeat(80);
         assert!(derive_description(&long).ends_with("..."));
-        assert_eq!(derive_description(&long).chars().count(), DERIVED_DESCRIPTION_LIMIT + 3);
+        assert_eq!(
+            derive_description(&long).chars().count(),
+            DERIVED_DESCRIPTION_LIMIT + 3
+        );
     }
 }
 
@@ -387,7 +403,8 @@ mod discovery {
     use super::*;
 
     fn scratch(name: &str) -> (PathBuf, PathBuf) {
-        let base = std::env::temp_dir().join(format!("micro-prompts-{name}-{}", std::process::id()));
+        let base =
+            std::env::temp_dir().join(format!("micro-prompts-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&base);
         let root = base.join("project");
         let home = base.join("home");
@@ -422,7 +439,9 @@ mod discovery {
     fn an_untrusted_project_offers_no_prompts() {
         let (root, home) = scratch("trust");
         std::fs::write(
-            root.join(micro_config::PROJECT_DIR).join(PROMPTS_DIR).join("deploy.md"),
+            root.join(micro_config::PROJECT_DIR)
+                .join(PROMPTS_DIR)
+                .join("deploy.md"),
             "Ship it.\n",
         )
         .unwrap();
@@ -437,7 +456,9 @@ mod discovery {
         let (root, home) = scratch("shadow");
         std::fs::write(home.join(PROMPTS_DIR).join("ship.md"), "user version\n").unwrap();
         std::fs::write(
-            root.join(micro_config::PROJECT_DIR).join(PROMPTS_DIR).join("ship.md"),
+            root.join(micro_config::PROJECT_DIR)
+                .join(PROMPTS_DIR)
+                .join("ship.md"),
             "project version\n",
         )
         .unwrap();

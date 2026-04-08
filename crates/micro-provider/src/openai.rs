@@ -101,6 +101,10 @@ impl Provider for OpenAi {
 
         receiver
     }
+
+    fn payload(&self, model: &Model, context: &Context) -> Value {
+        build_payload(model, context).unwrap_or(Value::Null)
+    }
 }
 
 async fn run(
@@ -1120,8 +1124,7 @@ mod tests {
             "a service that was never told about strict fields is not sent one"
         );
         assert_eq!(
-            payload["tools"][0]["function"]["parameters"],
-            original_parameters,
+            payload["tools"][0]["function"]["parameters"], original_parameters,
             "the schema is exactly what the tool wrote, untouched"
         );
     }

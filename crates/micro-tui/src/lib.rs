@@ -964,11 +964,13 @@ fn apply_applied(app: &mut App, agent: &mut Agent, applied: Applied) {
             agent.set_messages(messages.clone());
             app.apply_result(Applied::Conversation { messages, note });
         }
-        Applied::SystemPrompt { prompt, note } => {
+        // What the model is told before the conversation is the host's to change, and it
+        // has already asked the agent for it: the prompt reaches the next turn hashed and
+        // recorded, rather than being installed from here without either.
+        Applied::SystemPrompt { note, .. } => {
             // Reloading re-reads the workspace, so the file listing behind `@` is read
             // again too rather than describing the workspace as it was at startup.
             app.forget_workspace_files();
-            agent.set_system_prompt(prompt);
             if let Some(note) = note {
                 app.notice(note, MessageKind::Info);
             }

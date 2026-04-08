@@ -45,7 +45,9 @@ pub(crate) async fn resume(argument: Option<&str>, context: &CommandContext<'_>)
         },
         several => {
             let title = format!("{} sessions start with \"{query}\"", several.len());
-            CommandOutcome::Choose(Picker::new(title, items(several.to_vec(), context)).searchable())
+            CommandOutcome::Choose(
+                Picker::new(title, items(several.to_vec(), context)).searchable(),
+            )
         }
     }
 }
@@ -129,17 +131,12 @@ fn messages(meta: &SessionMeta) -> String {
     }
 }
 
-
-
 /// `/tree` with no argument offers the conversation's entries to choose from; with an
 /// entry id it continues from that entry.
 ///
 /// Nothing is thrown away by continuing from an earlier point. What came after stays in
 /// the log as another branch, which is what makes it safe to go back and try again.
-pub(crate) async fn tree(
-    argument: Option<&str>,
-    context: &CommandContext<'_>,
-) -> CommandOutcome {
+pub(crate) async fn tree(argument: Option<&str>, context: &CommandContext<'_>) -> CommandOutcome {
     let Some(session_id) = context.session_id else {
         return CommandOutcome::error("this conversation is not being recorded");
     };
@@ -177,11 +174,7 @@ pub(crate) async fn tree(
         .map(|row| {
             // Depth is drawn into the label, so a branch reads as one at a glance and the
             // list stays a flat thing to move through.
-            let label = format!(
-                "{}{}",
-                "  ".repeat(row.depth),
-                summary(&row.entry.message)
-            );
+            let label = format!("{}{}", "  ".repeat(row.depth), summary(&row.entry.message));
             PickerItem::new(label, where_it_sits(row), format!("/tree {}", row.entry.id))
                 .current(row.is_head)
         })
@@ -239,10 +232,7 @@ fn text_of(content: &[micro_types::ContentBlock]) -> String {
 
 /// `/name` gives the session a title of its own, in place of the one taken from the first
 /// thing that was asked. With no argument it reports the title the session already has.
-pub(crate) async fn name(
-    argument: Option<&str>,
-    context: &CommandContext<'_>,
-) -> CommandOutcome {
+pub(crate) async fn name(argument: Option<&str>, context: &CommandContext<'_>) -> CommandOutcome {
     let Some(session_id) = context.session_id else {
         return CommandOutcome::error("this conversation is not being recorded");
     };
@@ -295,7 +285,10 @@ pub(crate) async fn info(context: &CommandContext<'_>) -> CommandOutcome {
 
     let counts = Counts::of(&loaded.messages);
     out.push_str("\nMessages\n");
-    out.push_str(&format!("Total: {}\n", thousands(loaded.messages.len() as u64)));
+    out.push_str(&format!(
+        "Total: {}\n",
+        thousands(loaded.messages.len() as u64)
+    ));
     out.push_str(&format!("User: {}\n", thousands(counts.user)));
     out.push_str(&format!("Assistant: {}\n", thousands(counts.assistant)));
     out.push_str(&format!(

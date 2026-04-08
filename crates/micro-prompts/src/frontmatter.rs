@@ -105,7 +105,8 @@ mod tests {
 
     #[test]
     fn a_header_is_read_and_the_body_kept() {
-        let parsed = parse_frontmatter("---\nname: thing\ndescription: Does it.\n---\nBody here.\n");
+        let parsed =
+            parse_frontmatter("---\nname: thing\ndescription: Does it.\n---\nBody here.\n");
         assert_eq!(parsed.field("name"), Some("thing"));
         assert_eq!(parsed.field("description"), Some("Does it."));
         assert_eq!(parsed.body(), "Body here.\n");

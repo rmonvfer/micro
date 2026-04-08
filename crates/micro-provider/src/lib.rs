@@ -55,6 +55,18 @@ pub trait Provider: Send + Sync {
         context: Context,
         api_key: String,
     ) -> UnboundedReceiver<StreamEvent>;
+
+    /// The body [`Provider::stream`] would send for this model and this context.
+    ///
+    /// The same assembly the request itself goes through, so what comes back is what the
+    /// service is told rather than a description of it. That is what lets a session record
+    /// a request by its hash and rebuild it afterwards without storing a copy of every
+    /// body it ever sent.
+    ///
+    /// A body that cannot be assembled — a tool schema the service would refuse — is
+    /// answered as null rather than as an error: this is a reading of the request, and the
+    /// attempt to send it is where the refusal belongs.
+    fn payload(&self, model: &Model, context: &Context) -> serde_json::Value;
 }
 
 /// How long a request may go without producing anything before it is given up on.

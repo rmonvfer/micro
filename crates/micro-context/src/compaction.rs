@@ -4,6 +4,7 @@ use crate::ContextError;
 use crate::Result;
 use async_trait::async_trait;
 use micro_types::now_ms;
+use micro_types::CompactionCost;
 use micro_types::ContentBlock;
 use micro_types::Message;
 use micro_types::StopReason;
@@ -50,18 +51,40 @@ Use this template:
 ## Relevant files
 [Files read, edited, or created, with what matters about each]";
 
+/// A summary, and what asking for it cost.
+///
+/// The cost travels with the text because the only thing that knows it is whatever made
+/// the request, and by the time a summary has replaced half a conversation there is
+/// nothing left to ask. A summarizer that answers without a model behind it reports
+/// nothing spent, which is the truth.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Summary {
+    pub text: String,
+    pub cost: CompactionCost,
+}
+
+impl Summary {
+    /// A summary that cost nothing, for a summarizer with no request behind it.
+    pub fn text(text: impl Into<String>) -> Self {
+        Summary {
+            text: text.into(),
+            cost: CompactionCost::default(),
+        }
+    }
+}
+
 /// Produces the summary that replaces the older half of a conversation.
 ///
 /// The implementation lives with the caller, which is what keeps this crate free of any
 /// provider or agent dependency.
 #[async_trait]
 pub trait Summarizer: Send + Sync {
-    async fn summarize(&self, messages: &[Message]) -> Result<String>;
+    async fn summarize(&self, messages: &[Message]) -> Result<Summary>;
 }
 
 #[async_trait]
 impl<S: Summarizer + ?Sized> Summarizer for Arc<S> {
-    async fn summarize(&self, messages: &[Message]) -> Result<String> {
+    async fn summarize(&self, messages: &[Message]) -> Result<Summary> {
         (**self).summarize(messages).await
     }
 }
@@ -123,6 +146,8 @@ pub struct Compacted {
     /// The conversation to continue with: the summary followed by the kept messages.
     pub messages: Vec<Message>,
     pub summary: String,
+    /// What writing the summary cost, for whoever is accounting for the session.
+    pub cost: CompactionCost,
     /// How many messages the summary stands in for.
     pub replaced: usize,
     pub tokens_before: usize,
@@ -161,13 +186,14 @@ impl<S: Summarizer> Compactor<S> {
         let summary = self.summarizer.summarize(&messages[..cut]).await?;
 
         let mut compacted = Vec::with_capacity(messages.len() - cut + 1);
-        compacted.push(summary_message(&summary));
+        compacted.push(summary_message(&summary.text));
         compacted.extend_from_slice(&messages[cut..]);
 
         Ok(Compacted {
             tokens_after: estimate_tokens(&compacted),
             messages: compacted,
-            summary,
+            summary: summary.text,
+            cost: summary.cost,
             replaced: cut,
             tokens_before,
         })
@@ -428,8 +454,8 @@ mod tests {
 
     #[async_trait]
     impl Summarizer for Canned {
-        async fn summarize(&self, _messages: &[Message]) -> Result<String> {
-            Ok(self.0.to_string())
+        async fn summarize(&self, _messages: &[Message]) -> Result<Summary> {
+            Ok(Summary::text(self.0))
         }
     }
 
@@ -437,7 +463,7 @@ mod tests {
 
     #[async_trait]
     impl Summarizer for Failing {
-        async fn summarize(&self, _messages: &[Message]) -> Result<String> {
+        async fn summarize(&self, _messages: &[Message]) -> Result<Summary> {
             Err(ContextError::summarizer("the provider said no"))
         }
     }
@@ -447,9 +473,9 @@ mod tests {
 
     #[async_trait]
     impl Summarizer for Recording {
-        async fn summarize(&self, messages: &[Message]) -> Result<String> {
+        async fn summarize(&self, messages: &[Message]) -> Result<Summary> {
             *self.0.lock().unwrap() = messages.to_vec();
-            Ok("summary".to_string())
+            Ok(Summary::text("summary"))
         }
     }
 

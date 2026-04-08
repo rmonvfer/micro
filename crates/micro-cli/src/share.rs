@@ -210,7 +210,10 @@ mod tests {
         // Read back lowercased, since a header's case is the client's business.
         let request = server.await.unwrap();
         assert!(request.contains("post /gists"), "{request}");
-        assert!(request.contains("authorization: bearer gho_test"), "{request}");
+        assert!(
+            request.contains("authorization: bearer gho_test"),
+            "{request}"
+        );
         assert!(request.contains("user-agent: micro"), "{request}");
         // Secret, because a conversation holds whatever was being worked on.
         assert!(request.contains("\"public\":false"), "{request}");
@@ -226,7 +229,12 @@ mod tests {
         tokio::spawn(async move {
             let (mut socket, _) = listener.accept().await.unwrap();
             read_request(&mut socket).await;
-            respond(&mut socket, 403, "{\"message\":\"Resource not accessible\"}").await;
+            respond(
+                &mut socket,
+                403,
+                "{\"message\":\"Resource not accessible\"}",
+            )
+            .await;
         });
 
         let error = publish_to(&endpoint, "counting", &[Message::user("hello")], "gho_test")

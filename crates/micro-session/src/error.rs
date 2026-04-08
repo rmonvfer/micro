@@ -18,6 +18,13 @@ pub enum SessionError {
     #[error("message index {index} is out of range; the session holds {len} messages")]
     IndexOutOfRange { index: usize, len: usize },
 
+    #[error("session {id} recorded no turn {turn}")]
+    NoSuchTurn { id: String, turn: u64 },
+
+    /// A fact names content by hash, and the content is not beside the log any more.
+    #[error("session {id} is missing the content {hash} one of its records names")]
+    MissingBlob { id: String, hash: String },
+
     #[error("cannot locate a home directory; set {env}")]
     NoHome { env: &'static str },
 

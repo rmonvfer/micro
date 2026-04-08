@@ -23,6 +23,7 @@ impl micro_tools::Tool for SlowTool {
             name: "slow".into(),
             description: "waits".into(),
             parameters: json!({ "type": "object", "properties": {} }),
+            constrained_sampling: None,
         }
     }
 
@@ -45,7 +46,10 @@ fn model() -> Model {
     }
 }
 
-async fn rpc_with(provider: FakeProvider, tools: Vec<Arc<dyn micro_tools::Tool>>) -> (Rpc, std::path::PathBuf) {
+async fn rpc_with(
+    provider: FakeProvider,
+    tools: Vec<Arc<dyn micro_tools::Tool>>,
+) -> (Rpc, std::path::PathBuf) {
     let root = std::env::temp_dir().join(format!("micro-rpc-test-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&root);
     std::fs::create_dir_all(&root).unwrap();

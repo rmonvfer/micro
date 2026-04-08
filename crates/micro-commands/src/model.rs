@@ -37,7 +37,8 @@ fn offered(context: &CommandContext<'_>) -> Vec<ModelDef> {
 }
 
 /// What is said about the ones left out.
-const ONLY_CONFIGURED: &str = "Only showing models from configured providers. Use /login to add providers.";
+const ONLY_CONFIGURED: &str =
+    "Only showing models from configured providers. Use /login to add providers.";
 
 fn neighbour(context: &CommandContext<'_>, forward: bool) -> Option<ModelDef> {
     let models = offered(context);
@@ -71,10 +72,13 @@ pub(crate) fn model(argument: Option<&str>, context: &CommandContext<'_>) -> Com
             .collect();
         // A workspace's shortlist is what the list opens on; the whole catalog is a key
         // away. A shortlist matching nothing is one nobody could use, so it is ignored.
-        let shortlist: Vec<_> = ordered(&on_shortlist(&offered, context.scoped_models), context.model)
-            .iter()
-            .map(|model| item(model, context.model))
-            .collect();
+        let shortlist: Vec<_> = ordered(
+            &on_shortlist(&offered, context.scoped_models),
+            context.model,
+        )
+        .iter()
+        .map(|model| item(model, context.model))
+        .collect();
 
         return CommandOutcome::Choose(
             Picker::new("Select a model", all)
@@ -122,21 +126,23 @@ pub(crate) fn model(argument: Option<&str>, context: &CommandContext<'_>) -> Com
 
 pub(crate) fn provider(argument: Option<&str>, context: &CommandContext<'_>) -> CommandOutcome {
     let Some(name) = argument else {
-        return CommandOutcome::Choose(Picker::new(
-            "Select a provider",
-            micro_provider::known_providers()
-                .iter()
-                .map(|info| {
-                    PickerItem::new(
-                        info.id,
-                        format!("{} · {}", info.label, credential_note(info.id, context)),
-                        format!("/provider {}", info.id),
-                    )
-                    .current(info.id == context.provider)
-                })
-                .collect(),
-        )
-        .searchable());
+        return CommandOutcome::Choose(
+            Picker::new(
+                "Select a provider",
+                micro_provider::known_providers()
+                    .iter()
+                    .map(|info| {
+                        PickerItem::new(
+                            info.id,
+                            format!("{} · {}", info.label, credential_note(info.id, context)),
+                            format!("/provider {}", info.id),
+                        )
+                        .current(info.id == context.provider)
+                    })
+                    .collect(),
+            )
+            .searchable(),
+        );
     };
 
     match micro_provider::provider_info(name) {
@@ -243,7 +249,10 @@ mod tests {
     #[tokio::test]
     async fn model_with_no_argument_offers_what_is_signed_in() {
         let harness = Harness::new("model-picker");
-        harness.auth.store_api_key("anthropic", "sk-ant-test").unwrap();
+        harness
+            .auth
+            .store_api_key("anthropic", "sk-ant-test")
+            .unwrap();
 
         let outcome = dispatch("/model", &harness.context()).await.unwrap();
         let picker = picker(&outcome);
@@ -331,7 +340,10 @@ mod tests {
     #[tokio::test]
     async fn the_model_in_use_is_marked_in_the_picker() {
         let harness = Harness::new("model-current");
-        harness.auth.store_api_key("anthropic", "sk-ant-test").unwrap();
+        harness
+            .auth
+            .store_api_key("anthropic", "sk-ant-test")
+            .unwrap();
         let current = harness
             .catalog
             .resolve("anthropic/claude-opus-5")
@@ -447,11 +459,7 @@ mod tests {
             thinking: Default::default(),
         };
 
-        let models = vec![
-            make("a", "zed"),
-            make("b", "acme"),
-            make("c", "middle"),
-        ];
+        let models = vec![make("a", "zed"), make("b", "acme"), make("c", "middle")];
         let running = make("c", "middle");
 
         let sorted = ordered(&models, Some(&running));

@@ -8,6 +8,7 @@ use async_trait::async_trait;
 use micro_context::ContextError;
 use micro_context::Result;
 use micro_context::Summarizer;
+use micro_context::Summary;
 use micro_types::Message;
 
 /// A summarizer that answers with canned text and records every conversation handed to it.
@@ -69,14 +70,18 @@ impl FakeSummarizer {
 
 #[async_trait]
 impl Summarizer for FakeSummarizer {
-    async fn summarize(&self, messages: &[Message]) -> Result<String> {
+    async fn summarize(&self, messages: &[Message]) -> Result<Summary> {
         self.inner
             .calls
             .lock()
             .expect("calls lock")
             .push(messages.to_vec());
 
-        self.inner.answer.clone().map_err(ContextError::summarizer)
+        self.inner
+            .answer
+            .clone()
+            .map(Summary::text)
+            .map_err(ContextError::summarizer)
     }
 }
 
@@ -91,7 +96,7 @@ mod tests {
 
         let summary = summarizer.summarize(&messages).await.unwrap();
 
-        assert_eq!(summary, "what happened");
+        assert_eq!(summary.text, "what happened");
         assert_eq!(summarizer.call_count(), 1);
         assert_eq!(summarizer.call(0), messages);
     }

@@ -11,21 +11,23 @@ use micro_auth::ProviderStatus;
 
 pub(crate) async fn login(argument: Option<&str>, context: &CommandContext<'_>) -> CommandOutcome {
     let Some(name) = argument else {
-        return CommandOutcome::Choose(Picker::new(
-            "Select provider to configure:",
-            micro_auth::provider_table()
-                .iter()
-                .map(|entry| {
-                    PickerItem::new(
-                        entry.id.clone(),
-                        describe(&context.auth.status_of(&entry.id)),
-                        format!("/login {}", entry.id),
-                    )
-                    .current(entry.id == context.provider)
-                })
-                .collect(),
-        )
-        .searchable());
+        return CommandOutcome::Choose(
+            Picker::new(
+                "Select provider to configure:",
+                micro_auth::provider_table()
+                    .iter()
+                    .map(|entry| {
+                        PickerItem::new(
+                            entry.id.clone(),
+                            describe(&context.auth.status_of(&entry.id)),
+                            format!("/login {}", entry.id),
+                        )
+                        .current(entry.id == context.provider)
+                    })
+                    .collect(),
+            )
+            .searchable(),
+        );
     };
 
     let Some(provider) = known(name) else {
@@ -68,7 +70,9 @@ pub(crate) fn logout(argument: Option<&str>, context: &CommandContext<'_>) -> Co
         if signed_in.is_empty() {
             return CommandOutcome::info("no provider has a stored credential");
         }
-        return CommandOutcome::Choose(Picker::new("Select provider to logout:", signed_in).searchable());
+        return CommandOutcome::Choose(
+            Picker::new("Select provider to logout:", signed_in).searchable(),
+        );
     };
 
     let Some(provider) = known(name) else {
@@ -281,7 +285,10 @@ mod tests {
         assert_eq!(known("copilot"), Some("github-copilot"));
         assert_eq!(known("GEMINI"), Some("google"));
         // Azure hosts a protocol micro speaks, so it is offered a login like any other.
-        assert_eq!(known("azure-openai-responses"), Some("azure-openai-responses"));
+        assert_eq!(
+            known("azure-openai-responses"),
+            Some("azure-openai-responses")
+        );
         // Mistral serves the completions shape under its own name, so it is offered too.
         assert_eq!(known("mistral"), Some("mistral"));
         // Bedrock is signed rather than keyed, and is offered like any other.

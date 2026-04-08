@@ -8,6 +8,7 @@
 //! Older logs hold bare messages with no envelope. They read as a straight line, which is
 //! exactly what they were.
 
+use micro_types::LedgerEvent;
 use micro_types::Message;
 use serde::Deserialize;
 use serde::Serialize;
@@ -81,14 +82,35 @@ pub struct Label {
     pub timestamp: i64,
 }
 
-/// A line of the log: an entry, something recorded beside the conversation, or a bare
-/// message from an older session.
+/// Something the session recorded that is not part of the conversation, in the envelope
+/// the ledger is written in.
 ///
-/// Untagged so every shape parses: an envelope has an `id` and a `message`, a custom entry
-/// has a `custom_type`, a label has an `entry_id`, and a bare message has a `role`.
+/// The only line kind that says what it is: `v` is the schema it was written against,
+/// `seq` orders it against every other fact in the session whatever else was written in
+/// between, and `event` is the fact itself.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct LedgerLine {
+    pub v: u32,
+    pub seq: u64,
+    pub ts: i64,
+    pub event: LedgerEvent,
+}
+
+/// A line of the log: a ledger event, an entry, something recorded beside the
+/// conversation, or a bare message from an older session.
+///
+/// Untagged so every shape parses: a ledger line has a `v` and an `event`, an envelope has
+/// an `id` and a `message`, a custom entry has a `custom_type`, a label has an `entry_id`,
+/// and a bare message has a `role`.
+///
+/// The ledger comes first and is the only variant carrying `v`, so no line written by the
+/// ledger can be mistaken for one of the older shapes — in particular for a label, which
+/// matches anything with an `entry_id` and a `timestamp` and reads a missing name as an
+/// instruction to take a name away.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(untagged)]
 pub enum Line {
+    Ledger(LedgerLine),
     Entry(Entry),
     Compaction(Compaction),
     Custom(CustomEntry),
@@ -107,6 +129,8 @@ pub struct Tree {
     /// Every compaction recorded, oldest first. The newest one on the current path is
     /// what the conversation is read through.
     compactions: Vec<Compaction>,
+    /// Every fact recorded beside the conversation, in the order it happened.
+    ledger: Vec<LedgerLine>,
     head: Option<String>,
 }
 
@@ -119,27 +143,37 @@ impl Tree {
     pub fn from_lines(lines: Vec<Line>) -> Self {
         let mut tree = Tree::new();
         for line in lines {
-            match line {
-                Line::Entry(entry) => {
-                    tree.head = Some(entry.id.clone());
-                    tree.entries.push(entry);
-                }
-                Line::Compaction(compaction) => tree.compactions.push(compaction),
-                Line::Custom(custom) => tree.customs.push(custom),
-                Line::Label(label) => match label.label {
-                    Some(name) => {
-                        tree.labels.insert(label.entry_id, name);
-                    }
-                    None => {
-                        tree.labels.remove(&label.entry_id);
-                    }
-                },
-                Line::Bare(message) => {
-                    tree.push(message);
-                }
-            }
+            tree.apply(line);
         }
         tree
+    }
+
+    /// Fold one line of a log in, in the order it was written.
+    ///
+    /// Applied one at a time rather than only in bulk, so a reader rebuilding what a turn
+    /// saw can stop at the line that turn was recorded on and read the conversation as it
+    /// stood at that moment.
+    pub(crate) fn apply(&mut self, line: Line) {
+        match line {
+            Line::Ledger(recorded) => self.ledger.push(recorded),
+            Line::Entry(entry) => {
+                self.head = Some(entry.id.clone());
+                self.entries.push(entry);
+            }
+            Line::Compaction(compaction) => self.compactions.push(compaction),
+            Line::Custom(custom) => self.customs.push(custom),
+            Line::Label(label) => match label.label {
+                Some(name) => {
+                    self.labels.insert(label.entry_id, name);
+                }
+                None => {
+                    self.labels.remove(&label.entry_id);
+                }
+            },
+            Line::Bare(message) => {
+                self.push(message);
+            }
+        }
     }
 
     pub fn entries(&self) -> &[Entry] {
@@ -149,6 +183,18 @@ impl Tree {
     /// Everything recorded beside the conversation.
     pub fn customs(&self) -> &[CustomEntry] {
         &self.customs
+    }
+
+    /// Every compaction recorded, oldest first. Most callers want [`Tree::path`], which
+    /// already reads the conversation through whichever of these is active; this is for a
+    /// reader that wants the record of compactions itself, not just its effect.
+    pub fn compactions(&self) -> &[Compaction] {
+        &self.compactions
+    }
+
+    /// Every fact recorded beside the conversation, oldest first.
+    pub fn ledger(&self) -> &[LedgerLine] {
+        &self.ledger
     }
 
     /// What an entry has been named, if anything.
@@ -279,6 +325,24 @@ impl Tree {
         let mut read = vec![micro_context::summary_message(&compaction.summary)];
         read.extend(path.into_iter().skip(from).map(|(_, message)| message));
         read
+    }
+
+    /// The ids of the entries [`Tree::path`] reads, in the same order.
+    ///
+    /// A stretch a summary stands for is not among them: those entries are still in the
+    /// log, but the conversation is no longer read through them, and the summary that
+    /// stands in their place is not an entry and has no id.
+    pub fn path_entry_ids(&self) -> Vec<String> {
+        let ids = self.path_ids();
+        let Some(compaction) = self.active_compaction() else {
+            return ids;
+        };
+        let from = compaction
+            .first_kept
+            .as_ref()
+            .and_then(|kept| ids.iter().position(|id| id == kept))
+            .unwrap_or(0);
+        ids.into_iter().skip(from).collect()
     }
 
     /// Where an entry sits along the path from the root to the head, counting from zero.
@@ -436,10 +500,7 @@ mod tests {
     /// A log written before sessions had a tree reads as the straight line it was.
     #[test]
     fn an_older_log_reads_as_one_branch() {
-        let tree = Tree::from_lines(vec![
-            Line::Bare(user("one")),
-            Line::Bare(user("two")),
-        ]);
+        let tree = Tree::from_lines(vec![Line::Bare(user("one")), Line::Bare(user("two"))]);
         assert_eq!(tree.entries().len(), 2);
         assert_eq!(tree.path().len(), 2);
         assert_eq!(tree.entries()[1].parent_id.as_deref(), Some("1"));
@@ -469,7 +530,10 @@ mod tests {
 
         assert!(tree.set_label("1", None));
         assert_eq!(tree.label("1"), None);
-        assert!(!tree.set_label("nowhere", Some("x".into())), "a stale id is harmless");
+        assert!(
+            !tree.set_label("nowhere", Some("x".into())),
+            "a stale id is harmless"
+        );
     }
 
     /// Everything written to the log comes back, each kind as what it was.
@@ -494,6 +558,41 @@ mod tests {
         assert_eq!(tree.path().len(), 1);
         assert_eq!(tree.customs()[0].data["seen"], true);
         assert_eq!(tree.label("1"), Some("the good branch"));
+    }
+
+    /// The line kinds are told apart by their fields alone, and a label matches anything
+    /// carrying an entry id — with a missing name meaning "take the name away". A ledger
+    /// line read as a label would quietly unname an entry every time the session opened,
+    /// so it has to read as a ledger line and nothing else.
+    #[test]
+    fn a_ledger_line_is_never_read_as_something_else() {
+        let written = serde_json::to_string(&LedgerLine {
+            v: micro_types::SCHEMA_VERSION,
+            seq: 1,
+            ts: 1786361585474,
+            event: LedgerEvent::HeadMoved {
+                entry_id: "3".into(),
+            },
+        })
+        .unwrap();
+
+        let line: Line = serde_json::from_str(&written).expect("a ledger line reads back");
+        let Line::Ledger(recorded) = line else {
+            panic!("expected a ledger line, got {line:?}");
+        };
+        assert_eq!(recorded.seq, 1);
+
+        let mut tree = Tree::from_lines(vec![
+            Line::Entry(Entry::new("1", None, user("a question"))),
+            Line::Label(Label {
+                entry_id: "1".into(),
+                label: Some("the good branch".into()),
+                timestamp: 0,
+            }),
+        ]);
+        tree.apply(serde_json::from_str(&written).unwrap());
+        assert_eq!(tree.label("1"), Some("the good branch"));
+        assert_eq!(tree.ledger().len(), 1);
     }
 
     #[test]
@@ -574,7 +673,10 @@ mod compaction {
 
         let path = tree.path();
         assert!(text(&path[0]).contains("second summary"));
-        assert!(!path.iter().skip(1).any(|message| text(message).contains("first summary")));
+        assert!(!path
+            .iter()
+            .skip(1)
+            .any(|message| text(message).contains("first summary")));
     }
 
     /// A compaction recorded on a branch that was left behind says nothing about the one

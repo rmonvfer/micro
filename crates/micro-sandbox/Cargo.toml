@@ -1,0 +1,18 @@
+[package]
+name = "micro-sandbox"
+version.workspace = true
+edition.workspace = true
+# Apache-2.0 rather than the workspace MIT: this crate carries code derived from
+# OpenAI Codex, and the LICENSE and NOTICE files beside this one travel with it.
+license = "Apache-2.0"
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+landlock = "0.4"
+seccompiler = "0.5"

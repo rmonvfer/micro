@@ -2,6 +2,7 @@
 
 use crate::required_str;
 use crate::truncate;
+use crate::Guard;
 use crate::Tool;
 use async_trait::async_trait;
 use micro_types::ToolDefinition;
@@ -66,11 +67,12 @@ fn timeout_for(arguments: &Value) -> Result<Option<u64>, String> {
 
 pub struct Bash {
     root: PathBuf,
+    guard: Guard,
 }
 
 impl Bash {
-    pub fn new(root: PathBuf) -> Self {
-        Bash { root }
+    pub fn new(root: PathBuf, guard: Guard) -> Self {
+        Bash { root, guard }
     }
 }
 
@@ -110,10 +112,17 @@ impl Tool for Bash {
         let command = required_str(arguments, "command")?;
         let timeout_ms = timeout_for(arguments)?;
 
-        let child = tokio::process::Command::new(shell())
-            .arg("-c")
-            .arg(&command)
-            .current_dir(&self.root)
+        // The policy is applied by the kernel rather than by anything here: what the
+        // sandbox hands back is an argument list that confines whatever it runs, and the
+        // shell is spawned from that instead of directly.
+        let shell = shell();
+        let wrapped = self.guard.sandbox().wrap(
+            &shell.to_string_lossy(),
+            ["-c".to_string(), command.clone()],
+            &self.root,
+        );
+        let confined = wrapped.enforced;
+        let child = tokio::process::Command::from(wrapped.to_std_command())
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -195,28 +204,57 @@ impl Tool for Bash {
             truncate(combined.trim_end())
         };
 
-        match code {
-            Some(0) => Ok(body),
-            Some(code) => Err(format!("exit code {code}\n{body}")),
-            None => Err(format!("terminated by signal\n{body}")),
+        let failure = match code {
+            Some(0) => return Ok(body),
+            Some(code) => format!("exit code {code}\n{body}"),
+            None => format!("terminated by signal\n{body}"),
+        };
+
+        // A command the kernel turned down reads as an ordinary failure unless it is said
+        // otherwise, and a model told only "exit code 1" retries the same command. Saying
+        // which policy stopped it is what lets the model do something else instead.
+        if !micro_sandbox::is_likely_denied(&status, &body) {
+            return Err(failure);
         }
+        if !confined {
+            // Nothing was confining this, so whatever refused it was not the sandbox.
+            // Worth a line in the ledger all the same: a run that looks like it is being
+            // stopped by a policy which is not in force is exactly what a reader would
+            // otherwise spend an afternoon on.
+            self.guard.record("exec", command, true);
+            return Err(failure);
+        }
+        self.guard.record("exec", command, false);
+        Err(format!(
+            "denied by policy {}: {failure}",
+            self.guard.policy()
+        ))
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use micro_sandbox::Sandbox;
+    use micro_sandbox::SandboxPolicy;
 
     fn scratch(name: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("micro-bash-{name}"));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        dir
+        dir.canonicalize().unwrap()
+    }
+
+    /// A shell with nothing confining it, which is what these tests are about: what a
+    /// policy does to a command is the `sandboxed` tests' business.
+    fn unconfined(root: PathBuf) -> Bash {
+        let guard = Guard::new(Sandbox::new(SandboxPolicy::Full, root.clone()));
+        Bash::new(root, guard)
     }
 
     #[tokio::test]
     async fn captures_stdout() {
-        let output = Bash::new(scratch("stdout"))
+        let output = unconfined(scratch("stdout"))
             .execute(&json!({ "command": "echo hello" }))
             .await
             .unwrap();
@@ -225,7 +263,7 @@ mod tests {
 
     #[tokio::test]
     async fn reports_a_non_zero_exit_code_as_an_error() {
-        let error = Bash::new(scratch("exit"))
+        let error = unconfined(scratch("exit"))
             .execute(&json!({ "command": "echo oops >&2; exit 3" }))
             .await
             .unwrap_err();
@@ -238,7 +276,7 @@ mod tests {
         let root = scratch("cwd");
         std::fs::write(root.join("marker.txt"), "").unwrap();
 
-        let output = Bash::new(root)
+        let output = unconfined(root)
             .execute(&json!({ "command": "ls" }))
             .await
             .unwrap();
@@ -247,7 +285,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_hanging_command_hits_the_timeout() {
-        let error = Bash::new(scratch("timeout"))
+        let error = unconfined(scratch("timeout"))
             .execute(&json!({ "command": "sleep 30", "timeout": 0.25 }))
             .await
             .unwrap_err();
@@ -259,7 +297,7 @@ mod tests {
     #[tokio::test]
     async fn a_running_command_says_what_it_has_printed() {
         let root = scratch("reporting");
-        let bash = Bash::new(root.clone());
+        let bash = unconfined(root.clone());
         let (sender, mut reported) = tokio::sync::mpsc::unbounded_channel();
 
         let output = bash
@@ -292,7 +330,7 @@ mod tests {
     #[tokio::test]
     async fn a_silent_command_reports_nothing() {
         let root = scratch("silent");
-        let bash = Bash::new(root.clone());
+        let bash = unconfined(root.clone());
         let (sender, mut reported) = tokio::sync::mpsc::unbounded_channel();
 
         bash.execute_reporting(&json!({ "command": "true" }), &crate::Progress::new(sender))
@@ -301,5 +339,102 @@ mod tests {
 
         assert!(reported.try_recv().is_err());
         let _ = std::fs::remove_dir_all(&root);
+    }
+}
+
+/// What the policy does to a command, run against the real thing.
+///
+/// macOS confines a command from the outside with a Seatbelt profile, so these spawn a
+/// command that genuinely is refused and check the tool says so in the terms the model
+/// needs: which policy, and what the command itself printed. Linux applies its rules from
+/// inside a helper process, which is micro's own binary re-invoked — there is no binary to
+/// re-invoke from a unit test, so the same ground is covered there by the integration
+/// tests that run the built program.
+#[cfg(all(test, target_os = "macos"))]
+mod sandboxed {
+    use super::*;
+    use micro_sandbox::Sandbox;
+    use micro_sandbox::SandboxPolicy;
+    use micro_types::LedgerEvent;
+
+    fn workspace(name: &str) -> (PathBuf, PathBuf) {
+        let dir = std::env::temp_dir().join(format!("micro-bash-policy-{name}"));
+        let _ = std::fs::remove_dir_all(&dir);
+        let workspace = dir.join("workspace");
+        std::fs::create_dir_all(&workspace).unwrap();
+        (
+            dir.canonicalize().unwrap(),
+            workspace.canonicalize().unwrap(),
+        )
+    }
+
+    #[tokio::test]
+    async fn a_write_outside_the_workspace_is_refused_in_the_name_of_the_policy() {
+        let (dir, workspace) = workspace("outside");
+        let (sender, mut events) = tokio::sync::mpsc::unbounded_channel();
+        let guard = Guard::new(Sandbox::new(SandboxPolicy::workspace_write(), &workspace))
+            .recording(sender);
+        let target = dir.join("loot.txt");
+
+        let error = Bash::new(workspace, guard)
+            .execute(&json!({ "command": format!("echo taken > {}", target.display()) }))
+            .await
+            .expect_err("the policy does not allow this");
+
+        assert!(
+            error.contains("denied by policy workspace-write"),
+            "the model is told which policy refused: {error}"
+        );
+        assert!(
+            error.contains("exit code"),
+            "and what the command itself said: {error}"
+        );
+        assert!(!target.exists(), "nothing was written");
+
+        match events.try_recv().expect("the refusal was recorded") {
+            LedgerEvent::SandboxDecision {
+                policy,
+                operation,
+                allowed,
+                ..
+            } => {
+                assert_eq!(policy, "workspace-write");
+                assert_eq!(operation, "exec");
+                assert!(!allowed);
+            }
+            other => panic!("expected a sandbox decision, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_write_inside_the_workspace_goes_through() {
+        let (_dir, workspace) = workspace("inside");
+        let guard = Guard::new(Sandbox::new(SandboxPolicy::workspace_write(), &workspace));
+
+        Bash::new(workspace.clone(), guard)
+            .execute(&json!({ "command": "echo kept > notes.txt" }))
+            .await
+            .expect("the workspace is writable");
+
+        assert_eq!(
+            std::fs::read_to_string(workspace.join("notes.txt")).unwrap(),
+            "kept\n"
+        );
+    }
+
+    /// Under `read-only` even the workspace is off limits, and the refusal reads the same
+    /// way: a policy, by name, and what the command printed.
+    #[tokio::test]
+    async fn read_only_refuses_a_write_to_the_workspace_itself() {
+        let (_dir, workspace) = workspace("read-only");
+        let guard = Guard::new(Sandbox::new(SandboxPolicy::ReadOnly, &workspace));
+
+        let error = Bash::new(workspace.clone(), guard)
+            .execute(&json!({ "command": "echo nope > notes.txt" }))
+            .await
+            .expect_err("read-only writes nothing");
+
+        assert!(error.contains("denied by policy read-only"), "{error}");
+        assert!(!workspace.join("notes.txt").exists());
     }
 }
