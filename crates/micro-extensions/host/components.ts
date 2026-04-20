@@ -36,13 +36,32 @@ export interface Component {
 let nextId = 0;
 const registry = new Map<string, Component>();
 
+/** Which extension registered each live component, so letting an extension go can retire
+ * everything it put on the screen without asking it to keep a list of its own. */
+const owners = new Map<string, string>();
+
 /** Register a component, and hand back the id it is driven by from here on. An object
  * rather than a bare string, matching pi's own convention of a result namely being able to
  * grow a field without every caller's destructuring breaking. */
-export function registerComponent(component: Component): { id: string } {
+export function registerComponent(component: Component, owner?: string): { id: string } {
 	const id = `component-${nextId++}`;
 	registry.set(id, component);
+	if (owner) {
+		owners.set(id, owner);
+	}
 	return { id };
+}
+
+/** Retire every component one extension registered, and say which ids went — what micro
+ * needs to take their lines off the screen too. */
+export function disposeOwnedBy(owner: string): string[] {
+	const owned = [...owners.entries()]
+		.filter(([, held]) => held === owner)
+		.map(([id]) => id);
+	for (const id of owned) {
+		dispose(id);
+	}
+	return owned;
 }
 
 /** A component's lines at this width, or nothing for an id nobody has registered — the same
@@ -72,6 +91,7 @@ export function dispose(id: string): void {
 		return;
 	}
 	registry.delete(id);
+	owners.delete(id);
 	component.dispose?.();
 }
 

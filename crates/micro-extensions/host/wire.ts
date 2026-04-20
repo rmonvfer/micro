@@ -23,6 +23,22 @@ export function ask(request: Json): Promise<Json> {
 	});
 }
 
+/**
+ * The same two calls, tagging everything they send with the extension that made it.
+ *
+ * micro decides what an ask is allowed to do by looking at who asked, so an ask that
+ * arrives anonymously cannot be held to anything. The tag is attached here, at the one
+ * place every message crosses, rather than at each of the several dozen call sites that
+ * send one — a caller takes its own pair once and uses them exactly as it used the
+ * untagged ones.
+ */
+export function wireFor(extension: string): { ask: typeof ask; send: typeof send } {
+	return {
+		ask: (request: Json) => ask({ ...request, extension }),
+		send: (message: Json) => send({ ...message, extension }),
+	};
+}
+
 /** Hand micro's answer to whoever asked for it. */
 export function answered(id: string, value: Json): boolean {
 	const resolve = waiting.get(id);

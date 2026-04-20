@@ -33,7 +33,7 @@
 // A property that is present but silently wrong is worse than one that is simply missing —
 // an extension reading it would make a decision on it.
 
-import { ask, type Json, send } from "./host-wire.ts";
+import { ask, type Json, wireFor } from "./host-wire.ts";
 
 /** Whether a run is in flight, and the controller whose signal is handed out for its
  *  duration. Updated as `agent_start`/`agent_settled` arrive — the same lifecycle events
@@ -133,7 +133,7 @@ const SNAPSHOT_TIMEOUT_MS = 2_000;
  * weight only on a command's own snapshot, since `getSystemPromptOptions()` is never
  * offered anywhere else and a tool call or an event dispatch would be paying for skills
  * and context files it has no way to ask for. */
-async function snapshot(commandContext: boolean): Promise<Json> {
+export async function snapshot(commandContext: boolean): Promise<Json> {
 	const asked = ask({ type: "request", request: "get_context", commandContext });
 	const gaveUp = new Promise<Json>((resolve) => {
 		setTimeout(() => resolve({}), SNAPSHOT_TIMEOUT_MS);
@@ -268,8 +268,9 @@ function sessionManagerFor(session: Json | undefined): Json {
  * `session_start` has actually arrived (see `replaceSession`), so `ctx.sessionManager` and
  * the rest of it already describe the new session, not the one that was left behind.
  */
-async function replacedSessionContext(ui: Json): Promise<Json> {
-	const ctx = await contextFor(ui, true);
+async function replacedSessionContext(ui: Json, extension: string): Promise<Json> {
+	const { send } = wireFor(extension);
+	const ctx = await contextFor(ui, extension, true);
 	ctx.sendMessage = async (message: Json, options?: Json): Promise<void> => {
 		send({ type: "action", action: "send_message", message, options: options ?? {} });
 	};
@@ -291,12 +292,13 @@ async function replacedSessionContext(ui: Json): Promise<Json> {
  */
 async function replaceSession(
 	ui: Json,
+	extension: string,
 	reason: string,
 	request: Json,
 	withSession: ((ctx: Json) => Promise<void>) | undefined,
 ): Promise<Json> {
 	const arrived = waitForSessionStart(reason);
-	const queued = await ask(request);
+	const queued = await wireFor(extension).ask(request);
 	if (queued.cancelled === true) {
 		return queued;
 	}
@@ -304,7 +306,7 @@ async function replaceSession(
 		return { cancelled: true };
 	}
 	if (withSession) {
-		await withSession(await replacedSessionContext(ui));
+		await withSession(await replacedSessionContext(ui, extension));
 	}
 	return { cancelled: false };
 }
@@ -323,8 +325,20 @@ async function replaceSession(
  * it, or describe how the prompt itself was assembled, and are not safe or worth offering
  * to a tool or an event handler that did not ask to be run again with the result.
  */
-export async function contextFor(ui: Json, commandContext = false): Promise<Json> {
-	const now = await snapshot(commandContext);
+export async function contextFor(ui: Json, extension: string, commandContext = false): Promise<Json> {
+	return contextFrom(await snapshot(commandContext), ui, extension, commandContext);
+}
+
+/**
+ * The same context, built from a snapshot already taken.
+ *
+ * One event reaches handlers belonging to several extensions, and each of them needs a
+ * context naming itself so micro can tell whose ask is whose. They are all watching the
+ * same moment, though, so they share one snapshot: asking micro again per extension would
+ * pay a round trip apiece to be told what was just answered.
+ */
+export function contextFrom(now: Json, ui: Json, extension: string, commandContext = false): Json {
+	const { ask, send } = wireFor(extension);
 	const model = now.model as Json | undefined;
 
 	const context: Json = {
@@ -411,6 +425,7 @@ export async function contextFor(ui: Json, commandContext = false): Promise<Json
 		context.fork = async (entryId: string, options?: Json): Promise<Json> => {
 			return replaceSession(
 				ui,
+				extension,
 				"fork",
 				{
 					type: "request",
@@ -428,6 +443,7 @@ export async function contextFor(ui: Json, commandContext = false): Promise<Json
 		context.switchSession = async (sessionPath: string, options?: Json): Promise<Json> => {
 			return replaceSession(
 				ui,
+				extension,
 				"resume",
 				{ type: "request", request: "switch_session", sessionPath },
 				options?.withSession as ((ctx: Json) => Promise<void>) | undefined,

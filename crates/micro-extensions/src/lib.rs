@@ -5,6 +5,7 @@
 //! registers into things micro already knows how to do: a tool the model may call, a
 //! command a user may type, a handler that runs when something happens.
 
+mod capabilities;
 mod compat;
 mod discover;
 mod events;
@@ -15,6 +16,12 @@ mod prompt;
 mod providers;
 mod tool;
 
+pub use capabilities::declared;
+pub use capabilities::derived;
+pub use capabilities::parse_all;
+pub use capabilities::Capability;
+pub use capabilities::Grant;
+pub use capabilities::Grants;
 pub use discover::discover;
 pub use discover::entries_of;
 pub use discover::package_name;

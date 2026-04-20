@@ -9,6 +9,8 @@ use micro_context::Compacted;
 use micro_context::CompactionConfig;
 use micro_context::Compactor;
 use micro_context::Summarizer;
+use micro_models::ModelCost;
+use micro_models::TokenUsage;
 use micro_provider::ApiKey;
 use micro_provider::Provider;
 use micro_tools::Tool;
@@ -60,6 +62,10 @@ pub struct ModelSwap {
     pub model: Model,
     pub api_key: ApiKey,
     pub context_window: usize,
+    /// What this model's tokens are charged at, so a budget carries on meaning the same
+    /// thing after a swap: what a run has spent is one number, and the model it was spent
+    /// on changes underneath it.
+    pub cost: ModelCost,
 }
 
 impl std::fmt::Debug for ModelSwap {
@@ -82,6 +88,47 @@ impl PartialEq for ModelSwap {
         self.provider.name() == other.provider.name()
             && self.model == other.model
             && self.context_window == other.context_window
+    }
+}
+
+/// What a session may spend, what it has spent, and what its tokens are charged at.
+///
+/// Held by the agent because the agent is what issues the requests, and checked after each
+/// one rather than before: what a request will cost is not knowable until the provider says
+/// what it read. A session that reopens over its limit is not bricked by that — it opens,
+/// it answers once more, and it stops again — because a limit that made a session
+/// unreadable would be a limit that lost the record of why it was reached.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Budget {
+    /// The ceiling for the whole session, in US dollars.
+    pub limit: f64,
+    /// What the session had already spent when this run opened it, which is what makes the
+    /// ceiling the session's rather than each run's.
+    pub spent: f64,
+    /// What the model in use charges. Replaced by [`Agent::set_model`], since the same
+    /// budget goes on applying across a swap.
+    pub cost: ModelCost,
+}
+
+impl Budget {
+    /// A ceiling on a session that has spent nothing yet.
+    pub fn new(limit: f64, cost: ModelCost) -> Budget {
+        Budget {
+            limit,
+            spent: 0.0,
+            cost,
+        }
+    }
+
+    /// What a session had already spent before this run opened it.
+    pub fn already_spent(mut self, spent: f64) -> Budget {
+        self.spent = spent;
+        self
+    }
+
+    /// Whether what has been spent has reached what was allowed.
+    fn reached(&self) -> bool {
+        self.spent >= self.limit
     }
 }
 
@@ -297,6 +344,8 @@ pub struct Agent {
     /// Content already handed to the recorder, by hash. A system prompt that stands
     /// unchanged for a hundred turns crosses this channel once.
     stored_blobs: HashSet<String>,
+    /// What this session is allowed to spend, when anything limits it.
+    budget: Option<Budget>,
 }
 
 impl Agent {
@@ -333,6 +382,7 @@ impl Agent {
             turn: 0,
             repairs: Vec::new(),
             stored_blobs: HashSet::new(),
+            budget: None,
         }
     }
 
@@ -378,6 +428,12 @@ impl Agent {
         self.model = swap.model;
         self.api_key = swap.api_key;
         self.context_window = swap.context_window;
+        // What has been spent stands; what the next turn will be charged at is the new
+        // model's. A budget is a ceiling on the session, not on the model that was running
+        // when it was set.
+        if let Some(budget) = &mut self.budget {
+            budget.cost = swap.cost;
+        }
         self.summarizer = self.provider_summarizer();
     }
 
@@ -456,6 +512,16 @@ impl Agent {
         self
     }
 
+    /// Stop this session once it has spent what `budget` allows.
+    ///
+    /// Nothing is refused before a request goes out — a request's price is not knowable
+    /// until the provider reports what it read — so the ceiling is checked against what has
+    /// been billed, and the run ends at the first turn boundary past it.
+    pub fn with_budget(mut self, budget: Budget) -> Self {
+        self.budget = Some(budget);
+        self
+    }
+
     /// Name the conversation, so a provider that caches a prompt can recognise it again.
     ///
     /// The summarizer is rebuilt with it: its request is part of this conversation, and one
@@ -492,6 +558,18 @@ impl Agent {
     ) -> Self {
         self.offered = Some(offered);
         self
+    }
+
+    /// Take tools away for good, for a run that outlived whoever provided them.
+    ///
+    /// Narrower than the offered list, which says only which tools the model is told about:
+    /// a tool left out of that one is still there to be called, which is the point of it.
+    /// A tool removed here is gone — its provider is no longer running, so a call to it
+    /// could not be answered — and the model stops being told about it at the next turn,
+    /// where the change is recorded like any other move of the cacheable prefix.
+    pub fn remove_tools(&mut self, names: &[String]) {
+        self.tools
+            .retain(|tool| !names.contains(&tool.definition().name));
     }
 
     /// Let something decide what the run may do.
@@ -542,6 +620,7 @@ impl Agent {
 
         let summary = compacted.messages[0].clone();
         self.record_compaction(&compacted);
+        self.charge(compacted.cost.usage);
         self.messages = compacted.messages;
         Ok(summary)
     }
@@ -727,6 +806,58 @@ impl Agent {
                 blobs: Vec::new(),
             });
         }
+    }
+
+    /// Charge what a provider said a request cost against the session's budget.
+    ///
+    /// Every request the session makes goes through here, the summarizer's included: a
+    /// summary is money spent on this session whether or not anyone asked for it, and a
+    /// ceiling that ignored it would be a ceiling with a hole in it.
+    fn charge(&mut self, usage: Usage) {
+        let Some(budget) = &mut self.budget else {
+            return;
+        };
+        budget.spent += budget
+            .cost
+            .price(
+                TokenUsage::new(usage.input as u64, usage.output as u64)
+                    .with_cache(usage.cache_read as u64, usage.cache_write as u64),
+            )
+            .total();
+    }
+
+    /// The ceiling and what has been spent against it, once the spending has reached it.
+    ///
+    /// Recorded on the way past, so the reason a run ended where it did is a fact about the
+    /// session rather than a line that scrolled by in a terminal.
+    fn budget_reached(&self) -> Option<(f64, f64)> {
+        let budget = self.budget.as_ref().filter(|budget| budget.reached())?;
+        let reached = (budget.limit, budget.spent);
+        self.record_event(LedgerEvent::BudgetStop {
+            limit: reached.0,
+            spent: reached.1,
+        });
+        Some(reached)
+    }
+
+    /// Say why the run stopped, in the shape a turn that failed is already said in.
+    ///
+    /// Announced rather than committed: the conversation holds what was said, and a run
+    /// that stopped for want of money is a fact about the run, which the ledger already
+    /// holds. Committing it would leave an answer in the transcript the model never gave,
+    /// and hand it back to a provider the next time the session was resumed.
+    fn say_stopped(&self, events: &Fan<'_>, limit: f64, spent: f64) {
+        let message = Message::Assistant(self.empty_assistant(
+            StopReason::Error,
+            Some(format!(
+                "Stopped: this session has spent ${spent:.4} of its ${limit:.4} budget. Raise \
+                 the budget to carry on, or set it to 0 to run without a ceiling."
+            )),
+        ));
+        events.send(AgentEvent::MessageStart {
+            message: message.clone(),
+        });
+        events.send(AgentEvent::MessageEnd { message });
     }
 
     /// Record the request about to go out: what identifies it, and what it was built from.
@@ -938,6 +1069,17 @@ impl Agent {
                 break;
             }
 
+            // What the turn cost is known now, and the next request has not been assembled
+            // yet, so this is where a ceiling can be honoured without abandoning a request
+            // already in flight.
+            if let Some((limit, spent)) = self.budget_reached() {
+                events.send(AgentEvent::TurnEnd {
+                    messages: produced.clone(),
+                });
+                self.say_stopped(events, limit, spent);
+                break;
+            }
+
             let calls: Vec<(String, String, serde_json::Value)> = assistant
                 .tool_calls()
                 .into_iter()
@@ -1127,6 +1269,7 @@ impl Agent {
 
         let summary = compacted.messages[0].clone();
         self.record_compaction(&compacted);
+        self.charge(compacted.cost.usage);
         self.messages = compacted.messages;
 
         // The summary joins the conversation like any other message, so it is announced
@@ -1225,6 +1368,7 @@ impl Agent {
                         provider: message.provider.clone(),
                         model: message.model.clone(),
                     });
+                    self.charge(message.usage);
                     events.send(AgentEvent::MessageEnd {
                         message: Message::Assistant(message.clone()),
                     });
@@ -1440,6 +1584,77 @@ mod tests {
                 _ => None,
             })
             .collect()
+    }
+
+    /// A tool that exists and does nothing, for a test about which tools an agent holds
+    /// rather than about what any of them do.
+    struct NamedTool(&'static str);
+
+    #[async_trait::async_trait]
+    impl Tool for NamedTool {
+        fn definition(&self) -> ToolDefinition {
+            ToolDefinition {
+                name: self.0.to_string(),
+                description: String::new(),
+                parameters: serde_json::json!({ "type": "object" }),
+                constrained_sampling: Default::default(),
+            }
+        }
+
+        async fn execute(&self, _arguments: &serde_json::Value) -> Result<String, String> {
+            Ok(String::new())
+        }
+    }
+
+    /// A tool whose provider is gone is gone: the model stops being told about it, and it
+    /// can no longer be found by name either — unlike a narrowed list, where a tool left
+    /// out is still there to be called.
+    #[test]
+    fn a_removed_tool_is_neither_offered_nor_findable() {
+        let mut agent = Agent::new(
+            Arc::new(NoProvider),
+            vec![
+                Arc::new(NamedTool("read")),
+                Arc::new(NamedTool("from-an-extension")),
+            ],
+            Model::anthropic("test-model"),
+            "test-key",
+        );
+        assert_eq!(agent.tool_definitions().len(), 2);
+
+        agent.remove_tools(&["from-an-extension".to_string()]);
+
+        let offered: Vec<String> = agent
+            .tool_definitions()
+            .into_iter()
+            .map(|definition| definition.name)
+            .collect();
+        assert_eq!(offered, vec!["read".to_string()]);
+        assert!(agent.find_tool("from-an-extension").is_none());
+        assert!(agent.find_tool("read").is_some());
+    }
+
+    /// A provider that is never asked for anything, for a test about the agent's own
+    /// bookkeeping rather than about a request.
+    struct NoProvider;
+
+    impl Provider for NoProvider {
+        fn name(&self) -> &str {
+            "none"
+        }
+
+        fn stream(
+            &self,
+            _model: Model,
+            _context: Context,
+            _api_key: String,
+        ) -> tokio::sync::mpsc::UnboundedReceiver<micro_types::StreamEvent> {
+            unreachable!("this test never issues a request")
+        }
+
+        fn payload(&self, _model: &Model, _context: &Context) -> serde_json::Value {
+            serde_json::Value::Null
+        }
     }
 
     #[test]

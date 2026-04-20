@@ -90,6 +90,14 @@ pub struct Runtime {
     pub commands: CliCommands,
     /// The extension host, when there was anything to load and a runtime to load it.
     pub extensions: Option<Arc<micro_extensions::Host>>,
+    /// What each loaded extension may ask micro for, and where the fact that it asked is
+    /// written down. Settled here, once, where the load report and the project's own trust
+    /// decision are both on hand.
+    ///
+    /// Taken rather than borrowed by whoever answers the extensions: it holds a sender into
+    /// the session log, and the log is finished by every sender being let go, so one left
+    /// behind here would keep the log open after the run had ended.
+    pub broker: Option<crate::extensions::Broker>,
     /// Every tool the model may call, by name, for whoever asks what is available.
     pub tool_names: Vec<String>,
     /// Which tools the model is told about, when an extension has narrowed them.
@@ -192,7 +200,7 @@ pub async fn build(
     // catalog is read. What the project itself ships is loaded only once the project has
     // been trusted; what the user installed for themselves always is.
     let mut extension_roots: Vec<(PathBuf, String)> = Vec::new();
-    let extensions = load_extensions(
+    let (extensions, grants, capability_notices) = load_extensions(
         root,
         settings,
         trusted,
@@ -202,6 +210,7 @@ pub async fn build(
         &mut extension_roots,
     )
     .await;
+    let grants = Arc::new(grants);
     let declared = apply_declared_providers(&mut catalog, extensions.as_deref(), settings);
     // A workspace's shortlist decides what the model list opens on, not what may be run:
     // it is a way of putting the handful you use in front of you, and the whole catalog is
@@ -293,7 +302,20 @@ pub async fn build(
     // Where the tools say what the policy refused them. A channel of its own rather than
     // the recorder itself: micro-tools knows what a fact about a run is and nothing about
     // how a session is written, so the two are joined below, once there is a recorder.
+    //
+    // Exactly one thing may hold this end strongly, and it is the tools: they live on the
+    // agent, the agent is let go when the run ends, and that is what closes this channel,
+    // which closes the recorder, which is what `persist` waits on before the process
+    // exits. Anything else that reports through here holds it weakly (see `crossings`) —
+    // a second strong hold would mean the session log waiting on a holder that is itself
+    // waiting for the run to be over.
     let (decisions, refusals) = tokio::sync::mpsc::unbounded_channel();
+    // The same channel the extension broker reports its own crossings on: both are facts
+    // about the run that nothing in this crate is holding a session open to write, and one
+    // bridge into the recorder is what keeps them in one order. Weak, per the rule above:
+    // the pump that answers the extensions outlives the run, since it stops only once the
+    // host it answers for is gone, and that happens after the log has been closed.
+    let crossings = decisions.downgrade();
     let guard = micro_tools::Guard::new(sandbox.clone()).recording(decisions);
     let mut tools = micro_tools::builtin_tools(root.to_path_buf(), guard);
     // The tools the loop is built around, which are described to the model whatever else
@@ -389,7 +411,12 @@ pub async fn build(
     // Running unconfined is a fact about the whole session rather than about any one
     // command, so it is said once, out loud, in both places a reader might look: the
     // ledger, and the screen.
+    let broker = crate::extensions::Broker {
+        grants: Arc::clone(&grants),
+        crossings: Some(crossings),
+    };
     let mut warnings = mcp_notices;
+    warnings.extend(capability_notices);
     if sandbox.policy().allows_all_writes() {
         let _ = recorder.send(micro_agent::Record::Event {
             event: micro_types::LedgerEvent::SandboxDecision {
@@ -451,6 +478,7 @@ pub async fn build(
     let agent = match extensions.as_ref() {
         Some(host) => agent.with_hooks(Arc::new(crate::extensions::ExtensionHooks::new(
             Arc::clone(host),
+            broker.clone(),
             prefix.clone(),
             root.display().to_string(),
         ))),
@@ -461,6 +489,11 @@ pub async fn build(
     let agent = match settings.auto_compact {
         true => agent,
         false => agent.without_compaction(),
+    };
+    // A ceiling on the session, which means the runs before this one count towards it.
+    let agent = match spending_limit(settings, &sessions, &catalog, session.id(), &model).await {
+        Some(budget) => agent.with_budget(budget),
+        None => agent,
     };
 
     // Where a phone's copy of the run goes, once a session has been handed to one. The
@@ -516,6 +549,7 @@ pub async fn build(
         notice,
         warnings,
         extensions,
+        broker: Some(broker),
         tool_names,
         offered_tools,
         self_framed_tools,
@@ -715,7 +749,7 @@ fn resources(
 /// loaded from says nothing about which package it came from. The roots are the ones this
 /// run was configured with — where a package was installed to — rather than a guess made
 /// by walking up from the file until a manifest turns up.
-fn extension_name(path: &str, roots: &[(PathBuf, String)]) -> String {
+pub fn extension_name(path: &str, roots: &[(PathBuf, String)]) -> String {
     let file = Path::new(path);
     if let Some((_, named)) = roots.iter().find(|(root, _)| file.starts_with(root)) {
         return named.clone();
@@ -735,6 +769,31 @@ fn shorten(path: &str) -> String {
         Some(rest) => format!("~{rest}"),
         None => path.to_string(),
     }
+}
+
+/// What this session may spend, and what it has spent already.
+///
+/// The ceiling is on the session rather than on this run of it, so what earlier runs spent
+/// is read back out of the ledger and counted against it: a limit that started over every
+/// time a session was reopened would be no limit at all. It is read through the same bill
+/// `/bill` prints, so the number a run stops at is the number a reader was shown.
+async fn spending_limit(
+    settings: &micro_config::Settings,
+    sessions: &SessionStore,
+    catalog: &Catalog,
+    session_id: &str,
+    model: &micro_models::ModelDef,
+) -> Option<micro_agent::Budget> {
+    if settings.budget <= 0.0 {
+        return None;
+    }
+    // A session whose bill cannot be worked out is treated as having spent nothing, since
+    // the alternative is refusing to run over a number nobody can produce.
+    let spent = micro_commands::bill(sessions, catalog, session_id)
+        .await
+        .map(|billed| billed.total)
+        .unwrap_or_default();
+    Some(micro_agent::Budget::new(settings.budget, model.cost.clone()).already_spent(spent))
 }
 
 /// The stretch of the prompt appended since the last one was measured, attributed to
@@ -1047,9 +1106,13 @@ async fn load_extensions(
     // itself, so the interface can say which package an extension came from rather than
     // what its entry file happens to be called.
     roots: &mut Vec<(PathBuf, String)>,
-) -> Option<Arc<micro_extensions::Host>> {
+) -> (
+    Option<Arc<micro_extensions::Host>>,
+    micro_extensions::Grants,
+    Vec<String>,
+) {
     if resources.no_extensions {
-        return None;
+        return (None, micro_extensions::Grants::default(), Vec::new());
     }
     let named = &resources.extensions;
     let home = micro_context::micro_home().unwrap_or_default();
@@ -1078,23 +1141,33 @@ async fn load_extensions(
     // how an extension is tried before it is committed to.
     paths.extend(named.iter().map(std::path::PathBuf::from));
     if paths.is_empty() {
-        return None;
+        return (None, micro_extensions::Grants::default(), Vec::new());
     }
 
     match micro_extensions::Host::start(&home, &paths, root, has_ui, trusted, mode).await {
-        Ok(host) => {
+        Ok(mut host) => {
             if !settings.quiet_startup {
                 for failure in &host.loaded().errors {
                     eprintln!("note: {} was not loaded: {}", failure.path, failure.error);
                 }
             }
-            Some(Arc::new(host))
+            // Settled before anything reads what was registered, and while the host is
+            // still this function's own to change: a registration outside what an extension
+            // was granted is dropped here rather than refused later, so a tool the model is
+            // told about is always a tool that can actually run. The question, when there
+            // is one to put, is asked on the plain terminal — this is the last moment there
+            // is one, the same as the project-trust question.
+            let resolved =
+                crate::capabilities::resolve(host.loaded(), roots, trusted, has_ui).await;
+            let mut notices = resolved.notices;
+            notices.extend(host.retain_granted(&resolved.grants));
+            (Some(Arc::new(host)), resolved.grants, notices)
         }
         Err(error) => {
             if !settings.quiet_startup {
                 eprintln!("note: extensions were not loaded: {error}");
             }
-            None
+            (None, micro_extensions::Grants::default(), Vec::new())
         }
     }
 }

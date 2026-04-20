@@ -30,6 +30,11 @@ pub struct UiRequest {
     pub detail: Option<String>,
     /// What may be chosen, for a selection.
     pub options: Vec<String>,
+    /// The extension that asked, where the ask carried one — the file it was loaded from,
+    /// which is how the host names it. Set only on the asks whose effect outlives the call:
+    /// a status line, a widget, a header, a footer, an editor. What an extension leaves on
+    /// the screen has to be attributable to it, or letting it go could not take it back.
+    pub extension: Option<String>,
     answer: Option<oneshot::Sender<Value>>,
 }
 
@@ -56,6 +61,18 @@ impl UiRequest {
         detail: Option<String>,
         options: Vec<String>,
     ) -> (UiRequest, oneshot::Receiver<Value>) {
+        UiRequest::for_test_from(None, method, title, detail, options)
+    }
+
+    /// The same, from a named extension, for a test about what letting one go takes back.
+    #[cfg(test)]
+    pub fn for_test_from(
+        extension: Option<String>,
+        method: impl Into<String>,
+        title: impl Into<String>,
+        detail: Option<String>,
+        options: Vec<String>,
+    ) -> (UiRequest, oneshot::Receiver<Value>) {
         let (sender, receiver) = oneshot::channel();
         (
             UiRequest {
@@ -63,6 +80,7 @@ impl UiRequest {
                 title: title.into(),
                 detail,
                 options,
+                extension,
                 answer: Some(sender),
             },
             receiver,
@@ -91,12 +109,26 @@ impl UiAsker {
         detail: Option<String>,
         options: Vec<String>,
     ) -> Value {
+        self.ask_from(None, method, title, detail, options).await
+    }
+
+    /// Ask on a named extension's behalf, for the asks that leave something on the screen
+    /// after the call returns — see [`UiRequest::extension`].
+    pub async fn ask_from(
+        &self,
+        extension: Option<String>,
+        method: impl Into<String>,
+        title: impl Into<String>,
+        detail: Option<String>,
+        options: Vec<String>,
+    ) -> Value {
         let (sender, receiver) = oneshot::channel();
         let request = UiRequest {
             method: method.into(),
             title: title.into(),
             detail,
             options,
+            extension,
             answer: Some(sender),
         };
         if self.0.send(request).is_err() {

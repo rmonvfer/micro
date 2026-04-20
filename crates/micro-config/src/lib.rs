@@ -34,8 +34,13 @@ pub const FILE_NAME: &str = "config.json";
 pub const MICRO_DIR_ENV: &str = "MICRO_DIR";
 
 pub mod assignments;
+mod capabilities;
 mod project;
 mod trust;
+
+pub use capabilities::CapabilityDecision;
+pub use capabilities::CapabilityStore;
+pub use capabilities::CAPABILITIES_FILE_NAME;
 
 pub use project::ProjectConfig;
 pub use project::PROJECT_SETTINGS_FILE;
@@ -322,6 +327,10 @@ pub struct Config {
     /// more place for the two to disagree.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sandbox: Option<Value>,
+    /// What one session may spend before it stops, in US dollars. Zero is no ceiling,
+    /// which is also what leaving it out means.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub budget: Option<f64>,
     /// Extensions to load beyond the ones found in the project and the home directory.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub extensions: Option<Vec<String>>,
@@ -388,6 +397,8 @@ pub struct Settings {
     /// rather than defaulted, because a project of its own gets a say between this and the
     /// default and could not be given one if the two had already been merged.
     pub sandbox: Option<Value>,
+    /// What one session may spend before it stops, in US dollars. Zero is no ceiling.
+    pub budget: f64,
     pub extensions: Vec<String>,
 }
 
@@ -450,6 +461,7 @@ impl Default for Settings {
             anthropic_extra_usage: true,
             transport: DEFAULT_TRANSPORT.to_string(),
             sandbox: None,
+            budget: 0.0,
             extensions: Vec::new(),
         }
     }
@@ -658,6 +670,9 @@ impl Config {
             // — and a variable that both announces a sandbox and asks for one would let a
             // sandboxed run of micro reconfigure the sandbox it is inside.
             sandbox: self.sandbox.clone().or(defaults.sandbox),
+            // A negative ceiling is a ceiling nothing could ever be under, so it is read as
+            // the absence of one rather than as a session that may not run at all.
+            budget: self.budget.unwrap_or(defaults.budget).max(0.0),
             extensions: self.extensions.clone().unwrap_or(defaults.extensions),
         })
     }
@@ -708,6 +723,7 @@ impl Config {
             anthropic_extra_usage: take(&mut fields, "anthropic_extra_usage", path)?,
             transport: take(&mut fields, "transport", path)?,
             sandbox: take(&mut fields, "sandbox", path)?,
+            budget: take(&mut fields, "budget", path)?,
             extensions: take(&mut fields, "extensions", path)?,
             extra: fields,
         };

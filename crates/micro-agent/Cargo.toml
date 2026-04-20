@@ -6,6 +6,7 @@ license.workspace = true
 
 [dependencies]
 micro-context = { workspace = true }
+micro-models = { workspace = true }
 micro-provider = { workspace = true }
 micro-tools = { workspace = true }
 micro-types = { workspace = true }

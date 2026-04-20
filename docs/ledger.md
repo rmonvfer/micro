@@ -114,6 +114,66 @@ request after the session had described it.
 Compaction is not a prefix change. It replaces the head of the conversation rather than
 what sits in front of it, and it has its own event.
 
+## The bill
+
+```
+micro bill                 the latest session from this workspace
+micro bill <id>            that one
+micro bill <id> --diff 4   what turn 4 added, and why
+```
+
+The same reading is `/bill` inside a session, and `/bill 4` for one turn of it.
+
+A bill is `turn_usage` priced against the catalog, turn by turn, with each turn broken down
+by where its money went. The two halves of that are not equally certain, and the report says
+so. What a turn cost is exact: the provider reported how many tokens it read fresh, how many
+it read back out of its cache and how many it wrote into one, and each is priced at its own
+rate. How that is shared out between the sources is an estimate, worked out from the byte
+counts in the same turn's `turn_request` — its `prefix_spans`, the tool definitions in its
+`tools_blob`, and the messages its `message_entry_ids` name. Output tokens are not shared
+at all: the model wrote the answer, so the answer is billed to `model`.
+
+The estimate is held to one rule, which is what makes it worth printing rather than merely
+suggestive: **the shares always add up to the turn**. Whatever the division leaves over
+lands on the largest line. A bill never adds up to almost what the provider billed.
+
+Compaction is billed on a line of its own, from the `cost` on the `compaction` event.
+Summarizing is a request the session decides to make by itself, and folding it into the turn
+that triggered it would hide the one piece of spending nobody asked for.
+
+A session recorded before the ledger existed is still billed, from the usage each answer
+carries — turn by turn, with no split, and the report says which kind of bill you are
+reading.
+
+A bill that comes to nothing says which kind of nothing it is. A model the catalog prices at
+zero is a subscription: the plan was billed rather than the requests, and the report says so.
+A model the catalog does not carry at all is a bill nobody could work out, and it is named
+rather than passed off as free.
+
+`--diff <turn>` answers a narrower question: what that one turn added to the running total,
+its own line items, the total on either side of it, and why it came to that — how much of
+its prompt came back out of cache, what was written into the cache, whether a summary was
+written before it, and which source put the most new bytes into the prompt.
+
+## Budgets
+
+`--budget <amount>` for one run, or `budget` in the config file for every run. The amount is
+in US dollars and zero is no ceiling.
+
+The ceiling is on the session, not on the run: what earlier runs of the same session spent
+is read back out of the ledger and counted against it, through the same bill `micro bill`
+prints. Nothing is refused before a request goes out, because what a request will cost is
+not knowable until the provider says what it read. Instead the cost of each turn is charged
+as it is reported, the summarizer's requests included, and the run ends at the first turn
+boundary past the limit:
+
+```json
+{"type":"budget_stop","limit":5.0,"spent":5.13}
+```
+
+The session is left readable and resumable. Reopening one that is already over its limit
+answers once more and stops again; raising the limit, or removing it, lifts the stop.
+
 ## Why a turn missed the cache
 
 ```
@@ -167,6 +227,7 @@ micro sessions show <id>                 the turns the session recorded
 micro sessions show <id> --turn 2        what the model was shown at turn 2
 micro sessions show <id> --turn 2 --raw  that turn's request, as it went out
 micro sessions export <id>               the whole ledger as JSONL
+micro bill [<id>] [--diff <turn>]        what it cost, and what the money went on
 micro why-miss <id> [turn]               why a turn paid for a prompt again
 ```
 

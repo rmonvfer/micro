@@ -283,6 +283,7 @@ impl CliCommands {
                 ),
                 api_key: resolved.api_key,
                 context_window: model.context_window as usize,
+                cost: model.cost.clone(),
             }),
             note: Some(note),
         }
