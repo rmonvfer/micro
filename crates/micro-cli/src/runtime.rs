@@ -100,6 +100,8 @@ pub struct Runtime {
     pub broker: Option<crate::extensions::Broker>,
     /// Every tool the model may call, by name, for whoever asks what is available.
     pub tool_names: Vec<String>,
+    /// The same tools described rather than named, for `getAllTools()`.
+    pub tool_definitions: Vec<micro_types::ToolDefinition>,
     /// Which tools the model is told about, when an extension has narrowed them.
     ///
     /// Shared with the agent rather than read from it, so `setActiveTools` reaches the
@@ -357,6 +359,10 @@ pub async fn build(
     // Resolved ahead of the system prompt so an extension tool's snippet and guidelines can
     // be told apart from one this run left out — see `load_context`.
     let tool_names: Vec<String> = tools.iter().map(|tool| tool.definition().name).collect();
+    // Kept as well as named, since `getAllTools()` describes a tool rather than listing it
+    // — and a built-in's description and parameters live nowhere else by then.
+    let tool_definitions: Vec<micro_types::ToolDefinition> =
+        tools.iter().map(|tool| tool.definition()).collect();
 
     let context = load_context(
         root,
@@ -381,7 +387,7 @@ pub async fn build(
         true => Vec::new(),
         false => micro_prompts::discover(
             root,
-            &micro_context::micro_home().unwrap_or_default(),
+            &micro_dirs::config_dir().unwrap_or_default(),
             trusted,
         ),
     };
@@ -528,7 +534,8 @@ pub async fn build(
         session: Arc::clone(&session),
         session_id,
         prefix,
-        home: micro_context::micro_home().unwrap_or_default(),
+        config_home: micro_dirs::config_dir().unwrap_or_default(),
+        data_home: micro_dirs::data_dir().unwrap_or_default(),
         scoped_models: settings.scoped_models.clone(),
         resources: selection.resources.clone(),
         tree_filter: settings.tree_filter_mode,
@@ -546,6 +553,7 @@ pub async fn build(
 
     Ok(Runtime {
         agent,
+        tool_definitions,
         notice,
         warnings,
         extensions,
@@ -885,7 +893,7 @@ pub async fn load_context(
     let extra_skill_paths = extra_paths("skillPaths");
     let extra_prompt_paths = extra_paths("promptPaths");
 
-    let home = micro_context::micro_home().unwrap_or_default();
+    let home = micro_dirs::config_dir().unwrap_or_default();
     // Skills are announced by name and description only; the model reads a skill's file
     // when it decides one applies, which is what keeps a shelf of them out of the context.
     // A skill is a file the model is told to read and follow, so the project's own are
@@ -1115,7 +1123,10 @@ async fn load_extensions(
         return (None, micro_extensions::Grants::default(), Vec::new());
     }
     let named = &resources.extensions;
-    let home = micro_context::micro_home().unwrap_or_default();
+    // An extension package was fetched rather than written here, and the host script and
+    // its compatibility modules are rewritten every start, so all of it lives with the
+    // data rather than with the settings.
+    let home = micro_dirs::data_dir().unwrap_or_default();
     // A configured entry is a source rather than a path: `npm:thing` is installed
     // somewhere of micro's choosing, and that is where it is loaded from.
     let configured: Vec<String> = settings

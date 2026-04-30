@@ -10,9 +10,6 @@ use std::collections::HashSet;
 use std::path::Path;
 use std::path::PathBuf;
 
-/// Environment variable naming micro's home directory.
-pub const MICRO_DIR_ENV: &str = "MICRO_DIR";
-
 /// The instruction file names recognised in a directory, in ascending order of precedence:
 /// `AGENTS.md` is micro's own file, so it has the last word where both are present.
 pub const INSTRUCTION_FILE_NAMES: &[&str] = &["CLAUDE.md", "AGENTS.md"];
@@ -57,9 +54,13 @@ impl InstructionLoader {
         }
     }
 
-    /// A loader rooted at `$MICRO_DIR`, falling back to `~/.micro`.
+    /// A loader whose global instructions come from micro's configuration directory,
+    /// which is where the rest of what the user wrote for themselves lives.
     pub fn from_env() -> Result<Self> {
-        Ok(InstructionLoader::new(micro_home()?))
+        let home = micro_dirs::config_dir().ok_or(ContextError::NoHome {
+            env: micro_dirs::MICRO_DIR_ENV,
+        })?;
+        Ok(InstructionLoader::new(home))
     }
 
     pub fn with_max_import_depth(mut self, depth: usize) -> Self {
@@ -249,19 +250,6 @@ fn resolve_import(directory: &Path, target: &str) -> PathBuf {
     }
 }
 
-/// `$MICRO_DIR`, or `~/.micro` when it is unset.
-pub fn micro_home() -> Result<PathBuf> {
-    home_from(std::env::var(MICRO_DIR_ENV).ok().as_deref(), home_dir())
-}
-
-fn home_from(micro_dir: Option<&str>, home: Option<PathBuf>) -> Result<PathBuf> {
-    if let Some(dir) = micro_dir.map(str::trim).filter(|dir| !dir.is_empty()) {
-        return Ok(PathBuf::from(dir));
-    }
-    home.map(|home| home.join(".micro"))
-        .ok_or(ContextError::NoHome { env: MICRO_DIR_ENV })
-}
-
 fn home_dir() -> Option<PathBuf> {
     std::env::var("HOME")
         .ok()
@@ -312,7 +300,7 @@ mod tests {
     }
 
     /// A loader whose global directory is inside the scratch tree, so no test reads the
-    /// real `~/.micro`.
+    /// caller's own configuration directory.
     fn loader(root: &Path) -> InstructionLoader {
         InstructionLoader::new(root.join("global"))
     }
@@ -502,23 +490,17 @@ mod tests {
         assert_eq!(loaded.sources, vec![root.join("project/CLAUDE.md")]);
     }
 
+    /// The user's own standing instructions sit with the rest of what they wrote, so a
+    /// profile that moves the configuration moves them too.
     #[test]
-    fn the_home_directory_follows_the_environment() {
+    fn the_global_instructions_come_from_the_configuration_directory() {
+        let loader = InstructionLoader::from_env().unwrap();
         assert_eq!(
-            home_from(Some("/opt/micro"), Some(PathBuf::from("/home/ramon"))).unwrap(),
-            PathBuf::from("/opt/micro")
+            loader.global_candidates(),
+            INSTRUCTION_FILE_NAMES
+                .iter()
+                .map(|name| micro_dirs::config_dir().unwrap().join(name))
+                .collect::<Vec<_>>()
         );
-        assert_eq!(
-            home_from(None, Some(PathBuf::from("/home/ramon"))).unwrap(),
-            PathBuf::from("/home/ramon/.micro")
-        );
-        assert_eq!(
-            home_from(Some("  "), Some(PathBuf::from("/home/ramon"))).unwrap(),
-            PathBuf::from("/home/ramon/.micro")
-        );
-        assert!(matches!(
-            home_from(None, None).unwrap_err(),
-            ContextError::NoHome { .. }
-        ));
     }
 }

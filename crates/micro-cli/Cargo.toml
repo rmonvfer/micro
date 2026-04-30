@@ -15,6 +15,7 @@ micro-auth = { workspace = true }
 micro-commands = { workspace = true }
 micro-config = { workspace = true }
 micro-context = { workspace = true }
+micro-dirs = { workspace = true }
 micro-extensions = { workspace = true }
 micro-models = { workspace = true }
 micro-provider = { workspace = true }

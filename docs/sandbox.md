@@ -18,9 +18,10 @@ reaching the network — is on the other side.
 Inside a writable workspace, `.git` and `.micro` stay read-only, whether or not they exist
 yet. A process that can write a git hook decides what runs on your next commit, and one
 that can write `.micro/settings.json` decides what the next session is allowed to do; both
-would turn a confined run into an unconfined one, one step later. micro's own directory —
-`$MICRO_DIR`, or `~/.micro` — is read-only for the same reason wherever it falls inside a
-writable root, which is what happens when you work on your own configuration.
+would turn a confined run into an unconfined one, one step later. micro's own directories —
+`~/.micro`, or the XDG directories on a fresh install — are read-only for the same reason
+wherever they fall inside a writable root, which is what happens when you work on your own
+configuration.
 
 That has a consequence worth knowing before you meet it: under `workspace-write` the agent
 can edit your files but cannot commit them, because committing writes inside `.git`. Ask

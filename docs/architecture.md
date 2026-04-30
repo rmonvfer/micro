@@ -10,6 +10,11 @@ content blocks, messages, usage, stop reasons — plus the two event enums every
 speaks: `StreamEvent`, what a provider emits while a response arrives, and `AgentEvent`,
 what the loop emits to whatever is driving it.
 
+`micro-dirs` sits beside it and also depends on nothing, not even `micro-types`. It answers
+one question — where micro reads and writes — so that the six crates that store something
+cannot answer it six different ways. See [configuration.md](configuration.md) for the rule
+it applies.
+
 Above it, four crates are independent of each other. `micro-provider` turns a `Context` into
 an HTTP request and the response body into a stream of events. `micro-tools` holds the
 capabilities the model can invoke. `micro-auth` holds credentials. `micro-context` assembles

@@ -655,6 +655,14 @@ async fn main() -> Result<()> {
             reasoning: built.model.reasoning,
             tools: built.tool_names.clone(),
             offered_tools: std::sync::Arc::clone(&built.offered_tools),
+            // Described once. What a tool is, and what commands exist, are settled by the
+            // time loading has finished; only which tools are offered changes after that.
+            all_tools: extensions::all_tools(
+                &host.loaded().extensions,
+                &built.tool_definitions,
+                &built.tool_names,
+            ),
+            all_commands: extensions::all_commands(&host.loaded().extensions),
             commands: micro_commands::commands()
                 .iter()
                 .map(|command| command.name.to_string())

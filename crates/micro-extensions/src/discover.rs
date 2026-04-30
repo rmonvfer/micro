@@ -1,8 +1,9 @@
 //! Finding extensions on disk.
 //!
-//! Three places, in the order they win: the project's own `.micro/extensions/`, then
-//! `~/.micro/extensions/`, then whatever the configuration names. A path already found is
-//! not taken twice, so a project extension shadows a global one of the same file.
+//! Three places, in the order they win: the project's own `.micro/extensions/`, then the
+//! `extensions/` directory of micro's own, then whatever the configuration names. A path
+//! already found is not taken twice, so a project extension shadows a global one of the
+//! same file.
 //!
 //! Inside a directory the rules are ohm's, and they stop after one level: a `.ts` or `.js`
 //! file is an extension; a subdirectory is one when it carries an `index.ts`/`index.js` or

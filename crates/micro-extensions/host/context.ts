@@ -150,7 +150,27 @@ export async function snapshot(commandContext: boolean): Promise<Json> {
 	if ("sessionName" in answer) {
 		named = typeof answer.sessionName === "string" ? answer.sessionName : undefined;
 	}
+	if (Array.isArray(answer.allTools)) {
+		tools = answer.allTools as Json[];
+	}
+	if (Array.isArray(answer.commands)) {
+		slashCommands = answer.commands as Json[];
+	}
 	return answer;
+}
+
+/** Every tool that exists, as the last snapshot described them. */
+let tools: Json[] = [];
+
+/** Every command that can be typed, as the last snapshot described them. */
+let slashCommands: Json[] = [];
+
+export function allTools(): Json[] {
+	return tools;
+}
+
+export function commands(): Json[] {
+	return slashCommands;
 }
 
 /** What the last snapshot said the thinking level was. */

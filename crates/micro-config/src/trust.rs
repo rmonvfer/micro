@@ -71,8 +71,8 @@ pub struct TrustStore {
 }
 
 impl TrustStore {
-    /// Reads `$MICRO_DIR/trust.json`. A missing file means nothing has been decided yet,
-    /// which is not an error.
+    /// Reads `trust.json` from the configuration directory. A missing file means nothing
+    /// has been decided yet, which is not an error.
     pub async fn load() -> Result<Self, ConfigError> {
         TrustStore::load_from(config_dir()?).await
     }

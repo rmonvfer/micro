@@ -27,8 +27,8 @@ holds.
 
 `AuthStore::resolve` prefers what is stored and falls back to the environment.
 
-A credential stored by `micro auth login` lives in `~/.micro/auth.json`, one entry per
-provider, in a file only its owner can read. If the provider issues short-lived tokens, the
+A credential stored by `micro auth login` lives in `auth.json` in micro's configuration
+directory, one entry per provider, in a file only its owner can read. If the provider issues short-lived tokens, the
 stored credential is exchanged for a fresh one at resolve time rather than at login, so a
 long-idle installation still works without signing in again.
 
@@ -57,7 +57,7 @@ The catalog is assembled in three layers, each overlaying the last.
 **The bundled catalog** is compiled into the binary, so micro works offline with no setup.
 It covers the current models on all four of the providers that publish them.
 
-**A user catalog** at `~/.micro/models.json` is applied over it. An entry naming a model
+**A user catalog** at `models.json` in micro's configuration directory is applied over it. An entry naming a model
 that already exists patches only the fields it mentions; an entry naming a new one registers
 it. Provider-level settings re-point every model under that provider at once, which is how a
 whole provider moves behind a proxy. See [configuration.md](configuration.md) for the file's

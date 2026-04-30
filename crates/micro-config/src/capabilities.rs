@@ -40,8 +40,8 @@ pub struct CapabilityStore {
 }
 
 impl CapabilityStore {
-    /// Reads `$MICRO_DIR/capabilities.json`. A missing file means nothing has been decided
-    /// yet, which is not an error.
+    /// Reads `capabilities.json` from the configuration directory. A missing file means
+    /// nothing has been decided yet, which is not an error.
     pub async fn load() -> Result<Self, ConfigError> {
         CapabilityStore::load_from(config_dir()?).await
     }

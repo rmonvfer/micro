@@ -371,6 +371,48 @@ impl Fixture {
         self.root.join("workspace")
     }
 
+    /// The home directory of a machine that has never run micro, so nothing about it says
+    /// where micro's own directory should be.
+    pub fn xdg_home(&self) -> PathBuf {
+        self.root.join("xdg/home")
+    }
+
+    /// Where a fresh install keeps what the user wrote, once nothing names one directory
+    /// for everything.
+    pub fn xdg_config(&self) -> PathBuf {
+        self.root.join("xdg/config/micro")
+    }
+
+    /// Where a fresh install keeps what it produced.
+    pub fn xdg_data(&self) -> PathBuf {
+        self.root.join("xdg/data/micro")
+    }
+
+    /// The binary run as a machine that has never held a `~/.micro`: nothing names one
+    /// directory, the home directory is empty, and the XDG variables say where each half
+    /// goes.
+    ///
+    /// The credential and the catalog the fixture wrote are put in the configuration half,
+    /// which is where a run that resolves the split correctly will look for them — so a
+    /// request reaching the fake provider is itself the assertion that it did.
+    pub fn micro_split(&self) -> Command {
+        let home = self.xdg_home();
+        let config = self.xdg_config();
+        std::fs::create_dir_all(&home).expect("create the scratch home");
+        std::fs::create_dir_all(&config).expect("create the scratch configuration directory");
+        for name in ["auth.json", "models.json", "config.json"] {
+            std::fs::copy(self.home().join(name), config.join(name))
+                .unwrap_or_else(|error| panic!("copy {name}: {error}"));
+        }
+
+        let mut command = self.micro();
+        command.env_remove("MICRO_DIR");
+        command.env("HOME", home);
+        command.env("XDG_CONFIG_HOME", self.root.join("xdg/config"));
+        command.env("XDG_DATA_HOME", self.root.join("xdg/data"));
+        command
+    }
+
     pub fn write(&self, name: &str, contents: &str) -> PathBuf {
         let path = self.workspace().join(name);
         if let Some(parent) = path.parent() {

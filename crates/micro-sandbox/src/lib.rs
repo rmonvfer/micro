@@ -76,7 +76,7 @@ pub const SANDBOX_ENV_VAR: &str = "MICRO_SANDBOX";
 pub struct Sandbox {
     policy: SandboxPolicy,
     workspace: PathBuf,
-    micro_home: Option<PathBuf>,
+    micro_homes: Vec<PathBuf>,
     helper_program: Option<PathBuf>,
 }
 
@@ -156,17 +156,22 @@ impl Sandbox {
         Sandbox {
             policy,
             workspace,
-            micro_home: None,
+            micro_homes: Vec::new(),
             helper_program: std::env::current_exe().ok(),
         }
     }
 
-    /// Protect micro's own directory, so a command confined to a workspace that contains
-    /// it cannot rewrite the configuration, credentials or session history that decide
-    /// what the next run is allowed to do.
+    /// Protect one of micro's own directories, so a command confined to a workspace that
+    /// contains it cannot rewrite the configuration, credentials or session history that
+    /// decide what the next run is allowed to do.
+    ///
+    /// Called once per directory: micro keeps what the user wrote apart from what it
+    /// produced, and both are worth the same protection.
     pub fn with_micro_home(mut self, micro_home: impl Into<PathBuf>) -> Self {
-        let micro_home = micro_home.into();
-        self.micro_home = Some(paths::canonicalize_deepest_existing(&micro_home));
+        let micro_home = paths::canonicalize_deepest_existing(&micro_home.into());
+        if !self.micro_homes.contains(&micro_home) {
+            self.micro_homes.push(micro_home);
+        }
         self
     }
 
@@ -231,7 +236,7 @@ impl Sandbox {
             .map(|root| {
                 let mut read_only_subpaths: Vec<PathBuf> =
                     PROTECTED_NAMES.iter().map(|name| root.join(name)).collect();
-                if let Some(micro_home) = &self.micro_home {
+                for micro_home in &self.micro_homes {
                     if micro_home.starts_with(&root) && !read_only_subpaths.contains(micro_home) {
                         read_only_subpaths.push(micro_home.clone());
                     }

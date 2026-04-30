@@ -7,6 +7,7 @@ license.workspace = true
 [dependencies]
 micro-types = { workspace = true }
 micro-context = { workspace = true }
+micro-dirs = { workspace = true }
 
 serde = { workspace = true }
 serde_json = { workspace = true }
