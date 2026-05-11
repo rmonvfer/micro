@@ -41,7 +41,7 @@ pub fn hint(keys: &str, description: &str, theme: &Theme) -> Vec<Span<'static>> 
     ]
 }
 
-/// Several hints on one line, separated the way ohm separates them.
+/// Several hints on one line, separated by a muted middle dot.
 pub fn hints(pairs: &[(&str, &str)], theme: &Theme) -> Vec<Span<'static>> {
     let mut spans = Vec::new();
     for (index, (keys, description)) in pairs.iter().enumerate() {

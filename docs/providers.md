@@ -1,98 +1,121 @@
 # Providers and models
 
-micro speaks three wire formats across five providers, resolves a credential for each, and
-decides which models exist from a catalog assembled in three layers.
+micro ships with a model catalog and clients for the wire protocols used by its supported providers. You can authenticate several providers and switch models without starting a new conversation.
 
-## The providers
+## Common providers
 
-| Id | Name | Endpoint | Sign-in |
-| --- | --- | --- | --- |
-| `anthropic` | Anthropic | `api.anthropic.com` | API key |
-| `openrouter` | OpenRouter | `openrouter.ai/api/v1` | API key |
-| `github-copilot` | GitHub Copilot | `api.individual.githubcopilot.com` | Device code |
-| `gemini` | Google Gemini | `generativelanguage.googleapis.com` | API key |
-| `openai` | OpenAI | `api.openai.com/v1` | API key |
+| Provider ID | Service | Authentication |
+| --- | --- | --- |
+| `anthropic` | Anthropic | API key or supported stored credential |
+| `openai` | OpenAI | API key |
+| `google` | Google Gemini | API key |
+| `openrouter` | OpenRouter | API key |
+| `github-copilot` | GitHub Copilot | Device-code login or token |
 
-Three client implementations serve them. `Anthropic` speaks the Messages API, `Gemini`
-speaks Google's generative API, and `OpenAi` speaks chat completions with per-host
-adjustments for OpenRouter and Copilot. A provider micro does not recognize falls back to
-the OpenAI shape, which most gateways implement.
+The bundled catalog also includes cloud platform endpoints, inference hosts, model vendors, and gateways.
 
-Common alternative spellings are folded onto the canonical id, so `claude` reaches
-`anthropic`, `google` reaches `gemini`, and `copilot` or `github` reach `github-copilot`.
-The canonical id is what the credential is filed under and what a model's `provider` field
-holds.
+List providers and models known to your build with:
 
-## How credentials resolve
+```bash
+micro models
+```
 
-`AuthStore::resolve` prefers what is stored and falls back to the environment.
+## Authenticate
 
-A credential stored by `micro auth login` lives in `auth.json` in micro's configuration
-directory, one entry per provider, in a file only its owner can read. If the provider issues short-lived tokens, the
-stored credential is exchanged for a fresh one at resolve time rather than at login, so a
-long-idle installation still works without signing in again.
+```bash
+micro auth login anthropic
+micro auth login github-copilot
+micro auth status
+```
 
-With nothing stored, the conventional environment variable is used instead:
+API-key logins read the key from the terminal. Device-code logins open the provider's browser flow. `micro auth logout <provider>` removes a stored credential.
+
+Stored credentials are checked first. If none exists, micro checks environment variables:
 
 | Provider | Variables, in order |
 | --- | --- |
-| `anthropic` | `ANTHROPIC_API_KEY` |
-| `openrouter` | `OPENROUTER_API_KEY` |
-| `github-copilot` | `COPILOT_GITHUB_TOKEN`, `GH_TOKEN`, `GITHUB_TOKEN` |
-| `gemini` | `GEMINI_API_KEY`, `GOOGLE_API_KEY` |
+| `anthropic` | `ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_OAUTH_TOKEN`, `ANTHROPIC_API_KEY` |
 | `openai` | `OPENAI_API_KEY` |
+| `google` | `GEMINI_API_KEY` |
+| `openrouter` | `OPENROUTER_API_KEY` |
+| `github-copilot` | `COPILOT_GITHUB_TOKEN` |
 
-`micro auth status` reports each provider's state and which of the two it came from, so a
-key that is being shadowed by a stored credential is visible rather than mysterious.
+Other providers use the conventional `<PROVIDER>_API_KEY` name unless their catalog entry specifies another variable.
 
-## The model catalog
+## Select a model
 
-A model is more than an id. `micro-models` records the display name, the provider, the wire
-API it speaks, its endpoint, its context window and output cap, whether it reasons, what
-input it accepts, any headers it needs, and its price per million tokens for input, output,
-cache reads, and cache writes. The prices are what the interface bases a running cost on.
+Use `-m` for one run or `/model` inside the interface:
 
-The catalog is assembled in three layers, each overlaying the last.
+```bash
+micro -m opus "review this patch"
+micro -m anthropic/claude-sonnet-5 "review this patch"
+micro models sonnet
+```
 
-**The bundled catalog** is compiled into the binary, so micro works offline with no setup.
-It covers the current models on all four of the providers that publish them.
+Resolution checks, in order:
 
-**A user catalog** at `models.json` in micro's configuration directory is applied over it. An entry naming a model
-that already exists patches only the fields it mentions; an entry naming a new one registers
-it. Provider-level settings re-point every model under that provider at once, which is how a
-whole provider moves behind a proxy. See [configuration.md](configuration.md) for the file's
-shape.
+1. provider-qualified ID;
+2. exact model ID;
+3. alias;
+4. unique prefix;
+5. unique substring of an ID or display name.
 
-**Live listings** are merged last, so a model released since the build appears without one.
-`micro models --live` fetches OpenRouter's public model list and, when a Copilot credential
-is present, the models that account is entitled to. Providers are independent: one that is
-unreachable leaves its bundled entries in place and reports the failure rather than emptying
-the catalog. A listing is authoritative about what it states and silent about the rest, so
-anything it omits — headers, aliases, limits, prices a subscription provider does not quote
-— is carried over rather than blanked.
+An ambiguous query prints the candidates. It is not resolved by ranking or guessing.
 
-Resolution takes what a user typed and finds one model, in tiers: a provider-qualified id,
-then an exact id, then an alias, then a unique prefix, then a substring of an id or display
-name. The first tier that matches decides, and matching several is reported as an ambiguity
-with the candidates rather than resolved by guessing. The qualified form is tried first and
-alone, because an OpenRouter id contains a slash of its own — `anthropic/claude-sonnet-5`
-means the model Anthropic serves, and `openrouter/anthropic/claude-sonnet-5` means the one
-OpenRouter serves, and both stay reachable.
+Provider qualification is useful when several services expose the same model:
 
-## Adding a provider
+```text
+anthropic/claude-sonnet-5
+openrouter/anthropic/claude-sonnet-5
+```
 
-Implement `Provider`, which is one method: turn a `Model`, a `Context`, and an API key into
-a receiver of `StreamEvent`s. The work is the translation at both edges — the request body
-the endpoint expects, and its response framing back into events. `Anthropic`, `OpenAi`, and
-`Gemini` are the three worked examples; an endpoint that already speaks one of those shapes
-needs no new client at all.
+## Live model listings
 
-Register it in `micro-provider`'s registry with its canonical id, display name, default
-endpoint, sign-in method, and a conservative output cap for models whose real one is
-unknown, then add the id and its environment variables to `micro-auth` so a credential can
-be stored and resolved. Add its models to the bundled catalog, or leave that to a live
-listing if the provider publishes one.
+The bundled catalog works offline. Fetch current listings from configured providers with:
 
-Nothing above needs to change. The agent loop and the tools never learn
-that a provider was added, and a user reaches the new models through the same resolution
-that finds every other one.
+```bash
+micro models --live
+```
+
+Live data is merged over the bundled catalog. Fields omitted by the provider, such as aliases or prices, retain their catalog values. A provider that cannot be reached is reported without removing its bundled models.
+
+Set `live_models` in `config.json` to perform this merge at startup.
+
+## Add a local or compatible endpoint
+
+Add it to `models.json`:
+
+```json
+{
+  "providers": {
+    "ollama": {
+      "base_url": "http://localhost:11434/v1",
+      "api": "openai-completions",
+      "models": [
+        {
+          "id": "qwen3-coder:30b",
+          "name": "Qwen3 Coder 30B",
+          "aliases": ["local"],
+          "context_window": 32768
+        }
+      ]
+    }
+  }
+}
+```
+
+Then run:
+
+```bash
+micro -m local "explain this crate"
+```
+
+Model entries can also provide prices for input, output, cache reads, and cache writes. `micro bill` uses those values with provider-reported usage.
+
+## Supported protocols
+
+The provider layer currently handles Anthropic Messages, OpenAI-compatible chat completions, OpenAI Responses, Google Generative AI, Vertex, and Amazon Bedrock Converse Stream.
+
+The selected model determines the protocol. This matters for providers such as GitHub Copilot that expose different model families through different APIs.
+
+Adding a service that already speaks a supported protocol normally requires catalog and authentication entries, not a new agent loop. See [Architecture](architecture.md) for the provider boundary.

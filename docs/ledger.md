@@ -1,251 +1,154 @@
-# The ledger
+# Ledger format
 
-A session log holds the conversation. The ledger is everything else that happened: the
-exact request each turn issued, what the provider said it cost, where every stretch of the
-prompt came from, and what something watching the run would not allow. It is written to the
-same file as the conversation, one JSON object per line, in the order things happened.
+Each session is an append-only JSONL file. Conversation entries and runtime events are written to the same ordered log.
 
-The format is public and versioned. `micro sessions export <id>` prints it verbatim, and
-what this document describes is what you get.
+Use:
 
-## Where it lives
-
-Under `sessions/` in micro's data directory — `~/.micro`, or the XDG directories on a fresh
-install; see [configuration.md](configuration.md):
-
-```
-sessions/1786754321.jsonl        the log: conversation and ledger together
-sessions/1786754321.meta.json    the sidecar a listing reads
-sessions/1786754321.blobs/       content the log names by hash
+```bash
+micro sessions export <SESSION_ID>
 ```
 
-## The envelope
+to print the file without transforming it.
 
-Every ledger line is an envelope with four fields, and it is the only kind of line that
-says what it is:
+## Files
+
+```text
+sessions/<id>.jsonl       conversation and ledger events
+sessions/<id>.meta.json   metadata used by session listings
+sessions/<id>.blobs/      content addressed by hash
+```
+
+See [Configuration](configuration.md) for the base data directory.
+
+## Event envelope
+
+Ledger events use this envelope:
 
 ```json
-{"v":1,"seq":7,"ts":1786754321987,"event":{"type":"turn_usage","turn":2,"...":"..."}}
+{
+  "v": 1,
+  "seq": 7,
+  "ts": 1786754321987,
+  "event": {
+    "type": "turn_usage",
+    "turn": 2
+  }
+}
 ```
 
-`v` is the schema version, `seq` orders this fact against every other one in the session,
-and `ts` is when it was written in milliseconds since the epoch. The other line kinds — a
-conversation entry, a label, a compaction marker — are unchanged and carry none of these,
-so nothing written by the ledger can be mistaken for one of them.
+`v` is the event schema version. `seq` orders events within the session. `ts` is milliseconds since the Unix epoch.
 
-A reader that meets an event type it has never heard of keeps the line and gives up only on
-its contents. A later version of micro can add a type without making today's sessions
-unreadable in either direction.
+Conversation entries, labels, and compaction markers retain their existing line formats. Readers should preserve event types they do not understand and skip interpretation of their contents.
 
-## What a turn records
+## Turn requests
 
-Two events describe a turn. `turn_request` is written after everything watching the run has
-had its say about the context and immediately before the provider is called; `turn_usage`
-is written when the answer arrives.
+`turn_request` is written after context hooks run and immediately before the provider call.
 
 ```json
-{"v":1,"seq":3,"ts":1786754321900,"event":{
-  "type":"turn_request","turn":2,"provider":"anthropic","model":"claude-opus-5",
-  "prefix_hash":"9f2a…","request_hash":"3c81…",
-  "system_prompt_blob":"4c1f…","tools_blob":"1b7c…","model_blob":"aa03…",
-  "prefix_spans":[
-    {"source":"system_prompt","bytes":812,"hash":"5d2e…"},
-    {"source":"project_instructions","bytes":392,"hash":"7ab1…"}],
-  "message_entry_ids":["1","2","3"],"attempt":1}}
+{
+  "type": "turn_request",
+  "turn": 2,
+  "provider": "anthropic",
+  "model": "claude-opus-5",
+  "prefix_hash": "9f2a...",
+  "request_hash": "3c81...",
+  "system_prompt_blob": "4c1f...",
+  "tools_blob": "1b7c...",
+  "model_blob": "aa03...",
+  "prefix_spans": [
+    { "source": "system_prompt", "bytes": 812, "hash": "5d2e..." },
+    { "source": "project_instructions", "bytes": 392, "hash": "7ab1..." }
+  ],
+  "message_entry_ids": ["1", "2", "3"],
+  "attempt": 1
+}
 ```
 
-`request_hash` is the sha-256 of the serialized request body. The body itself is not
-stored: what makes it rebuildable is the three blobs — the system prompt, the tool
-definitions, and the model as it was configured — plus the entries the conversation stood
-at. `prefix_hash` covers the system prompt and the tool definitions together, which is the
-part of a request a provider can cache; two turns sharing it asked for the same cacheable
-head.
+`request_hash` is the SHA-256 hash of the serialized provider body. The body is reconstructed from the referenced system prompt, tool definitions, model configuration, and conversation entries.
 
-`prefix_spans` say who supplied each stretch of the prompt. The spans tile the prompt
-exactly, separators included, so what they add up to is the prompt itself. A source is
-written as a kind, optionally with a name: `system_prompt`, `project_instructions`,
-`skill:review`, `extension:deploy`, `tool:bash`, `user`, `model`, `compaction`, `sandbox`,
-`subagent:scout`. A kind with no name stands for the whole of that kind rather than one
-member of it — `skill` is the section describing every skill that loaded.
+`prefix_hash` covers the cacheable prompt head. `prefix_spans` attribute byte ranges to sources such as the system prompt, project instructions, skills, extensions, tools, users, model messages, compaction, sandbox output, and subagents.
 
-A turn re-issued after a transient failure is recorded once per attempt, with `attempt`
-counting up and `turn` staying the same. The last attempt is the one that produced the
-answer.
+Retries keep the same turn number and increment `attempt`.
 
-`turn_usage` carries what the provider reported, kept as its own fact so a session that is
-later summarized still knows what it was billed for:
+## Usage
+
+`turn_usage` records provider-reported token counts and the stop reason:
 
 ```json
-{"type":"turn_usage","turn":2,"usage":{"input":812,"output":41,"cache_read":0,
- "cache_write":0},"stop_reason":"tool_use","provider":"anthropic","model":"claude-opus-5"}
+{
+  "type": "turn_usage",
+  "turn": 2,
+  "usage": {
+    "input": 812,
+    "output": 41,
+    "cache_read": 0,
+    "cache_write": 0
+  },
+  "stop_reason": "tool_use",
+  "provider": "anthropic",
+  "model": "claude-opus-5"
+}
 ```
 
-## The other events
+`micro bill` combines these counts with catalog prices. Prompt-source attribution uses the spans from the matching request and is an estimate. See [Sessions](sessions.md).
 
-`compaction` says a stretch of the conversation was replaced by a summary, naming the
-summary by hash, how many recent messages were kept, and what the request that wrote the
-summary cost — spending nobody asked for, so it is billed on a line of its own rather than
-folded into the turn that triggered it. `head_moved` says the conversation
-now continues from a different entry, which is what makes a branch survive being reopened.
-`tool_denied` says something watching the run refused a call; the model was told in the
-shape a failed call takes, and this is the record that it was a refusal rather than a
-failure. `sandbox_decision` says what the sandbox allowed or refused and under which policy.
-`extension_crossing` says an extension asked the host for something and what it was told.
-`prefix_changed` says the cacheable head of the request changed, and why.
-`budget_stop` says a run stopped because it had spent what it was allowed to. `marker` is
-for anything that has not earned a kind of its own.
+## Other event types
 
-## When the prefix changes
+| Type | Meaning |
+| --- | --- |
+| `compaction` | Older context was summarized. Includes summary content and usage. |
+| `head_moved` | The active conversation branch changed. |
+| `tool_denied` | A hook or policy refused a tool call. |
+| `sandbox_decision` | The command or file sandbox allowed or refused an operation. |
+| `extension_crossing` | An extension requested a host operation and received a result. |
+| `prefix_changed` | The cacheable prompt prefix changed. |
+| `budget_stop` | The session reached its configured cost limit. |
+| `marker` | A named runtime marker without a dedicated event type. |
 
-The head of a request is supposed to stand still for the length of a session, because
-standing still is what a provider will reuse. Everything that can move it — `/reload`
-re-reading the project's instructions, an extension replacing the prompt, a narrowed tool
-list — asks the agent for the change rather than making it, and the agent takes it up at a
-turn boundary, never inside a request already being assembled. Each one that lands is a
-line:
+New event types may be added without changing the outer envelope version.
+
+## Prefix changes
+
+Changes requested by reloads, tool selection, or extensions are applied at turn boundaries and recorded:
 
 ```json
-{"type":"prefix_changed","reason":"reload","from_hash":"9f2a…","to_hash":"41bd…"}
+{
+  "type": "prefix_changed",
+  "reason": "reload",
+  "from_hash": "9f2a...",
+  "to_hash": "41bd..."
+}
 ```
 
-`reason` says what asked: `reload`, `tools`, or `extension`. The hashes are the
-`prefix_hash` of the turns on either side, so requests and prefix changes read as one
-chain — a turn whose prefix differs from the turn before it has a recorded reason sitting
-between them, and a difference with nothing between them means something rewrote the
-request after the session had described it.
-
-Compaction is not a prefix change. It replaces the head of the conversation rather than
-what sits in front of it, and it has its own event.
-
-## The bill
-
-```
-micro bill                 the latest session from this workspace
-micro bill <id>            that one
-micro bill <id> --diff 4   what turn 4 added, and why
-```
-
-The same reading is `/bill` inside a session, and `/bill 4` for one turn of it.
-
-A bill is `turn_usage` priced against the catalog, turn by turn, with each turn broken down
-by where its money went. The two halves of that are not equally certain, and the report says
-so. What a turn cost is exact: the provider reported how many tokens it read fresh, how many
-it read back out of its cache and how many it wrote into one, and each is priced at its own
-rate. How that is shared out between the sources is an estimate, worked out from the byte
-counts in the same turn's `turn_request` — its `prefix_spans`, the tool definitions in its
-`tools_blob`, and the messages its `message_entry_ids` name. Output tokens are not shared
-at all: the model wrote the answer, so the answer is billed to `model`.
-
-The estimate is held to one rule, which is what makes it worth printing rather than merely
-suggestive: **the shares always add up to the turn**. Whatever the division leaves over
-lands on the largest line. A bill never adds up to almost what the provider billed.
-
-Compaction is billed on a line of its own, from the `cost` on the `compaction` event.
-Summarizing is a request the session decides to make by itself, and folding it into the turn
-that triggered it would hide the one piece of spending nobody asked for.
-
-A session recorded before the ledger existed is still billed, from the usage each answer
-carries — turn by turn, with no split, and the report says which kind of bill you are
-reading.
-
-A bill that comes to nothing says which kind of nothing it is. A model the catalog prices at
-zero is a subscription: the plan was billed rather than the requests, and the report says so.
-A model the catalog does not carry at all is a bill nobody could work out, and it is named
-rather than passed off as free.
-
-`--diff <turn>` answers a narrower question: what that one turn added to the running total,
-its own line items, the total on either side of it, and why it came to that — how much of
-its prompt came back out of cache, what was written into the cache, whether a summary was
-written before it, and which source put the most new bytes into the prompt.
-
-## Budgets
-
-`--budget <amount>` for one run, or `budget` in the config file for every run. The amount is
-in US dollars and zero is no ceiling.
-
-The ceiling is on the session, not on the run: what earlier runs of the same session spent
-is read back out of the ledger and counted against it, through the same bill `micro bill`
-prints. Nothing is refused before a request goes out, because what a request will cost is
-not knowable until the provider says what it read. Instead the cost of each turn is charged
-as it is reported, the summarizer's requests included, and the run ends at the first turn
-boundary past the limit:
-
-```json
-{"type":"budget_stop","limit":5.0,"spent":5.13}
-```
-
-The session is left readable and resumable. Reopening one that is already over its limit
-answers once more and stops again; raising the limit, or removing it, lifts the stop.
-
-## Why a turn missed the cache
-
-```
-micro why-miss <id>        the most recent turn
-micro why-miss <id> 4      that one
-```
-
-The same reading is `/why-miss` inside a session. It compares a turn's request against the
-one before it and answers in one of two ways. If the two prefix hashes match, it says so
-and then names anything on the conversation side that could still have cost a hit: a
-summary written between them, a branch the conversation moved to, or more messages added
-than a provider holds breakpoints for.
-
-If the hashes differ, it names the span of the prompt that moved, resolves both versions
-out of the blobs, prints the lines that differ, and finishes with the recorded reason and
-the sequence number it was recorded at. That last line is the point of the whole thing:
-the cache broke because the project's instructions were read again, at seq 42, rather than
-for no reason anyone can name.
+`micro why-miss` compares adjacent requests, resolves changed spans from blobs, and reports the event between them. Compaction changes conversation context rather than the prefix and has its own event.
 
 ## Blobs
 
-Content a fact refers to rather than contains is filed under the hex sha-256 of its bytes,
-in a directory beside the log. The name is the content, so a write is never repeated: a
-system prompt that stands unchanged for a hundred turns is on disk once and named by all
-hundred of them. Blobs are written through a temporary file and renamed, so a crash
-mid-write cannot leave one whose name lies about what is in it, and they are deleted with
-the session that named them.
+Large or repeated content is stored by SHA-256 below the session's blob directory. A stable system prompt referenced by many turns is written once.
 
-## What is guaranteed
+Blob writes use a temporary file followed by a rename. Deleting the session also deletes its blob directory.
 
-The log is append-only. Nothing already written is ever rewritten, so the worst a crash
-costs is the line being written, and a log that ends mid-line is sealed on the next open
-and counted as one unreadable line rather than swallowing whatever is appended next.
+## Append and recovery guarantees
 
-Sequence numbers are assigned by the session and increase without gaps within a run.
-Reopening a session carries on from the highest number the log holds, so a fact recorded
-after a resume sorts after everything recorded before it.
+- Existing log lines are never rewritten.
+- Events are appended while the run is active.
+- Sequence numbers increase within a run and continue from the highest value after resume.
+- A partial final line is isolated when the session is opened again.
+- Unreadable lines are skipped rather than preventing the rest of the session from loading.
+- Forking copies conversation state into a new session; it does not continue the original ledger sequence.
 
-A session written before the ledger existed holds messages and nothing else. It opens
-exactly as it always did, and `micro sessions show` says it has no turns rather than
-inventing any.
+Sessions created before ledger events existed still open. Commands that require turn records report that those records are unavailable.
 
-Forking copies a conversation, not a ledger. The session that comes out of `/fork` starts
-its own numbering and names the session it came from in its sidecar, which is what keeps
-each ledger an account of one run of one agent.
+## Request reconstruction
 
-## Reading it
-
-```
-micro sessions show <id>                 the turns the session recorded
-micro sessions show <id> --turn 2        what the model was shown at turn 2
-micro sessions show <id> --turn 2 --raw  that turn's request, as it went out
-micro sessions export <id>               the whole ledger as JSONL
-micro bill [<id>] [--diff <turn>]        what it cost, and what the money went on
-micro why-miss <id> [turn]               why a turn paid for a prompt again
+```bash
+micro sessions show <SESSION_ID> --turn 2 --raw
 ```
 
-`--raw` rebuilds the body from what was recorded and hashes it against `request_hash`
-before printing. A mismatch is reported rather than passed off as the request, which is
-what makes the record checkable rather than merely stored. One case rebuilds differently by
-design: an Anthropic subscription credential is issued to a named client and spells the
-tool names that client's way, and a reading of a request has no credential in hand, so it
-reads the request as an API key sends it.
+The command rebuilds the request and compares its hash with `request_hash`. It does not print a mismatched reconstruction as verified.
 
-## org_id and agent_id
+Anthropic subscription credentials are a special case: the request format may use client-specific tool names. Reconstruction without that credential uses the API-key spelling and reports the limitation.
 
-The sidecar carries an optional `org_id` and `agent_id` alongside the session's own
-metadata. Nothing in micro fills them in and nothing is sent anywhere — there is no
-telemetry in micro and no account to attach a session to. They are in the schema from its
-first version because an exported ledger is a record somebody may need to file against an
-organization or against the agent that produced it, and a field added later cannot be
-backfilled onto sessions already written.
+## Optional metadata
+
+The session sidecar supports optional `org_id` and `agent_id` fields. micro does not populate or transmit them. They are available for systems that file exported sessions against an organization or agent identity.

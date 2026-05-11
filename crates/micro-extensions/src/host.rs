@@ -85,7 +85,7 @@ pub struct Registered {
 #[derive(Debug, Clone, Deserialize)]
 pub struct RegisteredProvider {
     pub name: String,
-    /// The provider as ohm's `registerProvider` describes it.
+    /// The provider as pi's `registerProvider` describes it.
     pub config: Value,
 }
 
@@ -284,16 +284,47 @@ impl Host {
         // `NODE_PATH` directory rather than a loader hook.
         let compat_node_modules = crate::compat::install(home)?;
         let node_path = crate::compat::node_path(home, &compat_node_modules)?;
-        let mut child = tokio::process::Command::new(runtime)
-            .arg("run")
-            // Without this, an import nothing here provides does not simply fail: Bun's
-            // default is to fetch whatever is missing, from its own global cache or from
-            // the network, so what an extension actually gets can depend on what happens
-            // to be lying around on the machine it runs on. A missing module should say so
-            // once, the same way everywhere, rather than resolve to something nobody chose.
-            .arg("--no-install")
-            .arg(&script)
+        let readable_roots = extension_read_roots(home, paths, workspace);
+        let sandbox = micro_sandbox::Sandbox::extension_host(&runtime, readable_roots);
+        if !sandbox.is_enforced() {
+            return Err(
+                "extensions are disabled because this platform cannot confine the Bun host"
+                    .to_string(),
+            );
+        }
+        let runtime_name = runtime.to_string_lossy().into_owned();
+        let wrapped = sandbox.wrap(
+            &runtime_name,
+            [
+                "run".to_string(),
+                // Without this, an import nothing here provides does not simply fail: Bun's
+                // default is to fetch whatever is missing, from its own global cache or from
+                // the network, so what an extension actually gets can depend on what happens
+                // to be lying around on the machine it runs on. A missing module should say so
+                // once, the same way everywhere, rather than resolve to something nobody chose.
+                "--no-install".to_string(),
+                script.display().to_string(),
+            ],
+            home,
+        );
+        if !wrapped.enforced {
+            return Err(
+                "extensions are disabled because the Bun host would be unconfined".to_string(),
+            );
+        }
+        let mut command = tokio::process::Command::new(&wrapped.program);
+        command
+            .args(&wrapped.args)
+            .current_dir(&wrapped.cwd)
+            // Do not leak provider keys, tokens, socket paths, or other parent-process
+            // authority through `process.env`.
+            .env_clear();
+        for (name, value) in &wrapped.env {
+            command.env(name, value);
+        }
+        let mut child = command
             .env("NODE_PATH", node_path)
+            .env("HOME", home)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -983,10 +1014,10 @@ impl Host {
 
     /// Tell the extensions the session is over, and let the process go.
     ///
-    /// `reason` is ohm's `session_shutdown` reason: `"quit"` for the run ending outright.
-    /// micro has no other moment to spend it on — switching, starting over, and forking
-    /// all replace the session in place, inside the same host and the same process, so
-    /// none of them ever tear this down the way ohm's own runtime replacement does.
+    /// `reason` is pi's `session_shutdown` reason: `"quit"` for the run ending outright.
+    /// micro has no other moment to spend it on — switching, starting over, and forking all
+    /// replace the session in place, inside the same host and the same process, so none of
+    /// them ever tear this down.
     pub async fn shutdown(&self, reason: &str) {
         let _ = write_line(
             &mut *self.stdin.lock().await,
@@ -1242,6 +1273,25 @@ pub fn which_bun() -> Option<PathBuf> {
     std::env::split_paths(&paths)
         .map(|directory| directory.join("bun"))
         .find(|candidate| candidate.is_file())
+}
+
+fn extension_read_roots(home: &Path, paths: &[PathBuf], workspace: &Path) -> Vec<PathBuf> {
+    let mut roots = vec![home.to_path_buf()];
+    for path in paths {
+        let path = std::fs::canonicalize(path).unwrap_or_else(|_| path.clone());
+        if path.is_dir() {
+            roots.push(path);
+            continue;
+        }
+        let parent = path.parent().unwrap_or(path.as_path());
+        let package_root = parent.ancestors().find(|ancestor| {
+            *ancestor != workspace && ancestor.join("package.json").is_file()
+        });
+        roots.push(package_root.unwrap_or(parent).to_path_buf());
+    }
+    roots.sort();
+    roots.dedup();
+    roots
 }
 
 #[cfg(test)]

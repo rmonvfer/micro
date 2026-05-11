@@ -108,6 +108,13 @@ pub struct Listings {
 /// credentials, the session log and the conversation these outcomes change.
 #[async_trait]
 pub trait Commands: Send {
+    /// Re-read durable cost and usage from the persisted ledger.
+    async fn session_observability(
+        &mut self,
+    ) -> Option<(Option<f64>, micro_types::Usage, micro_types::Usage)> {
+        None
+    }
+
     /// Tell whatever is listening what the user typed, before anything is done with it.
     ///
     /// The line comes back, possibly changed: an extension may rewrite what was submitted,
@@ -120,9 +127,9 @@ pub trait Commands: Send {
     /// take over the run entirely.
     ///
     /// `None` runs the command against the shell as usual. `Some` is what running it
-    /// amounted to instead — the shell is never actually asked — which is how ohm's
-    /// `user_bash` handlers are honoured: an extension answering with its own result has
-    /// decided what happened, not merely watched it happen.
+    /// amounted to instead — the shell is never actually asked — which is how a `user_bash`
+    /// handler is honoured: an extension answering with its own result has decided what
+    /// happened, not merely watched it happen.
     async fn before_bash(
         &mut self,
         command: &str,

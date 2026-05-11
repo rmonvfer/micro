@@ -40,11 +40,24 @@ pub enum ThemeChoice {
     Auto,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InspectionItem {
+    pub label: String,
+    pub detail: String,
+}
+
 pub enum CommandOutcome {
     /// Text to show. Nothing else changes.
     Message {
         kind: MessageKind,
         text: String,
+    },
+    /// Read-only session data shown outside the conversation. The TUI opens an overlay;
+    /// headless callers can print `text`.
+    Inspect {
+        title: String,
+        text: String,
+        items: Vec<InspectionItem>,
     },
     /// Send this to the model in place of what was typed, which is what running a prompt
     /// written for the purpose does.
@@ -156,10 +169,32 @@ impl CommandOutcome {
         }
     }
 
+    pub fn inspect(title: impl Into<String>, text: impl Into<String>) -> Self {
+        CommandOutcome::Inspect {
+            title: title.into(),
+            text: text.into(),
+            items: Vec::new(),
+        }
+    }
+
+    pub fn inspect_items(
+        title: impl Into<String>,
+        text: impl Into<String>,
+        items: Vec<InspectionItem>,
+    ) -> Self {
+        CommandOutcome::Inspect {
+            title: title.into(),
+            text: text.into(),
+            items,
+        }
+    }
+
     /// The text of a message outcome, for a caller that only wants to print.
     pub fn text(&self) -> Option<&str> {
         match self {
-            CommandOutcome::Message { text, .. } => Some(text),
+            CommandOutcome::Message { text, .. } | CommandOutcome::Inspect { text, .. } => {
+                Some(text)
+            }
             _ => None,
         }
     }
@@ -344,6 +379,12 @@ impl fmt::Debug for CommandOutcome {
                 .debug_struct("Message")
                 .field("kind", kind)
                 .field("text", text)
+                .finish(),
+            CommandOutcome::Inspect { title, text, items } => formatter
+                .debug_struct("Inspect")
+                .field("title", title)
+                .field("text", text)
+                .field("items", items)
                 .finish(),
             CommandOutcome::SetModel { model } => formatter
                 .debug_struct("SetModel")

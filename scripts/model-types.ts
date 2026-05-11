@@ -1,5 +1,5 @@
-// The model shapes ohm's catalog generator works with, taken from
-// `packages/ai/src/types.ts` so this repository's generator stands on its own.
+// The model shapes the catalog generator works with, declared here so the generator
+// stands on its own.
 
 export type KnownApi =
 	| "openai-completions"

@@ -1,8 +1,8 @@
 //! The input area: a rule above, a rule below, and the prompt between them.
 //!
-//! ohm frames its input with two horizontal rules rather than a box or a fill, and colors
-//! them by the reasoning budget the next turn will run with — so the frame around what you
-//! are typing tells you how hard the model is about to think. A `!` line takes the bash
+//! The input is framed with two horizontal rules rather than a box or a fill, and they are
+//! colored by the reasoning budget the next turn will run with — so the frame around what
+//! you are typing tells you how hard the model is about to think. A `!` line takes the bash
 //! colour instead, marking the mode before it is sent.
 
 use crate::editor::Editor;
@@ -24,7 +24,7 @@ const PLACEHOLDER: &str = "Ask anything - enter to send, shift+enter for a new l
 /// How the input is drawn, beyond where it goes.
 #[derive(Debug, Clone, Copy)]
 pub struct Look {
-    /// Colour of the rules: ohm marks the reasoning effort here, so a raised level is
+    /// Colour of the rules: the reasoning effort is marked here, so a raised level is
     /// visible without reading the footer.
     pub level: ratatui::style::Color,
     /// Whether the input has the keyboard. An overlay takes it, and the cursor then stays

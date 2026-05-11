@@ -1,6 +1,6 @@
 //! Installing extensions that live somewhere else.
 //!
-//! A source names where a package comes from, in the forms ohm accepts:
+//! A source names where a package comes from, in the forms pi accepts:
 //!
 //! ```text
 //! npm:@scope/name          npm:name@1.2.3
@@ -45,7 +45,7 @@ pub enum Source {
 }
 
 impl Source {
-    /// Read a source the way ohm reads it.
+    /// Read a source the way pi reads it.
     pub fn parse(source: &str) -> Result<Source, String> {
         let source = source.trim();
         if source.is_empty() {
@@ -63,8 +63,8 @@ impl Source {
         if let Some(parsed) = git(source) {
             return Ok(parsed);
         }
-        // Anything left is taken as a path, which is what ohm does: a bare name is more
-        // likely a directory than a URL somebody forgot the scheme for.
+        // Anything left is taken as a path: a bare name is more likely a directory than a
+        // URL somebody forgot the scheme for.
         Ok(Source::Local {
             path: source.to_string(),
         })
@@ -132,7 +132,7 @@ fn npm(spec: &str) -> Result<Source, String> {
     })
 }
 
-/// A repository, in any of the spellings ohm accepts.
+/// A repository, in any of the spellings a source may be written in.
 fn git(source: &str) -> Option<Source> {
     let (rest, reference) = match source.split_once('#') {
         Some((rest, reference)) if !reference.is_empty() => (rest, Some(reference.to_string())),
@@ -339,11 +339,11 @@ pub fn remove(source: &Source, home: &Path, workspace: &Path, local: bool) -> Re
 /// name carrying shell punctuation is a package name and nothing else.
 /// Install what a package expects its host to provide.
 ///
-/// An extension written for ohm declares ohm's own packages as optional peers: inside ohm
-/// they resolve to what is already running, so nothing installs them. micro is a different
-/// host, and the imports still have to resolve, so they are fetched here. Optional is what
-/// lets a package be installed at all without them; it is not a claim that it runs without
-/// them, and one that imports them at the top of a file does not.
+/// An extension written for pi declares pi's own packages as optional peers: inside pi they
+/// resolve to what is already running, so nothing installs them. micro is a different host,
+/// and the imports still have to resolve, so they are fetched here. Optional is what lets a
+/// package be installed at all without them; it is not a claim that it runs without them,
+/// and one that imports them at the top of a file does not.
 async fn install_peers(runtime: &Path, root: &Path, package: &Path) -> Result<(), String> {
     let Ok(raw) = std::fs::read_to_string(package.join("package.json")) else {
         return Ok(());

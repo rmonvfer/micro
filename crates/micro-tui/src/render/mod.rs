@@ -43,16 +43,15 @@ fn max_editor_rows(rows: u16) -> usize {
 }
 /// Rows kept for the conversation behind an overlay, so opening one never hides all of it.
 ///
-/// One, which is what ohm's own layout keeps. Everything else on the screen is the
-/// overlay's to use: a list is what the reader is working in while it is open, and one
-/// squeezed into a corner shows three or four rows wrapped in as much chrome again — an
-/// interface made mostly of margins.
+/// One. Everything else on the screen is the overlay's to use: a list is what the reader is
+/// working in while it is open, and one squeezed into a corner shows three or four rows
+/// wrapped in as much chrome again — an interface made mostly of margins.
 const ROWS_BEHIND_OVERLAY: u16 = 1;
 /// Rows kept for the spinner: a blank one, then the message.
 ///
 /// Held from the first turn onward, whether or not one is running, so starting one never
 /// shifts the interface vertically. Before then they are not held at all: a screen that
-/// has done nothing has nothing to say there, and ohm leaves the same space empty.
+/// has done nothing has nothing to say there.
 const ACTIVITY_ROWS: u16 = 2;
 
 /// The rows the spinner is entitled to right now.
@@ -85,8 +84,8 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     app.refresh_lines();
 
     // Before anything has happened there is no conversation, and the screen introduces
-    // itself in the space one would have taken — an extension's own header in place of
-    // ohm's, when `setHeader` gave it one.
+    // itself in the space one would have taken — an extension's own header in place of the
+    // built-in one, when `setHeader` gave it one.
     let opening = match app.lines().is_empty() && !app.settings().quiet_startup {
         true => match app.header_override() {
             Some(lines) => lines
@@ -335,6 +334,19 @@ fn overlay_lines(app: &App, theme: &Theme, width: usize) -> Vec<Line<'static>> {
     if let Some(prompt) = app.key_prompt() {
         return overlay::key_prompt_lines(prompt, theme, width);
     }
+    if let Some((title, text, items, selected, detail_open, scroll)) = app.inspection() {
+        return overlay::inspection_lines(
+            title,
+            text,
+            items,
+            selected,
+            detail_open,
+            scroll,
+            theme,
+            width,
+            budget,
+        );
+    }
     if let Some(lines) = app.component_overlay_lines() {
         return lines
             .iter()
@@ -517,8 +529,8 @@ fn clip(line: Line<'static>, width: usize) -> Line<'static> {
     Line::from(spans)
 }
 
-/// The keys worth knowing on the first screen, in ohm's order and ohm's words. A key is
-/// dim and what it does is muted, which is how every hint in the interface is written.
+/// The keys worth knowing on the first screen. A key is dim and what it does is muted,
+/// which is how every hint in the interface is written.
 const HINTS: [(&str, &str); 5] = [
     ("escape", "interrupt"),
     ("ctrl+c/ctrl+d", "clear/exit"),
@@ -707,8 +719,8 @@ fn footer_for(app: &App) -> status::Footer<'_> {
         cwd: &app.cwd,
         branch: app.branch(),
         session: None,
-        total: app.transcript.total_usage(),
-        last: app.transcript.last_usage(),
+        total: app.total_usage(),
+        last: app.last_usage(),
         context_window: app.context_window,
         model: app.model_id(),
         thinking: Some(crate::app::thinking_name(app.thinking)),
@@ -726,7 +738,7 @@ fn footer_for(app: &App) -> status::Footer<'_> {
     }
 }
 
-/// How many rows the footer takes: an extension's own count, from `setFooter`, or ohm's.
+/// How many rows the footer takes: an extension's own count, from `setFooter`, or micro's.
 fn footer_height(app: &App) -> u16 {
     match app.footer_override() {
         Some(lines) => lines.len() as u16,
@@ -734,7 +746,7 @@ fn footer_height(app: &App) -> u16 {
     }
 }
 
-/// The footer's rows: an extension's own, from `setFooter`, or ohm's.
+/// The footer's rows: an extension's own, from `setFooter`, or micro's.
 fn footer_rows(app: &App, theme: &Theme, width: usize) -> Vec<Line<'static>> {
     match app.footer_override() {
         Some(lines) => lines
@@ -1187,7 +1199,7 @@ mod tests {
     }
 
     #[test]
-    fn the_opening_screen_offers_ohms_hints() {
+    fn the_opening_screen_offers_its_hints() {
         let mut app = App::new(&[], TuiOptions::default());
         let rows = paint(&mut app, 100, 30);
         assert!(

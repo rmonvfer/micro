@@ -89,12 +89,28 @@ impl Provider for OpenAi {
         context: Context,
         api_key: String,
     ) -> UnboundedReceiver<StreamEvent> {
+        let payload = match self.request_payload(&model, &context, &api_key) {
+            Ok(payload) => payload,
+            Err(error) => return crate::error_stream(error),
+        };
+        self.stream_prepared(model, context, api_key, payload)
+    }
+
+    fn stream_prepared(
+        &self,
+        model: Model,
+        context: Context,
+        api_key: String,
+        payload: Value,
+    ) -> UnboundedReceiver<StreamEvent> {
         let (sender, receiver) = mpsc::unbounded_channel();
         let client = self.client.clone();
         let provider = self.provider.clone();
 
         tokio::spawn(async move {
-            if let Err(message) = run(client, provider, model, context, api_key, &sender).await {
+            if let Err(message) =
+                run(client, provider, model, context, api_key, payload, &sender).await
+            {
                 let _ = sender.send(StreamEvent::Error { message });
             }
         });
@@ -105,6 +121,15 @@ impl Provider for OpenAi {
     fn payload(&self, model: &Model, context: &Context) -> Value {
         build_payload(model, context).unwrap_or(Value::Null)
     }
+
+    fn request_payload(
+        &self,
+        model: &Model,
+        context: &Context,
+        _api_key: &str,
+    ) -> Result<Value, String> {
+        build_payload(model, context)
+    }
 }
 
 async fn run(
@@ -113,9 +138,9 @@ async fn run(
     model: Model,
     context: Context,
     api_key: String,
+    payload: Value,
     sender: &UnboundedSender<StreamEvent>,
 ) -> Result<(), String> {
-    let payload = build_payload(&model, &context)?;
     let mut request = client
         .post(endpoint(&model.base_url))
         .bearer_auth(api_key)

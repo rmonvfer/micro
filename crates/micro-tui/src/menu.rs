@@ -1,16 +1,16 @@
 //! The slash-command menu shown while a command is being typed.
 //!
-//! Behaviour follows ohm's editor autocomplete: the menu belongs to the text before the
-//! cursor and is rebuilt on every keystroke, so the selection returns to the top whenever
-//! the filter changes. Moving through it wraps at both ends, and committing replaces what
-//! was typed with the command and a trailing space, ready for its argument.
+//! The menu belongs to the text before the cursor and is rebuilt on every keystroke, so the
+//! selection returns to the top whenever the filter changes. Moving through it wraps at both
+//! ends, and committing replaces what was typed with the command and a trailing space, ready
+//! for its argument.
 
 use micro_commands::Command;
 use micro_models::fuzzy;
 use serde_json::Value;
 use std::ops::Range;
 
-/// Rows the menu shows at once before it scrolls, matching ohm's editor default.
+/// Rows the menu shows at once before it scrolls.
 pub const MAX_VISIBLE: usize = 5;
 
 /// How many files a menu offers at once. Past this the list stops being a list.
@@ -254,7 +254,7 @@ impl Menu {
 
 impl From<Command> for MenuItem {
     fn from(command: Command) -> Self {
-        // The hint and the description read as one phrase, the way ohm joins them.
+        // The hint and the description read as one phrase, joined by a dash.
         let description = match command.argument {
             Some(argument) => format!("{argument} — {}", command.description),
             None => command.description.to_string(),

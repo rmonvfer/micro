@@ -126,7 +126,7 @@ fn key_action(key: &KeyEvent) -> Action {
 
     match key.code {
         // Alt+Enter queues the prompt behind the turn in flight rather than breaking the
-        // line, which is how ohm lets a follow-up be written while an answer is arriving.
+        // line, so a follow-up can be written while an answer is arriving.
         KeyCode::Enter if alt => Action::QueueFollowUp,
         KeyCode::Enter if shift || control => Action::Newline,
         KeyCode::Enter => Action::Submit,
@@ -147,8 +147,8 @@ fn key_action(key: &KeyEvent) -> Action {
         KeyCode::Down if control => Action::FocusNext,
         KeyCode::Down => Action::MoveDown,
 
-        // ohm claims these for the input. The transcript is the terminal's to scroll, and
-        // it has its own wheel and its own keys for that.
+        // These belong to the input. The transcript is the terminal's to scroll, and it
+        // has its own wheel and its own keys for that.
         KeyCode::PageUp => Action::PageUp,
         KeyCode::PageDown => Action::PageDown,
 
@@ -195,7 +195,7 @@ fn control_action(character: char) -> Action {
         'x' => Action::CopyMessage,
         'v' => Action::PasteImage,
         'z' => Action::Suspend,
-        // ohm binds undo to ctrl+-, which most terminals deliver as ctrl+_.
+        // Undo is bound to ctrl+-, which most terminals deliver as ctrl+_.
         '-' | '_' => Action::Undo,
         _ => Action::Ignored,
     }
@@ -215,7 +215,7 @@ fn alt_action(character: char) -> Action {
 
 /// A key press as a person writes it: `ctrl+h`, `alt+enter`, `shift+f5`.
 ///
-/// The spelling ohm uses for a registered shortcut, so a key an extension asked for is
+/// The spelling a registered shortcut is written in, so a key an extension asked for is
 /// recognised by the name it asked for it under.
 pub fn key_name(event: &Event) -> Option<String> {
     let Event::Key(key) = event else {

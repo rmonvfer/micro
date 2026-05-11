@@ -1,9 +1,8 @@
 //! What a service accepts, worked out from who serves a model and where.
 //!
 //! A catalog entry records only what a service does differently from the protocol it
-//! answers. Everything else is inferred from the provider and its address, the way ohm
-//! infers it in `packages/ai/src/api/openai-completions.ts`: the inference is the base,
-//! and whatever the entry states is laid over it.
+//! answers. Everything else is inferred from the provider and its address: the inference
+//! is the base, and whatever the entry states is laid over it.
 
 use micro_types::CacheControlFormat;
 use micro_types::Compat;
@@ -16,9 +15,9 @@ use std::collections::BTreeMap;
 
 /// What one catalog entry states about its service, where it differs from the protocol.
 ///
-/// These keys are written the way the generator writes them, which is the way ohm names
-/// them: in camel case, unlike the surrounding entry. Spelling them any other way here
-/// means none of them are read and every model quietly falls back to the inference.
+/// These keys are written the way the generator writes them: in camel case, unlike the
+/// surrounding entry. Spelling them any other way here means none of them are read and
+/// every model quietly falls back to the inference.
 #[derive(Debug, Clone, Default, PartialEq, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CompatOverrides {

@@ -229,6 +229,7 @@ impl SessionStore {
             model,
             prefix_hash,
             request_hash,
+            request_body_blob,
             system_prompt_blob,
             tools_blob,
             model_blob,
@@ -246,6 +247,10 @@ impl SessionStore {
         };
         let tools = self.parsed_blob(id, &tools_blob).await?;
         let described = self.parsed_blob(id, &model_blob).await?;
+        let recorded_request_body = match &request_body_blob {
+            Some(hash) => Some(self.blob(id, hash).await?),
+            None => None,
+        };
 
         Ok(ReconstructedTurn {
             turn,
@@ -255,6 +260,7 @@ impl SessionStore {
             model: described,
             prefix_hash,
             request_hash,
+            recorded_request_body,
             prefix_spans,
             system_prompt,
             tools,
@@ -589,6 +595,8 @@ pub struct ReconstructedTurn {
     pub model: Model,
     pub prefix_hash: String,
     pub request_hash: String,
+    /// Exact serialized provider body for ledgers written by versions that retain it.
+    pub recorded_request_body: Option<Vec<u8>>,
     /// Where each stretch of the system prompt came from.
     pub prefix_spans: Vec<PrefixSpan>,
     pub system_prompt: Option<String>,
@@ -701,6 +709,7 @@ impl Session {
         self.append_event(LedgerEvent::Compaction {
             summary_blob,
             kept,
+            message_entry_ids: Vec::new(),
             cost,
         })
         .await
@@ -740,13 +749,17 @@ impl Session {
     /// Whoever produced the request has the messages but not their ids — the tree assigns
     /// those as they are written — so the names are put on here, where the tree is.
     fn stamp(&self, event: &mut LedgerEvent) {
-        if let LedgerEvent::TurnRequest {
-            message_entry_ids, ..
-        } = event
-        {
-            if message_entry_ids.is_empty() {
-                *message_entry_ids = self.tree.path_entry_ids();
+        let message_entry_ids = match event {
+            LedgerEvent::TurnRequest {
+                message_entry_ids, ..
             }
+            | LedgerEvent::Compaction {
+                message_entry_ids, ..
+            } => Some(message_entry_ids),
+            _ => None,
+        };
+        if let Some(message_entry_ids) = message_entry_ids.filter(|ids| ids.is_empty()) {
+            *message_entry_ids = self.tree.path_entry_ids();
         }
     }
 
@@ -1556,6 +1569,7 @@ mod tests {
         session.append(&asked).await.unwrap();
         let system_prompt_blob = session.store_blob(b"you are micro").await.unwrap();
         let tools_blob = session.store_blob(b"[]").await.unwrap();
+        let request_body_blob = session.store_blob(br#"{"messages":[]}"#).await.unwrap();
         let model = Model::anthropic("claude-opus-5");
         let model_blob = session
             .store_blob(&serde_json::to_vec(&model).unwrap())
@@ -1568,6 +1582,7 @@ mod tests {
                 model: "claude-opus-5".into(),
                 prefix_hash: "aa".into(),
                 request_hash: "bb".into(),
+                request_body_blob: Some(request_body_blob),
                 system_prompt_blob: Some(system_prompt_blob),
                 tools_blob,
                 model_blob,
@@ -1603,6 +1618,7 @@ mod tests {
         assert_eq!(rebuilt.system_prompt.as_deref(), Some("you are micro"));
         assert!(rebuilt.tools.is_empty());
         assert_eq!(rebuilt.model, model);
+        assert_eq!(rebuilt.recorded_request_body.as_deref(), Some(br#"{"messages":[]}"#.as_slice()));
         assert_eq!(rebuilt.usage.map(|usage| usage.input), Some(7));
         assert_eq!(rebuilt.stop_reason, Some(StopReason::Stop));
     }

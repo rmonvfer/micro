@@ -1158,8 +1158,8 @@ fn tool_from_json(value: &Value) -> Option<micro_types::ToolDefinition> {
 /// pi-ai's `Context` (`systemPrompt`/`messages`/`tools`), read into micro's own shape.
 /// `messages` reuses [`message_from_json`] rather than a second parser: it is already the
 /// inverse of `message_json`, which is what an extension's own messages are written
-/// against (see `crates/micro-extensions/src/events.rs`'s header comment on why ohm's and
-/// pi's shapes are one and the same here).
+/// against (see `crates/micro-extensions/src/events.rs`'s header comment on why pi's and
+/// micro's event names differ).
 fn context_from_json(value: &Value) -> micro_types::Context {
     let messages = value
         .get("messages")
@@ -1930,11 +1930,11 @@ pub struct ExtensionHooks {
     /// prompt on the way to every request — and it left the change unrecorded besides.
     prefix: micro_agent::PrefixControl,
     /// Where this run operates, for `before_agent_start`'s `systemPromptOptions` — the
-    /// one field ohm's own default carries when nothing richer is on hand.
+    /// one field pi's own default carries when nothing richer is on hand.
     cwd: String,
     /// The arguments a tool call was started with, kept by call id until it answers.
     /// `Hooks::after_tool` is not handed them itself, and `tool_result` is written against
-    /// ohm's shape, which carries them as `input`.
+    /// pi's shape, which carries them as `input`.
     call_arguments: Mutex<HashMap<String, Value>>,
 }
 
@@ -1955,7 +1955,7 @@ impl ExtensionHooks {
     }
 }
 
-// `after_provider_response` is not fired from here. Ohm's version carries the raw HTTP
+// `after_provider_response` is not fired from here. pi's version carries the raw HTTP
 // status and headers, read after the response arrives but before its body is consumed —
 // data that belongs to the HTTP call itself. `Hooks::after_response` runs well past that,
 // with the stream already fully read into an `AssistantMessage` and no status or headers
@@ -2076,7 +2076,7 @@ impl Hooks for ExtensionHooks {
         prompt: &micro_types::Message,
     ) -> Option<micro_types::Message> {
         // The prompt a run starts on is always a user message; text and images are read
-        // out of it the way ohm reads them off its own `UserMessage`.
+        // out of it the way pi reads them off its own `UserMessage`.
         let (text, images) = match prompt {
             micro_types::Message::User { content, .. } => (
                 content.iter().map(micro_types::ContentBlock::as_text).collect::<String>(),
@@ -2112,7 +2112,7 @@ impl Hooks for ExtensionHooks {
             .broker
             .heeded_from(answers, Capability::Context, "system_prompt");
 
-        // Ohm's own result appends `message` alongside the prompt rather than replacing
+        // pi's own result appends `message` alongside the prompt rather than replacing
         // it; `Hooks::before_agent_start` can only replace the prompt outright, so that
         // half of the result has nowhere to go and is not honoured. `systemPrompt` is:
         // each answer is applied in turn, so the last extension to set it has the final
@@ -2163,7 +2163,7 @@ impl Hooks for ExtensionHooks {
         if let Ok(answers) = asked {
             // Each answer is applied in turn, so a later extension sees what an earlier
             // one changed rather than what the agent originally assembled. An answer
-            // whose messages do not parse as ohm's shape changes nothing, rather than
+            // whose messages do not parse as pi's shape changes nothing, rather than
             // clearing the conversation.
             for (source, answer) in self
                 .broker
@@ -2187,11 +2187,11 @@ impl Hooks for ExtensionHooks {
             }
         }
 
-        // Announced separately, because ohm reports the request itself as its own moment.
+        // Announced separately, because pi reports the request itself as its own moment.
         // What is handed over is the same context an extension can already read and
         // rewrite through `context` above, not the literal per-provider request body:
         // that is assembled deep inside the HTTP client, well past where an extension can
-        // be asked about it, so nothing answered here can replace it — unlike ohm, whose
+        // be asked about it, so nothing answered here can replace it — unlike pi, whose
         // own version of this event runs in the same process as the request it shapes.
         let _ = self
             .host

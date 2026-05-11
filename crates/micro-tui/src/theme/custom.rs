@@ -1,10 +1,10 @@
 //! Reading a theme written by the user.
 //!
-//! ohm lets a user drop a JSON theme into its config directory and name it in settings, so
-//! micro reads the same shape from the `themes` directory of its own configuration
-//! directory. The file is ohm's: a `name`, an optional `vars` block of reusable colors, and
-//! a `colors` block naming every token, where a value is a hex string, a 256-color index,
-//! an empty string meaning the terminal's own default, or the name of a var.
+//! A user drops a JSON theme into the `themes` directory of micro's configuration directory
+//! and names it in settings. The file carries a `name`, an optional `vars` block of reusable
+//! colors, and a `colors` block naming every token, where a value is a hex string, a
+//! 256-color index, an empty string meaning the terminal's own default, or the name of a
+//! var.
 
 use ratatui::style::Color;
 use serde_json::Value;
@@ -29,7 +29,7 @@ pub fn path_for(name: &str) -> Option<PathBuf> {
     themes_dir().map(|dir| dir.join(format!("{name}.json")))
 }
 
-/// Every token a theme file resolved to, by ohm's token name.
+/// Every token a theme file resolved to, by its schema name.
 pub type Resolved = Vec<(String, Color)>;
 
 /// Parses a theme file, resolving var references and checking that every token the built-in
@@ -83,7 +83,7 @@ fn resolve(
     let Some(text) = value.as_str() else {
         return Err(format!("expected a color, found {value}"));
     };
-    // ohm's empty string means "leave this to the terminal", which is ratatui's Reset.
+    // An empty string means "leave this to the terminal", which is ratatui's Reset.
     if text.is_empty() {
         return Ok(Color::Reset);
     }

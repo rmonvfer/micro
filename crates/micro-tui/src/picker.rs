@@ -1,15 +1,15 @@
 //! The list a command opens when it wants the user to choose.
 //!
-//! Shaped after ohm's selectors: a title, a filter the user types into, a list that narrows
-//! as they type, and a marker on whatever is in use now. Choosing hands back the command
-//! line the item carries, which the interface dispatches as though it had been typed.
+//! A title, a filter the user types into, a list that narrows as they type, and a marker on
+//! whatever is in use now. Choosing hands back the command line the item carries, which the
+//! interface dispatches as though it had been typed.
 
 use micro_commands::Picker as Choices;
 use micro_commands::PickerItem;
 use micro_models::fuzzy;
 use std::ops::Range;
 
-/// Rows a picker shows at once before it scrolls, matching ohm's selectors.
+/// Rows a picker shows at once before it scrolls.
 pub const MAX_VISIBLE: usize = 10;
 /// The gap between a label's column and the detail beside it.
 pub const COLUMN_GAP: usize = 2;

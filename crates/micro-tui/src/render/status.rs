@@ -1,6 +1,6 @@
 //! The footer, and the activity line above the editor.
 //!
-//! ohm's footer is two rows with no fill of its own: where the session is on the first row,
+//! The footer is two rows with no fill of its own: where the session is on the first row,
 //! what it has spent on the second, with the model pushed to the right edge. The one piece
 //! of color in it is the context reading, which warns as the window fills.
 //!

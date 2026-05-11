@@ -1,13 +1,12 @@
-//! Colors for the whole interface, as ohm defines them.
+//! Colors for the whole interface.
 //!
-//! Every token in ohm's theme schema is here under the name ohm gives it, so a renderer
-//! asks for the token that paints a thing — `md_heading`, `tool_error_bg`, `syntax_string`
-//! — rather than picking a color. The values come from ohm's `dark.json` and `light.json`
-//! unchanged; see [`palette`] for the transcription.
+//! Every token the theme schema names is here, so a renderer asks for the token that paints
+//! a thing — `md_heading`, `tool_error_bg`, `syntax_string` — rather than picking a color.
+//! See [`palette`] for the value each built-in theme gives every token.
 //!
-//! Three fields have no ohm token behind them, because ohm's set names no editor or status
-//! surface and no user label: [`Theme::surface`], [`Theme::status`], and [`Theme::user`].
-//! Each is documented where it is declared with what it borrows and why.
+//! Three fields stand outside the schema, which names no editor or status surface and no
+//! user label: [`Theme::surface`], [`Theme::status`], and [`Theme::user`]. Each is
+//! documented where it is declared with what it borrows and why.
 
 mod custom;
 mod detect;
@@ -34,25 +33,25 @@ macro_rules! tokens {
             pub name: &'static str,
             $($(#[$note])* pub $field: Color,)*
 
-            /// Fill behind the input editor. ohm names no editor surface, so this takes the
-            /// `cardBg` its HTML export uses for the same raised-panel role.
+            /// Fill behind the input editor. The schema names no editor surface, so this
+            /// takes `cardBg`, the fill for a raised panel.
             pub surface: Color,
-            /// Fill behind the status bar. ohm names no status surface, so this takes the
-            /// `pageBg` its HTML export uses for the ground everything else sits on.
+            /// Fill behind the status bar. The schema names no status surface, so this
+            /// takes `pageBg`, the ground everything else sits on.
             pub status: Color,
-            /// The user's own label. ohm tints the whole message with `user_message_bg`
-            /// instead of coloring a label, so this takes `border`, ohm's blue.
+            /// The user's own label. A user message is tinted whole with `user_message_bg`
+            /// rather than carrying a colored label, so this takes `border`, the blue.
             pub user: Color,
-            /// Background for a highlighted note in ohm's HTML export. No terminal region
-            /// uses it yet; it is carried so the set is complete.
+            /// Background for a highlighted note. No terminal region uses it yet; it is
+            /// carried so the set is complete.
             pub info_bg: Color,
         }
 
         impl Theme {
-            /// Every token name, in ohm's schema order.
+            /// Every token name, in schema order.
             pub const TOKEN_NAMES: &'static [&'static str] = &[$($name),*];
 
-            /// One token by its ohm name, for a caller driven by data rather than by field.
+            /// One token by its schema name, for a caller driven by data rather than by field.
             pub fn token(&self, name: &str) -> Option<Color> {
                 match name {
                     $($name => Some(self.$field),)*
@@ -168,7 +167,7 @@ impl Theme {
 
     /// The palette to open with.
     ///
-    /// `MICRO_THEME` names it. A name with a single slash is ohm's automatic form,
+    /// `MICRO_THEME` names it. A name with a single slash is the automatic form,
     /// `light-theme/dark-theme`, which picks by what the terminal looks like. With nothing
     /// set, the terminal decides on its own, falling back to dark.
     pub fn from_env() -> Self {
@@ -213,7 +212,7 @@ impl Theme {
         Theme::from_json(&contents)
     }
 
-    /// A theme parsed from ohm's JSON shape.
+    /// A theme parsed from the schema's JSON shape.
     pub fn from_json(contents: &str) -> Result<Self, String> {
         let (_, resolved) = custom::parse(contents, Theme::TOKEN_NAMES)?;
         let lookup = |token: &str| {
@@ -267,7 +266,7 @@ impl Default for Theme {
     }
 }
 
-/// ohm's automatic form: exactly one slash, splitting the light name from the dark one.
+/// The automatic form: exactly one slash, splitting the light name from the dark one.
 fn auto_pair(setting: &str) -> Option<(&str, &str)> {
     let (light, dark) = setting.split_once('/')?;
     if dark.contains('/') {
@@ -322,9 +321,8 @@ mod tests {
         custom::parse_hex(hex.trim_start_matches('#')).unwrap()
     }
 
-    /// Every token both themes must carry, taken from the `required` list in ohm's
-    /// `theme-schema.json` plus `thinkingMax`, which the schema leaves optional but both
-    /// built-in themes define.
+    /// Every token both themes must carry: the schema's `required` list plus `thinkingMax`,
+    /// which the schema leaves optional but both built-in themes define.
     const SCHEMA_TOKENS: &[&str] = palette::TOKENS;
 
     #[test]
@@ -332,7 +330,7 @@ mod tests {
         for token in SCHEMA_TOKENS {
             assert!(
                 Theme::TOKEN_NAMES.contains(token),
-                "{token} is in ohm's schema but not in the theme"
+                "{token} is in the schema but not in the theme"
             );
         }
         assert_eq!(Theme::TOKEN_NAMES.len(), SCHEMA_TOKENS.len());
@@ -391,10 +389,10 @@ mod tests {
         }
     }
 
-    /// The values, spelled out against ohm's JSON. A typo in a hex digit is the failure
-    /// this whole exercise is exposed to, so every token is checked rather than sampled.
+    /// The values, spelled out one by one. A typo in a hex digit is the failure this whole
+    /// exercise is exposed to, so every token is checked rather than sampled.
     #[test]
-    fn the_dark_values_match_ohm() {
+    fn every_dark_token_carries_its_value() {
         let theme = Theme::dark();
         for (token, expected) in [
             ("accent", "#8abeb7"),
@@ -455,7 +453,7 @@ mod tests {
     }
 
     #[test]
-    fn the_light_values_match_ohm() {
+    fn every_light_token_carries_its_value() {
         let theme = Theme::light();
         for (token, expected) in [
             ("accent", "#5a8080"),
@@ -516,7 +514,7 @@ mod tests {
     }
 
     #[test]
-    fn the_export_surfaces_match_ohm() {
+    fn the_surfaces_outside_the_schema_carry_values() {
         let dark = Theme::dark();
         assert_eq!(dark.status, rgb("#18181e"));
         assert_eq!(dark.surface, rgb("#1e1e24"));
@@ -586,7 +584,7 @@ mod tests {
             Theme::resolve_setting(Some("light/dark"), dark).name,
             "dark"
         );
-        // Spacing around the names is ignored, as ohm ignores it.
+        // Spacing around the names is ignored.
         assert_eq!(
             Theme::resolve_setting(Some(" light / dark "), dark).name,
             "dark"
@@ -603,7 +601,7 @@ mod tests {
     }
 
     #[test]
-    fn a_user_theme_is_read_in_ohms_shape() {
+    fn a_user_theme_is_read_in_the_schema_shape() {
         let mut json =
             String::from(r##"{ "name": "mine", "vars": { "brand": "#123456" }, "colors": {"##);
         for (index, token) in Theme::TOKEN_NAMES.iter().enumerate() {

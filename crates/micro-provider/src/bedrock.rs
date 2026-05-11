@@ -67,11 +67,25 @@ impl crate::Provider for Bedrock {
         context: Context,
         api_key: String,
     ) -> UnboundedReceiver<StreamEvent> {
+        let payload = match self.request_payload(&model, &context, &api_key) {
+            Ok(payload) => payload,
+            Err(error) => return crate::error_stream(error),
+        };
+        self.stream_prepared(model, context, api_key, payload)
+    }
+
+    fn stream_prepared(
+        &self,
+        model: Model,
+        context: Context,
+        api_key: String,
+        payload: Value,
+    ) -> UnboundedReceiver<StreamEvent> {
         let (sender, receiver) = mpsc::unbounded_channel();
         let client = self.client.clone();
 
         tokio::spawn(async move {
-            if let Err(message) = run(client, model, context, api_key, &sender).await {
+            if let Err(message) = run(client, model, context, api_key, payload, &sender).await {
                 let _ = sender.send(StreamEvent::Error { message });
             }
         });
@@ -81,6 +95,15 @@ impl crate::Provider for Bedrock {
 
     fn payload(&self, model: &Model, context: &Context) -> Value {
         build_payload(model, context).unwrap_or(Value::Null)
+    }
+
+    fn request_payload(
+        &self,
+        model: &Model,
+        context: &Context,
+        _api_key: &str,
+    ) -> Result<Value, String> {
+        build_payload(model, context)
     }
 }
 
@@ -172,11 +195,11 @@ async fn run(
     model: Model,
     context: Context,
     api_key: String,
+    payload: Value,
     sender: &UnboundedSender<StreamEvent>,
 ) -> Result<(), String> {
     let region = region(&model.base_url);
     let address = endpoint(&model.base_url, &region, &model.id);
-    let payload = build_payload(&model, &context)?;
     let body = serde_json::to_vec(&payload).map_err(|error| error.to_string())?;
 
     let host = address

@@ -108,7 +108,14 @@ fn install_filesystem_rules(rules: &SandboxRules) -> Result<(), String> {
         .filter(|subpath| subpath.exists())
         .collect();
 
-    let status = restrict_current_thread(&writable, &read_only)
+    let readable: Option<Vec<&Path>> = rules.readable_roots.as_ref().map(|roots| {
+        roots
+            .iter()
+            .map(|path| path.as_path())
+            .filter(|root| root.exists())
+            .collect()
+    });
+    let status = restrict_current_thread(&writable, &read_only, readable.as_deref())
         .map_err(|error| format!("the filesystem ruleset would not apply: {error}"))?;
     if status.ruleset == RulesetStatus::NotEnforced {
         return Err("this kernel does not enforce Landlock".to_string());
@@ -119,6 +126,7 @@ fn install_filesystem_rules(rules: &SandboxRules) -> Result<(), String> {
 fn restrict_current_thread(
     writable: &[&Path],
     read_only: &[&Path],
+    readable: Option<&[&Path]>,
 ) -> Result<RestrictionStatus, RulesetError> {
     let abi = ABI::V5;
     let access_rw = AccessFs::from_all(abi);
@@ -128,11 +136,20 @@ fn restrict_current_thread(
         .set_compatibility(CompatLevel::BestEffort)
         .handle_access(access_rw)?
         .create()?
-        .add_rules(path_beneath_rules(["/"], access_ro))?
         // Writing to /dev/null is how a command discards output, not a way out of the
         // sandbox.
         .add_rules(path_beneath_rules(["/dev/null"], access_rw))?
         .no_new_privs(true);
+
+    match readable {
+        Some(roots) if !roots.is_empty() => {
+            ruleset = ruleset.add_rules(path_beneath_rules(roots, access_ro))?;
+        }
+        Some(_) => {}
+        None => {
+            ruleset = ruleset.add_rules(path_beneath_rules(["/"], access_ro))?;
+        }
+    }
 
     if !writable.is_empty() {
         ruleset = ruleset.add_rules(path_beneath_rules(writable, access_rw))?;

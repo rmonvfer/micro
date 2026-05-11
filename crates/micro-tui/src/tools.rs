@@ -518,8 +518,8 @@ mod tests {
 
         assert_eq!(view.subject, "src/main.rs");
         assert_eq!(view.detail.as_deref(), Some("+1 -1"));
-        // Numbered as ohm numbers it: the old file's line for context and removals, the new
-        // file's for additions.
+        // Numbered from the old file for context and removals, and from the new file for
+        // additions.
         assert_eq!(
             gutters(&view, true),
             vec![" 1 fn main() {", "-2     old();", "+2     new();", " 3 }"]

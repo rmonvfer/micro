@@ -1,9 +1,9 @@
 //! One tool result, drawn.
 //!
 //! The whole result sits in a band of background whose color says how the call went:
-//! pending while it runs, then success or error. That band is ohm's way of marking a tool
-//! block, and it does the work a marker glyph and a frame would otherwise be doing, so
-//! there is neither.
+//! pending while it runs, then success or error. That band is what marks a tool block, and
+//! it does the work a marker glyph and a frame would otherwise be doing, so there is
+//! neither.
 //!
 //! The header is always one line: what ran, what it acted on, and how it went. Everything
 //! below it is the body the reader can open, styled by what the row means — a diff line, a
@@ -62,7 +62,7 @@ pub fn lines(tool: &ToolEntry, focused: bool, theme: &Theme, width: usize) -> Ve
 /// A call an extension is drawing itself, through renderCall/renderResult. Its lines are
 /// already composed on the other side of the wire; what is left is where they land.
 ///
-/// Most such tools still want ohm's own frame — the padded band whose color says how the
+/// Most such tools still want micro's own frame — the padded band whose color says how the
 /// call went — and only supply what goes inside it. A tool whose `render_shell` asked for
 /// `"self"` wants none of that: it means to draw its own frame on the far side, so this
 /// leaves the band off entirely and only spaces the result off from whatever came before.
@@ -301,12 +301,12 @@ mod tests {
         );
     }
 
-    /// `render_shell: "self"` skips ohm's own band entirely: no background tint marking how
-    /// the call went, no padding column, just the extension's own lines behind one blank
+    /// `render_shell: "self"` skips micro's own band entirely: no background tint marking
+    /// how the call went, no padding column, just the extension's own lines behind one blank
     /// row that keeps them off whatever came before — no trailing blank row, since nothing
     /// here is closing a frame the extension is still drawing.
     #[test]
-    fn a_self_framed_tool_draws_without_ohms_band() {
+    fn a_self_framed_tool_draws_without_the_band() {
         let theme = Theme::dark();
         let mut tool = entry("weather", json!({ "city": "lima" }), Some("ignored"));
         tool.call_component_id = Some("component-0".into());

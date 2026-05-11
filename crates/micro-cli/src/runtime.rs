@@ -867,7 +867,7 @@ pub async fn load_context(
 
     // What an extension adds to what micro would have found on its own. Asked once, here,
     // rather than separately for skills and for prompts: both come back from the same
-    // answer, the way ohm's own event hands a handler one result with both fields on it.
+    // answer, the way pi's own event hands a handler one result with both fields on it.
     // `themePaths` is read this far and then set aside: micro has no facility to load a
     // theme from a path at all, pluggable or otherwise, so there is nowhere for it to go.
     let discovered = match extensions {
@@ -1190,7 +1190,7 @@ async fn load_extensions(
 /// nothing up. What they change they change by asking, which is its own path.
 ///
 /// A phone is fed from here rather than from its own observer because the translation is
-/// the expensive part and both want the same thing: the run in the shape ohm describes it,
+/// the expensive part and both want the same thing: the run in the shape pi describes it,
 /// which is the shape the phone was written against.
 async fn forward_events(
     mut watched: tokio::sync::mpsc::UnboundedReceiver<micro_types::AgentEvent>,
@@ -1208,7 +1208,7 @@ async fn forward_events(
 
         if let Some(sender) = mirror.lock().await.as_ref() {
             let mut named = payload.clone();
-            // The phone reads the event's own name off the event, the way ohm writes it.
+            // The phone reads the event's own name off the event, the way pi writes it.
             if let Some(object) = named.as_object_mut() {
                 object.insert("type".into(), serde_json::Value::String(name.to_string()));
             }

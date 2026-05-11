@@ -696,6 +696,7 @@ async fn submit(
             terminal_input,
             host_asker,
             remote,
+            None,
             prompt,
         )
         .await;
@@ -722,6 +723,7 @@ async fn submit(
                 terminal_input,
                 host_asker,
                 remote,
+                Some(commands),
                 prompt,
             )
             .await
@@ -740,6 +742,7 @@ async fn submit(
                 terminal_input,
                 host_asker,
                 remote,
+                Some(commands),
                 prompt,
             )
             .await
@@ -751,7 +754,7 @@ async fn submit(
 /// Run a shell command on the user's behalf and put what it printed into the conversation.
 ///
 /// The model is not asked anything, but it is told: the command and its output are recorded
-/// so the next turn knows what the user just did, the same way ohm treats a `!` line.
+/// so the next turn knows what the user just did.
 async fn run_bash(
     screen: &mut Screen,
     app: &mut App,
@@ -769,8 +772,8 @@ async fn run_bash(
     screen.render(app)?;
 
     // Whatever is listening is asked first, and may decide what running this amounted to
-    // itself — ohm's `user_bash` is a moment the shell answers to, not one it is merely
-    // told about.
+    // itself — `user_bash` is a moment the shell answers to, not one it is merely told
+    // about.
     let overridden = match commands.as_deref_mut() {
         Some(commands) => {
             commands
@@ -844,6 +847,7 @@ async fn apply_outcome(
 ) -> Result<()> {
     match outcome {
         CommandOutcome::Message { kind, text } => app.notice(text, kind),
+        CommandOutcome::Inspect { title, text, items } => app.open_inspection(title, text, items),
         CommandOutcome::Quit => app.should_quit = true,
         CommandOutcome::Choose(picker) => {
             // A list of models is drawn from what is already known and asked about at the
@@ -1111,6 +1115,7 @@ async fn run_turn(
     terminal_input: &Option<crate::ui::TerminalInputAsker>,
     host_asker: &Option<crate::ui::HostAsker>,
     remote: &mut Option<crate::remote::Remote>,
+    mut commands: Option<&mut (dyn Commands + 'static)>,
     prompt: Message,
 ) -> Result<()> {
     // The phone shows a stop button in place of a send button while a turn runs, and
@@ -1232,6 +1237,10 @@ async fn run_turn(
         app.apply_event(event);
     }
     app.finish_turn(aborted);
+    if let Some(commands) = commands.as_mut() {
+        let observed = commands.session_observability().await;
+        app.set_session_observability(observed);
+    }
     report_progress(progress, false);
     Ok(())
 }

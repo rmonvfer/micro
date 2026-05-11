@@ -21,6 +21,7 @@ mod bill;
 mod model;
 mod outcome;
 mod parse;
+mod request;
 mod session;
 mod why_miss;
 
@@ -30,7 +31,9 @@ pub use bill::BillLine;
 pub use bill::CompactionBill;
 pub use bill::Side;
 pub use bill::TurnBill;
+pub use bill::UnknownAttempt;
 pub use outcome::CommandOutcome;
+pub use outcome::InspectionItem;
 pub use outcome::MessageKind;
 pub use outcome::RemoteAction;
 pub use outcome::Picker;
@@ -227,6 +230,11 @@ static COMMANDS: &[Command] = &[
         description: "say why a turn did not reuse the cached prompt",
     },
     Command {
+        name: "request",
+        argument: Some("<turn> [--raw]"),
+        description: "inspect the recorded provider request",
+    },
+    Command {
         name: "compact",
         argument: None,
         description: "summarize the conversation to reclaim context",
@@ -373,6 +381,7 @@ pub async fn run(
         "debug" => debug(context),
         "bill" => bill::command(argument, context).await,
         "why-miss" => why_miss::command(argument, context).await,
+        "request" => request::command(argument, context).await,
         "thinking" => thinking(argument),
         "theme" => theme(argument),
         "compact" => compact(context),
@@ -481,8 +490,8 @@ fn theme(argument: Option<&str>) -> CommandOutcome {
             Picker::new(
                 "Theme",
                 vec![
-                    PickerItem::new("dark", "ohm's dark palette", "/theme dark"),
-                    PickerItem::new("light", "ohm's light palette", "/theme light"),
+                    PickerItem::new("dark", "dark palette", "/theme dark"),
+                    PickerItem::new("light", "light palette", "/theme light"),
                     PickerItem::new("auto", "follow the terminal", "/theme auto"),
                 ],
             )
@@ -554,8 +563,7 @@ async fn skills(context: &CommandContext<'_>) -> CommandOutcome {
 }
 
 /// Where every setting comes from, so a surprising one can be traced to its file.
-/// `/settings` offers what can be changed, in ohm's words, each item carrying the command
-/// that changes it.
+/// `/settings` offers what can be changed, each item carrying the command that changes it.
 ///
 /// Every row here is honoured somewhere: a setting that controlled nothing would read as a
 /// feature and behave as a decoration.
@@ -1310,10 +1318,10 @@ fn debug(context: &CommandContext<'_>) -> CommandOutcome {
     CommandOutcome::info(out)
 }
 
-/// `/hotkeys`, in ohm's three groups, ohm's order, and ohm's words.
+/// `/hotkeys`, grouped as navigation, editing, and everything else.
 ///
-/// The keys are micro's own, which are ohm's defaults: what a row says is bound is what
-/// [`crate`]'s caller actually binds, so this is a description rather than a wish.
+/// What a row says is bound is what [`crate`]'s caller actually binds, so this is a
+/// description rather than a wish.
 fn hotkeys_text() -> String {
     let groups: &[(&str, &[(&str, &str)])] = &[
         (

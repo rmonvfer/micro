@@ -177,8 +177,8 @@ enum Command {
     },
     /// Itemize what a session cost.
     Bill {
-        /// The session to bill, rather than the latest one from this workspace.
-        session: Option<String>,
+        /// The session to bill.
+        session: String,
         /// Show what one turn added to the bill, and why.
         #[arg(long = "diff", value_name = "TURN")]
         diff: Option<u64>,
@@ -187,8 +187,8 @@ enum Command {
     WhyMiss {
         /// The session to explain.
         session: String,
-        /// Which turn, rather than the most recent one.
-        turn: Option<u64>,
+        /// Which turn to compare with its parent turn.
+        turn: u64,
     },
     /// Try the sandbox out.
     Sandbox {
@@ -214,12 +214,6 @@ enum SandboxAction {
 enum AuthAction {
     /// Sign in to a provider.
     Login { provider: String },
-    /// Adopt the credentials agent47 already holds.
-    Import {
-        /// Replace credentials micro already has.
-        #[arg(long)]
-        overwrite: bool,
-    },
     /// Remove a stored credential.
     Logout { provider: String },
     /// Show which providers are configured.
@@ -451,7 +445,6 @@ async fn main() -> Result<()> {
         Some(Command::Auth { action }) => {
             return match action {
                 AuthAction::Login { provider } => subcommands::auth_login(provider).await,
-                AuthAction::Import { overwrite } => subcommands::auth_import(*overwrite).await,
                 AuthAction::Logout { provider } => subcommands::auth_logout(provider).await,
                 AuthAction::Status => subcommands::auth_status().await,
             }
@@ -483,12 +476,7 @@ async fn main() -> Result<()> {
             };
         }
         Some(Command::Bill { session, diff }) => {
-            let root = runtime::workspace(&cli.cwd)?;
-            let id = match session {
-                Some(id) => id.clone(),
-                None => subcommands::latest_session(&root).await?,
-            };
-            return subcommands::bill(&id, *diff).await;
+            return subcommands::bill(session, *diff).await;
         }
         Some(Command::WhyMiss { session, turn }) => {
             return subcommands::why_miss(session, *turn).await
@@ -774,6 +762,8 @@ async fn main() -> Result<()> {
             None => headless::run(built.agent, Message::user(prompt), cli.quiet).await,
         }
     } else {
+        let initial_observability =
+            micro_tui::Commands::session_observability(&mut built.commands).await;
         let options = micro_tui::TuiOptions {
             cwd: root.clone(),
             model: built.model.qualified_id(),
@@ -818,6 +808,8 @@ async fn main() -> Result<()> {
             subscription: built.subscription,
             auto_compact: settings.auto_compact,
             price: Some(built.model.cost.clone()),
+            session_cost: initial_observability.and_then(|observed| observed.0),
+            session_usage: initial_observability.map(|observed| (observed.1, observed.2)),
             experimental: micro_config::experimental_enabled(),
             // Named on the command line for this run, in place of whatever was settled on.
             theme: cli.theme.as_deref().and_then(micro_tui::Theme::named),

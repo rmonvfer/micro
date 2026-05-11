@@ -56,17 +56,48 @@ pub trait Provider: Send + Sync {
         api_key: String,
     ) -> UnboundedReceiver<StreamEvent>;
 
+    /// Prepare the provider body for this credential. Most providers are credential-
+    /// independent; Anthropic subscription requests use a different tool spelling.
+    fn request_payload(
+        &self,
+        model: &Model,
+        context: &Context,
+        api_key: &str,
+    ) -> Result<serde_json::Value, String> {
+        let _ = api_key;
+        Ok(self.payload(model, context))
+    }
+
+    /// Send an already-prepared payload. Built-in providers override this so the value
+    /// retained by the ledger is the value passed to the HTTP client. Test providers may
+    /// keep using `stream` and the default fallback.
+    fn stream_prepared(
+        &self,
+        model: Model,
+        context: Context,
+        api_key: String,
+        payload: serde_json::Value,
+    ) -> UnboundedReceiver<StreamEvent> {
+        let _ = payload;
+        self.stream(model, context, api_key)
+    }
+
     /// The body [`Provider::stream`] would send for this model and this context.
     ///
     /// The same assembly the request itself goes through, so what comes back is what the
-    /// service is told rather than a description of it. That is what lets a session record
-    /// a request by its hash and rebuild it afterwards without storing a copy of every
-    /// body it ever sent.
+    /// service is told rather than a description of it. The agent serializes and retains
+    /// this value at the provider boundary before calling `stream`.
     ///
     /// A body that cannot be assembled — a tool schema the service would refuse — is
     /// answered as null rather than as an error: this is a reading of the request, and the
     /// attempt to send it is where the refusal belongs.
     fn payload(&self, model: &Model, context: &Context) -> serde_json::Value;
+}
+
+pub(crate) fn error_stream(message: String) -> UnboundedReceiver<StreamEvent> {
+    let (sender, receiver) = tokio::sync::mpsc::unbounded_channel();
+    let _ = sender.send(StreamEvent::Error { message });
+    receiver
 }
 
 /// How long a request may go without producing anything before it is given up on.

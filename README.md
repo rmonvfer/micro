@@ -1,132 +1,119 @@
 # micro
 
-A coding agent that runs in a terminal. It reads and edits files in a workspace you choose
-and runs shell commands there, once you have said the project may run its own code.
-One native binary, no runtime to install.
+micro is a terminal coding agent with local, inspectable session logs.
+
+It supports multiple model providers, runs commands in an operating-system sandbox, and records requests, usage, tool calls, and policy decisions as the session runs.
 
 ```bash
 cargo install --path crates/micro-cli
 micro auth login anthropic
-micro "what does this project do?"
+micro "explain this repository"
 ```
 
-From a checkout, `cargo run --bin micro -- "…"` does the same without installing.
+Read the [documentation](https://rmonvfer.github.io/micro/) for installation, configuration, security details, and extension development.
 
-## Authenticating
-
-micro talks to Anthropic, OpenRouter, GitHub Copilot, Google Gemini, and OpenAI. Sign in
-once per provider and the credential is stored in `~/.micro/auth.json`, readable only by
-you:
+Run it directly from a checkout with:
 
 ```bash
-micro auth login openrouter    # pastes an API key
-micro auth login github-copilot # opens a browser, device-code flow
-micro auth status               # which providers are ready
+cargo run --bin micro -- "explain this repository"
 ```
 
-A provider you have not signed into still works if its conventional environment variable is
-set — `ANTHROPIC_API_KEY`, `OPENROUTER_API_KEY`, `GEMINI_API_KEY`, `OPENAI_API_KEY`, or one
-of `COPILOT_GITHUB_TOKEN` / `GH_TOKEN` / `GITHUB_TOKEN`. The stored credential wins when
-both exist. If you already use agent47, `micro auth import` adopts its credentials rather
-than making you authenticate a second time.
+## What it does
 
-## Interactive and one-shot
+- Opens an interactive terminal interface or runs a single prompt with `--print`.
+- Works with Anthropic, OpenAI, Google, OpenRouter, GitHub Copilot, and other compatible providers.
+- Saves conversations as append-only JSONL logs on your machine.
+- Reports provider usage and estimated cost by turn with `micro bill`.
+- Explains prompt-cache misses with `micro why-miss`.
+- Uses Seatbelt on macOS and Landlock with seccomp on Linux to restrict commands.
+- Loads TypeScript extensions in a confined Bun process with explicit host capabilities.
 
-With no `--print`, micro opens a full-screen interface: the conversation scrolls, responses
-stream in as they arrive, diffs are rendered inline, and a prompt on the command line seeds
-the first turn. It returns you to your shell when you leave.
+The core agent is a native Rust binary. Bun is only needed for TypeScript extensions.
 
-`--print` runs a single prompt to completion and exits, writing the response to stdout and
-tool progress to stderr. This is the form to pipe, to put in a script, or to run in CI:
+## Basic use
+
+Start an interactive session:
+
+```bash
+micro
+```
+
+Start with a prompt:
+
+```bash
+micro "find the cause of the failing test"
+```
+
+Run once and print the final response to standard output:
 
 ```bash
 micro --print "summarize the error handling in src/"
 micro -p -q "list the public functions in micro-agent" > api.txt
 ```
 
-`-q` suppresses the tool progress so only the model's answer reaches the terminal.
-
-Pick a model with `-m`, which accepts an exact id, a provider-qualified id, a unique
-prefix, or a short alias, and reports the candidates rather than guessing when a query
-matches several. `micro models` prints the catalog with prices and context windows, and
-`micro models --live` merges each provider's current listing first.
+Select a model with `-m`:
 
 ```bash
-micro -m opus "…"                          # an alias
-micro -m anthropic/claude-sonnet-5 "…"     # provider-qualified
+micro -m opus "review this patch"
 micro models sonnet
 ```
 
-Every run is written to `~/.micro/sessions/` as it happens. `micro sessions list` shows
-those from the current workspace, `--all` shows every one, and `--resume <ID>` or
-`--continue` picks a conversation back up where it stopped.
+Resume the latest session for the current workspace:
 
-## Trusting a project
-
-A project can carry things it asks micro to run: its own settings, the extensions it ships,
-the skills and prompts it offers. Reading a project is one thing; running what it contains
-is another, and that is the one thing micro asks about.
-
-A project carrying none of it — no `.micro/` directory — is used without a question, which
-is most of them. One that does is answered by whatever was decided about it before, then by
-the `default_project_trust` setting (`ask`, `always` or `never`), and only then by asking.
-With nobody at a terminal there is nobody to ask, so `--print` and `--rpc` leave an
-undecided project alone rather than running its code unasked. `/trust` settles it either
-way, and the decision is remembered in `~/.micro/trust.json`. `--approve` trusts the
-project for one run and `--no-approve` refuses it for one run; neither is written down,
-which is what a scripted run wants.
-
-Tool calls themselves are not gated: once micro is running, it acts. `--tools` narrows what
-the model is offered to a named list, and `--exclude-tools` withholds particular ones.
-
-## Reaching a session from your phone
-
-A session can be watched and driven from a phone while the terminal stays fully usable.
-Pair a phone with the machine once:
-
-```
-/remote pair          # prints a link to open in the app
-/remote pair qr       # draws it as a code to scan instead
+```bash
+micro --continue
 ```
 
-From then on, `/remote` puts a session on that phone — no link, no code. It appears in the
-app's session list beside every other session this machine has offered, with the ones that
-are still live marked as such. Open one and you can read the conversation as it streams,
-send a prompt, steer the turn that is running, queue a follow-up, stop it, and change the
-model or the thinking level. Everything the phone submits goes in the way a typed line
-does, so a command it sends runs as that command and shows up in the terminal's own
-transcript.
+## Session records
 
-Nothing in between can read any of it. The phone and the machine derive keys from a secret
-they share and the relay never holds; what crosses the relay is ciphertext it routes
-without being able to open. `micro remote pair` writes that secret to
-`~/.micro/remote-control.json`, readable only by you. `MICRO_REMOTE_RELAY_URL` points the
-pairing at a relay of your own.
+micro writes each session while it is running. The log contains the conversation and a versioned ledger of requests, provider usage, sandbox refusals, extension capability checks, and other runtime events.
 
-## How a request flows
+```bash
+micro sessions list
+micro sessions show <SESSION_ID> --turn 4
+micro sessions show <SESSION_ID> --turn 4 --raw
+micro sessions export <SESSION_ID>
+micro bill <SESSION_ID>
+micro why-miss <SESSION_ID> 4
+```
 
-`micro-cli` resolves a model from the catalog, a credential from the store, and a workspace
-root, then hands `micro-agent` a provider, a set of tools, and the conversation so far.
-`Agent::run` builds a `Context` — system prompt, messages, tool definitions — and asks the
-provider to stream it.
+New sessions retain the serialized provider request as a content-addressed blob. `--raw` verifies that body against the recorded hash before printing it. Older sessions are reconstructed and printed only when reconstruction produces the same hash.
 
-`micro-provider` turns that `Context` into an HTTP request in the shape the endpoint wants,
-and the response body back into `StreamEvent`s on a channel. The agent forwards each one as
-an `AgentEvent`, so the interface can paint tokens as they arrive. When the response is
-complete, the agent runs whatever tools it asked for, appends each result to the
-conversation, and goes around again until the model stops asking for tools.
+Inside the TUI, `/bill`, `/why-miss [turn]`, and `/request <turn> [--raw]` open local inspection views. In `/bill`, select a model turn and press Enter for its prompt-source and usage breakdown. These views do not add messages to the conversation.
 
-The crates either side of that path do one thing each. `micro-types` holds the conversation
-model every layer speaks. `micro-tools` holds the capabilities the model can invoke. `micro-models` is the model catalog,
-`micro-auth` the credentials, `micro-context` the project instructions and the compaction
-that keeps a long conversation inside the context window, and `micro-session` the durable
-log. `micro-tui` draws the interface, `micro-remote` carries a session to a phone, and
-`micro-testkit` provides the fakes the agent loop is tested against. Nothing depends on a layer above it, so the provider crate has no idea
-tools exist and the tools have no idea a model is calling them.
+## Command sandbox
 
-[docs/architecture.md](docs/architecture.md) covers why the seams fall where they do.
-[docs/providers.md](docs/providers.md) covers the providers and the model catalog.
-[docs/extensions.md](docs/extensions.md) covers writing and installing an extension, and
-what an extension written for pi can expect here.
-[docs/extension-testing.md](docs/extension-testing.md) covers the two harnesses that check
-extensions, and why one of them drives a real terminal.
+The default policy is `workspace-write`: commands may write inside the workspace, cannot write to `.git` or `.micro`, and cannot use the network.
+
+```bash
+micro --sandbox read-only
+micro --sandbox workspace-write
+micro --sandbox full
+micro sandbox try -- touch ../outside.txt
+```
+
+See [Security model](docs/security.md) and [Command sandbox](docs/sandbox.md) before using `full` or trusting project-provided configuration.
+
+## Extension host
+
+TypeScript extensions run in a Bun process with an empty inherited environment, no network or write access, and a filesystem read allowlist limited to the host and loaded extension packages. Host API calls still pass through the capability broker, and brokered command execution still uses the session sandbox. On a platform where micro cannot enforce the host sandbox, extensions do not run.
+
+## Documentation
+
+Read the [documentation site](https://rmonvfer.github.io/micro/) or browse the Markdown in [`docs/`](docs/README.md).
+
+- [Getting started](docs/getting-started.md)
+- [CLI reference](docs/cli-reference.md)
+- [Sessions, billing, and cache analysis](docs/sessions.md)
+- [Tools and integrations](docs/tools.md)
+- [Project context](docs/project-context.md)
+- [Providers and models](docs/providers.md)
+- [Configuration](docs/configuration.md)
+- [Security model](docs/security.md)
+- [Extensions](docs/extensions.md)
+- [Remote control](docs/remote-control.md)
+- [RPC mode](docs/rpc.md)
+- [Ledger format](docs/ledger.md)
+- [Architecture](docs/architecture.md)
+
+micro does not collect telemetry or upload session logs. Model requests go to the provider selected for the session. Remote-control traffic goes through the configured relay as encrypted payloads.

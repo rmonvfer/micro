@@ -1,6 +1,6 @@
 //! A provider an extension declared, turned into something the catalog understands.
 //!
-//! ohm's `registerProvider` describes a provider the way a person would write it: camelCase
+//! pi's `registerProvider` describes a provider the way a person would write it: camelCase
 //! keys, a credential that may be a literal, an environment variable, or a command to run.
 //! micro's catalog reads a different spelling, so the two are translated here rather than
 //! at the point of use.
@@ -113,7 +113,7 @@ fn model(described: &Value) -> Result<Value, String> {
     Ok(Value::Object(out))
 }
 
-/// The credential, from whichever of ohm's three spellings was used.
+/// The credential, from whichever of pi's three spellings was used.
 ///
 /// `$NAME` and `${NAME}` read the environment. A leading `!` runs a command and takes what
 /// it printed, which is how a key kept in a password manager is fetched. Anything else is

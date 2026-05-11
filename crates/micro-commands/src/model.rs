@@ -284,6 +284,10 @@ mod tests {
     #[tokio::test]
     async fn a_picked_item_dispatches_back_to_the_model_it_names() {
         let harness = Harness::new("model-roundtrip");
+        harness
+            .auth
+            .store_api_key("anthropic", "sk-ant-test")
+            .unwrap();
         let outcome = dispatch("/model", &harness.context()).await.unwrap();
         let line = picker(&outcome).command_at(0).unwrap().to_string();
 
