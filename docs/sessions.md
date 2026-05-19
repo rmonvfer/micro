@@ -40,7 +40,9 @@ To see the provider request for one turn:
 micro sessions show <SESSION_ID> --turn 4 --raw
 ```
 
-micro rebuilds the body from the recorded system prompt, tool definitions, model configuration, and conversation entries. It checks the rebuilt body against the request hash stored for that turn. A mismatch is reported instead of printing the body as verified.
+New sessions retain the exact serialized provider body in a content-addressed blob. Before `--raw` prints it, micro checks the blob against the request hash recorded when the request was sent.
+
+For an older session without a retained body, micro rebuilds the request from the recorded context. It prints that reconstruction only when its hash matches. A mismatch is an error.
 
 Export the underlying JSONL file with:
 
@@ -60,13 +62,7 @@ These commands are explicit. micro does not upload sessions automatically.
 
 ## Billing
 
-Show the latest session bill for the current workspace:
-
-```bash
-micro bill
-```
-
-Select a session or one turn:
+Select a session or one turn explicitly:
 
 ```bash
 micro bill <SESSION_ID>
@@ -75,11 +71,13 @@ micro bill <SESSION_ID> --diff 4
 
 The turn total is calculated from provider-reported token usage and the prices in the model catalog. The split between prompt sources is an estimate based on the number of bytes each source contributed. The estimated lines are adjusted to add up to the turn total.
 
+Billing counts every provider turn recorded under the session ID, including spend on branches that are no longer active. When that differs from the current branch, the report shows the current-branch and other-branch subtotals.
+
 Output cost is attributed to the model. Compaction requests appear separately.
 
 If the catalog sets a model price to zero, the report identifies it as a zero-priced model. If the catalog has no price, the report says the cost is unknown rather than calling it free.
 
-The interactive `/bill` command reads the same records. The terminal footer shows the running total.
+The interactive `/bill` command reads the same records for the active session. Select a turn and press Enter to open its prompt-source and provider-usage breakdown. The terminal footer shows the running total.
 
 ## Budgets
 
@@ -95,10 +93,9 @@ Set a default with the `budget` key in `config.json`. A value of `0` disables th
 
 ## Prompt-cache misses
 
-Explain why a turn did not reuse the previous cached prompt:
+Explain why a turn did not reuse its parent turn's cached prompt:
 
 ```bash
-micro why-miss <SESSION_ID>
 micro why-miss <SESSION_ID> 4
 ```
 
@@ -106,7 +103,7 @@ If the recorded prefix hash changed, micro identifies the changed prompt span an
 
 If the prefix did not change, the report checks conversation-side causes such as compaction or a branch change.
 
-`/why-miss` runs the same analysis inside an interactive session.
+`/why-miss 4` runs the same analysis inside an interactive session. Without a turn, `/why-miss` selects the latest completed turn on the current branch whose prefix differs from its parent.
 
 ## Delete a session
 

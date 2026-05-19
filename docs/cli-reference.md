@@ -62,7 +62,6 @@ With no subcommand, micro opens the terminal interface. A prompt on the command 
 micro auth login <PROVIDER>
 micro auth logout <PROVIDER>
 micro auth status
-micro auth import [--overwrite]
 ```
 
 ### Models
@@ -89,8 +88,8 @@ micro sessions list [--all]
 micro sessions show <ID> [--turn <N>] [--raw]
 micro sessions export <ID>
 micro sessions delete <ID>
-micro bill [ID] [--diff <TURN>]
-micro why-miss <ID> [TURN]
+micro bill <ID> [--diff <TURN>]
+micro why-miss <ID> <TURN>
 ```
 
 ### Sandbox diagnostics
@@ -117,6 +116,7 @@ Type `/help` in the interface for the list from the installed version.
 | `/name [title]` | Name the session. |
 | `/bill [turn]` | Show session or turn cost. |
 | `/why-miss [turn]` | Explain a cache miss. |
+| `/request <turn> [--raw]` | Inspect the model-facing request for a turn. |
 | `/compact` | Summarize older context. |
 | `/trust [on|off]` | Save a project trust decision. |
 | `/reload` | Reload skills and context files. |

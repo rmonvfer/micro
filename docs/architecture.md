@@ -52,7 +52,7 @@ Providers receive a `Model`, a `Context`, and a credential. `Context` contains t
 
 That boundary keeps provider differences out of the agent loop. Anthropic Messages, OpenAI-compatible completions, OpenAI Responses, Google APIs, Vertex, and Bedrock each implement request assembly and stream parsing. The agent consumes one event vocabulary.
 
-The provider also exposes request-body assembly without sending it. micro uses the same path to hash requests before sending and to reconstruct them later from the ledger.
+The provider prepares one serialized request value. The agent hashes and stores that exact body before network I/O, then passes the same value to the provider transport. Request inspection reads the retained body and verifies its hash. Reconstruction is the fallback for older sessions that did not retain it.
 
 ## Agent loop
 
@@ -83,6 +83,8 @@ This lets the TUI, print renderer, RPC server, and tests consume the same loop.
 
 The agent sends messages, compaction records, and ledger events through one recorder channel. A separate task appends them to the session file in receive order.
 
+Session observability lives behind the shared session reader. The CLI and TUI use the same billing, request-inspection, prefix-diff, sandbox-event, and extension-event records. The TUI may cache totals for rendering, but it does not keep a second accounting source.
+
 Writing during the run limits data loss if the process exits unexpectedly. The agent does not wait for individual filesystem writes, but shutdown waits for the recorder channel to drain.
 
 Compaction adds a summary and moves the active conversation head. Original messages remain in the log.
@@ -95,7 +97,7 @@ The CLI decides project trust before loading `.micro/` resources. It then resolv
 
 This keeps untrusted extensions, settings, prompts, and skills out of the runtime rather than adding checks at each later use.
 
-Extension capabilities are enforced separately at the host boundary. Commands requested through the host are passed through the same sandbox policy as commands requested by the model.
+Extension capabilities are enforced separately at the host boundary. The Bun host has an empty inherited environment, no network or write access, and a read allowlist for the host and loaded extension packages. Commands requested through the broker still pass through the same session sandbox policy as commands requested by the model.
 
 ## Tests
 

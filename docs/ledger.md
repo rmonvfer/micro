@@ -52,6 +52,7 @@ Conversation entries, labels, and compaction markers retain their existing line 
   "model": "claude-opus-5",
   "prefix_hash": "9f2a...",
   "request_hash": "3c81...",
+  "request_body_blob": "3c81...",
   "system_prompt_blob": "4c1f...",
   "tools_blob": "1b7c...",
   "model_blob": "aa03...",
@@ -64,11 +65,13 @@ Conversation entries, labels, and compaction markers retain their existing line 
 }
 ```
 
-`request_hash` is the SHA-256 hash of the serialized provider body. The body is reconstructed from the referenced system prompt, tool definitions, model configuration, and conversation entries.
+`request_hash` is the SHA-256 hash of the serialized provider body. `request_body_blob` points to the exact body passed to the provider transport. Older events may omit it; their readers must reconstruct and verify the body before presenting it as exact.
 
 `prefix_hash` covers the cacheable prompt head. `prefix_spans` attribute byte ranges to sources such as the system prompt, project instructions, skills, extensions, tools, users, model messages, compaction, sandbox output, and subagents.
 
-Retries keep the same turn number and increment `attempt`.
+`message_entry_ids` records the conversation path used by the request. It is also how readers find a turn's parent when the session has branches.
+
+Retries keep the same turn number and increment `attempt`. A failed attempt that returns no usage is recorded separately; billing reports its usage as unknown rather than inventing a cost.
 
 ## Usage
 
@@ -103,6 +106,7 @@ Retries keep the same turn number and increment `attempt`.
 | `extension_crossing` | An extension requested a host operation and received a result. |
 | `prefix_changed` | The cacheable prompt prefix changed. |
 | `budget_stop` | The session reached its configured cost limit. |
+| `request_attempt_failed` | A provider attempt failed, including whether its usage is unknown. |
 | `marker` | A named runtime marker without a dedicated event type. |
 
 New event types may be added without changing the outer envelope version.
@@ -120,7 +124,7 @@ Changes requested by reloads, tool selection, or extensions are applied at turn 
 }
 ```
 
-`micro why-miss` compares adjacent requests, resolves changed spans from blobs, and reports the event between them. Compaction changes conversation context rather than the prefix and has its own event.
+`micro why-miss` compares a request with its parent request on the same branch, resolves changed spans from blobs, and reports the event between them. Compaction changes conversation context rather than the prefix and has its own event.
 
 ## Blobs
 
@@ -139,13 +143,15 @@ Blob writes use a temporary file followed by a rename. Deleting the session also
 
 Sessions created before ledger events existed still open. Commands that require turn records report that those records are unavailable.
 
-## Request reconstruction
+## Request inspection
 
 ```bash
 micro sessions show <SESSION_ID> --turn 2 --raw
 ```
 
-The command rebuilds the request and compares its hash with `request_hash`. It does not print a mismatched reconstruction as verified.
+For current sessions, the command loads `request_body_blob` and compares it with `request_hash` before printing the exact bytes.
+
+For a legacy session without that blob, the command rebuilds the request and compares its hash with `request_hash`. It does not print a mismatched reconstruction as verified.
 
 Anthropic subscription credentials are a special case: the request format may use client-specific tool names. Reconstruction without that credential uses the API-key spelling and reports the limitation.
 
