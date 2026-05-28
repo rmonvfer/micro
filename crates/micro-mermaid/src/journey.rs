@@ -1,9 +1,4 @@
 //! User journeys, drawn as sections of tasks scored out of five.
-//!
-//! A journey is about where the going is good and where it is bad, so the score is what a
-//! reader is looking for. Each task gets its score drawn as filled and empty marks against
-//! a fixed scale — five of them, always, so two tasks can be compared by eye without
-//! reading the numbers — and whoever is involved is named beside it.
 
 use crate::canvas::draw_text;
 use crate::canvas::Canvas;
@@ -11,12 +6,10 @@ use crate::labels::{clean_label, strip_controls};
 use crate::types::Cls;
 use crate::width::string_width;
 
-/// Tasks past this and the journey is refused: a journey is a story, and one this long is
-/// better read as the source it was written as.
+
 const MAX_TASKS: usize = 64;
 
-/// Mermaid scores a journey out of five, so the scale is fixed rather than taken from the
-/// highest score present: a task scored 3 must look the same in every journey.
+/// Mermaid scores a journey out of five.
 const SCALE: usize = 5;
 
 enum Row {
@@ -55,8 +48,7 @@ pub(crate) fn render_journey(src: &str) -> Option<Canvas> {
             continue;
         }
 
-        // `Task name: score: Actor, Actor`. The actors are optional; the score is not,
-        // because a journey without scores is a list of steps.
+        
         let mut parts = line.split(':').map(str::trim);
         let label = clean_label(parts.next()?);
         let score: usize = parts.next()?.trim().parse().ok()?;
@@ -93,8 +85,7 @@ pub(crate) fn render_journey(src: &str) -> Option<Canvas> {
 }
 
 fn draw(title: Option<&str>, rows: &[Row]) -> Canvas {
-    // Tasks are indented under their section, so the shape of the journey is visible before
-    // any of the words are read.
+    
     const INDENT: usize = 2;
 
     let widest_label = rows
@@ -132,8 +123,7 @@ fn draw(title: Option<&str>, rows: &[Row]) -> Canvas {
             Row::Task { label, score, .. } => {
                 draw_text(&mut canvas, label, INDENT, y, Cls::Text);
 
-                // Filled to the score, empty to the scale: how good a step was reads at a
-                // glance, and two steps can be compared without reading either number.
+                
                 let marks: String = (0..SCALE)
                     .map(|mark| match mark < *score {
                         true => '●',
@@ -189,7 +179,7 @@ mod tests {
         assert!(rows[0].contains("●●●●○"), "{rows:?}");
     }
 
-    /// What is not a journey is refused rather than guessed at.
+    
     #[test]
     fn what_is_not_a_journey_is_left_alone() {
         assert!(render_journey("graph TD\n  A --> B").is_none());
@@ -205,7 +195,7 @@ mod tests {
         );
     }
 
-    /// A journey this long is a list, and reads better as the source it came from.
+    
     #[test]
     fn too_many_tasks_are_refused() {
         let mut source = String::from("journey\n");

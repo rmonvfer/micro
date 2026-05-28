@@ -1,35 +1,22 @@
-//! Quadrant charts: a bordered grid split into four by a labelled cross,
-//! with named points plotted on it.
-//!
-//! Like `pie`, this has no `Graph` to reuse — a scatter of points on two
-//! axes is not a node-and-edge diagram — so it reads its own source and
-//! draws its own grid. The grid's border and its cross both go through the
-//! canvas's own bit-accumulating edges (`seg_h`/`seg_v`), which is what
-//! gives the cross correct box-drawing T-junctions where it meets the frame
-//! for free, the same mechanism `layout::draw_box` leans on for a node
-//! border meeting a routed connector.
+//! Quadrant charts: a bordered grid split into four by a labelled cross, with named points plotted
+//! on it.
 
 use crate::canvas::{draw_text, Canvas, D, L, R, U};
 use crate::labels::{ascii_lower, clean_label, fit_label, strip_controls, wrap_label};
 use crate::types::Cls;
 use crate::width::string_width;
 
-/// Points past this and a scatter of them says nothing a terminal can show
-/// clearly, so it is refused — the same reasoning as `pie::MAX_SLICES`.
+/// Points past this and a scatter of them says nothing a terminal can show clearly.
 const MAX_POINTS: usize = 64;
 
-/// Interior size of the grid, chosen to give points room to sit apart from
-/// each other and from the quadrant names while still fitting a terminal.
+
 const GRID_W: usize = 43;
 const GRID_H: usize = 17;
 
 /// Lines a quadrant name wraps to before it starts crowding the points.
 const QUADRANT_LABEL_LINES: usize = 3;
 
-/// One end of an axis range, e.g. the `Low Reach` / `High Reach` either side
-/// of `x-axis Low Reach --> High Reach`. A bare `x-axis Name` with no `-->`
-/// names the axis itself rather than either end, which is read into `high`
-/// alone so it still has one label to show.
+/// One end of an axis range, e.g.
 #[derive(Default)]
 struct AxisLabel {
     low: Option<String>,
@@ -46,8 +33,7 @@ struct Chart {
     title: Option<String>,
     x_axis: AxisLabel,
     y_axis: AxisLabel,
-    /// Indexed 0..4 for `quadrant-1` .. `quadrant-4`: top-right, top-left,
-    /// bottom-left, bottom-right, the usual Cartesian numbering.
+    
     quadrants: [Option<String>; 4],
     points: Vec<Point>,
 }
@@ -141,12 +127,11 @@ fn parse_point(st: &str) -> Option<Point> {
     Some(Point { label: name, x, y })
 }
 
-// ------------------------------------------------------------------ drawing
+
 
 fn draw_quadrant(chart: &Chart) -> Canvas {
     let top = usize::from(chart.title.is_some());
-    // One row is always reserved for the y-axis high label, whether or not
-    // one was given, so the grid sits at the same offset either way.
+    
     let grid_top = top + 1;
     let grid_bottom = grid_top + GRID_H - 1;
     let y_low_row = grid_bottom + 1;
@@ -192,9 +177,7 @@ fn draw_grid(chart: &Chart) -> Canvas {
     let mid_x = GRID_W / 2;
     let mid_y = GRID_H / 2;
 
-    // The outer border, drawn the same way `layout::draw_box` draws one:
-    // corners set directly, the straight runs accumulated as bits so the
-    // cross below can tee into them without erasing them.
+    
     g.set(0, 0, "┌", Cls::Border);
     g.set(right, 0, "┐", Cls::Border);
     g.set(0, bottom, "└", Cls::Border);
@@ -208,11 +191,7 @@ fn draw_grid(chart: &Chart) -> Canvas {
         g.add_bits(right, y, U | D, Cls::Border);
     }
 
-    // The cross that splits the grid into quadrants is the chart's axes, so
-    // it is drawn in the edge class even though it touches the border —
-    // `add_bits` leaves a cell already claimed by the border classified as
-    // `Border`, which is what lets the T-junctions where the cross meets the
-    // frame read as one continuous box rather than a seam.
+    
     g.seg_v(mid_x, 0, bottom);
     g.seg_h(mid_y, 0, right);
     g.finalize_mask();
@@ -222,9 +201,7 @@ fn draw_grid(chart: &Chart) -> Canvas {
     g
 }
 
-/// `quadrant-1` through `quadrant-4` go top-right, top-left, bottom-left,
-/// bottom-right — the usual Cartesian order, read anticlockwise from the
-/// upper right.
+/// `quadrant-1` through `quadrant-4` go top-right, top-left, bottom-left, bottom-right.
 fn draw_quadrant_names(
     g: &mut Canvas,
     quadrants: &[Option<String>; 4],
@@ -270,10 +247,7 @@ fn draw_quadrant_names(
     }
 }
 
-/// Plot every point at its normalised `(x, y)` position — clamped to the
-/// `[0, 1]` a quadrant chart is defined over, so a stray out-of-range value
-/// still lands inside the grid instead of off the edge of the canvas — with
-/// its name beside it.
+/// Plot every point at its normalised `(x, y)` position.
 fn draw_points(
     g: &mut Canvas,
     points: &[Point],
@@ -286,12 +260,9 @@ fn draw_points(
         let xn = p.x.clamp(0.0, 1.0);
         let yn = p.y.clamp(0.0, 1.0);
         let mut col = 1 + (xn * (right.saturating_sub(2)) as f64).round() as usize;
-        // Row 0 is the top of the canvas but the top of the y-range, so a
-        // higher y climbs toward row 1 rather than down toward `bottom`.
+        
         let mut row = 1 + ((1.0 - yn) * (bottom.saturating_sub(2)) as f64).round() as usize;
-        // A point landing exactly on the divider would sit on top of the
-        // cross rather than in either quadrant it is next to, so it is
-        // nudged one cell into whichever side its own value already leans.
+        
         if col == mid_x {
             col = if xn >= 0.5 {
                 mid_x + 1
@@ -311,19 +282,11 @@ fn draw_points(
         } else {
             (mid_y + 1, bottom.saturating_sub(1))
         };
-        // A quadrant name is often centred on this same row; the marker
-        // itself gives way to it (a data point's row nudged by one cell
-        // still reads as roughly where it belongs), since the point moving
-        // is less misleading than the point erasing part of the name.
-        // A cell either side has to be clear too: a marker drawn hard against a quadrant
-        // name reads as part of it, so `Plan●` looks like a point called Plan.
+        
         let row = nearby_clear_row(g, col.saturating_sub(1), 3, row, top_bound, bottom_bound);
         draw_text(g, "●", col, row, Cls::Text);
 
-        // A label never crosses the divider into the other quadrant: doing
-        // so could both blot out the divider itself and run the label into
-        // that quadrant's own name, so it is kept within whichever half its
-        // point already sits in.
+        
         let (half_lo, half_hi) = if col <= mid_x {
             (1, mid_x.saturating_sub(1))
         } else {
@@ -332,26 +295,19 @@ fn draw_points(
         let space_right = half_hi.saturating_sub(col + 1);
         let label = fit_label(&p.label, space_right.max(1));
         let label_w = string_width(&label);
-        // A label with no room to its right within its own half is written
-        // backing onto the point from the left instead.
+        
         let lx = if col + 2 + label_w <= half_hi {
             col + 2
         } else {
             col.saturating_sub(1 + label_w).max(half_lo)
         };
-        // The point's own row is where a quadrant name is most likely to be
-        // centred too, so a clear row nearby is preferred over writing the
-        // label straight on top of it.
+        
         let ly = nearby_clear_row(g, lx, label_w, row, top_bound, bottom_bound);
         draw_text(g, &label, lx, ly, Cls::Text);
     }
 }
 
-/// The row closest to `preferred` (tried first, then alternating outward up
-/// to three rows either side, within `[lo, hi]`) whose `w` cells starting at
-/// `x` are all still blank. Falls back to `preferred` if nothing nearby is
-/// clear — a diagram crowded enough to exhaust the search draws an overlap
-/// rather than hunting indefinitely for room that may not exist.
+
 fn nearby_clear_row(
     g: &Canvas,
     x: usize,
@@ -397,9 +353,7 @@ mod tests {
             .plain
     }
 
-    /// The grid is one continuous bordered box split into four by a cross,
-    /// not four separate boxes — the border and the divider share glyphs at
-    /// every point they meet.
+    /// The grid is one continuous bordered box split into four by a cross, not four separate boxes.
     #[test]
     fn the_grid_is_a_bordered_box_split_into_four_by_a_cross() {
         let rows = drawn(
@@ -427,8 +381,7 @@ mod tests {
             .find(|r| r.contains('└'))
             .expect("bottom border");
         assert!(bottom_border.contains('┴'), "{bottom_border:?}");
-        // An interior row (not a border row, not the cross's own row) still
-        // carries the vertical divider between its two side borders.
+        
         let interior_row = rows
             .iter()
             .find(|r| r.starts_with('│'))
@@ -454,11 +407,10 @@ mod tests {
         let top_left_row = rows.iter().position(|r| r.contains("TopLeft")).unwrap();
         let top_right_row = rows.iter().position(|r| r.contains("TopRight")).unwrap();
         let bottom_left_row = rows.iter().position(|r| r.contains("BottomLeft")).unwrap();
-        // Both top names sit above both bottom names.
+        
         assert!(top_left_row < bottom_left_row);
         assert!(top_right_row < bottom_left_row);
-        // A name in the left half starts left of where one in the right
-        // half starts.
+        
         let left_col = rows[top_left_row].find("TopLeft").unwrap();
         let right_col = rows[top_right_row].find("TopRight").unwrap();
         assert!(left_col < right_col, "{left_col} vs {right_col}");
@@ -471,8 +423,7 @@ mod tests {
         let text = rows.join("\n");
         assert!(text.contains('●'), "{text}");
         assert!(text.contains("Campaign A"), "{text}");
-        // x=0.1 is near the left edge, y=0.9 near the top: the marker's row
-        // should come well before the vertical midpoint of the grid.
+        
         let marker_row = rows.iter().position(|r| r.contains('●')).unwrap();
         assert!(
             marker_row < rows.len() / 2,
@@ -481,9 +432,7 @@ mod tests {
         );
     }
 
-    /// A point at exactly `(0.5, 0.5)` maps onto the cross itself; nudged
-    /// off it, the grid's every junction still reads intact, corner to
-    /// corner.
+    
     #[test]
     fn a_point_on_the_divider_is_nudged_off_it_leaving_the_cross_intact() {
         let rows = drawn("quadrantChart\n  P: [0.5, 0.5]");
@@ -511,16 +460,14 @@ mod tests {
         );
     }
 
-    /// An axis with no `-->` names the axis rather than either end, and
-    /// still shows up as a label.
+    
     #[test]
     fn a_bare_axis_name_with_no_arrow_still_shows_a_label() {
         let rows = drawn("quadrantChart\n  x-axis Reach\n  P: [0.5, 0.5]");
         assert!(rows.iter().any(|r| r.contains("Reach")), "{rows:?}");
     }
 
-    /// Anything that is not a quadrant chart, or is one but malformed, is
-    /// refused rather than guessed at.
+    
     #[test]
     fn what_is_not_a_quadrant_chart_is_left_alone() {
         assert!(render_quadrant("graph TD\n A --> B").is_none());
@@ -535,8 +482,7 @@ mod tests {
         );
     }
 
-    /// A scatter of hundreds of points says nothing a terminal can show
-    /// clearly, so it is refused rather than crammed in.
+    
     #[test]
     fn too_many_points_are_refused() {
         let mut source = String::from("quadrantChart\n");

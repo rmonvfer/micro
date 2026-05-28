@@ -1,8 +1,4 @@
-//! Google's native Gemini API — `streamGenerateContent`, not the OpenAI-compatible shim.
-//!
-//! Gemini streams a sequence of whole `GenerateContentResponse` chunks. Text arrives a
-//! fragment at a time across chunks, but a function call always arrives complete inside
-//! one `functionCall` part, so every one of those parts closes a tool call outright.
+
 
 use crate::sse::read_sse;
 use crate::Provider;
@@ -29,8 +25,7 @@ use tokio::sync::mpsc::UnboundedSender;
 #[cfg(test)]
 const GEMINI_BASE_URL: &str = "https://generativelanguage.googleapis.com/v1beta";
 
-/// JSON Schema keywords Gemini's function declarations reject. Anything left in the
-/// schema after this filter is a keyword it understands.
+/// JSON Schema keywords Gemini's function declarations reject.
 const UNSUPPORTED_SCHEMA_FIELDS: &[&str] = &[
     "$schema",
     "$ref",
@@ -53,10 +48,6 @@ const UNSUPPORTED_SCHEMA_FIELDS: &[&str] = &[
 ];
 
 /// Which service is answering the Gemini shape.
-///
-/// The request and the stream are the same either way. What differs is the address — a
-/// Vertex model lives under a project and a location — and how the credential is
-/// presented: an API key to Google's own endpoint, a bearer token to Vertex.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Backend {
     /// Google's own `generativelanguage` endpoint, reached with an API key.
@@ -70,9 +61,7 @@ pub enum Backend {
 pub struct Gemini {
     client: reqwest::Client,
     backend: Backend,
-    /// Where the next synthesized call id continues from. Shared across every request this
-    /// provider serves, which is what keeps ids unique for a whole conversation rather
-    /// than only within one response.
+    
     next_call: Arc<AtomicUsize>,
 }
 
@@ -127,12 +116,7 @@ impl Provider for Gemini {
         let client = self.client.clone();
         let backend = self.backend;
 
-        // Two things have to hold for an id to stay unique across a whole conversation, and
-        // they cover different failures. Starting from the calls the history already holds
-        // makes a resumed session continue past everything in its log rather than restart
-        // at zero. Never moving backwards covers compaction, where the conversation in
-        // memory gets shorter than the transcript on disk and a history count alone would
-        // hand out an id that transcript already used.
+        
         let counter = Arc::clone(&self.next_call);
         counter.fetch_max(tool_calls_so_far(&context.messages), Ordering::Relaxed);
 
@@ -165,11 +149,6 @@ impl Provider for Gemini {
 }
 
 /// The reasoning signature a part carries, if any.
-///
-/// Gemini hangs this off the part rather than off the content inside it, so it appears on
-/// a text part and on a `functionCall` part alike. Only the text case can be kept today:
-/// [`ContentBlock::Thinking`] has somewhere to put a signature and
-/// [`ContentBlock::ToolCall`] does not.
 fn thought_signature(part: &Value) -> Option<String> {
     part.get("thoughtSignature")
         .and_then(Value::as_str)
@@ -206,8 +185,7 @@ async fn run(
             .header("x-goog-api-key", api_key),
         Backend::Vertex => {
             let account = crate::vertex::account(&model.base_url)?;
-            // A Vertex credential is a bearer token, minted from whatever the account
-            // was set up with; a plain API key is sent as one too.
+            
             let token = crate::vertex::access_token(&client, &api_key).await?;
             client
                 .post(crate::vertex::endpoint(&account, &model.id))
@@ -242,16 +220,14 @@ async fn run(
     Ok(())
 }
 
-/// `{base}/models/{id}:streamGenerateContent?alt=sse`. `alt=sse` is what makes Gemini
-/// deliver chunks as they are produced rather than one JSON array at the end.
+/// `{base}/models/{id}:streamGenerateContent?alt=sse`.
 fn endpoint(base_url: &str, model_id: &str) -> String {
     let base = base_url.trim_end_matches('/');
     let id = model_id.trim_start_matches("models/");
     format!("{base}/models/{id}:streamGenerateContent?alt=sse")
 }
 
-/// The block currently being assembled. Gemini interleaves reasoning, text, and calls, so
-/// a part of a different kind closes whatever is open.
+/// The block currently being assembled.
 enum OpenBlock {
     Text {
         index: usize,
@@ -314,7 +290,7 @@ impl Accumulator {
             return;
         };
 
-        // A prompt Gemini refuses outright comes back with feedback and no candidates.
+        
         if let Some(reason) = chunk
             .pointer("/promptFeedback/blockReason")
             .and_then(Value::as_str)
@@ -360,8 +336,7 @@ impl Accumulator {
     fn handle_part(&mut self, part: &Value, sender: &UnboundedSender<StreamEvent>) {
         if let Some(call) = part.get("functionCall").filter(|call| call.is_object()) {
             self.close_open(sender);
-            // The signature rides on the part, not inside the call, and belongs to the
-            // reasoning that produced this call.
+            
             self.emit_tool_call(call, thought_signature(part), sender);
             return;
         }
@@ -373,8 +348,7 @@ impl Accumulator {
             return;
         }
 
-        // Reasoning parts are marked; the signature on them has to be replayed verbatim
-        // for Gemini to accept the thought on a later turn.
+        
         let is_thought = part
             .get("thought")
             .and_then(Value::as_bool)
@@ -454,10 +428,7 @@ impl Accumulator {
             return;
         };
 
-        // Gemini names its calls but rarely identifies them. A synthesized id has to stay
-        // unique for the whole conversation, not just this response: the history is replayed
-        // verbatim, and a provider that pairs by id rather than by name reads two calls
-        // sharing one id as the same call.
+        
         let id = call
             .get("id")
             .and_then(Value::as_str)
@@ -530,8 +501,7 @@ impl Accumulator {
         index
     }
 
-    /// `promptTokenCount` already includes the cached prefix, so the billable input is the
-    /// prompt minus that; reasoning tokens are billed as output.
+    /// `promptTokenCount` already includes the cached prefix.
     fn read_usage(&mut self, metadata: &Value) {
         let count = |key: &str| metadata.get(key).and_then(Value::as_u64).unwrap_or(0) as u32;
 
@@ -545,8 +515,7 @@ impl Accumulator {
         self.finished = true;
         self.close_open(sender);
 
-        // Gemini reports STOP alongside the function calls it wants run, so a turn that
-        // produced calls is a tool-use turn whatever the finish reason said.
+        
         let has_tool_calls = self
             .blocks
             .iter()
@@ -561,8 +530,7 @@ impl Accumulator {
     }
 }
 
-/// Safety, recitation, and malformed-call terminations become errors rather than a silent
-/// stop, so the agent loop can tell that the generation did not complete.
+
 fn map_finish_reason(reason: &str) -> StopReason {
     match reason.to_uppercase().as_str() {
         "STOP" => StopReason::Stop,
@@ -601,10 +569,7 @@ pub(crate) fn build_payload(model: &Model, context: &Context) -> Result<Value, S
 
     if !context.tools.is_empty() {
         let supports_strict = supports_google_strict_tool_sampling(&model.id);
-        // Whether the request as a whole asks Gemini to validate arguments strictly. This
-        // is a request-level switch rather than a per-tool one — Gemini has no per-tool
-        // `strict` field the way OpenAI, Anthropic, and the Responses API do — so it is
-        // turned on the moment any tool in the batch resolves to it.
+        
         let mut any_strict = false;
         let declarations: Vec<Value> = context
             .tools
@@ -617,13 +582,7 @@ pub(crate) fn build_payload(model: &Model, context: &Context) -> Result<Value, S
                 let declaration = match strict {
                     Some(true) => {
                         any_strict = true;
-                        // The strict rewrite already is full JSON Schema — additional
-                        // properties forbidden, every property required or nullable —
-                        // which is what `parametersJsonSchema` is for. Sanitizing it the
-                        // way an ordinary tool's schema is sanitized would strip the very
-                        // keywords strict sampling exists to add; the legacy
-                        // `parameters`/OpenAPI field a tool that never opted in still uses
-                        // does not reliably carry them at all.
+                        
                         let parameters =
                             crate::constrained_sampling::json_schema_tool_parameters(tool, strict)?;
                         json!({
@@ -661,8 +620,7 @@ pub(crate) fn build_payload(model: &Model, context: &Context) -> Result<Value, S
     Ok(Value::Object(payload))
 }
 
-/// Build the `contents` array. Gemini has only two roles, so a tool result is a user
-/// turn; consecutive turns of the same role are merged into one.
+/// Build the `contents` array.
 fn build_contents(messages: &[Message]) -> Vec<Value> {
     let mut contents: Vec<(&str, Vec<Value>)> = Vec::new();
 
@@ -704,9 +662,7 @@ fn content_parts(blocks: &[ContentBlock]) -> Vec<Value> {
     parts
 }
 
-/// Assistant turns replay their calls as `functionCall` parts so Gemini can pair each
-/// `functionResponse` with the call that produced it. Reasoning is replayed only when it
-/// carries the signature Gemini issued, which is what it validates the thought against.
+
 fn assistant_parts(blocks: &[ContentBlock]) -> Vec<Value> {
     let mut parts = Vec::new();
 
@@ -742,8 +698,7 @@ fn assistant_parts(blocks: &[ContentBlock]) -> Vec<Value> {
                 "functionCall".into(),
                 json!({ "name": name, "args": arguments_object(arguments) }),
             );
-            // The signature sits beside the call rather than inside it, which is where
-            // Gemini issued it and the only place it validates against.
+            
             if let Some(signature) = signature {
                 part.insert("thoughtSignature".into(), json!(signature));
             }
@@ -755,8 +710,7 @@ fn assistant_parts(blocks: &[ContentBlock]) -> Vec<Value> {
     parts
 }
 
-/// Gemini has no error flag on a function response, so a failure is reported through the
-/// response key rather than being read as a successful result.
+/// Gemini has no error flag on a function response.
 fn tool_result_parts(tool_name: &str, blocks: &[ContentBlock], is_error: bool) -> Vec<Value> {
     let text = join_text(blocks);
     let response = if is_error {
@@ -804,8 +758,7 @@ fn arguments_object(arguments: &Value) -> Value {
     }
 }
 
-/// Keys whose value maps names the tool's author chose onto schemas. Those names are data,
-/// not keywords, so a parameter called `pattern` or `default` must survive untouched.
+/// Keys whose value maps names the tool's author chose onto schemas.
 const SCHEMA_MAPS: &[&str] = &[
     "properties",
     "patternProperties",
@@ -833,12 +786,6 @@ const SCHEMA_VALUES: &[&str] = &[
 const SCHEMA_LISTS: &[&str] = &["allOf", "anyOf", "oneOf", "prefixItems"];
 
 /// Strip the JSON Schema keywords Gemini rejects, wherever a schema appears.
-///
-/// The filter has to know where it is standing. A key at a schema position is a keyword and
-/// is checked against the unsupported list; a key inside `properties` is a parameter name the
-/// tool's author picked and is never checked, or a tool with a parameter called `pattern`
-/// would lose it while `required` went on naming it. Anything that is plain data — `enum`,
-/// `const`, `required`, a description — is copied through without being walked at all.
 fn sanitize_schema(schema: &Value) -> Value {
     match schema {
         Value::Object(fields) => Value::Object(
@@ -848,8 +795,7 @@ fn sanitize_schema(schema: &Value) -> Value {
                 .map(|(key, value)| (key.clone(), sanitize_below(key, value)))
                 .collect(),
         ),
-        // A schema is an object; a bare `true` or `false` is a valid schema too and carries
-        // nothing to strip.
+        
         other => other.clone(),
     }
 }
@@ -877,22 +823,17 @@ fn sanitize_below(key: &str, value: &Value) -> Value {
 
     if SCHEMA_VALUES.contains(&key) {
         return match value {
-            // Older drafts allow a list of schemas where later ones take a single schema.
+            
             Value::Array(schemas) => Value::Array(schemas.iter().map(sanitize_schema).collect()),
             other => sanitize_schema(other),
         };
     }
 
-    // Not a schema position: `enum` values, a `const`, the `required` list, a description.
+    
     value.clone()
 }
 
 /// How much thinking to ask for, and whether to be shown any of it.
-///
-/// Turning it off is said outright rather than left unsaid: a model that thinks by default
-/// keeps thinking when nothing tells it not to, and bills for it. Not every model can be
-/// told to stop — the newest ones take a level instead of a budget, and their lowest level
-/// is as quiet as they get.
 fn thinking_config(model: &Model) -> Value {
     let Some(budget) = model.thinking.budget_tokens() else {
         return match lowest_level(&model.id) {
@@ -902,7 +843,7 @@ fn thinking_config(model: &Model) -> Value {
     };
 
     match lowest_level(&model.id) {
-        // A model that takes a level does not take a budget, so effort is spelled as one.
+        
         Some(_) => json!({ "thinkingLevel": level_for(model.thinking), "includeThoughts": true }),
         None => json!({ "thinkingBudget": budget, "includeThoughts": true }),
     }
@@ -925,9 +866,7 @@ fn lowest_level(id: &str) -> Option<&'static str> {
     None
 }
 
-/// The number after `gemini-` or `gemini-live-`, however many digits precede the next
-/// non-digit. `gemini-2.5-pro` is version 2; `gemini-live-3-flash` is version 3; anything
-/// that does not open with one of those two prefixes has no version to read.
+/// The number after `gemini-` or `gemini-live-`, however many digits precede the next non-digit.
 fn gemini_major_version(id: &str) -> Option<u32> {
     let lower = id.to_ascii_lowercase();
     let rest = lower
@@ -937,8 +876,7 @@ fn gemini_major_version(id: &str) -> Option<u32> {
     digits.parse().ok()
 }
 
-/// Gemini 3 and later enforce required function parameters in validated tool-calling
-/// modes; nothing earlier understands the request-level knob that asks for it.
+
 fn supports_google_strict_tool_sampling(id: &str) -> bool {
     gemini_major_version(id).is_some_and(|version| version >= 3)
 }
@@ -991,8 +929,8 @@ mod tests {
         drain_with(&Arc::new(AtomicUsize::new(0)), chunks)
     }
 
-    /// Drain one response against a counter the caller owns, which is how a test plays
-    /// several requests through a single provider.
+    /// Drain one response against a counter the caller owns, which is how a test plays several
+    /// requests through a single provider.
     fn drain_with(next_call: &Arc<AtomicUsize>, chunks: &[Value]) -> Vec<StreamEvent> {
         let (sender, mut receiver) = mpsc::unbounded_channel();
         let mut state = Accumulator::new(&model(), Arc::clone(next_call));
@@ -1069,8 +1007,7 @@ mod tests {
             "be brief"
         );
         assert_eq!(payload["generationConfig"]["maxOutputTokens"], 8_192);
-        // Thinking is turned off outright rather than left unsaid: a model that thinks by
-        // default keeps thinking, and bills for it, when nothing says otherwise.
+        
         assert_eq!(
             payload["generationConfig"]["thinkingConfig"]["thinkingBudget"],
             0
@@ -1148,10 +1085,8 @@ mod tests {
         }
     }
 
-    /// Gemini has no per-tool `strict` field the way the other providers do: a tool that
-    /// resolves to strict sampling is declared under `parametersJsonSchema` instead of
-    /// `parameters`, and the whole request is switched into Gemini's validated
-    /// tool-calling mode.
+    /// Gemini has no per-tool `strict` field the way the other providers do: a tool that resolves
+    /// to strict sampling is declared under.
     #[test]
     fn a_tool_preferring_strict_sampling_gets_it_on_a_model_that_supports_it() {
         let context = Context {
@@ -1177,9 +1112,7 @@ mod tests {
         );
     }
 
-    /// A tool that never asked for constrained sampling is completely unaffected by a
-    /// model supporting strict tool sampling: no `toolConfig` is added, and its
-    /// declaration still goes through the ordinary sanitized `parameters` field.
+    
     #[test]
     fn a_plain_tool_alongside_a_capable_model_is_unaffected() {
         let context = Context {
@@ -1203,9 +1136,7 @@ mod tests {
             .is_none());
     }
 
-    /// A model before Gemini 3 is unaffected by a tool merely preferring constrained
-    /// sampling — the request-level knob it would need does not exist for that model, so
-    /// the tool falls back to ordinary sampling exactly as if it had asked for nothing.
+    /// A model before Gemini 3 is unaffected by a tool merely preferring constrained sampling.
     #[test]
     fn a_model_that_predates_strict_tool_sampling_is_unaffected() {
         let original_parameters = json!({
@@ -1228,8 +1159,7 @@ mod tests {
         );
     }
 
-    /// `"require"` on a model that predates strict tool sampling fails the request rather
-    /// than silently sending it under ordinary sampling.
+    
     #[test]
     fn requiring_strict_sampling_on_a_model_that_predates_it_fails_the_request() {
         let context = Context {
@@ -1242,9 +1172,7 @@ mod tests {
         assert!(error.contains("\"grep\""), "got {error:?}");
     }
 
-    /// One tool resolving to strict turns on validated tool-calling mode for the whole
-    /// request, the same way one sequential tool call turns a whole batch sequential
-    /// elsewhere in this codebase — it is a request-level switch, not a per-tool one.
+    
     #[test]
     fn one_strict_tool_switches_the_whole_request_into_validated_mode() {
         let context = Context {
@@ -1265,17 +1193,14 @@ mod tests {
             payload["toolConfig"]["functionCallingConfig"]["mode"],
             "VALIDATED"
         );
-        // The tool that never opted in is still declared the ordinary way.
+        
         assert_eq!(
             payload["tools"][0]["functionDeclarations"][0]["parameters"]["type"],
             "object"
         );
     }
 
-    /// The failure this guards was a live 400 from Gemini: `required[0]: property is not
-    /// defined`. `grep` declares a parameter named `pattern`, the filter matched that name
-    /// against the JSON Schema keyword of the same name and deleted the property, and the
-    /// `required` entry naming it was left pointing at nothing.
+    /// The failure this guards was a live 400 from Gemini: `required[0]: property is not defined`.
     #[test]
     fn a_parameter_named_after_a_keyword_survives() {
         let grep = micro_tools::builtin_tools("/work", micro_tools::Guard::for_workspace("/work"))
@@ -1332,7 +1257,7 @@ mod tests {
         });
         let sanitized = sanitize_schema(&schema);
 
-        // The property survives; the constraints inside it do not.
+        
         let property = &sanitized["properties"]["pattern"];
         assert_eq!(property["description"], "kept");
         assert!(property.get("pattern").is_none(), "the keyword survived");
@@ -1359,7 +1284,7 @@ mod tests {
             sanitized["properties"]["mode"]["enum"],
             json!(["pattern", "default", "title"])
         );
-        // A `const` is a value, so its keys are not keywords whatever they are named.
+        
         assert_eq!(
             sanitized["properties"]["mode"]["const"]["pattern"],
             "not a schema"
@@ -1389,9 +1314,7 @@ mod tests {
         assert_eq!(items["required"][0], "pattern");
     }
 
-    /// The one that generalizes: whatever a tool declares, a sanitized schema may never
-    /// name something in `required` that it does not also define in `properties`. Gemini
-    /// rejects the request outright when it does.
+    
     #[test]
     fn no_builtin_tool_requires_a_property_it_does_not_define() {
         fn check(schema: &Value, path: &str) {
@@ -1409,7 +1332,7 @@ mod tests {
                 }
             }
 
-            // Every nested schema has to hold the same property.
+            
             if let Some(properties) = object.get("properties").and_then(Value::as_object) {
                 for (name, nested) in properties {
                     check(nested, &format!("{path}.{name}"));
@@ -1684,8 +1607,7 @@ mod tests {
         ];
         assert_eq!(tool_calls_so_far(&history), 2);
 
-        // A resumed session seeds the counter from its own log, so the next id lands past
-        // everything the log already holds.
+        
         let counter = Arc::new(AtomicUsize::new(0));
         counter.fetch_max(tool_calls_so_far(&history), Ordering::Relaxed);
         let events = drain_with(
@@ -1700,9 +1622,7 @@ mod tests {
 
     #[test]
     fn a_shrinking_history_does_not_pull_the_numbering_back() {
-        // Compaction leaves fewer calls in the conversation than the transcript on disk
-        // holds. Seeding must never lower the counter, or the next id would collide with
-        // one the transcript already used.
+        
         let counter = Arc::new(AtomicUsize::new(0));
         counter.fetch_max(9, Ordering::Relaxed);
         counter.fetch_max(2, Ordering::Relaxed);
@@ -1807,7 +1727,7 @@ mod tests {
         assert_eq!(parts[0]["functionCall"]["name"], "read");
         assert_eq!(parts[0]["functionCall"]["args"]["path"], "a.txt");
         assert_eq!(parts[0]["thoughtSignature"], "sig");
-        // The signature is a sibling of the call, not a field inside it.
+        
         assert!(parts[0]["functionCall"].get("thoughtSignature").is_none());
     }
 
@@ -1839,7 +1759,7 @@ mod tests {
         let decoded: Message = serde_json::from_str(&encoded).unwrap();
         assert_eq!(decoded, message);
 
-        // What comes back out of the log replays exactly as what went in.
+        
         let Message::Assistant(decoded) = &decoded else {
             panic!("expected an assistant message");
         };
@@ -1972,8 +1892,8 @@ mod tests {
         assert!(!state.started);
     }
 
-    /// The newest models cannot be told to stop thinking, so they are told to think as
-    /// little as they can instead.
+    /// The newest models cannot be told to stop thinking, so they are told to think as little as
+    /// they can instead.
     #[test]
     fn a_model_that_cannot_stop_thinking_is_asked_for_its_quietest_level() {
         for (id, quietest) in [
@@ -1993,8 +1913,7 @@ mod tests {
         }
     }
 
-    /// A model that takes a budget is told a budget, and one that takes a level is told a
-    /// level, whichever way the effort was asked for.
+    
     #[test]
     fn effort_is_spelled_the_way_each_model_takes_it() {
         let budgeted = thinking_config(&Model {

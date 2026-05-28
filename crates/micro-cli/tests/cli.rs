@@ -1,5 +1,5 @@
-//! End-to-end tests of the compiled `micro` binary against a fake provider served from
-//! the test process. Nothing here reaches the network or the caller's own configuration.
+//! End-to-end tests of the compiled `micro` binary against a fake provider served from the test
+//! process.
 
 mod support;
 
@@ -47,7 +47,7 @@ fn the_first_request_carries_the_prompt_the_model_and_the_tools() {
     assert_eq!(request["stream"], true);
     assert!(transcript(&request).contains("count the files"));
 
-    // The workspace tools are offered, so the model can actually do something.
+    
     let tools = offered_tools(&request);
     for expected in ["read", "write", "edit", "ls", "grep", "bash"] {
         assert!(
@@ -91,7 +91,7 @@ fn a_tool_call_runs_and_its_result_returns_in_the_next_request() {
     output.expect_success("micro --print with a tool call");
     assert!(output.stdout.contains("remember the milk"));
 
-    // Two requests: the one that asked for the tool, and the one carrying its result.
+    
     assert_eq!(api.request_count(), 2);
     let second = api.request(1);
     let results = tool_results(&second);
@@ -170,7 +170,7 @@ fn continue_resumes_the_conversation() {
         .print(&["-m", "test", "--continue", "what is my name?"])
         .expect_success("the resumed run");
 
-    // The resumed run's request carries the earlier exchange, not just the new prompt.
+    
     let resumed = api.request(1);
     let conversation = transcript(&resumed);
     assert!(
@@ -186,7 +186,7 @@ fn continue_resumes_the_conversation() {
         "the new prompt is missing"
     );
 
-    // Both runs share one session rather than starting a second.
+    
     assert_eq!(fixture.session_logs().len(), 1);
 }
 
@@ -232,7 +232,7 @@ fn a_client_error_from_the_provider_fails_with_a_useful_message() {
 
 #[test]
 fn a_server_error_is_retried_and_then_reported() {
-    // Five attempts, four of them retries, so the script holds five failures.
+    
     let api = FakeApi::start((0..5).map(|_| {
         Reply::Status(
             500,
@@ -278,8 +278,8 @@ fn an_unresolvable_model_reports_the_candidates() {
     assert_eq!(api.request_count(), 0, "no request should go out");
 }
 
-/// `-c key=value` writes into the config as it is read, so the setting it names is the
-/// one the run goes on to use.
+/// `-c key=value` writes into the config as it is read, so the setting it names is the one the run
+/// goes on to use.
 #[test]
 fn a_setting_named_on_the_command_line_takes_effect() {
     let api = FakeApi::start([]);
@@ -296,8 +296,7 @@ fn a_setting_named_on_the_command_line_takes_effect() {
     assert_eq!(api.request_count(), 0, "no request should go out");
 }
 
-/// A mistyped setting is a mistake to correct rather than one to run past: falling back
-/// to the stored settings would do the work with something other than what was asked for.
+
 #[test]
 fn a_malformed_setting_on_the_command_line_is_refused() {
     let api = FakeApi::start([]);
@@ -314,8 +313,7 @@ fn a_malformed_setting_on_the_command_line_is_refused() {
     assert_eq!(api.request_count(), 0, "no request should go out");
 }
 
-/// A value of the wrong shape is reported against the flag that wrote it. Naming the
-/// config file would point at somewhere the bad value is not.
+/// A value of the wrong shape is reported against the flag that wrote it.
 #[test]
 fn a_bad_value_on_the_command_line_names_the_flag_not_the_file() {
     let api = FakeApi::start([]);
@@ -344,8 +342,7 @@ fn a_bad_value_on_the_command_line_names_the_flag_not_the_file() {
 
 #[test]
 fn an_ambiguous_model_reports_the_candidates_rather_than_guessing() {
-    // `claude-opus-5` is served by more than one provider in the bundled catalog, and
-    // silently picking one would bill the wrong account.
+    
     let api = FakeApi::start([]);
     let fixture = Fixture::new(&api);
 
@@ -496,10 +493,7 @@ fn help_and_version_exit_zero() {
     assert!(version.stdout.contains("micro"));
 }
 
-/// A machine with no `~/.micro` and nothing naming one directory keeps the two halves
-/// apart. The credential and the catalog are read from where XDG puts configuration —
-/// which reaching the fake provider at all proves — and the session log is written where
-/// XDG puts data.
+/// A machine with no `~/.micro` and nothing naming one directory keeps the two halves apart.
 #[test]
 fn a_fresh_install_reads_its_configuration_and_writes_its_sessions_where_xdg_says() {
     let api = FakeApi::start([Reply::text("split")]);
@@ -584,7 +578,7 @@ fn sessions_are_scoped_to_a_workspace_and_follow_the_cwd_flag() {
         .print(&["-m", "test", "a question worth finding"])
         .expect_success("micro --print");
 
-    // From an unrelated directory the session belongs to somewhere else.
+    
     let mut elsewhere = fixture.micro();
     elsewhere.current_dir(std::env::temp_dir());
     let unscoped = Output::run(elsewhere.args(["sessions", "list"]));
@@ -595,7 +589,7 @@ fn sessions_are_scoped_to_a_workspace_and_follow_the_cwd_flag() {
         unscoped.stdout
     );
 
-    // Naming that workspace with `-C` brings it back, from anywhere.
+    
     let workspace = fixture.workspace().display().to_string();
     let mut command = fixture.micro();
     command.current_dir(std::env::temp_dir());
@@ -607,7 +601,7 @@ fn sessions_are_scoped_to_a_workspace_and_follow_the_cwd_flag() {
         scoped.stdout
     );
 
-    // `--all` ignores the scoping entirely.
+    
     let all = Output::run(fixture.micro().args(["sessions", "list", "--all"]));
     all.expect_success("micro sessions list --all");
     assert!(all.stdout.contains("a question worth finding"));
@@ -708,8 +702,8 @@ fn an_empty_stored_credential_fails_before_any_request() {
     );
 }
 
-/// The headless protocol answers each command, echoes the id it was given, and ends when
-/// stdin closes.
+/// The headless protocol answers each command, echoes the id it was given, and ends when stdin
+/// closes.
 #[test]
 fn rpc_answers_every_command_it_is_given() {
     let api = FakeApi::start([]);
@@ -746,7 +740,7 @@ fn rpc_answers_every_command_it_is_given() {
     assert_eq!(lines[5]["data"]["title"], "the good one");
 }
 
-/// A line that is not a command is reported rather than ignored, and the stream carries on.
+
 #[test]
 fn rpc_reports_a_line_it_cannot_read_and_keeps_going() {
     let api = FakeApi::start([]);
@@ -776,7 +770,7 @@ fn rpc_streams_a_turn_as_it_happens() {
 
     let lines = fixture.rpc(&[r#"{"type":"prompt","message":"ask something","id":"turn"}"#]);
 
-    // The command is acknowledged before the turn runs, so a caller knows it started.
+    
     assert_eq!(lines[0]["type"], "response");
     assert_eq!(lines[0]["command"], "prompt");
     assert_eq!(lines[0]["success"], true);
@@ -797,7 +791,7 @@ fn rpc_streams_a_turn_as_it_happens() {
     assert!(answered, "the answer reached the stream: {lines:#?}");
 }
 
-/// A model the catalog does not have is refused by name rather than silently kept.
+
 #[test]
 fn rpc_refuses_a_model_it_does_not_have() {
     let api = FakeApi::start([]);
@@ -818,8 +812,8 @@ fn rpc_refuses_a_model_it_does_not_have() {
     );
 }
 
-/// An extension in the project registers a tool, the model calls it, and what it returned
-/// reaches the answer — through a real Bun process, with no configuration anywhere.
+/// An extension in the project registers a tool, the model calls it, and what it returned reaches
+/// the answer.
 #[test]
 fn an_extension_tool_is_offered_to_the_model_and_runs() {
     if which_bun().is_none() {
@@ -845,12 +839,11 @@ export default (micro) => {
 "#,
     );
 
-    // Approval is given up front: an extension's tool is third-party code, so without
-    // this the policy asks, and nothing is there to answer.
+    
     let output = fixture.print(&["-m", "test", "greet the world"]);
     assert!(output.status.success(), "{}", output.stderr);
 
-    // The model was offered the extension's tool by name.
+    
     let request = api.request(0);
     let tools = request["tools"].as_array().expect("tools were sent");
     assert!(
@@ -860,7 +853,7 @@ export default (micro) => {
         "the extension's tool was offered: {tools:#?}"
     );
 
-    // And what the extension returned went back to the model as the result.
+    
     let second = api.request(1);
     let messages = second["messages"].as_array().expect("a conversation");
     let carried = messages.iter().any(|message| {
@@ -889,8 +882,8 @@ fn a_project_without_extensions_says_nothing_about_them() {
     );
 }
 
-/// A package installed from a path is remembered, and its tool is offered on the next run
-/// without anything else being said.
+/// A package installed from a path is remembered, and its tool is offered on the next run without
+/// anything else being said.
 #[test]
 fn an_installed_package_is_loaded_on_the_next_run() {
     if which_bun().is_none() {
@@ -899,7 +892,7 @@ fn an_installed_package_is_loaded_on_the_next_run() {
     let api = FakeApi::start([Reply::text("fine")]);
     let fixture = Fixture::new(&api);
 
-    // A package the way one arrives from npm: a manifest naming its entry point.
+    
     fixture.write(
         "package/package.json",
         r#"{ "name": "micro-demo", "pi": { "extensions": ["index.ts"] } }"#,
@@ -925,7 +918,7 @@ export default (micro) => {
         installed.stdout
     );
 
-    // Nothing else is configured: the next run finds it through the settings alone.
+    
     let output = fixture.print(&["-m", "test", "say something"]);
     assert!(output.status.success(), "{}", output.stderr);
 
@@ -969,7 +962,7 @@ fn an_extension_hears_the_lifecycle_events() {
     let fixture = Fixture::new(&api);
     fixture.write("notes.txt", "the file's contents");
 
-    // The extension writes down every event it hears, so the test can read them back.
+    
     let log = fixture.workspace().join("events.log");
     fixture.write(
         ".micro/extensions/listener.ts",
@@ -1015,13 +1008,13 @@ export default (micro) => {{
         assert!(heard.contains(event), "{event} was heard: {heard}");
     }
 
-    // And the events carry what happened, not just that it happened.
+    
     assert!(heard.contains("\"toolName\":\"read\""), "{heard}");
     assert!(heard.contains("notes.txt"), "{heard}");
 }
 
-/// A command an extension registered is typed like any other, and what it returns is what
-/// the user sees.
+/// A command an extension registered is typed like any other, and what it returns is what the user
+/// sees.
 #[test]
 fn an_extension_command_is_a_slash_command() {
     if which_bun().is_none() {
@@ -1045,8 +1038,7 @@ export default (micro) => {
     let commands = lines[0]["data"]["commands"]
         .as_array()
         .expect("a list of commands");
-    // The built-in list is what `get_commands` reports; the extension's own is reached by
-    // typing it, which is what the next assertion covers.
+    
     assert!(!commands.is_empty());
 
     let output = fixture.print(&["-m", "test", "/shout hello there"]);
@@ -1136,7 +1128,7 @@ export default (micro) => {{
         output.stdout
     );
 
-    // The request went to the declared endpoint with the declared credential.
+    
     assert_eq!(api.request_count(), 1);
     let headers = api.headers(0);
     let authorization = headers
@@ -1148,8 +1140,8 @@ export default (micro) => {{
     );
 }
 
-/// An extension can refuse a tool call, and the model is told why instead of getting the
-/// tool's output.
+/// An extension can refuse a tool call, and the model is told why instead of getting the tool's
+/// output.
 #[test]
 fn an_extension_can_block_a_tool_call() {
     if which_bun().is_none() {
@@ -1180,7 +1172,7 @@ export default (micro) => {
     let output = fixture.print(&["-m", "test", "write the file"]);
     assert!(output.status.success(), "{}", output.stderr);
 
-    // The file was never written, and the model was told why.
+    
     assert!(!fixture.exists("secrets.env"), "the call did not run");
     let second = api.request(1);
     let refused = second["messages"]
@@ -1237,8 +1229,7 @@ export default (micro) => {
     );
 }
 
-/// An extension that only listens changes nothing, which is what keeps a watcher from
-/// accidentally intercepting.
+
 #[test]
 fn a_listener_that_answers_nothing_changes_nothing() {
     if which_bun().is_none() {
@@ -1270,8 +1261,8 @@ export default (micro) => {
     );
 }
 
-/// An extension sees what the user typed and can rewrite it before anything is done with
-/// it, or swallow it entirely.
+/// An extension sees what the user typed and can rewrite it before anything is done with it, or
+/// swallow it entirely.
 #[test]
 fn an_extension_can_rewrite_what_the_user_typed() {
     if which_bun().is_none() {
@@ -1303,8 +1294,7 @@ export default (micro) => {
     );
 }
 
-/// The moments the host owns reach extensions too: the model changing, and a session
-/// starting.
+/// The moments the host owns reach extensions too: the model changing, and a session starting.
 #[test]
 fn an_extension_hears_the_moments_the_host_owns() {
     if which_bun().is_none() {
@@ -1361,7 +1351,7 @@ export default (micro) => {
     let output = fixture.print(&["-m", "test", "say something"]);
     assert!(output.status.success(), "{}", output.stderr);
 
-    // The system prompt the model received carries the extension's addition.
+    
     let request = api.request(0);
     let system = request["messages"][0]["content"]
         .as_str()
@@ -1369,8 +1359,8 @@ export default (micro) => {
     assert!(system.contains("be extremely terse"), "{system}");
 }
 
-/// An extension can rewrite the messages the model is sent, and is told once the request
-/// carrying them is assembled.
+/// An extension can rewrite the messages the model is sent, and is told once the request carrying
+/// them is assembled.
 #[test]
 fn an_extension_can_rewrite_the_messages_the_model_is_sent() {
     if which_bun().is_none() {
@@ -1480,7 +1470,7 @@ export default (micro) => {{
     let read_back = std::fs::read_to_string(&log).expect("the extension read it back");
     assert!(read_back.contains("kept aside"), "{read_back}");
 
-    // The next run sends the conversation, and what was kept aside is not in it.
+    
     let output = fixture.print(&["-m", "test", "say something"]);
     assert!(output.status.success(), "{}", output.stderr);
     let sent = serde_json::to_string(&api.request(0)).unwrap();
@@ -1515,7 +1505,7 @@ export default (micro) => {
 "#,
     );
 
-    // The renderer is registered, and micro knows which types it draws.
+    
     let installed =
         fixture.micro_run(&["install", &path_of(&fixture, ".micro/extensions/drawer.ts")]);
     assert!(installed.status.success(), "{}", installed.stderr);
@@ -1560,7 +1550,7 @@ export default (micro) => {{
     assert!(seen.contains("\"loud\":true"), "{seen}");
 }
 
-/// A flag nobody declared is said out loud rather than ignored.
+
 #[test]
 fn a_flag_nobody_declared_is_reported() {
     let api = FakeApi::start([Reply::text("fine")]);
@@ -1576,15 +1566,13 @@ fn a_flag_nobody_declared_is_reported() {
     );
 }
 
-/// A tool another program provides is offered to the model beside micro's own, under a
-/// name that says where it came from.
+
 #[test]
 fn an_mcp_servers_tools_are_offered_like_any_other() {
     let api = FakeApi::start([Reply::text("done")]);
     let fixture = Fixture::new(&api);
 
-    // A server is any program that speaks the protocol on its stdin and stdout, so the
-    // test uses one rather than standing in for it.
+    
     let server = fixture.workspace().join("echo-server.sh");
     std::fs::write(
         &server,
@@ -1624,17 +1612,16 @@ done
         tools.contains(&"mcp__demo__echo".to_string()),
         "the server's tool should be offered, got {tools:?}"
     );
-    // micro's own are still there beside it.
+    
     assert!(tools.contains(&"read".to_string()), "{tools:?}");
-    // A server that is turned off is not started, so nothing of its is offered.
+    
     assert!(
         !tools.iter().any(|name| name.starts_with("mcp__off__")),
         "{tools:?}"
     );
 }
 
-/// A server that cannot start is named rather than passed over, and costs only its own
-/// tools.
+
 #[test]
 fn an_mcp_server_that_will_not_start_is_reported() {
     let api = FakeApi::start([Reply::text("done")]);
@@ -1658,12 +1645,12 @@ fn an_mcp_server_that_will_not_start_is_reported() {
         "the server should be named, got {:?}",
         output.stderr
     );
-    // The run went ahead on the tools that did load.
+    
     assert!(offered_tools(&api.request(0)).contains(&"read".to_string()));
 }
 
-/// Writes a server offering `count` tools, so a test can put more of them on offer than
-/// are worth describing up front.
+/// Writes a server offering `count` tools, so a test can put more of them on offer than are worth
+/// describing up front.
 fn many_tool_server(path: &std::path::Path, count: usize) {
     let listed: Vec<String> = (0..count)
         .map(|index| {
@@ -1704,9 +1691,7 @@ fn with_mcp_server(fixture: &Fixture, server: &std::path::Path, extra: serde_jso
         .expect("write config.json");
 }
 
-/// Past the threshold the extra tools stop being described and `tool_search` stands in
-/// for them. The built-in ones are still there, since deferring those would cost a search
-/// before the model could read a file.
+/// Past the threshold the extra tools stop being described and `tool_search` stands in for them.
 #[test]
 fn many_tools_are_left_to_be_searched_for() {
     let api = FakeApi::start([Reply::text("done")]);
@@ -1728,8 +1713,8 @@ fn many_tools_are_left_to_be_searched_for() {
     );
 }
 
-/// Below the threshold nothing changes: a handful of tools is worth describing outright,
-/// and a search would only cost an exchange.
+/// Below the threshold nothing changes: a handful of tools is worth describing outright, and a
+/// search would only cost an exchange.
 #[test]
 fn a_few_tools_are_still_described_up_front() {
     let api = FakeApi::start([Reply::text("done")]);
@@ -1775,8 +1760,7 @@ fn the_threshold_can_be_turned_off() {
     assert!(!tools.contains(&"tool_search".to_string()), "{tools:?}");
 }
 
-/// A command handler's second argument is pi's `ExtensionCommandContext`: where the run
-/// is, what it is running, and the handful of things a command is allowed to do to it.
+
 #[test]
 fn an_extension_command_reads_the_extension_context() {
     if which_bun().is_none() {
@@ -1802,9 +1786,6 @@ export default (micro) => {{
                 thinkingLevel: ctx.thinkingLevel,
                 systemPrompt: ctx.getSystemPrompt(),
                 contextUsage: ctx.getContextUsage(),
-                // Present only on a command's context, not a tool's or an event
-                // handler's — the same restriction pi places on
-                // `ExtensionCommandContext` versus the plain `ExtensionContext`.
                 hasNewSession: typeof ctx.newSession === "function",
                 hasFork: typeof ctx.fork === "function",
                 hasNavigateTree: typeof ctx.navigateTree === "function",
@@ -1830,7 +1811,7 @@ export default (micro) => {{
 
     assert_eq!(read["mode"], "print");
     assert_eq!(read["hasUI"], false);
-    // Baked into every `Fixture`: `default_project_trust: "always"`.
+    
     assert_eq!(read["isProjectTrusted"], true);
     assert_eq!(read["model"]["id"], "test-model");
     assert_eq!(read["model"]["provider"], "openai");
@@ -1853,8 +1834,7 @@ export default (micro) => {{
     }
 }
 
-/// `ctx.sessionManager` reads back a conversation that already happened, entirely from
-/// what `get_context` carried over in one round trip — no further asking.
+
 #[test]
 fn an_extension_reads_the_conversation_through_session_manager() {
     if which_bun().is_none() {
@@ -1909,7 +1889,7 @@ export default (micro) => {{
     assert!(read["sessionFile"].as_str().unwrap().ends_with(".jsonl"));
     assert!(!read["sessionId"].as_str().unwrap().is_empty());
     let entries = read["allEntries"].as_array().expect("entries");
-    assert!(entries.len() >= 2, "{entries:?}"); // the prompt, and the reply
+    assert!(entries.len() >= 2, "{entries:?}"); 
     assert!(
         entries.iter().any(|entry| {
             entry["type"] == "message"
@@ -1919,19 +1899,17 @@ export default (micro) => {{
         }),
         "{entries:?}"
     );
-    // The leaf, looked up two ways, is the same entry.
+    
     assert_eq!(read["leafEntry"], read["sameAsLeafEntry"]);
     assert!(!read["leafEntry"].is_null());
-    // getBranch() with no argument walks from the leaf, root to head.
+    
     let branch = read["branch"].as_array().expect("a branch");
     assert_eq!(branch.last().unwrap(), &read["leafEntry"]);
-    // The tree covers the same ground as the flat entry list.
+    
     assert_eq!(read["tree"].as_array().unwrap().len(), 1, "{}", read["tree"]);
 }
 
-/// `ctx.isIdle()` and `ctx.signal` track a real turn from the lifecycle events micro
-/// already forwards: busy with a signal to hand out while `agent_start` is heard, idle
-/// with none by the time `agent_settled` is.
+
 #[test]
 fn is_idle_and_signal_track_a_turn_through_its_lifecycle_events() {
     if which_bun().is_none() {
@@ -2009,10 +1987,7 @@ export default (micro) => {{
     assert_eq!(waited["idle"], true, "{waited}");
 }
 
-/// `ctx.getSystemPromptOptions()` reports what actually went into the prompt — a custom
-/// SYSTEM.md, an APPEND_SYSTEM.md, a context file with its own content, a loaded skill,
-/// and a tool's own snippet — read back through the whole wire, not asserted against
-/// Rust's own state directly.
+/// `ctx.getSystemPromptOptions()` reports what actually went into the prompt.
 #[test]
 fn get_system_prompt_options_reports_what_actually_built_the_prompt() {
     if which_bun().is_none() {
@@ -2098,8 +2073,7 @@ export default (micro) => {{
         .ends_with("SKILL.md"));
 }
 
-/// `ctx.scopedModels` reflects a `-c scoped_models=` setting, resolved to real catalog
-/// entries rather than left as the raw pattern.
+
 #[test]
 fn scoped_models_reach_the_extension_context_resolved() {
     if which_bun().is_none() {
@@ -2148,8 +2122,7 @@ export default (micro) => {{
     );
 }
 
-/// With nothing scoped, `ctx.scopedModels` is empty — pi's own reading of "unscoped",
-/// rather than the whole catalog standing in for it.
+/// With nothing scoped, `ctx.scopedModels` is empty.
 #[test]
 fn unscoped_models_reach_the_extension_context_as_empty() {
     if which_bun().is_none() {
@@ -2184,9 +2157,7 @@ export default (micro) => {{
     assert_eq!(read, serde_json::json!([]));
 }
 
-/// A tool call gets pi's plain `ExtensionContext`, not the command-only one: the members
-/// that move the conversation somewhere else are for a command handler to use, not a tool
-/// the model calls mid-turn.
+
 #[test]
 fn session_navigation_is_absent_from_a_tool_calls_context() {
     if which_bun().is_none() {
@@ -2231,8 +2202,7 @@ export default (micro) => {{
     let read: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(&log).expect("the tool wrote a log"))
             .expect("the log is JSON");
-    // The tool still gets the plain context — `model` and the rest of
-    // `ExtensionContext` are there — but not the five that belong to a command.
+    
     assert_eq!(read["hasModel"], true, "{read}");
     for member in [
         "hasNewSession",
@@ -2245,9 +2215,7 @@ export default (micro) => {{
     }
 }
 
-/// An extension's tool can report partial progress while it runs, through `onUpdate` —
-/// and that shows up as its own event, before the tool's final result, the same way a
-/// streaming built-in like `bash` is watchable rather than silent until it is done.
+/// An extension's tool can report partial progress while it runs, through `onUpdate`.
 #[test]
 fn an_extension_tool_streams_a_partial_update_while_it_runs() {
     if which_bun().is_none() {
@@ -2289,7 +2257,7 @@ export default (micro) => {
         lines[update_index]
     );
 
-    // The update arrived while the call was still running, not after the fact.
+    
     let end_index = lines
         .iter()
         .position(|line| line["type"] == "tool_end" && line["name"] == "narrate")
@@ -2300,8 +2268,7 @@ export default (micro) => {
     );
 }
 
-/// An extension's tool sees the turn's own abort: dropping the turn does not leave the
-/// call running forever with nobody watching, and the extension can tell it happened.
+
 #[test]
 fn an_extension_tool_is_stopped_when_the_turn_is_aborted() {
     if which_bun().is_none() {
@@ -2337,9 +2304,7 @@ export default (micro) => {{
         ),
     );
 
-    // Driven by hand rather than through `Fixture::rpc`, which writes every command before
-    // anything is read back: the abort has to land once the tool call is actually running,
-    // not race it — the `started` marker is what tells this when that moment has come.
+    
     use std::io::Write as _;
     let mut command = fixture.micro();
     command.arg("--rpc");
@@ -2366,7 +2331,7 @@ export default (micro) => {{
         r#"{{"type":"abort","id":"2"}}"#
     )
     .expect("the abort is written");
-    // Closing stdin is what ends `--rpc`; without it the process waits for more commands.
+    
     drop(child.stdin.take());
     let _ = child.wait_with_output().expect("micro --rpc finishes");
 
@@ -2380,9 +2345,7 @@ export default (micro) => {{
     );
 }
 
-/// A theme is a file on disk, the same one micro itself reads, so an extension can look one
-/// up, switch to it, and color text with it — all without a live interface to ask, since
-/// `getAllThemes`, `getTheme` and `setTheme` resolve locally rather than over the wire.
+/// A theme is a file on disk, the same one micro itself reads.
 #[test]
 fn an_extension_can_read_and_switch_to_a_custom_theme() {
     if which_bun().is_none() {
@@ -2455,10 +2418,7 @@ export default (micro) => {{
     assert_eq!(result["colored"], "\u{1b}[38;2;18;52;86mhi\u{1b}[39m");
 }
 
-/// `getEditorText` and `getToolsExpanded` answer synchronously, the same as they do in pi,
-/// which is only possible here because each echoes back what this extension itself last
-/// set rather than reading live state through a pipe. Both are exercised together since
-/// neither needs a live interface to prove out.
+/// `getEditorText` and `getToolsExpanded` answer synchronously, the same as they do in pi.
 #[test]
 fn an_extension_reads_back_what_it_set_in_the_editor_and_in_tools_expansion() {
     if which_bun().is_none() {
@@ -2509,14 +2469,7 @@ export default (micro) => {{
     assert_eq!(result["afterExpanded"], true);
 }
 
-/// Every member of `ExtensionUIContext` that hands back a live TUI component — a header, a
-/// footer, a widget, the editor, `custom`'s result — really does run the factory it is
-/// given and register what it returns, rather than pretending to: the object stays in this
-/// process and micro would drive it by id, the same way `execute()` already runs here and
-/// is called from there. `--print` has no interface to open an overlay or hold a
-/// replacement editor in, so `custom()` still resolves `undefined` and nothing drawn by any
-/// of these actually reaches the (nonexistent) screen — but none of it throws, and
-/// `getEditorComponent` hands back the very factory `setEditorComponent` was just given.
+/// Every member of `ExtensionUIContext` that hands back a live TUI component.
 #[test]
 fn an_extension_asking_for_a_live_component_runs_the_factory_it_is_given() {
     if which_bun().is_none() {
@@ -2570,11 +2523,7 @@ export default (micro) => {{
     assert_eq!(result["ranWithoutThrowing"], true);
 }
 
-/// `setWidget`'s component-factory overload cannot be sent over the wire when it is a
-/// function pi-tui itself cannot serialize either — the object stays in this process, but
-/// the factory is still called and its component still registered, the same as every other
-/// live-component member; only the JSON `send` this process makes of it is impossible, and
-/// that only matters once micro is on the other end to ask for it, which `--print` is not.
+
 #[test]
 fn setting_a_widget_component_never_throws_even_headless() {
     if which_bun().is_none() {
@@ -2610,9 +2559,7 @@ export default (micro) => {{
     assert_eq!(std::fs::read_to_string(&log).unwrap(), "ok");
 }
 
-/// `onTerminalInput` registers and unregisters without a live terminal to read keys from —
-/// the registration itself is ordinary, synchronous bookkeeping; only actually being
-/// offered a key needs the interactive interface `--print` does not have.
+
 #[test]
 fn an_extension_can_register_and_unregister_a_terminal_input_listener() {
     if which_bun().is_none() {
@@ -2650,14 +2597,7 @@ export default (micro) => {{
     assert_eq!(result["isFunction"], true);
 }
 
-/// A pi extension imports pi's own runtime modules — `@earendil-works/pi-coding-agent`,
-/// `@earendil-works/pi-tui`, and their older `@mariozechner/*` names — the same way the
-/// real `pi-subagents` extension does. Without something to resolve those to, the import
-/// fails and the extension never loads at all. What micro's compatibility layer answers
-/// for real (pi-tui's text measurement, pi-coding-agent's pure helpers) is exercised here
-/// for a genuine, computed answer; what it does not answer for (pi's own agent loop and
-/// interactive TUI) is exercised for the specific, named failure reaching for it produces
-/// — at the point of use, not at import time, since the module loads regardless.
+/// A pi extension imports pi's own runtime modules.
 #[test]
 fn an_extension_importing_a_pi_runtime_module_loads_and_runs() {
     if which_bun().is_none() {
@@ -2730,10 +2670,7 @@ export default (micro) => {{
     );
 }
 
-/// pi-tui's layout components (`HStack`/`VStack`), `TruncatedText`, `renderLatex` and the
-/// autocomplete provider contract are all pure — no terminal I/O — and real in this
-/// compatibility layer rather than stubbed. This exercises each for a genuinely computed
-/// answer, not merely that importing them does not throw.
+
 #[test]
 fn an_extension_uses_pi_tuis_pure_layout_and_autocomplete_components() {
     if which_bun().is_none() {
@@ -2761,9 +2698,6 @@ export default (micro) => {{
         handler: async () => {{
             // Two 3-wide texts side by side in a 10-wide box: real column layout, not a stub.
             const hstack = new HStack([new Text("aaa", 0, 0), new Text("bbb", 0, 0)], {{ gap: 1 }});
-            // compositeTuiLine wraps each composited segment in a style-reset even for
-            // plain text (see tui.ts), so the layout itself is read through
-            // stripTerminalSequences the same way truncateToWidth's answer is above.
             const hstackLines = hstack.render(10).map((line) => stripTerminalSequences(line));
 
             // Stacked vertically instead: line count reflects both children plus the gap.
@@ -2823,10 +2757,7 @@ export default (micro) => {{
     );
 }
 
-/// An extension's command handler that throws is not a command that quietly did nothing —
-/// it is a run that failed, the same way pi's own print mode exits nonzero for a command
-/// that raised rather than answered. Before this, `--print` printed the error and still
-/// exited zero, which is indistinguishable from success to anything scripting it.
+/// An extension's command handler that throws is not a command that quietly did nothing.
 #[test]
 fn a_thrown_command_handler_fails_the_print_run_rather_than_exiting_zero() {
     if which_bun().is_none() {
@@ -2863,10 +2794,7 @@ export default (micro) => {
     );
 }
 
-/// pi-tui's `Markdown` component is real now that `marked` is vendored — genuine
-/// markdown tokenization and rendering, not a stub. `theme.underline` is not exercised
-/// here on purpose: coding-agent/index.ts's `getMarkdownTheme()` does not implement it
-/// yet (flagged separately), and this test's job is `Markdown` itself, not that gap.
+
 #[test]
 fn an_extension_renders_real_markdown() {
     if which_bun().is_none() {
@@ -2931,12 +2859,8 @@ export default (micro) => {{
     );
 }
 
-/// `custom()` and `setEditorComponent()` hand their factory pi-tui's real `KeybindingsManager`
-/// now, not `{}` — an extension whose factory calls `keybindings.matches(data, name)` the way
-/// pi's own `CustomEditor.handleInput` does would have thrown `TypeError: keybindings.matches
-/// is not a function` on the very first bound keypress before this. `escape` is bound to
-/// `tui.select.cancel` by pi-tui's own default table, so a real manager answers `true` for it
-/// and `false` for a key that was never bound to it — not just "does not throw."
+/// `custom()` and `setEditorComponent()` hand their factory pi-tui's real `KeybindingsManager` now,
+/// not `{}`.
 #[test]
 fn a_components_keybindings_argument_answers_for_real_rather_than_being_empty() {
     if which_bun().is_none() {
@@ -2960,10 +2884,6 @@ export default (micro) => {{
                 return {{ render: () => ["editor"], handleInput: () => {{}} }};
             }};
             ctx.ui.setEditorComponent(factory);
-            // `--print` has no interface to open an overlay in, so `custom()` resolves
-            // `undefined` headless regardless of `done` — see
-            // `an_extension_asking_for_a_live_component_runs_the_factory_it_is_given`. What
-            // this is checking is only that the factory's `keybindings` argument works.
             await ctx.ui.custom((tui, theme, keybindings, done) => {{
                 seen.push(keybindings.matches("\x1b", "tui.select.cancel"));
                 done("closed");

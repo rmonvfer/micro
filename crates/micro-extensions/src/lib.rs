@@ -1,9 +1,4 @@
-//! Extensions: someone else's code, running beside micro rather than inside it.
-//!
-//! An extension is a TypeScript or JavaScript file with a default export. micro finds it
-//! ([`discover`]), starts a Bun process to hold it ([`host::Host`]), and turns what it
-//! registers into things micro already knows how to do: a tool the model may call, a
-//! command a user may type, a handler that runs when something happens.
+
 
 mod capabilities;
 mod compat;

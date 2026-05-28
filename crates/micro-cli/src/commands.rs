@@ -1,9 +1,4 @@
 //! Running slash commands on behalf of the interface.
-//!
-//! [`micro_commands`] decides what a command means; this carries out the part of it that
-//! needs the credential store, the catalog or the session log. What it cannot do it says
-//! so, rather than reporting a change that did not happen: the agent is the interface's,
-//! and the conversation of record lives inside it.
 
 use async_trait::async_trait;
 use micro_auth::AuthStore;
@@ -21,7 +16,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
-/// Everything a command reads, which is what the agent was built from minus the agent.
+
 pub struct CliCommands {
     catalog: Catalog,
     auth: Arc<AuthStore>,
@@ -29,28 +24,25 @@ pub struct CliCommands {
     workspace: PathBuf,
     provider: String,
     model: ModelDef,
-    /// The open session, shared with the task writing it: branching and renaming have to
-    /// reach the log that is actually being appended to, not a second copy of it.
+    
     session: Arc<Mutex<Session>>,
     /// Held alongside so a command can be answered without waiting on the writer.
     session_id: String,
-    /// How a re-read instruction file reaches the model: asked for here, applied by the
-    /// agent at its next turn boundary, recorded as a prefix change.
+    
     prefix: micro_agent::PrefixControl,
     /// Where micro keeps what the user has settled, which is where a trust decision and a
     /// remembered model are written.
     config_home: PathBuf,
     /// Where micro keeps what it produced, which is where a phone pairing is written.
     data_home: PathBuf,
-    /// Whether skills are announced to the model at all, so `/reload` rebuilds what the
-    /// run was built with rather than something else.
+    
     skills_enabled: bool,
     scoped_models: Vec<String>,
-    /// What this run was told to look at beyond the usual places, so a reload looks in the
-    /// same places the first load did.
+    /// What this run was told to look at beyond the usual places, so a reload looks in the same
+    /// places the first load did.
     resources: crate::runtime::Resources,
     tree_filter: micro_config::TreeFilter,
-    /// Show only the newest entry when the changelog is asked for.
+    
     collapse_changelog: bool,
     /// How hard the model is being asked to reason, so a model swap keeps it.
     thinking: micro_types::ThinkingLevel,
@@ -62,28 +54,20 @@ pub struct CliCommands {
     mirror: crate::remote::Mirror,
     /// What the phone is told about the session.
     snapshot: Arc<Mutex<crate::remote::Snapshot>>,
-    /// Whether a phone already has this session, so a second `/remote` says so
-    /// rather than opening a second connection.
+    
     remote_started: bool,
-    /// Warn that a subscription credential bills per token here. Said once a run: repeating
-    /// it every model swap would train the reader to skip it.
+    /// Warn that a subscription credential bills per token here.
     anthropic_extra_usage: bool,
     warned_about_extra_usage: bool,
     /// The user's own prompt files, which become commands named after them.
     prompts: Vec<micro_prompts::PromptTemplate>,
-    /// Whether the line just dispatched asked to step to the neighboring model rather than
-    /// naming one — set in `dispatch`, read and reset in `swap_to`, since that is where
-    /// pi's `model_select` needs to say `"cycle"` instead of `"set"`.
+    
     model_source: &'static str,
-    /// Every tool this run actually offers the model, so `/reload` can tell which extension
-    /// tools are still owed their line in the system prompt and which were left out by
-    /// `--tools` or `--exclude-tools`.
+    /// Every tool this run actually offers the model.
     tool_names: Vec<String>,
 }
 
-/// Everything a host is built from. Gathered into one value because a run assembles all
-/// of it in one place, and a constructor with nine positional arguments is a place to make
-/// a mistake.
+
 pub struct HostParts {
     pub catalog: Catalog,
     pub auth: Arc<AuthStore>,
@@ -149,12 +133,8 @@ impl CliCommands {
         }
     }
 
-    /// Resolve a model into everything the agent needs to run it: a client for its provider
-    /// and a credential to reach it.
-    ///
-    /// This is the half a command cannot do by itself. The interface applies the result,
-    /// because the agent is its, but only here are the catalog and the credential store.
-    /// Write the chosen model to the settings, so the next run starts on it.
+    /// Resolve a model into everything the agent needs to run it: a client for its provider and a
+    /// credential to reach it.
     fn remember_model(&self, model: &ModelDef) -> Result<(), String> {
         let path = self.config_home.join(micro_config::FILE_NAME);
         let mut config = micro_config::Config::load_from(&path)
@@ -195,9 +175,6 @@ impl CliCommands {
     }
 
     /// What a sign-in leaves behind, however the credential was collected.
-    ///
-    /// A credential for the service already in use reaches the running agent now. Waiting
-    /// for a restart to pick it up would make signing in look like it failed.
     async fn signed_in(&mut self, provider: &str) -> Applied {
         if micro_auth::canonical_provider(provider)
             == micro_auth::canonical_provider(&self.model.provider)
@@ -236,25 +213,20 @@ impl CliCommands {
             ));
         }
 
-        // Read before they are overwritten below, and the source is consumed rather than
-        // merely read: the line that led here is spent, and a later swap it did not ask
-        // for — reapplying the model already in use after signing in, say — starts fresh.
+        
         let previous_model = self.model.clone();
         let source = std::mem::replace(&mut self.model_source, "set");
 
-        // Kept in step so the next command reports the model that is actually running.
+        
         self.provider = model.provider.clone();
         self.model = model.clone();
         let session_model = model.qualified_id();
         if let Err(error) = self.session.lock().await.set_model_id(session_model).await {
             return Applied::error(format!("Could not update the session model: {error}"));
         }
-        // And remembered, so the next run starts on it. Choosing a model is a decision
-        // about how to work, not about this conversation.
+        
         let remembered = self.remember_model(model);
-        // pi skips this event outright when the model did not actually change; the same
-        // guard applies here, since reapplying the model already in use is not a selection
-        // to report.
+        
         if previous_model.qualified_id() != model.qualified_id() {
             crate::extensions::announce(
                 self.extensions.as_ref(),
@@ -279,8 +251,7 @@ impl CliCommands {
         Applied::Model {
             swap: Box::new(micro_agent::ModelSwap {
                 provider: resolved.client,
-                // The effort the user chose belongs to them, not to the model they were
-                // using when they chose it.
+                
                 model: crate::runtime::with_host(
                     model.to_runtime(self.thinking),
                     resolved.base_url.as_deref(),
@@ -293,8 +264,7 @@ impl CliCommands {
         }
     }
 
-    /// Anthropic's subscription credentials are OAuth tokens, and a third-party harness
-    /// spending one is billed per token rather than against the plan. Said once.
+    
     fn subscription_warning(&mut self, api_key: &str, provider: &str) -> Option<String> {
         if !self.anthropic_extra_usage || self.warned_about_extra_usage {
             return None;
@@ -325,11 +295,7 @@ impl CliCommands {
         }
     }
 
-    /// Every branch entry on the current path, in path order — the closest micro's tree
-    /// comes to the `SessionEntry[]` pi's compaction events carry. What compaction
-    /// actually replaces is computed well below here, inside the agent loop, so the
-    /// richer `preparation` object pi builds ahead of time (with token counts and the
-    /// exact stretch chosen) is not available to build from at this hook.
+    /// Every branch entry on the current path, in path order.
     async fn branch_entries(&self) -> Vec<serde_json::Value> {
         let session = self.session.lock().await;
         let tree = session.tree();
@@ -348,9 +314,6 @@ impl CliCommands {
     }
 
     /// Continue the open conversation from an earlier entry.
-    ///
-    /// Nothing is deleted: what came after stays in the log as another branch, and the
-    /// next message appended hangs off the entry that was chosen.
     async fn branch(&mut self, entry_id: &str) -> Applied {
         let old_leaf_id = self.session.lock().await.tree().head().map(str::to_string);
         if crate::extensions::cancelled(
@@ -360,13 +323,10 @@ impl CliCommands {
                 "preparation": {
                     "targetId": entry_id,
                     "oldLeafId": old_leaf_id,
-                    // `/tree` only ever moves to an entry already on the current path, so
-                    // that entry is its own common ancestor with the leaf it is leaving —
-                    // unlike pi's `navigateTree`, which can also land on an unrelated
-                    // branch, this one never needs to search for where two branches meet.
+                    
                     "commonAncestorId": entry_id,
                     "entriesToSummarize": [],
-                    // micro's `/tree` does not summarize the branch it leaves.
+                    
                     "userWantsSummary": false,
                 },
             }),
@@ -400,8 +360,7 @@ impl CliCommands {
         )
         .await;
 
-        // The branch is what the model is shown from here on, and what the scrollback is
-        // rebuilt from, so the two never disagree.
+        
         Applied::Conversation {
             messages: session.branch(),
             note: Some("Navigated to selected point".to_string()),
@@ -409,14 +368,8 @@ impl CliCommands {
     }
 
     /// Reopen another session in place of this one.
-    ///
-    /// The open session is swapped for the one that was chosen, so the task writing the
-    /// log follows: from here on, what is said is appended to the reopened conversation
-    /// rather than to the one that was left.
     async fn resume(&mut self, session_id: &str) -> Applied {
-        // micro addresses a session by its id rather than by the file it is written to; the
-        // id is what an extension can act on regardless — asking to resume it again, say —
-        // so it stands in for `targetSessionFile`.
+        
         if crate::extensions::cancelled(
             self.extensions.as_ref(),
             "session_before_switch",
@@ -452,9 +405,6 @@ impl CliCommands {
     }
 
     /// Start over: a fresh session, and a conversation with nothing in it.
-    ///
-    /// The conversation that was left is not touched. It stays on disk under its own id,
-    /// which is what makes starting over cheap.
     async fn start_new_session(&mut self) -> Applied {
         if crate::extensions::cancelled(
             self.extensions.as_ref(),
@@ -491,9 +441,6 @@ impl CliCommands {
     }
 
     /// Bring in a session log written elsewhere and carry on from it.
-    ///
-    /// The imported file is copied, not adopted: it is left exactly as it was, and what is
-    /// said from here on is written to a session of micro's own.
     async fn import(&mut self, path: &str) -> Applied {
         let source = match std::path::Path::new(path).is_absolute() {
             true => std::path::PathBuf::from(path),
@@ -528,10 +475,6 @@ impl CliCommands {
     }
 
     /// Put this session on the paired phone, or bond a phone to this machine.
-    ///
-    /// Pairing is the one-off, and the only thing that shows a link. Publishing shows
-    /// nothing worth reading: the session appears in the app's list, which is where
-    /// someone reaching for their phone is already looking.
     async fn remote(&mut self, action: micro_commands::RemoteAction) -> Applied {
         if let micro_commands::RemoteAction::Pair { qr } = action {
             return match crate::remote::pair(&self.data_home, qr).await {
@@ -559,8 +502,7 @@ impl CliCommands {
             })
             .collect();
 
-        // The session's own name is what the phone lists it under, so it is read now
-        // rather than left as the id it was seeded with.
+        
         if let Ok(session) = self.session.try_lock() {
             let title = session.meta().title.clone();
             if !title.is_empty() {
@@ -617,14 +559,6 @@ impl CliCommands {
     }
 
     /// Read the instruction files and skills again, and tell the model what they say now.
-    ///
-    /// Only the standing instructions change. The conversation is left exactly as it is,
-    /// because nothing that was said stopped being true.
-    ///
-    /// The new prompt is asked for rather than installed: the agent takes it up at its next
-    /// turn boundary and records the change, so a session can say afterwards that this is
-    /// where its cached prefix stopped being reusable and why. What comes back is only what
-    /// the screen needs to hear about it.
     async fn reload(&self) -> Applied {
         let trusted = !micro_config::requires_decision(&self.workspace)
             || micro_config::TrustStore::load_from(&self.config_home)
@@ -665,9 +599,6 @@ impl CliCommands {
     }
 
     /// Run a command an extension registered, if this line names one.
-    ///
-    /// What the extension returns is shown as it comes back: a string is the answer, and
-    /// anything else is described rather than dropped.
     async fn extension_command(&mut self, line: &str) -> Option<CommandOutcome> {
         let (name, arguments) = command_parts(line)?;
         let host = self.extensions.clone()?;
@@ -684,9 +615,6 @@ impl CliCommands {
     }
 
     /// Remember what was decided about this project.
-    ///
-    /// The decision is read when a run starts, so it takes effect from the next one: the
-    /// policy this run is enforcing was settled before the first tool call.
     async fn trust(&self, trusted: bool) -> Applied {
         let mut store = match micro_config::TrustStore::load_from(&self.config_home).await {
             Ok(store) => store,
@@ -732,14 +660,9 @@ impl CliCommands {
         }
     }
 
-    /// Copy the conversation up to a point into a session of its own, and carry on in the
-    /// copy. The session it came from is left exactly as it was.
+    /// Copy the conversation up to a point into a session of its own, and carry on in the copy.
     async fn fork(&mut self, session_id: &str, through_index: usize, whole: bool) -> Applied {
-        // pi addresses a fork by the tree entry to fork from; micro's own `/fork` takes a
-        // position along the path instead, so the entry id pi's event carries is looked up
-        // from that position rather than being micro's own indexing. `/fork` keeps
-        // everything up to and including that entry, which is what pi calls "at" rather
-        // than "before".
+        
         let entry_id = {
             let session = self.session.lock().await;
             let tree = session.tree();
@@ -749,8 +672,7 @@ impl CliCommands {
                 .map(|entry| entry.id.clone())
                 .unwrap_or_else(|| through_index.to_string())
         };
-        // Asked before the copy is made, so refusing it leaves the session untouched
-        // rather than reporting a fork that has already happened.
+        
         if crate::extensions::cancelled(
             self.extensions.as_ref(),
             "session_before_fork",
@@ -769,9 +691,7 @@ impl CliCommands {
         };
 
         let messages = forked.branch();
-        // A fork is a fresh session file, the same as `/new` and `/resume` are — which is
-        // what pi reports it as too: there is no separate "a fork happened" event, only
-        // `session_start` with `reason: "fork"`.
+        
         let previous_session_file = self.session.lock().await.path().display().to_string();
         self.session_id = forked.id().to_string();
         *self.session.lock().await = forked;
@@ -831,14 +751,7 @@ impl Commands for CliCommands {
         Some((cost, total, last))
     }
 
-    /// What the user typed, before anything is done with it. An extension may rewrite it,
-    /// or swallow it by answering that it handled it.
-    ///
-    /// pi's three input sources are interactive typing, the RPC transport, and an
-    /// extension sending itself a message; RPC input never reaches this method at all — it
-    /// is answered by `micro-rpc`, a separate pump that does not go through `Commands` —
-    /// so what arrives here, print-mode's one-shot prompt included, is always reported as
-    /// `"interactive"`: neither of the other two.
+    /// What the user typed, before anything is done with it.
     async fn submitted(&mut self, line: String) -> Option<String> {
         let answers = crate::extensions::consult(
             self.extensions.as_ref(),
@@ -856,8 +769,7 @@ impl Commands for CliCommands {
                         line = text.to_string();
                     }
                 }
-                // `"continue"`, or anything else — an extension that didn't answer pi's
-                // shape at all — changes nothing.
+                
                 _ => {}
             }
         }
@@ -878,7 +790,7 @@ impl Commands for CliCommands {
             return false;
         }
 
-        // A shortcut is a command with no name: whoever registered it decides what it does.
+        
         let _ = host
             .ask_event("shortcut", serde_json::json!({ "key": key }))
             .await;
@@ -903,10 +815,7 @@ impl Commands for CliCommands {
     }
 
     async fn compacting(&mut self) -> bool {
-        // micro's own auto-compaction — triggered by the context threshold or by overflow
-        // recovery — runs inside the agent loop, which has no extension hook of its own
-        // for compaction at all. Only `/compact`, dispatched through here, can be asked
-        // about, so `reason` is always `"manual"` and `willRetry` is always `false`.
+        
         !crate::extensions::cancelled(
             self.extensions.as_ref(),
             "session_before_compact",
@@ -920,9 +829,7 @@ impl Commands for CliCommands {
     }
 
     async fn compacted(&mut self, summary: &str) {
-        // `compacted` is handed only the finished summary text; the richer
-        // `CompactionEntry` pi reports — its own id, the first entry still kept, when it
-        // happened — is not, so `compactionEntry` here carries just the part that is.
+        
         crate::extensions::announce(
             self.extensions.as_ref(),
             "session_compact",
@@ -953,12 +860,7 @@ impl Commands for CliCommands {
         )
         .await;
 
-        // The first extension to answer with anything at all decides, the same way pi's own
-        // runner stops at the first `user_bash` handler that returns something.
-        // `operations` — a custom execution strategy — has nowhere to plug in here: `!`
-        // always shells out directly, unlike the `bash` tool, which is built around a
-        // swappable executor. Only a full `result` is honoured; an answer that sets only
-        // `operations` is skipped, and the command runs as it would have.
+        
         answers.iter().find_map(|answer| {
             let result = answer.get("result")?;
             let output = result
@@ -976,21 +878,14 @@ impl Commands for CliCommands {
     }
 
     /// What a submitted line means, in the order the names are claimed.
-    ///
-    /// Built-in commands are matched first and cannot be taken over: a name micro answers
-    /// to has to keep answering, or an installed extension could quietly replace `/quit`.
-    /// Then the user's own prompt files, then whatever the extensions registered.
     fn begin_model_refresh(
         &mut self,
     ) -> Option<tokio::sync::oneshot::Receiver<micro_tui::Listings>> {
         let (sender, receiver) = tokio::sync::oneshot::channel();
-        // Copilot lists what an account may reach only when asked with its own token, so
-        // the credential is read here where the store is, not in the task.
+        
         tokio::spawn(async move {
             let client = reqwest::Client::new();
-            // Opened again rather than shared: the store is a file, and the task outlives
-            // the borrow that started it. The token says which host serves this account;
-            // only an individual plan is served by the default one.
+            
             let copilot = match micro_auth::AuthStore::open() {
                 Ok(store) => {
                     store
@@ -1026,8 +921,7 @@ impl Commands for CliCommands {
         if !listings.models.is_empty() {
             self.catalog.merge_listing(listings.models);
         }
-        // The list is rebuilt the way it was built in the first place, so a model that has
-        // just appeared is in it and everything else reads exactly as it did.
+        
         let context = self.context(ConversationState::default());
         match micro_commands::dispatch("/model", &context).await {
             Some(CommandOutcome::Choose(picker)) => Some(picker),
@@ -1036,17 +930,13 @@ impl Commands for CliCommands {
     }
 
     async fn dispatch(&mut self, line: &str, state: ConversationState) -> Option<CommandOutcome> {
-        // `/model next|previous` steps to a neighbor rather than naming one, which is what
-        // pi's `model_select` calls a `"cycle"` rather than a `"set"`. Read here, from the
-        // line itself, because by the time a `CommandOutcome::SetModel` reaches `swap_to`
-        // the two look identical.
+        
         self.model_source = match command_parts(line) {
             Some(("model", argument)) if matches!(argument.trim(), "next" | "previous" | "prev") => "cycle",
             _ => "set",
         };
 
-        // A name micro answers to is answered by micro. Trying the extensions first would
-        // let an installed one quietly take over `/quit`.
+        
         let claimed =
             command_parts(line).is_some_and(|(name, _)| micro_commands::find(name).is_some());
         if claimed {
@@ -1058,23 +948,20 @@ impl Commands for CliCommands {
         if let Some(outcome) = self.extension_command(line).await {
             return Some(outcome);
         }
-        // Nobody claimed it. What comes back is either the unknown-command message or
-        // nothing at all, for a line that was never a command.
+        
         micro_commands::dispatch(line, &self.context(state)).await
     }
 
     async fn apply(&mut self, outcome: CommandOutcome) -> Applied {
         match outcome {
-            // A device login is entirely this side of the seam: poll GitHub, store what it
-            // returns. Nothing about the running agent changes.
+            
             CommandOutcome::Fork {
                 session_id,
                 through_index,
                 whole,
             } => self.fork(&session_id, through_index, whole).await,
 
-            // Branching happens in the session that is open, so the conversation the
-            // interface holds is replaced by the branch that was chosen.
+            
             CommandOutcome::Branch { entry_id } => self.branch(&entry_id).await,
 
             CommandOutcome::Rename { title } => self.rename(&title).await,
@@ -1091,8 +978,7 @@ impl Commands for CliCommands {
 
             CommandOutcome::SetModel { model } => self.swap_to(&model).await,
 
-            // Naming a provider means running its first model, since a provider on its own
-            // is not something the agent can be pointed at.
+            
             CommandOutcome::SetProvider { provider } => {
                 let canonical = micro_auth::canonical_provider(provider).to_string();
                 match self
@@ -1111,7 +997,7 @@ impl Commands for CliCommands {
 
             CommandOutcome::Clear => self.start_new_session().await,
 
-            // The interface carries these out itself; reaching here means it did not.
+            
             other => Applied::error(format!("Nothing here knows how to carry out {other:?}.")),
         }
     }
@@ -1135,8 +1021,7 @@ impl Commands for CliCommands {
     }
 }
 
-/// What an Anthropic subscription credential looks like. The plan's own tokens are OAuth
-/// tokens, and they carry this prefix wherever they are stored.
+/// What an Anthropic subscription credential looks like.
 const ANTHROPIC_OAUTH_PREFIX: &str = "sk-ant-oat";
 
 /// Said when a subscription credential is used from here.
@@ -1154,10 +1039,6 @@ fn counted(count: usize, thing: &str) -> String {
 }
 
 /// A model the way `model_select` and `get_model` both describe one to an extension.
-///
-/// Kept to these few fields rather than pi's full `Model<any>` — thinking-level mapping,
-/// per-model headers, cost tiers — because that is all a `ModelDef` itself carries; an
-/// extension reading further than this is reading past what micro tracked.
 fn model_json(model: &ModelDef) -> serde_json::Value {
     serde_json::json!({
         "id": model.id,
@@ -1176,8 +1057,8 @@ mod tests {
     use std::sync::atomic::AtomicU32;
     use std::sync::atomic::Ordering;
 
-    /// A host rooted in this process's own scratch directory, so no test reads or writes a
-    /// real credential file or session log.
+    /// A host rooted in this process's own scratch directory, so no test reads or writes a real
+    /// credential file or session log.
     async fn host(label: &str) -> (CliCommands, PathBuf) {
         static COUNTER: AtomicU32 = AtomicU32::new(0);
         let root = std::env::temp_dir().join(format!(
@@ -1195,8 +1076,7 @@ mod tests {
             .expect("the bundled catalog carries this model")
             .clone();
 
-        // A real session, because branching and renaming reach the log rather than a
-        // name kept beside it.
+        
         let sessions = SessionStore::new(root.join("sessions"));
         let session = sessions
             .create(&workspace, "anthropic/claude-opus-5")
@@ -1213,11 +1093,9 @@ mod tests {
             model,
             session: Arc::new(Mutex::new(session)),
             session_id,
-            // Not attached to an agent here: what a command asks of the prefix is read
-            // back from this handle rather than from whoever would have applied it.
+            
             prefix: Default::default(),
-            // One scratch directory standing in for both halves, the way an install with a
-            // `MICRO_DIR` or a `~/.micro` resolves them.
+            
             config_home: root.join("home"),
             data_home: root.join("home"),
             skills_enabled: true,
@@ -1230,8 +1108,7 @@ mod tests {
             anthropic_extra_usage: true,
             prompts: Vec::new(),
             tool_names: Vec::new(),
-            // No phone is ever handed this session in a test, but the seam is built the
-            // same way it is in a real run: the interface's half is simply dropped.
+            
             seam: crate::remote::Seam::build().0,
             mirror: Default::default(),
             snapshot: Default::default(),
@@ -1298,11 +1175,9 @@ mod tests {
             .collect();
         assert_eq!(current, vec!["claude-opus-5"]);
 
-        // Everything offered is served by something there is a credential for. Which
-        // providers those are depends on the environment the test runs in, so the
-        // property is asserted rather than the list.
+        
         for item in &picker.items {
-            // The row names the model; the badge beside it names who serves it.
+            
             let provider = item.detail.trim_matches(['[', ']']);
             assert!(
                 host.auth.status_of(provider).is_authenticated(),
@@ -1340,9 +1215,8 @@ mod tests {
         );
     }
 
-    /// Without a credential the swap cannot be built, and the report says which provider to
-    /// sign in to. What it must never say is "restart" — switching model is something the
-    /// running interface does now.
+    /// Without a credential the swap cannot be built, and the report says which provider to sign in
+    /// to.
     #[tokio::test]
     async fn switching_model_without_a_credential_says_how_to_sign_in() {
         let (mut host, _root) = host("set-model").await;
@@ -1411,8 +1285,8 @@ mod tests {
         assert_eq!(saved.thinking, Some(micro_config::Thinking::High));
     }
 
-    /// Starting over leaves the old conversation on disk under its own id and opens a
-    /// session with nothing in it, which is what the writer appends to from then on.
+    /// Starting over leaves the old conversation on disk under its own id and opens a session with
+    /// nothing in it.
     #[tokio::test]
     async fn clearing_opens_a_new_session() {
         let (mut host, _root) = host("clear").await;
@@ -1434,13 +1308,13 @@ mod tests {
 
         assert_ne!(host.session_id, first, "a different session is open");
         assert_eq!(host.session.lock().await.id(), host.session_id);
-        // What was said before is still there to go back to.
+        
         let kept = host.sessions.load(&first).await.unwrap();
         assert_eq!(kept.messages.len(), 1);
     }
 
-    /// Resuming swaps the open session, so the conversation the model sees and the log
-    /// being written are the same one.
+    /// Resuming swaps the open session, so the conversation the model sees and the log being
+    /// written are the same one.
     #[tokio::test]
     async fn resuming_opens_the_chosen_session() {
         let (mut host, _root) = host("resume").await;
@@ -1481,8 +1355,7 @@ mod tests {
         assert!(applied.is_error(), "{applied:?}");
     }
 
-    /// Branching moves where the next message hangs off, and hands back the conversation
-    /// along the branch so the agent and the screen agree on what was said.
+    
     #[tokio::test]
     async fn branching_continues_from_an_earlier_entry() {
         let (mut host, _root) = host("branch").await;
@@ -1505,7 +1378,7 @@ mod tests {
             other => panic!("expected a conversation, got {other:?}"),
         }
 
-        // The next message hangs off the branch, and the abandoned one is still there.
+        
         host.session
             .lock()
             .await
@@ -1548,7 +1421,7 @@ mod tests {
         let meta = host.sessions.meta(&host.session_id).await.unwrap();
         assert_eq!(meta.title, "the good one");
 
-        // Asking without an argument reports the name rather than setting an empty one.
+        
         let outcome = host.dispatch("/name", state(1)).await.expect("a command");
         assert_eq!(outcome.text(), Some("Session name: the good one"));
     }
@@ -1569,7 +1442,7 @@ mod tests {
             other => panic!("expected a conversation, got {other:?}"),
         }
 
-        // The fork is a second session, and it is the one being written to now.
+        
         assert_ne!(host.session_id, original);
         assert_eq!(host.sessions.list().await.unwrap().len(), 2);
         assert_eq!(
@@ -1579,8 +1452,8 @@ mod tests {
         );
     }
 
-    /// Cloning copies the whole conversation as it stands, which is a fork through its
-    /// last message.
+    /// Cloning copies the whole conversation as it stands, which is a fork through its last
+    /// message.
     #[tokio::test]
     async fn cloning_copies_the_conversation_as_it_stands() {
         let (mut host, _root) = host("clone").await;
@@ -1599,14 +1472,14 @@ mod tests {
         assert_ne!(host.session_id, original);
     }
 
-    /// Importing copies a log written elsewhere into a session of micro's own, and
-    /// carries on in it.
+    /// Importing copies a log written elsewhere into a session of micro's own, and carries on in
+    /// it.
     #[tokio::test]
     async fn importing_carries_on_from_the_imported_log() {
         let (mut host, root) = host("import").await;
         let original = host.session_id.clone();
 
-        // A log in micro's own format, which is what /import is given.
+        
         let source = root.join("elsewhere.jsonl");
         let written = format!(
             "{}\n{}\n",
@@ -1662,7 +1535,7 @@ mod tests {
         }
     }
 
-    /// Sharing without a token says what to set rather than failing at GitHub.
+    
     #[tokio::test]
     async fn sharing_without_a_token_names_the_variable() {
         let (mut host, _root) = host("share").await;
@@ -1704,8 +1577,8 @@ mod tests {
         assert!(!store.is_trusted(&host.workspace));
     }
 
-    /// A subscription credential is billed per token from here, which is worth saying
-    /// once and not worth saying twice.
+    /// A subscription credential is billed per token from here, which is worth saying once and not
+    /// worth saying twice.
     #[tokio::test]
     async fn a_subscription_credential_is_flagged_once() {
         let (mut host, _root) = host("extra-usage").await;
@@ -1784,10 +1657,7 @@ mod tests {
         assert!(host.auth.get("openrouter").is_none());
     }
 
-    /// `!` runs the shell unless an extension takes over what running it means. Tested
-    /// directly against `before_bash` — a `!` line is only ever read by the interactive
-    /// TUI, which these tests do not drive — with a real extension host, since what
-    /// matters is that pi's `user_bash` shape actually reaches one.
+    /// `!` runs the shell unless an extension takes over what running it means.
     #[tokio::test]
     async fn an_extension_can_take_over_what_a_bang_command_does() {
         if micro_extensions::which_bun().is_none() {
@@ -1832,8 +1702,7 @@ export default (micro) => {
             })
         );
 
-        // A command the extension does not care about is not taken over, and the shell
-        // runs it as it always would.
+        
         let untouched = host.before_bash("ls", false, "/workspace").await;
         assert_eq!(untouched, None);
 

@@ -1,14 +1,4 @@
-//! Sankey diagrams, drawn as flows down the page rather than bands across it.
-//!
-//! A sankey is about where volume goes: which paths carry most of it, and where it is lost.
-//! Drawn the way a browser draws one — ribbons whose thickness is their value — a terminal
-//! has only whole rows to spend, so a diagram of any size becomes a wall of blocks with the
-//! names buried in it, and the thing it was meant to show is the first thing lost.
-//!
-//! So it is laid down instead, the way [`crate::pie`] lays a pie down: one row per flow,
-//! grouped under the node it leaves, with a bar in proportion and the value beside it.
-//! Every node also gets its total, since what comes into a stage and what leaves it is the
-//! comparison a sankey is read for.
+
 
 use std::collections::BTreeMap;
 
@@ -21,8 +11,7 @@ use crate::width::string_width;
 /// Flows past this and there is nothing left to read as a shape.
 const MAX_FLOWS: usize = 256;
 
-/// The widest a bar is drawn. The largest flow takes all of it and the rest are drawn
-/// against that, so the biggest path is obvious and the smallest is still visible.
+/// The widest a bar is drawn.
 const BAR: usize = 28;
 
 /// How far a flow is indented under the node it leaves.
@@ -66,7 +55,7 @@ fn read_flow(line: &str) -> Option<Flow> {
         return None;
     }
     let value: f64 = fields[2].trim().parse().ok()?;
-    // A flow carrying nothing, or carrying less than nothing, is not a flow.
+    
     if !value.is_finite() || value <= 0.0 {
         return None;
     }
@@ -100,8 +89,7 @@ fn split_fields(line: &str) -> Vec<String> {
 }
 
 fn draw(flows: &[Flow]) -> Canvas {
-    // Grouped by where each flow leaves from, in the order those nodes were first named:
-    // a sankey is written as a story from its sources onward, and reads best that way.
+    
     let mut order: Vec<&str> = Vec::new();
     let mut grouped: BTreeMap<&str, Vec<&Flow>> = BTreeMap::new();
     for flow in flows {
@@ -115,7 +103,7 @@ fn draw(flows: &[Flow]) -> Canvas {
     let amounts: Vec<String> = flows.iter().map(|flow| trim_number(flow.value)).collect();
     let widest_amount = amounts.iter().map(|a| string_width(a)).max().unwrap_or(0);
 
-    // Every flow reads `→ Target`, and they line up under their source.
+    
     let widest_target = flows
         .iter()
         .map(|flow| INDENT + 2 + string_width(&flow.target))
@@ -136,7 +124,7 @@ fn draw(flows: &[Flow]) -> Canvas {
     let mut y = 0;
     for source in &order {
         let out: f64 = grouped[source].iter().map(|flow| flow.value).sum();
-        // The node, and what leaves it altogether: the number a reader compares stages by.
+        
         let heading = format!("{source} ({})", trim_number(out));
         draw_text(&mut canvas, &heading, 0, y, Cls::Title);
         y += 1;
@@ -193,8 +181,8 @@ mod tests {
         assert!(rows[4].contains("→ Households"), "{rows:?}");
     }
 
-    /// The biggest flow fills the bar and the rest are drawn against it, so which path
-    /// carries the volume is the first thing seen.
+    /// The biggest flow fills the bar and the rest are drawn against it, so which path carries the
+    /// volume is the first thing seen.
     #[test]
     fn a_bar_is_drawn_in_proportion_to_the_largest_flow() {
         let rows = drawn("sankey-beta\nA,B,100\nA,C,25");
@@ -203,14 +191,14 @@ mod tests {
         assert!(rows[1].trim_end().ends_with("100"), "{rows:?}");
     }
 
-    /// A name may hold a comma if it is quoted, which is what the quotes are for.
+    
     #[test]
     fn a_quoted_name_may_hold_a_comma() {
         let rows = drawn("sankey-beta\n\"Bread, baked\",Shops,10");
         assert!(rows[0].starts_with("Bread, baked (10)"), "{rows:?}");
     }
 
-    /// What is not a sankey is refused rather than guessed at.
+    
     #[test]
     fn what_is_not_a_sankey_is_left_alone() {
         assert!(render_sankey("graph TD\n  A --> B").is_none());

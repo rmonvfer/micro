@@ -1,8 +1,4 @@
 //! What a service accepts, worked out from who serves a model and where.
-//!
-//! A catalog entry records only what a service does differently from the protocol it
-//! answers. Everything else is inferred from the provider and its address: the inference
-//! is the base, and whatever the entry states is laid over it.
 
 use micro_types::CacheControlFormat;
 use micro_types::Compat;
@@ -14,10 +10,6 @@ use serde::Serialize;
 use std::collections::BTreeMap;
 
 /// What one catalog entry states about its service, where it differs from the protocol.
-///
-/// These keys are written the way the generator writes them: in camel case, unlike the
-/// surrounding entry. Spelling them any other way here means none of them are read and
-/// every model quietly falls back to the inference.
 #[derive(Debug, Clone, Default, PartialEq, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CompatOverrides {
@@ -61,8 +53,7 @@ pub struct CompatOverrides {
     pub force_adaptive_thinking: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tool_call_id_length: Option<usize>,
-    /// Whether the service offers the model a search over its own tools. micro has no
-    /// such tool, so this is carried rather than acted on, and survives a round trip.
+    /// Whether the service offers the model a search over its own tools.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub supports_tool_search: Option<bool>,
 }
@@ -171,11 +162,7 @@ fn detect(provider: &str, base_url: &str, model_id: &str) -> Compat {
     let is_grok = provider == "xai" || base_url.contains("api.x.ai");
     let is_deepseek = provider == "deepseek" || base_url.contains("deepseek.com");
     let is_mistral = provider == "mistral" || base_url.contains("api.mistral.ai");
-    // Only the first-party Messages API understands `strict` on a tool. A Claude model
-    // served through Bedrock, Vertex, or a gateway speaks a different protocol entirely
-    // and never reaches this flag; one served through OpenRouter or Copilot speaks the
-    // genuine Messages API but is not Anthropic's own service, so it is not assumed to
-    // have kept pace with a beta feature.
+    
     let is_anthropic_native = provider == "anthropic";
 
     let is_nonstandard = is_nvidia
@@ -200,8 +187,7 @@ fn detect(provider: &str, base_url: &str, model_id: &str) -> Compat {
         || is_nvidia
         || is_ant_ling;
 
-    // OpenRouter passes a request through to whoever serves the model, so what it accepts
-    // follows the model rather than the gateway.
+    
     let openrouter_developer_role =
         is_openrouter && (model_id.starts_with("anthropic/") || model_id.starts_with("openai/"));
 
@@ -237,9 +223,7 @@ fn detect(provider: &str, base_url: &str, model_id: &str) -> Compat {
         zai_tool_stream: false,
         supports_strict_mode: !is_moonshot && !is_together && !is_cloudflare_gateway && !is_nvidia,
         supports_strict_tools: is_anthropic_native,
-        // Nothing infers this true for any provider — matching pi, which has no
-        // `generate-models.ts` rule for Bedrock the way it does for OpenAI-Responses and
-        // Anthropic-Messages. A model gets it only from an explicit catalog override.
+        
         bedrock_supports_strict_tools: false,
         cache_control_format: match provider == "openrouter" && model_id.starts_with("anthropic/") {
             true => Some(CacheControlFormat::Anthropic),
@@ -262,20 +246,13 @@ fn detect(provider: &str, base_url: &str, model_id: &str) -> Compat {
         supports_eager_tool_input_streaming: true,
         supports_cache_control_on_tools: true,
         force_adaptive_thinking: decides_its_own_thinking(model_id),
-        // Mistral routes a conversation back to the machine holding its cached prompt,
-        // and takes a tool call's id only in a shape of its own.
+        
         tool_call_id_length: is_mistral.then_some(MISTRAL_TOOL_CALL_ID_LENGTH),
         thinking: BTreeMap::new(),
     }
 }
 
 /// Whether a model is asked for an effort and left to decide how much to think.
-///
-/// Claude models from Opus 4.6 and Sonnet 4.6 onwards, and Fable 5, take an effort and
-/// spend it themselves. Everything before them is handed a token budget. The id is what
-/// says which, and it is written several ways depending on the service listing it, so
-/// both the hyphenated and dotted spellings count.
-/// How long Mistral will take a tool call's id.
 const MISTRAL_TOOL_CALL_ID_LENGTH: usize = 9;
 
 fn decides_its_own_thinking(model_id: &str) -> bool {
@@ -311,8 +288,6 @@ mod tests {
     }
 
     /// Only Anthropic's own service is assumed to have kept pace with a beta feature.
-    /// Something else answering the same wire shape — a gateway, a reimplementation, a
-    /// Claude model reached through GitHub Copilot — is not assumed to support it.
     #[test]
     fn only_anthropics_own_service_is_assumed_to_support_strict_tools() {
         let anthropic = detect("anthropic", "https://api.anthropic.com/v1", "claude-opus-5");
@@ -333,11 +308,7 @@ mod tests {
         assert!(!openrouter.supports_strict_tools);
     }
 
-    /// Nothing infers Bedrock strict-tool support — not for a Claude model reached through
-    /// it, not for anything else. pi is in the same state: its catalog generator has a
-    /// rule that turns this on for genuine Anthropic and OpenAI-Responses models, and has
-    /// none for Bedrock. A model gets it only from an explicit catalog override; the
-    /// consumer in `bedrock.rs` is built and correct, and simply never fires today.
+    
     #[test]
     fn nothing_infers_bedrock_strict_tool_support() {
         let bedrock = detect(
@@ -411,7 +382,7 @@ mod tests {
 
         assert!(compat.supports_store);
         assert_eq!(compat.thinking_format, ThinkingFormat::StringThinking);
-        // Anything it does not state is still inferred.
+        
         assert!(!compat.supports_developer_role);
     }
 
@@ -434,7 +405,7 @@ mod tests {
             compat.level(micro_types::ThinkingLevel::Low),
             Some("high".to_string())
         );
-        // A level it says nothing about keeps the name the protocol gives it.
+        
         assert_eq!(
             compat.level(micro_types::ThinkingLevel::High),
             Some("high".to_string())
@@ -500,9 +471,6 @@ mod tests {
 #[cfg(test)]
 mod catalog_probe {
     /// Every override the catalog states must survive being read.
-    ///
-    /// The catalog writes its keys the way the generator does; a struct that spells them
-    /// differently parses none of them and silently uses defaults for every model.
     #[test]
     fn what_the_catalog_states_about_a_model_is_read() {
         let catalog = crate::Catalog::bundled();
@@ -516,10 +484,6 @@ mod catalog_probe {
     }
 
     /// No key the catalog states may be dropped on the way in.
-    ///
-    /// A key this struct has no field for parses to nothing and vanishes, taking a
-    /// correction with it and leaving no sign that it was ever stated. Reading the whole
-    /// bundled catalog back out is what notices.
     #[test]
     fn no_compat_key_in_the_catalog_is_silently_dropped() {
         let file: serde_json::Value =
@@ -558,8 +522,7 @@ mod catalog_probe {
 mod mistral {
     use super::*;
 
-    /// Mistral serves the completions shape, but routes a conversation with a header of
-    /// its own and will only take a tool call's id in a shape of its own.
+    
     #[test]
     fn mistral_is_spoken_to_the_way_it_expects() {
         let catalog = crate::Catalog::bundled();

@@ -2,8 +2,7 @@
 name = "micro-sandbox"
 version.workspace = true
 edition.workspace = true
-# Apache-2.0 rather than the workspace MIT: this crate carries code derived from
-# OpenAI Codex, and the LICENSE and NOTICE files beside this one travel with it.
+# Apache-2.0: this crate contains code derived from OpenAI Codex.
 license = "Apache-2.0"
 
 [dependencies]

@@ -8,8 +8,8 @@ use micro_types::Message;
 use micro_types::StreamEvent;
 use std::io::Write as _;
 
-/// Run one exchange, printing assistant text to stdout and progress to stderr so the
-/// answer stays pipeable.
+/// Run one exchange, printing assistant text to stdout and progress to stderr so the answer stays
+/// pipeable.
 pub async fn run(mut agent: Agent, prompt: Message, quiet: bool) -> Result<()> {
     let (sender, mut receiver) = tokio::sync::mpsc::unbounded_channel();
     let task = tokio::spawn(async move {

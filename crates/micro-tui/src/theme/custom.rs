@@ -1,10 +1,4 @@
 //! Reading a theme written by the user.
-//!
-//! A user drops a JSON theme into the `themes` directory of micro's configuration directory
-//! and names it in settings. The file carries a `name`, an optional `vars` block of reusable
-//! colors, and a `colors` block naming every token, where a value is a hex string, a
-//! 256-color index, an empty string meaning the terminal's own default, or the name of a
-//! var.
 
 use ratatui::style::Color;
 use serde_json::Value;
@@ -14,15 +8,15 @@ use std::path::PathBuf;
 /// What the directory of user themes is called.
 pub const THEMES_DIR: &str = "themes";
 
-/// Where a user's own themes live: the `themes` directory of micro's configuration
-/// directory, since a theme is something they wrote.
+/// Where a user's own themes live: the `themes` directory of micro's configuration directory, since
+/// a theme is something they wrote.
 pub fn themes_dir() -> Option<PathBuf> {
     micro_dirs::config_dir().map(|dir| dir.join(THEMES_DIR))
 }
 
 /// The path a named user theme would live at.
 pub fn path_for(name: &str) -> Option<PathBuf> {
-    // A name is a file stem, so anything that could climb out of the directory is refused.
+    
     if name.is_empty() || name.contains(['/', '\\']) || name.contains("..") {
         return None;
     }
@@ -32,8 +26,8 @@ pub fn path_for(name: &str) -> Option<PathBuf> {
 /// Every token a theme file resolved to, by its schema name.
 pub type Resolved = Vec<(String, Color)>;
 
-/// Parses a theme file, resolving var references and checking that every token the built-in
-/// themes carry is present.
+/// Parses a theme file, resolving var references and checking that every token the built-in themes
+/// carry is present.
 pub fn parse(contents: &str, required: &[&str]) -> Result<(String, Resolved), String> {
     let document: Value =
         serde_json::from_str(contents).map_err(|error| format!("not valid JSON: {error}"))?;
@@ -67,8 +61,7 @@ pub fn parse(contents: &str, required: &[&str]) -> Result<(String, Resolved), St
     Ok((name.to_string(), resolved))
 }
 
-/// Follows a value to the color it names. A value that is not a literal is the name of a
-/// var, which may itself name another; `seen` is what stops a cycle from recursing forever.
+/// Follows a value to the color it names.
 fn resolve(
     value: &Value,
     vars: Option<&serde_json::Map<String, Value>>,
@@ -83,7 +76,7 @@ fn resolve(
     let Some(text) = value.as_str() else {
         return Err(format!("expected a color, found {value}"));
     };
-    // An empty string means "leave this to the terminal", which is ratatui's Reset.
+    
     if text.is_empty() {
         return Ok(Color::Reset);
     }
@@ -148,7 +141,7 @@ mod tests {
         .unwrap();
 
         assert_eq!(resolved[0].1, Color::Indexed(214));
-        // An empty string leaves the color to the terminal.
+        
         assert_eq!(resolved[1].1, Color::Reset);
     }
 

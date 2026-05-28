@@ -1,8 +1,4 @@
-// Running what an extension registered.
-//
-// A tool the model called, a command the user typed, a renderer asked for lines: each is a
-// function an extension handed over, and each answer has to be turned back into something
-// micro can act on.
+
 
 import { type Component, dispose as disposeComponent, registerComponent } from "./host-components.ts";
 import { type Json, send } from "./host-wire.ts";
@@ -20,44 +16,24 @@ export interface ImageContent {
 	mimeType: string;
 }
 
-/** What execute() resolves with, and what onUpdate() is called with along the way — pi's
- * AgentToolResult, member for member. */
+
 export interface ToolResult<TDetails = unknown> {
 	content: (TextContent | ImageContent)[];
 	details?: TDetails;
-	/** Nowhere to land on this side: a micro tool result carries content and nothing else,
-	 * so a usage figure a tool reports for itself is read here and travels no further. */
+	
 	usage?: Json;
-	/** Same story as usage — accepted so a pi-shaped result never fails for carrying it,
-	 * but micro's agent loop does not yet let a tool call introduce new tools mid-run. */
+	/** Same story as usage. */
 	addedToolNames?: string[];
-	/** And again: accepted, not honored. micro always finishes every call in a batch
-	 * rather than stopping the batch early on one tool's say-so. */
+	/** And again: accepted, not honored. */
 	terminate?: boolean;
 }
 
-/** Called with the result so far, as many times as a tool likes before it settles. Calls
- * made after execute() has resolved or thrown are dropped — nobody is listening anymore. */
+/** Called with the result so far, as many times as a tool likes before it settles. */
 export type ToolUpdateCallback<TDetails = unknown> = (partial: ToolResult<TDetails>) => void;
 
 /**
- * Tool definition for registerTool(), matching pi's contract member for member so a tool
- * written for pi runs here unchanged.
- *
- * label, promptSnippet, promptGuidelines, constrainedSampling, and executionMode describe
- * how pi's own process presents or schedules a call: a label for its TUI, a snippet and
- * guideline bullets for its system prompt, a sampling directive for its provider layer, a
- * batching hint for its loop. micro builds a provider request with no constrained-sampling
- * hook and always runs a batch of calls together rather than choosing sequential or
- * parallel per tool. These members are still read here and carried all the way to micro
- * instead of being dropped at this boundary, so an extension that sets one is never
- * silently ignored — but nothing on the Rust side consumes them yet.
- *
- * renderCall, renderResult and renderShell are real: see `renderToolCall`/
- * `renderToolResult` below. A Component itself never crosses the wire — it is three
- * methods, and a method cannot be written down as JSON — but a call to it by id can, which
- * is the same shape execute() already uses for a tool that stays in this process and is
- * driven by id rather than shipped over.
+ * Tool definition for registerTool(), matching pi's contract member for member so a tool written
+ * for pi runs here unchanged.
  */
 export interface ToolDefinition<TDetails = unknown> {
 	name: string;
@@ -68,10 +44,7 @@ export interface ToolDefinition<TDetails = unknown> {
 	parameters?: Json;
 	constrainedSampling?: false | Json;
 	renderShell?: "default" | "self";
-	/** Reshape raw arguments before execute() sees them. A schema validation step would
-	 * normally sit between this and execute() — micro runs none, for this tool or any
-	 * other, so what this returns is exactly what execute() receives. Thrown, its message
-	 * becomes the tool's error result rather than reaching execute() at all. */
+	/** Reshape raw arguments before execute() sees them. */
 	prepareArguments?: (args: unknown) => unknown;
 	executionMode?: "sequential" | "parallel";
 	execute: (
@@ -81,7 +54,7 @@ export interface ToolDefinition<TDetails = unknown> {
 		onUpdate: ToolUpdateCallback<TDetails> | undefined,
 		ctx: unknown,
 	) => unknown | Promise<unknown>;
-	/** Draw the call itself — the header a reader sees while, and after, a tool runs. */
+	
 	renderCall?: (args: unknown, theme: Json, context: ToolRenderContext) => Component;
 	/** Draw what the call came back with. */
 	renderResult?: (
@@ -92,22 +65,15 @@ export interface ToolDefinition<TDetails = unknown> {
 	) => Component;
 }
 
-/** What renderCall/renderResult are called with, matching pi's ToolRenderContext member for
- * member except for the members a live remote component cannot honestly offer — see the
- * note above `toolTheme`. */
+
 export interface ToolRenderContext {
 	args: unknown;
 	toolCallId: string;
-	/** Tell micro this row's rendering is stale, on this side's own schedule rather than
-	 * only when args or a result changed — a spinner mid-animation, a countdown, anything a
-	 * renderer wants to keep moving between the moments micro would otherwise ask again. */
+	
 	invalidate: () => void;
-	/** Whatever this same renderer — call or result, kept separate — returned last time for
-	 * this tool call, for a renderer that wants to reuse or diff against its own object
-	 * rather than build fresh every time. */
+	/** Whatever this same renderer. */
 	lastComponent: Component | undefined;
-	/** Scratch state this renderer owns across every call for this one tool row. Shared
-	 * between renderCall and renderResult for the same row, the way pi shares it. */
+	/** Scratch state this renderer owns across every call for this one tool row. */
 	state: Json;
 	cwd: string;
 	executionStarted: boolean;
@@ -118,21 +84,10 @@ export interface ToolRenderContext {
 	isError: boolean;
 }
 
-/** Tool calls running right now, keyed the same way micro asked for them, so an abort from
- * micro can find the right one to stop. */
+
 const running = new Map<string, AbortController>();
 
-/**
- * Run one of an extension's tools under pi's contract: an id it can use to tell its own
- * calls apart, a signal that fires if micro gives up on this call, and a way to say what it
- * has done before it is done doing it.
- *
- * The id passed as toolCallId is the one this host and micro correlate the call by, not
- * the id the model's own tool-call block carries — micro's tool trait does not thread the
- * model's id down to an individual tool, only the id used for reporting from the loop
- * around it. It is still unique to this call and stable for its whole run, which is what
- * the contract actually needs it for.
- */
+
 export async function runTool(id: string, tool: ToolDefinition, rawArguments: Json, ctx: unknown): Promise<void> {
 	let args: unknown = rawArguments;
 	if (tool.prepareArguments) {
@@ -147,8 +102,7 @@ export async function runTool(id: string, tool: ToolDefinition, rawArguments: Js
 	const controller = new AbortController();
 	running.set(id, controller);
 
-	// Nothing sent after the call settles is going anywhere: the id it would be tagged
-	// with no longer means anything to whoever was waiting on it.
+	
 	let settled = false;
 	const onUpdate: ToolUpdateCallback = (partial) => {
 		if (settled) return;
@@ -167,26 +121,12 @@ export async function runTool(id: string, tool: ToolDefinition, rawArguments: Js
 	}
 }
 
-/**
- * micro giving up on a call — a turn that was aborted, or one that ran past its own
- * patience. A call already settled, or one this host never started, is simply not found:
- * there is nothing left here to stop.
- */
+
 export function abortTool(id: string): void {
 	running.get(id)?.abort();
 }
 
-/**
- * The theme renderCall/renderResult receive as their second argument.
- *
- * pi's Theme is a constructor argument to the renderer, not something reached through
- * `ctx.ui` — a tool's renderer draws with whatever it is handed here, before a context
- * object with a `ui` member ever comes into it. Rather than a second copy of micro's full
- * palette (`ctx.ui.theme` already carries one, built for a different call site), colors are
- * mapped to the basic ANSI palette by what they mean: an unstyled token still reads
- * correctly, in either color scheme, without a second source of truth to keep in sync with
- * `crates/micro-tui/src/theme/palette.rs`.
- */
+/** The theme renderCall/renderResult receive as their second argument. */
 const FG_ANSI: Record<string, number> = {
 	error: 31,
 	success: 32,
@@ -221,8 +161,7 @@ const toolTheme: Json = {
 	},
 };
 
-/** What is kept per tool call for its renderers: shared scratch state, and the last
- * component each renderer returned, tracked apart because pi tracks them apart. */
+
 interface ToolRenderRow {
 	state: Json;
 	callComponent?: Component;
@@ -245,14 +184,15 @@ function rowFor(toolCallId: string): ToolRenderRow {
 export interface ToolRenderAnswer {
 	/** Set only when the renderer ran and returned a component. */
 	componentId?: string;
-	/** False either because the tool declared no renderer of this kind, or because the one
-	 * it declared threw — `error` tells the two apart. */
+	/**
+ * False either because the tool declared no renderer of this kind, or because the one it declared
+ * threw.
+ */
 	supported: boolean;
 	error?: string;
 }
 
-/** Everything renderCall and renderResult are both given beyond their own first argument,
- * read once from what micro sent over the wire. */
+
 interface RenderFields {
 	toolCallId: string;
 	cwd: string;
@@ -286,10 +226,7 @@ function contextFor(fields: RenderFields, row: ToolRenderRow, args: unknown, kin
 	};
 }
 
-/** Run a tool's renderCall, registering whatever Component it returns and retiring the one
- * from this same tool call's previous invocation — a renderer is asked again on every
- * state change (args streaming in, execution starting), and nothing should keep a stale
- * component registered once a fresher one exists to answer for it. */
+
 export function renderToolCall(tool: ToolDefinition, args: unknown, fields: RenderFields): ToolRenderAnswer {
 	if (!tool.renderCall) {
 		return { supported: false };
@@ -309,8 +246,7 @@ export function renderToolCall(tool: ToolDefinition, args: unknown, fields: Rend
 	}
 }
 
-/** The renderResult counterpart to `renderToolCall` — same retire-then-register handling,
- * called instead once a result (partial or final) has arrived to draw. */
+/** The renderResult counterpart to `renderToolCall`. */
 export function renderToolResult(
 	tool: ToolDefinition,
 	result: ToolResult,
@@ -336,11 +272,10 @@ export function renderToolResult(
 	}
 }
 
-/** Forget everything kept for a tool call's renderers, and retire whatever components are
- * still registered for it. Not tied to any lifecycle event micro sends today — a session
- * that never calls this simply keeps every tool call's rendering state for its own
- * lifetime, which ends anyway the moment the process does — but real code rather than a gap
- * for whichever caller does want to reclaim it, such as a session that forks or resets. */
+/**
+ * Forget everything kept for a tool call's renderers, and retire whatever components are still
+ * registered for it.
+ */
 export function forgetToolRender(toolCallId: string): void {
 	const row = toolRenderRows.get(toolCallId);
 	if (!row) {
@@ -370,14 +305,7 @@ export function renderedLines(value: unknown): string[] {
 	return [];
 }
 
-/**
- * Whatever a tool returned or reported mid-run, as the content array micro reads.
- *
- * A tool may answer with a bare string, an array of content blocks, or the full shape
- * pi's contract describes. Whatever form it took, what reaches micro is always
- * `{ content: [...] }` plus whatever else rode along with it, so a final result and a
- * partial update are read the same way on the other end.
- */
+/** Whatever a tool returned or reported mid-run, as the content array micro reads. */
 export function toolAnswer(value: unknown): Json {
 	if (typeof value === "string") {
 		return { content: [{ type: "text", text: value }] };
@@ -388,8 +316,7 @@ export function toolAnswer(value: unknown): Json {
 	if (value && typeof value === "object" && "content" in (value as Json)) {
 		const shape = value as Json;
 		const answer: Json = { content: normalizeContent(shape.content) };
-		// Carried as-is rather than reshaped: nothing on the Rust side reads these yet
-		// (see ToolResult), but a tool that set them should not see them vanish either.
+		
 		for (const carried of ["details", "usage", "addedToolNames", "terminate"] as const) {
 			if (carried in shape) {
 				answer[carried] = shape[carried];
@@ -398,8 +325,7 @@ export function toolAnswer(value: unknown): Json {
 		return answer;
 	}
 	if (value && typeof value === "object") {
-		// Shaped like an object but not a ToolResult: read as JSON, the way an
-		// unrecognized answer has always been carried rather than lost.
+		
 		return { content: [{ type: "text", text: JSON.stringify(value) }] };
 	}
 	return { content: [{ type: "text", text: value === undefined ? "" : String(value) }] };

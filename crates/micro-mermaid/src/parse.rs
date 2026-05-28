@@ -1,8 +1,4 @@
 //! Source text to diagram model.
-//!
-//! Every `parse_x` returns `None` when the source is not that kind of diagram,
-//! or when it exceeds a cap — `render` tries each in turn and falls back to a
-//! framed copy of the source when they all decline.
 
 use std::collections::HashMap;
 
@@ -14,7 +10,7 @@ use crate::labels::{
     ascii_lower, clean_label, decode_html_entities, display_generics, is_id_char, src_lines,
 };
 
-// ---------------------------------------------------------------- statements
+
 
 fn flush_statement(cur: &str, out: &mut Vec<String>) {
     let trimmed = cur.trim();
@@ -24,8 +20,6 @@ fn flush_statement(cur: &str, out: &mut Vec<String>) {
 }
 
 /// Split one source line into statements on `;`, stopping at a `%%` comment.
-///
-/// Quoted spans are opaque, so a label may contain `;` and `%%`.
 pub fn split_statements(line: &str, out: &mut Vec<String>) {
     let chars: Vec<char> = line.chars().collect();
     let mut cur = String::new();
@@ -116,16 +110,7 @@ pub enum DiagramKind {
     Requirement,
 }
 
-/// The kind of diagram `src` declares, or `None` if its header names no type
-/// this renderer draws.
-///
-/// Reads the header only — it says nothing about whether the body parses.
-/// Pair it with `render` to tell a source this renderer will never draw from
-/// one that is merely malformed: `render(src).is_none() && diagram_kind(src).is_some()`
-/// means a syntax error.
-///
-/// Each branch mirrors the header test in the matching `parse_x`, so the two
-/// always agree on what they recognise.
+/// The kind of diagram `src` declares, or `None` if its header names no type this renderer draws.
 pub fn diagram_kind(src: &str) -> Option<DiagramKind> {
     let statements = statements_of(src);
     let kind = header_kind(&statements)?;
@@ -176,7 +161,7 @@ pub fn diagram_kind(src: &str) -> Option<DiagramKind> {
     }
 }
 
-// ----------------------------------------------------------------- flowchart
+
 
 pub fn parse_graph(src: &str) -> Option<Graph> {
     let statements = statements_of(src);
@@ -244,11 +229,7 @@ fn parse_subgraph_decl(rest: &str) -> (String, String) {
     (rest.to_string(), rest.to_string())
 }
 
-/// A chain of `node link node link node ...`, each link fanning out over `&`.
-///
-/// Parses as far as it can and keeps the prefix, matching upstream mermaid.js.
-/// Whatever it could not read is recorded in `graph.warnings` rather than
-/// failing the diagram — see the note on that field.
+
 fn parse_statement(st: &str, graph: &mut Graph) {
     let chars: Vec<char> = st.chars().collect();
     let mut i;
@@ -294,8 +275,7 @@ fn parse_statement(st: &str, graph: &mut Graph) {
         let mut aborted = false;
         'edges: for &f in &prev {
             for &t in &target.group {
-                // `A <-- B` reads right-to-left: swap the endpoints so the arrow that
-                // was written on the left becomes a normal forward head.
+                
                 let reversed = link.left == Head::Arrow && link.right != Head::Arrow;
                 let pushed = graph.push_edge(Edge {
                     from: if reversed { t } else { f },
@@ -376,7 +356,7 @@ fn parse_node(chars: &[char], start: usize, graph: &mut Graph) -> Option<NodeRef
     })
 }
 
-/// What a shape bracket yielded. `unclosed` is set when the bracket never closed.
+/// What a shape bracket yielded.
 struct Shaped {
     shape: Shape,
     label: Option<String>,
@@ -415,10 +395,6 @@ fn read_shape_at(chars: &[char], i: usize) -> Shaped {
 }
 
 /// Read label text up to `closer`.
-///
-/// Quoting is decided by the first non-space character: inside a quoted label
-/// the closer is ignored until the quote closes, so `A["a] b"]` is one node.
-/// An unquoted label ends at the first closer, so `A[5" pipe]` keeps its quote.
 fn read_shape(chars: &[char], start: usize, closer: &'static str, shape: Shape) -> Shaped {
     let mut j = start;
     while matches!(chars.get(j), Some(&' ') | Some(&'\t')) {
@@ -449,8 +425,7 @@ fn read_shape(chars: &[char], start: usize, closer: &'static str, shape: Shape) 
         text.push(c);
         i += 1;
     }
-    // Ran off the end still looking for the closer: everything after the opening
-    // bracket became label text, so any link operator in it was swallowed.
+    
     Shaped {
         shape,
         label: Some(clean_label(&text)),
@@ -506,13 +481,10 @@ fn line_kind(op: &str) -> LineKind {
 }
 
 /// Read a link operator and its label.
-///
-/// Labels come in two forms: `-->|text|` and the inline `-- text -->`, the
-/// latter only when the first operator carried no head.
 fn parse_link(chars: &[char], start: usize) -> Option<Link> {
     let mut i = skip_spaces(chars, start);
     let mut left = Head::None;
-    // A leading `o`/`x` decorates the tail, but only directly before an operator.
+    
     if matches!(chars.get(i), Some(&'o') | Some(&'x'))
         && matches!(chars.get(i + 1), Some(&'-') | Some(&'.') | Some(&'='))
     {
@@ -609,7 +581,7 @@ fn parse_link(chars: &[char], start: usize) -> Option<Link> {
     })
 }
 
-// --------------------------------------------------------------------- state
+
 
 pub fn parse_state(src: &str) -> Option<Graph> {
     let statements = statements_of(src);
@@ -633,7 +605,7 @@ pub fn parse_state(src: &str) -> Option<Graph> {
             let w = words(st);
             graph.dir = parse_dir(w.get(1).map(|s| s.as_str()).unwrap_or(""));
         } else if first == "note" {
-            // A single-line `note ... : text` needs no terminator.
+            
             if !st.contains(':') {
                 in_note = true;
             }
@@ -643,7 +615,7 @@ pub fn parse_state(src: &str) -> Option<Graph> {
             first.as_str(),
             "classdef" | "class" | "hide" | "scale" | "}" | "--"
         ) {
-            // Styling and composite-state punctuation carry no layout meaning.
+            
         } else if st.contains("-->") {
             parse_transition(st, &mut graph)?;
         } else {
@@ -709,7 +681,7 @@ fn parse_transition(st: &str, graph: &mut Graph) -> Option<()> {
     while let Some((lhs, rhs)) = rest.split_once("-->") {
         let from_id = lhs.trim_end().trim_end_matches('-').trim();
         let from = if let Some(p) = prev {
-            // Mid-chain: the source is the previous target, so nothing may precede.
+            
             if !from_id.is_empty() {
                 return None;
             }
@@ -786,7 +758,7 @@ fn parse_state_desc(st: &str, graph: &mut Graph) -> Option<()> {
     graph.node_index(st, None, Shape::Round).map(|_| ())
 }
 
-// --------------------------------------------------------------------- class
+
 
 /// Relation operators, longest-first so `--|>` wins over `--`.
 const CLASS_OPS: &[(&str, Head, Head, LineKind)] = &[
@@ -969,7 +941,7 @@ fn parse_class_relation(st: &str) -> Option<ClassRelation> {
             if !tail.starts_with(op) {
                 continue;
             }
-            // `o` is also an identifier character: skip a match glued to a name.
+            
             if op.starts_with('o') && pos > 0 && is_id_char(chars[pos - 1]) {
                 continue;
             }
@@ -1028,7 +1000,7 @@ fn parse_class_relation(st: &str) -> Option<ClassRelation> {
     })
 }
 
-/// `Class "1"` — a quoted cardinality trailing the left-hand name.
+
 fn strip_cardinality_suffix(s: &str) -> (String, String) {
     let t = s.trim_end();
     if let Some(rest) = t.strip_suffix('"') {
@@ -1039,7 +1011,7 @@ fn strip_cardinality_suffix(s: &str) -> (String, String) {
     (t.to_string(), String::new())
 }
 
-/// `"0..*" Class` — a quoted cardinality leading the right-hand name.
+
 fn strip_cardinality_prefix(s: &str) -> (String, String) {
     let t = s.trim_start();
     if let Some(rest) = t.strip_prefix('"') {
@@ -1053,7 +1025,7 @@ fn strip_cardinality_prefix(s: &str) -> (String, String) {
     (t.to_string(), String::new())
 }
 
-// ------------------------------------------------------------------------ ER
+
 
 pub fn parse_er(src: &str) -> Option<(Graph, Vec<ClassInfo>)> {
     let statements = statements_of(src);
@@ -1223,7 +1195,7 @@ pub fn push_er_attribute(info: &mut ClassInfo, raw: &str) {
     }
 }
 
-// ------------------------------------------------------------------ sequence
+
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SeqHead {
@@ -1307,7 +1279,7 @@ pub fn parse_sequence(src: &str) -> Option<Sequence> {
     let mut seq = Sequence::new();
     let mut autonumber = false;
     let mut msg_count = 0u32;
-    // One entry per open block; `true` when it draws a divider on `end`.
+    
     let mut blocks: Vec<bool> = Vec::new();
 
     for st in &statements[1..] {
@@ -1363,7 +1335,7 @@ pub fn parse_sequence(src: &str) -> Option<Sequence> {
             "loop" | "alt" | "opt" | "par" | "critical" | "break" | "else" | "and" | "option"
         ) {
             if matches!(lower.as_str(), "else" | "and" | "option") {
-                // A continuation only divides a block that opened one.
+                
                 if blocks.last() != Some(&true) {
                     continue;
                 }
@@ -1511,7 +1483,7 @@ fn parse_seq_message(st: &str, seq: &mut Sequence) -> Option<SeqMessage> {
     if from_id.is_empty() {
         return None;
     }
-    // `+`/`-` activate and deactivate the target; they carry no layout meaning.
+    
     let rest_chars: String = chars[pos + op_len..].iter().collect();
     let rest = rest_chars.trim_start().trim_start_matches(['+', '-']);
 

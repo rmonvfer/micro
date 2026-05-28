@@ -1,5 +1,4 @@
-//! The conversation model shared by every layer: content blocks, messages, usage,
-//! and the events a provider emits while a response streams in.
+
 
 mod compat;
 mod events;
@@ -44,23 +43,20 @@ pub fn now_ms() -> i64 {
         .unwrap_or_default()
 }
 
-/// A piece of content within a [`Message`]. Providers serialize each variant differently,
-/// but the agent layer works with them uniformly.
+/// A piece of content within a [`Message`].
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ContentBlock {
     Text {
         text: String,
     },
-    /// Extended thinking from a reasoning model. The signature is an opaque provider
-    /// token that must be replayed verbatim for the block to be accepted next turn.
+    /// Extended thinking from a reasoning model.
     Thinking {
         thinking: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         signature: Option<String>,
     },
-    /// Thinking the provider redacted for safety. Not human-readable, but it must be
-    /// preserved and replayed verbatim.
+    /// Thinking the provider redacted for safety.
     RedactedThinking {
         data: String,
     },
@@ -68,19 +64,13 @@ pub enum ContentBlock {
         data: String,
         mime_type: String,
     },
-    /// A tool invocation requested by the model. The id is provider-assigned and must be
-    /// echoed back in the matching [`Message::ToolResult`].
+    /// A tool invocation requested by the model.
     ToolCall {
         id: String,
         name: String,
         #[serde(default)]
         arguments: Value,
-        /// Provider-issued proof of the reasoning that produced this call. Opaque, and
-        /// replayed verbatim or not at all — a provider that issued one validates the
-        /// thought against it on the next turn.
-        ///
-        /// Only Gemini populates this; Anthropic and OpenAI have no equivalent on a tool
-        /// call and leave it empty.
+        /// Provider-issued proof of the reasoning that produced this call.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         signature: Option<String>,
     },
@@ -124,8 +114,7 @@ impl Usage {
     }
 }
 
-/// A response from the model. Carries the provider that produced it so thinking
-/// signatures can be dropped when a message crosses provider boundaries.
+/// A response from the model.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AssistantMessage {
     pub content: Vec<ContentBlock>,
@@ -155,7 +144,7 @@ impl AssistantMessage {
             .collect()
     }
 
-    /// Concatenated text of every text block, which is what a headless caller prints.
+    
     pub fn text(&self) -> String {
         self.content
             .iter()
@@ -168,8 +157,7 @@ impl AssistantMessage {
     }
 }
 
-/// A single entry in a conversation. Serialized to JSONL for session persistence and
-/// converted to a provider-specific shape before it reaches the model.
+/// A single entry in a conversation.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "role", rename_all = "snake_case")]
 pub enum Message {
@@ -209,8 +197,7 @@ impl Message {
         )
     }
 
-    /// A result the model reads as content rather than as text, which is how a tool hands
-    /// back something looked at instead of read.
+    
     pub fn tool_result_content(
         tool_call_id: impl Into<String>,
         tool_name: impl Into<String>,
@@ -241,9 +228,7 @@ pub struct ToolDefinition {
     pub name: String,
     pub description: String,
     pub parameters: Value,
-    /// A provider-side sampling directive for this tool's arguments. `None` is by far the
-    /// common case: a provider crate reads this only for the small number of tools that
-    /// ask for it, and leaves everything else to ordinary sampling.
+    /// A provider-side sampling directive for this tool's arguments.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub constrained_sampling: Option<ConstrainedSampling>,
 }
@@ -255,10 +240,8 @@ pub struct Context {
     pub messages: Vec<Message>,
     pub tools: Vec<ToolDefinition>,
     /// Headers to send along with the request, beyond the ones the provider sets itself.
-    /// A header named here replaces the provider's own.
     pub headers: Vec<(String, String)>,
     /// What this conversation is called, for a provider that caches a prompt against it.
-    /// Sending the same key for the same conversation is what makes a cache hit possible.
     pub cache_key: Option<String>,
 }
 
@@ -280,9 +263,6 @@ mod tests {
     }
 
     /// A session log written before a tool call could carry a signature has no such key.
-    /// Reading one has to keep working: the session store treats a line it cannot parse as
-    /// corrupt and skips it, so a missing default would silently drop history a user
-    /// recorded rather than fail loudly.
     #[test]
     fn a_tool_call_recorded_without_a_signature_still_loads() {
         let line = r#"{"role":"assistant","content":[{"type":"tool_call","id":"call_1","name":"read","arguments":{"path":"a.txt"}}],"provider":"anthropic","model":"claude-opus-5","usage":{"input":1,"output":2,"cache_read":0,"cache_write":0},"stop_reason":"tool_use","timestamp":1786361585474}"#;

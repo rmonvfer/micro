@@ -1,8 +1,4 @@
 //! What the scrollback shows.
-//!
-//! The agent reports its progress as a flat stream of events; the transcript folds that
-//! stream into the ordered list of things a reader wants to see, and rebuilds the same list
-//! from a saved conversation so a resumed session looks identical to a live one.
 
 use micro_types::AgentEvent;
 use micro_types::AssistantMessage;
@@ -25,7 +21,7 @@ pub enum NoticeLevel {
 pub struct AssistantEntry {
     pub text: String,
     pub thinking: String,
-    /// True while deltas are still arriving, which is what draws the caret after the text.
+    
     pub streaming: bool,
     pub error: Option<String>,
 }
@@ -40,30 +36,24 @@ pub struct ToolEntry {
     pub is_error: bool,
     /// Whether the reader has opened this result up.
     pub expanded: bool,
-    /// The live component an extension's renderCall registered for this call, and the
-    /// lines it last answered with. `None` until the first answer lands — before then this
-    /// entry draws the same built-in view every tool without a renderer draws.
+    /// The live component an extension's renderCall registered for this call, and the lines it last
+    /// answered with.
     pub call_component_id: Option<String>,
     pub call_lines: Option<Vec<String>>,
     /// The renderResult counterpart to the pair above.
     pub result_component_id: Option<String>,
     pub result_lines: Option<Vec<String>>,
-    /// Whether this call's extension asked, through `render_shell: "self"`, to frame its
-    /// own call rather than sit inside micro's band. Resolved once, from the tool's name,
-    /// when the entry is created — see [`Transcript::set_self_framed_tools`].
+    
     pub self_framed: bool,
 }
 
 impl ToolEntry {
-    /// Whether an extension is drawing this call itself — true from the moment either
-    /// renderer has answered at least once, which is what tells [`crate::render::tool`]
-    /// to read `call_lines`/`result_lines` instead of building the built-in view.
+    /// Whether an extension is drawing this call itself.
     pub fn has_custom_render(&self) -> bool {
         self.call_component_id.is_some() || self.result_component_id.is_some()
     }
 
-    /// What an extension's renderCall/renderResult have drawn so far, call then result —
-    /// the same order pi's own `ToolExecutionComponent` stacks them in.
+    /// What an extension's renderCall/renderResult have drawn so far, call then result.
     pub fn render_lines(&self) -> Vec<String> {
         let mut lines = self.call_lines.clone().unwrap_or_default();
         lines.extend(self.result_lines.clone().unwrap_or_default());
@@ -74,22 +64,17 @@ impl ToolEntry {
 #[derive(Debug, Clone, PartialEq)]
 pub enum Entry {
     User(String),
-    /// A command the user ran themselves rather than asking the model to run.
-    ///
-    /// `shared` is whether the model was told: `!` records the command and its output into
-    /// the conversation, `!!` runs it and keeps it out, for when the answer is for the user
-    /// and would only crowd the model's context.
+    
     Bash {
         command: String,
         shared: bool,
     },
-    /// An image the user attached, drawn by the terminal when it can and described when it
-    /// cannot.
+    /// An image the user attached, drawn by the terminal when it can and described when it cannot.
     Image {
         data: String,
         mime_type: String,
     },
-    /// A stretch of conversation replaced by a summary, shown folded until asked for.
+    
     Compaction {
         summary: String,
         expanded: bool,
@@ -100,8 +85,7 @@ pub enum Entry {
         text: String,
         level: NoticeLevel,
     },
-    /// Something an extension drew itself. micro decides where it goes and how it is
-    /// tinted; what it says is the extension's.
+    /// Something an extension drew itself.
     Custom {
         /// What to call it, shown as its label.
         label: String,
@@ -117,18 +101,12 @@ pub struct Transcript {
     tools: HashMap<String, usize>,
     version: u64,
     /// The earliest entry that has changed since a reader last saw the conversation drawn.
-    ///
-    /// Everything before it is exactly as it was, so a frame can keep the rows it already
-    /// has for those and redraw only from here on. A turn changes the entry it is writing
-    /// and nothing else, which is what makes a long conversation cost no more to keep on
-    /// screen than a short one.
     dirty_from: usize,
     last_usage: Usage,
     total_usage: Usage,
     model: Option<String>,
-    /// Tool names whose extension asked to frame its own call, so a [`ToolEntry`] created
-    /// from here on knows without asking again. Set once, before a run's history is even
-    /// read — see [`Transcript::set_self_framed_tools`].
+    /// Tool names whose extension asked to frame its own call, so a [`ToolEntry`] created from here
+    /// on knows without asking again.
     self_framed_tools: HashSet<String>,
 }
 
@@ -138,10 +116,6 @@ impl Transcript {
     }
 
     /// Rebuild the scrollback from a stored conversation.
-    ///
-    /// Nothing in a stored conversation is still running, so a call it left unanswered was
-    /// abandoned; closing settles those rather than reopening the session with a tool that
-    /// appears to be working.
     pub fn from_messages(messages: &[Message]) -> Self {
         let mut transcript = Transcript::new();
         for message in messages {
@@ -151,10 +125,7 @@ impl Transcript {
         transcript
     }
 
-    /// Say which tool names draw their own call rather than sit inside micro's band, so every
-    /// [`ToolEntry`] built from here on — and every one already sitting in a rebuilt history
-    /// — knows without a lookup elsewhere. A run's registered tools are fixed before its
-    /// first frame, which is what makes calling this once, up front, enough.
+    
     pub fn set_self_framed_tools(&mut self, names: HashSet<String>) {
         for entry in &mut self.entries {
             if let Entry::Tool(tool) = entry {
@@ -214,8 +185,7 @@ impl Transcript {
         self.model.as_deref()
     }
 
-    /// Entry indices of every tool result, in the order they appear. These are the entries
-    /// focus moves between and the ones that can be expanded.
+    /// Entry indices of every tool result, in the order they appear.
     pub fn tool_positions(&self) -> Vec<usize> {
         self.entries
             .iter()
@@ -225,7 +195,7 @@ impl Transcript {
             .collect()
     }
 
-    /// Open or close one tool result. Returns false when the index is not a tool result.
+    /// Open or close one tool result.
     pub fn set_expanded(&mut self, index: usize, expanded: bool) -> bool {
         let Some(Entry::Tool(tool)) = self.entries.get_mut(index) else {
             return false;
@@ -238,7 +208,7 @@ impl Transcript {
         true
     }
 
-    /// The most recent answer's text, which is what a copy takes.
+    
     pub fn last_answer(&self) -> Option<String> {
         self.entries.iter().rev().find_map(|entry| match entry {
             Entry::Assistant(assistant) if !assistant.text.trim().is_empty() => {
@@ -249,9 +219,6 @@ impl Transcript {
     }
 
     /// True when anything that could be opened is still closed.
-    ///
-    /// What decides which way a global toggle goes: with anything left closed the next
-    /// press opens, so a half-open transcript resolves toward open rather than flapping.
     pub fn any_collapsed(&self) -> bool {
         self.entries.iter().any(|entry| match entry {
             Entry::Tool(tool) => !tool.expanded,
@@ -260,7 +227,7 @@ impl Transcript {
         })
     }
 
-    /// Open or close every collapsible entry, which is what `ctrl+o` does.
+    
     pub fn set_all_expanded(&mut self, expanded: bool) {
         let mut changed = false;
         for entry in &mut self.entries {
@@ -276,7 +243,7 @@ impl Transcript {
         }
         if changed {
             self.version += 1;
-            // Opening or closing every result at once changes all of them.
+            
             self.touched(0);
         }
     }
@@ -317,8 +284,7 @@ impl Transcript {
         self.appended();
     }
 
-    /// Show an image the user attached, which is drawn where it was attached rather than
-    /// alongside the answer it belongs to.
+    
     pub fn push_image(&mut self, data: impl Into<String>, mime_type: impl Into<String>) {
         self.entries.push(Entry::Image {
             data: data.into(),
@@ -349,8 +315,7 @@ impl Transcript {
 
     /// Fold one agent event into the scrollback.
     pub fn apply(&mut self, event: &AgentEvent) {
-        // An event that changes nothing on screen leaves the drawing alone: a turn starting
-        // or settling is worth knowing about, but there is nothing new to look at.
+        
         if matches!(
             event,
             AgentEvent::AgentStart
@@ -362,8 +327,7 @@ impl Transcript {
         }
         self.version += 1;
         match event {
-            // The prompt is echoed the moment it is submitted, and a tool result is already
-            // covered by `ToolEnd`, so only assistant messages open an entry here.
+            
             AgentEvent::MessageStart { message } => {
                 if matches!(message, Message::Assistant(_)) {
                     self.begin_assistant();
@@ -372,9 +336,7 @@ impl Transcript {
             AgentEvent::MessageDelta { event } => self.apply_delta(event),
             AgentEvent::MessageEnd { message } => match message {
                 Message::Assistant(assistant) => self.finish_assistant(assistant),
-                // A call left unanswered by an abandoned turn is given a result before the
-                // next one starts, outside any turn. It settles a tool still shown as
-                // unfinished; one the reader already saw an outcome for keeps it.
+                
                 Message::ToolResult {
                     tool_call_id,
                     content,
@@ -400,8 +362,7 @@ impl Transcript {
                     ..Default::default()
                 }));
             }
-            // What a tool has printed so far replaces what it had printed before, so a
-            // long command reads as it runs rather than only once it is over.
+            
             AgentEvent::ToolUpdate { id, name, output } => self.update_tool(id, name, output),
             AgentEvent::ToolEnd {
                 id,
@@ -420,8 +381,7 @@ impl Transcript {
                 ),
                 NoticeLevel::Warning,
             ),
-            // Nothing on screen changes when a turn opens or closes: what a turn produced
-            // is already drawn message by message.
+            
             AgentEvent::AgentStart
             | AgentEvent::TurnStart
             | AgentEvent::TurnEnd { .. }
@@ -507,8 +467,7 @@ impl Transcript {
         }
 
         if let Some(Entry::Assistant(entry)) = self.entries.get_mut(index) {
-            // The final message is authoritative; the streamed copy only fills gaps a
-            // provider left, such as a response that failed before any delta arrived.
+            
             let text = message.text();
             if !text.is_empty() {
                 entry.text = text;
@@ -523,8 +482,7 @@ impl Transcript {
         self.drop_if_empty(index);
     }
 
-    /// Settle a tool result that is still waiting, ignoring one that already has an outcome
-    /// and one for a call this scrollback never showed.
+    
     fn answer_unfinished(&mut self, id: &str, output: &str, is_error: bool) {
         let Some(index) = self.tools.get(id).copied() else {
             return;
@@ -547,8 +505,7 @@ impl Transcript {
                     tool.output = Some(output.to_string());
                 }
             }
-            // An update for a call nothing announced still shows: better an entry with no
-            // arguments than output nobody can see.
+            
             None => self.finish_tool(id, name, output, false),
         }
     }
@@ -578,11 +535,8 @@ impl Transcript {
         }
     }
 
-    /// Record what an extension's renderCall drew for this call, replacing whatever it had
-    /// drawn before — a call is re-drawn on every state change the same way pi's own
-    /// `ToolExecutionComponent` re-runs it. `false` for a call that has already left the
-    /// scrollback, the same "too late to matter" answer [`Transcript::set_tool_result_render`]
-    /// gives.
+    /// Record what an extension's renderCall drew for this call, replacing whatever it had drawn
+    /// before.
     pub fn set_tool_call_render(
         &mut self,
         tool_call_id: &str,
@@ -622,10 +576,7 @@ impl Transcript {
         true
     }
 
-    /// A registered component said its own lines changed, on its own schedule rather than
-    /// in answer to a state change this side already knew about. Found by the component id
-    /// alone — that is all a `component_changed` push carries — so whichever of a tool
-    /// call's two renderers registered it is the one updated; the other is left alone.
+    
     pub fn tool_component_changed(&mut self, component_id: &str, lines: Vec<String>) -> bool {
         let Some(index) = self.entries.iter().position(|entry| match entry {
             Entry::Tool(tool) => {
@@ -658,7 +609,7 @@ impl Transcript {
         );
         if empty && index + 1 == self.entries.len() {
             self.entries.pop();
-            // The rows drawn for it have to go with it.
+            
             self.touched(index);
         }
     }
@@ -680,8 +631,7 @@ impl Transcript {
                 if text.is_empty() {
                     return;
                 }
-                // A summary standing in for a compacted stretch is not something the user
-                // typed, and is not drawn as though it were.
+                
                 match summary_of(&text) {
                     Some(summary) => self.push_compaction(summary),
                     None => self.push_user(text),
@@ -835,8 +785,7 @@ mod tests {
         assert_eq!(transcript.model(), Some("claude-opus-5"));
     }
 
-    /// Set before anything else runs, `render_shell: "self"` tags the calls it names as
-    /// they arrive, and leaves everything else drawing micro's own band.
+    
     #[test]
     fn a_tool_started_after_naming_it_self_framed_is_tagged_from_the_start() {
         let mut transcript = Transcript::new();
@@ -862,9 +811,8 @@ mod tests {
         assert!(!read.self_framed);
     }
 
-    /// Naming a tool self-framed after its call already showed reaches back and retags the
-    /// entry already on screen — a reader should not need a resend to see a shell they had
-    /// no way to skip when the entry first appeared.
+    /// Naming a tool self-framed after its call already showed reaches back and retags the entry
+    /// already on screen.
     #[test]
     fn naming_a_tool_self_framed_retags_a_call_already_drawn() {
         let mut transcript = Transcript::new();
@@ -1017,8 +965,7 @@ mod tests {
         assert_eq!(transcript.total_usage().input, 20);
     }
 
-    /// The agent settles calls an abandoned turn left open before the next turn starts, so
-    /// these arrive outside any turn, ahead of `AgentStart`.
+    /// The agent settles calls an abandoned turn left open before the next turn starts.
     fn repair(id: &str, text: &str) -> AgentEvent {
         AgentEvent::MessageEnd {
             message: Message::tool_result(id, "bash", text, true),
@@ -1084,7 +1031,7 @@ mod tests {
             output: "done".into(),
             is_error: false,
         });
-        // The agent reports every tool result as a message as well as an event.
+        
         transcript.apply(&AgentEvent::MessageEnd {
             message: Message::tool_result("call_1", "bash", "done", false),
         });

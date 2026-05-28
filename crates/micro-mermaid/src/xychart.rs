@@ -1,11 +1,4 @@
 //! XY charts, drawn as bars and stepped lines against a pair of axes.
-//!
-//! The plot itself is unglamorous — a left gutter of value ticks, a bottom
-//! row of category ticks, bars as filled columns, lines as points joined by
-//! the same right-angle jog flowchart edges already use between ranks. The
-//! one real decision is what a value turns into vertically: everything is
-//! scaled once, from the axis range to a fixed row budget, so a bar's height
-//! and a line's rise mean the same thing on the same plot.
 
 use crate::canvas::{draw_text, Canvas};
 use crate::labels::{ascii_lower, clean_label, fit_label, strip_controls};
@@ -14,10 +7,9 @@ use crate::width::string_width;
 
 /// Points a single series may carry before the chart is refused.
 const MAX_POINTS: usize = 128;
-/// Series (bar or line statements together) past this and there is nothing
-/// left to read as a chart.
+/// Series (bar or line statements together) past this and there is nothing left to read as a chart.
 const MAX_SERIES: usize = 16;
-/// Rows the plot's value axis is scaled into.
+
 const PLOT_H: usize = 15;
 const MAX_CANVAS_CELLS: usize = 1 << 21;
 
@@ -49,10 +41,7 @@ pub(crate) fn render_xychart(src: &str) -> Option<Canvas> {
     if ascii_lower(header.split_whitespace().next()?) != "xychart-beta" {
         return None;
     }
-    // `horizontal` asks for the chart to be laid on its side; understood, but
-    // the terminal reads a chart the same width either way, so orientation is
-    // always the one below, the same way `pie`'s `showData` is read but does
-    // not change what gets drawn.
+    
 
     let mut chart = Chart {
         title: None,
@@ -168,7 +157,7 @@ fn data_range(chart: &Chart) -> (f64, f64) {
     if !lo.is_finite() || !hi.is_finite() {
         return (0.0, 1.0);
     }
-    // A flat series still needs a span to divide by.
+    
     if (hi - lo).abs() < f64::EPSILON {
         hi = lo + 1.0;
     }
@@ -185,8 +174,7 @@ fn trim_number(value: f64) -> String {
 fn draw(chart: &Chart) -> Option<Canvas> {
     let (lo, hi) = data_range(chart);
     let span = (hi - lo).max(f64::EPSILON);
-    // 0 maps to whichever row is closest to it inside the visible range, so a
-    // bar always grows from the zero baseline when zero is on the plot at all.
+    
     let row_for = |v: f64| -> usize {
         let t = ((v - lo) / span).clamp(0.0, 1.0);
         (((PLOT_H - 1) as f64) * (1.0 - t)).round() as usize
@@ -260,9 +248,7 @@ fn draw(chart: &Chart) -> Option<Canvas> {
             SeriesKind::Bar => {
                 for (i, &v) in series.values.iter().enumerate() {
                     let vr = row_for(v);
-                    // A value that lands exactly on the baseline has no
-                    // height to show, the same way a pie slice worth nothing
-                    // keeps its row but draws no bar into it.
+                    
                     if vr == baseline {
                         continue;
                     }
@@ -312,8 +298,7 @@ fn draw(chart: &Chart) -> Option<Canvas> {
     Some(canvas)
 }
 
-/// Join two plotted points with a right-angle jog through their shared
-/// midpoint column, the same shape flowchart edges route between ranks.
+
 fn connect(canvas: &mut Canvas, x0: usize, y0: usize, x1: usize, y1: usize) {
     if x1 <= x0 {
         return;
@@ -339,8 +324,7 @@ mod tests {
             .plain
     }
 
-    /// A bar chart draws one filled column per value, each reaching a height
-    /// proportional to where it sits between the axis's min and max.
+    
     #[test]
     fn bars_grow_from_the_axis_minimum() {
         let rows = drawn("xychart-beta\n  y-axis 0 --> 10\n  bar [10, 5, 0]");
@@ -368,8 +352,8 @@ mod tests {
         assert!(joined.contains("Mar"), "{rows:?}");
     }
 
-    /// A line series is drawn as markers joined by right-angle jogs, and the
-    /// y-axis ticks show the range it was told to use.
+    /// A line series is drawn as markers joined by right-angle jogs, and the y-axis ticks show the
+    /// range it was told to use.
     #[test]
     fn a_line_series_is_plotted_as_joined_points() {
         let rows = drawn("xychart-beta\n  y-axis \"Score\" 0 --> 100\n  line [0, 50, 100]");
@@ -394,8 +378,7 @@ mod tests {
         assert_eq!(rows[0], "Revenue");
     }
 
-    /// Two bar series in the same chart are drawn as adjacent columns within
-    /// each category's slot, so neither one is drawn over the other.
+    /// Two bar series in the same chart are drawn as adjacent columns within each category's slot.
     #[test]
     fn two_bar_series_draw_side_by_side() {
         let rows = drawn("xychart-beta\n  y-axis 0 --> 10\n  bar [10, 0]\n  bar [0, 10]");
@@ -410,8 +393,7 @@ mod tests {
         assert!(cols[1] > cols[0] + 1, "{cols:?}: {rows:?}");
     }
 
-    /// Anything that is not an xy chart, or breaks down partway through, is
-    /// refused rather than drawn wrong.
+    
     #[test]
     fn what_is_not_an_xychart_is_left_alone() {
         assert!(render_xychart("graph TD\n A --> B").is_none());

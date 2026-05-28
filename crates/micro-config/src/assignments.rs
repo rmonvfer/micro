@@ -1,14 +1,4 @@
 //! Settings named on the command line.
-//!
-//! A run sometimes needs one setting different and everything else left alone: a theme to
-//! see how it draws, images off on a terminal that cannot show them. Editing the config
-//! file for that means remembering to edit it back afterwards.
-//!
-//! `-c key=value` writes into the config as it is read, for that one run. The key is a
-//! dotted path, so a nested setting is reachable without restating the ones around it. The
-//! value is read as JSON, so `false` is a boolean and `3` is a number; text that is not
-//! JSON is taken as the string it looks like, because `-c theme=dracula` is what a person
-//! types and quoting it would be a surprise.
 
 use crate::ConfigError;
 use crate::Result;
@@ -16,21 +6,14 @@ use serde_json::Map;
 use serde_json::Value;
 
 /// A setting an assignment wrote, and the text that wrote it.
-///
-/// The settings are checked after every assignment has landed, so a value that is the
-/// wrong shape is caught there rather than here. Keeping the text that wrote each one is
-/// what lets that later complaint name the flag instead of the file.
 pub struct Written {
-    /// The top-level setting the assignment reached into.
+    
     pub key: String,
     /// The `key=value` text as it was given.
     pub assignment: String,
 }
 
 /// Apply every assignment to a config value, in the order they were given.
-///
-/// Later assignments win over earlier ones, which is what repeating a flag means
-/// everywhere else.
 pub fn apply_all(target: &mut Value, assignments: &[String]) -> Result<Vec<Written>> {
     assignments
         .iter()
@@ -45,8 +28,7 @@ pub fn apply_all(target: &mut Value, assignments: &[String]) -> Result<Vec<Writt
 
 /// Apply one `key=value` assignment, and say which top-level setting it reached.
 pub fn apply(target: &mut Value, assignment: &str) -> Result<String> {
-    // Split on the first `=` only: a value is free to contain more of them, and a key
-    // never does.
+    
     let (key, raw) = assignment
         .split_once('=')
         .ok_or_else(|| malformed(assignment, "expected key=value"))?;
@@ -74,10 +56,6 @@ fn segments(key: &str, assignment: &str) -> Result<Vec<String>> {
 }
 
 /// Read a value as JSON, falling back to the text itself.
-///
-/// The fallback is the common case rather than the exception: settings are mostly names,
-/// and requiring `-c theme='"dracula"'` to say one would be a worse trade than losing the
-/// ability to write a bare string that happens to parse as something else.
 fn read(raw: &str) -> Value {
     let trimmed = raw.trim();
     match serde_json::from_str::<Value>(trimmed) {
@@ -88,9 +66,7 @@ fn read(raw: &str) -> Value {
 
 /// Write `value` at `segments`, creating the objects on the way to it.
 fn place(target: &mut Value, segments: &[String], value: Value, assignment: &str) -> Result<()> {
-    // A config that is not an object has nothing to write into. Reading it produced this
-    // value, so replacing it here would discard whatever the file said; that is the
-    // file's problem to report, not this one's.
+    
     if !target.is_object() {
         return Err(malformed(assignment, "the config is not a JSON object"));
     }
@@ -123,8 +99,7 @@ fn malformed(assignment: &str, message: &str) -> ConfigError {
     }
 }
 
-/// A key whose parent is already a plain value cannot be written without throwing that
-/// value away, so it is refused rather than guessed at.
+/// A key whose parent is already a plain value cannot be written without throwing that value away.
 fn occupied(assignment: &str, segment: &str) -> ConfigError {
     ConfigError::Override {
         assignment: assignment.to_string(),
@@ -205,8 +180,8 @@ mod tests {
         assert!(apply(&mut value, "a..b=1").is_err());
     }
 
-    /// A key cannot be nested under a setting that already holds a plain value, because
-    /// writing it would silently discard that value.
+    /// A key cannot be nested under a setting that already holds a plain value, because writing it
+    /// would silently discard that value.
     #[test]
     fn a_key_under_a_plain_value_is_refused() {
         let mut value = json!({ "theme": "dark" });

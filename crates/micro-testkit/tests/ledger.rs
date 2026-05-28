@@ -53,8 +53,7 @@ fn events(records: &[Record]) -> Vec<LedgerEvent> {
         .collect()
 }
 
-/// A run records the request it issued and what the answer cost, once per turn, and the
-/// recorded hash is the hash of the body the provider was actually handed.
+
 #[tokio::test]
 async fn every_turn_records_the_request_it_issued_and_what_it_cost() {
     let provider = FakeProvider::builder()
@@ -115,7 +114,7 @@ async fn every_turn_records_the_request_it_issued_and_what_it_cost() {
     assert_eq!(billed[0].0, 1);
     assert_eq!(billed[1].1.cache_read, 8, "what the provider reported");
 
-    // The request the second turn recorded is the request the provider was given.
+    
     let LedgerEvent::TurnRequest {
         request_hash,
         prefix_spans,
@@ -133,8 +132,7 @@ async fn every_turn_records_the_request_it_issued_and_what_it_cost() {
     assert_eq!(prefix_spans.len(), 1, "the prompt is attributed as it was built");
 }
 
-/// Content a fact refers to travels with it the first time and never again: a prompt that
-/// did not change between two turns crosses the channel once.
+
 #[tokio::test]
 async fn content_a_record_names_is_handed_over_once() {
     let provider = FakeProvider::builder()
@@ -169,13 +167,12 @@ async fn content_a_record_names_is_handed_over_once() {
     once.dedup();
     assert_eq!(carried.len(), once.len(), "nothing was carried twice");
 
-    // The system prompt, the tool definitions and the model, from the first turn alone.
+    
     assert_eq!(carried.len(), 3, "got {carried:?}");
     assert!(carried.contains(&content_hash(b"you are micro")));
 }
 
 /// A refused tool call reaches the model as a failed call, which says nothing about why.
-/// The ledger says it was a refusal.
 #[tokio::test]
 async fn a_refused_call_is_recorded_as_a_refusal() {
     struct Refusing;

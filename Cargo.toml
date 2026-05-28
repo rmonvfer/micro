@@ -57,13 +57,11 @@ async-trait = "0.1"
 base64 = "0.22"
 hmac = "0.12"
 sha2 = "0.10"
-# The AES-GCM and HKDF generation that shares `digest` 0.10 with hmac and sha2
-# above. The newer releases sit on `digest` 0.11 and will not compose with them.
+# Keep the crypto stack on digest 0.10.
 aes-gcm = "0.10"
 hkdf = "0.12"
 rand = "0.8"
-# Pinned to the release that speaks rand 0.8, which is the generation the rest of the
-# workspace is on.
+# Keep rand_core compatible with rand 0.8.
 x25519-dalek = { version = "2", features = ["static_secrets"] }
 qrcode = { version = "0.14", default-features = false }
 tokio-tungstenite = { version = "0.30", features = ["rustls-tls-webpki-roots"] }

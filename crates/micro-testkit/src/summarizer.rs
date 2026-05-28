@@ -1,5 +1,4 @@
-//! A [`Summarizer`] whose output a test decides, and which records what it was asked to
-//! summarize.
+//! A [`Summarizer`] whose output a test decides, and which records what it was asked to summarize.
 
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -12,9 +11,6 @@ use micro_context::Summary;
 use micro_types::Message;
 
 /// A summarizer that answers with canned text and records every conversation handed to it.
-///
-/// Using this instead of the agent's own provider-backed summarizer keeps a compaction
-/// test's scripted turns for the turns under test, rather than spending one on the summary.
 #[derive(Clone)]
 pub struct FakeSummarizer {
     inner: Arc<Inner>,
@@ -54,8 +50,8 @@ impl FakeSummarizer {
         self.inner.calls.lock().expect("calls lock").len()
     }
 
-    /// The messages summarized on call `index`, panicking with a legible message when it
-    /// was called fewer times than that.
+    /// The messages summarized on call `index`, panicking with a legible message when it was called
+    /// fewer times than that.
     pub fn call(&self, index: usize) -> Vec<Message> {
         let calls = self.calls();
         assert!(

@@ -1,6 +1,4 @@
-// pi-tui's own layout-introspection protocol, vendored unchanged: a symbol-keyed method a
-// container can implement to describe how it wants to be sized, read by `Stack`/
-// `ScrollView` and nothing that touches a terminal.
+
 import type { Component } from "./tui.ts";
 
 export const LAYOUT_NODE = Symbol.for("@earendil-works/pi-tui/layout-node");

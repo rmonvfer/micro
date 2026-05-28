@@ -1,19 +1,11 @@
 //! Drawing an image in a terminal that can do it.
-//!
-//! Two protocols cover the terminals that manage this at all: kitty's, which Ghostty,
-//! WezTerm and Warp also speak, and iTerm2's own. Both take the image base64 encoded and
-//! placed at the cursor, and both are escape sequences rather than characters — so they go
-//! onto a cell after layout, the same way a hyperlink does, and the rows they occupy are
-//! reserved beforehand so nothing is drawn underneath them.
 
 use crate::capabilities::ImageProtocol;
 
 /// Kitty accepts at most this much base64 per escape, so a larger image is split.
 const CHUNK: usize = 4096;
 
-/// A terminal cell is about this many pixels, which is what turns an image's size into a
-/// number of rows. Terminals that report their real cell size are rare enough that a fixed
-/// figure is what gets used.
+
 pub const CELL_WIDTH_PX: usize = 9;
 pub const CELL_HEIGHT_PX: usize = 18;
 
@@ -26,17 +18,13 @@ pub fn encode(protocol: ImageProtocol, data: &str, columns: usize, rows: usize) 
 }
 
 /// Kitty's graphics protocol.
-///
-/// `a=T` places the image immediately, `f=100` says the payload is a PNG rather than raw
-/// pixels, and `q=2` asks the terminal not to reply — a reply would land in the input stream
-/// and be read as keystrokes.
 fn encode_kitty(data: &str, columns: usize, rows: usize) -> String {
     let params = format!("a=T,f=100,q=2,c={columns},r={rows}");
     if data.len() <= CHUNK {
         return format!("\x1b_G{params};{data}\x1b\\");
     }
 
-    // Split across escapes, `m=1` on every one that has more to come and `m=0` on the last.
+    
     let mut out = String::new();
     let bytes = data.as_bytes();
     let mut offset = 0;
@@ -62,9 +50,6 @@ fn encode_iterm2(data: &str, columns: usize, rows: usize) -> String {
 }
 
 /// Free every image the terminal is holding for us.
-///
-/// Kitty keeps an image until it is told otherwise, so a conversation that scrolls away
-/// would otherwise leave them all in memory.
 pub fn forget_all(protocol: ImageProtocol) -> Option<&'static str> {
     match protocol {
         ImageProtocol::Kitty => Some("\x1b_Ga=d,d=A,q=2\x1b\\"),
@@ -73,9 +58,6 @@ pub fn forget_all(protocol: ImageProtocol) -> Option<&'static str> {
 }
 
 /// How many cells an image should occupy, keeping its shape.
-///
-/// Bounded by the columns available and, when given, by a number of rows — so an image never
-/// takes the whole screen and never stretches.
 pub fn cell_size(
     width_px: usize,
     height_px: usize,
@@ -91,7 +73,7 @@ pub fn cell_size(
         Some(rows) => by_width.min((rows.max(1) * CELL_HEIGHT_PX) as f64 / height_px),
         None => by_width,
     };
-    // Never enlarge: an image smaller than the space keeps its own size.
+    
     let scale = scale.min(1.0);
 
     let columns = ((width_px * scale) / CELL_WIDTH_PX as f64).round().max(1.0) as usize;
@@ -102,16 +84,12 @@ pub fn cell_size(
 }
 
 /// The pixel size of a PNG, read from its header.
-///
-/// Only PNG is measured: it is what every clipboard on every platform hands over, and its
-/// dimensions sit at a fixed offset. Anything else is drawn at a default size rather than
-/// decoded.
 pub fn png_size(data: &[u8]) -> Option<(usize, usize)> {
     const SIGNATURE: &[u8] = &[0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a];
     if data.len() < 24 || !data.starts_with(SIGNATURE) {
         return None;
     }
-    // IHDR is the first chunk, and its width and height are big-endian at bytes 16 and 20.
+    
     let width = u32::from_be_bytes(data[16..20].try_into().ok()?) as usize;
     let height = u32::from_be_bytes(data[20..24].try_into().ok()?) as usize;
     match width > 0 && height > 0 {
@@ -132,8 +110,7 @@ mod tests {
         assert_eq!(encoded.matches("\x1b_G").count(), 1);
     }
 
-    /// Kitty takes at most 4096 bytes per escape, and every chunk but the last says more is
-    /// coming.
+    /// Kitty takes at most 4096 bytes per escape, and every chunk but the last says more is coming.
     #[test]
     fn a_large_image_is_split_and_marked() {
         let data = "a".repeat(CHUNK * 2 + 10);
@@ -167,7 +144,7 @@ mod tests {
 
     #[test]
     fn an_image_keeps_its_shape_when_it_is_scaled_down() {
-        // Twice as wide as it is tall, in a space too narrow for it.
+        
         let (columns, rows) = cell_size(900, 450, 50, None);
         assert_eq!(columns, 50);
         assert_eq!(

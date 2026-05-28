@@ -1,17 +1,11 @@
 //! Tool results, interpreted for display.
-//!
-//! Every tool answers with a string, and every tool means something different by it. This
-//! turns that string — together with the arguments the model sent — into rows the renderer
-//! can style, so the transcript shows a diff for an edit, a file list for a search, and a
-//! header rather than a whole file for a read.
 
 use crate::diff;
 use crate::diff::DiffLine;
 use crate::diff::LineKind;
 use serde_json::Value;
 
-/// Rows shown for a result the reader has expanded. A cap remains because a single command
-/// can produce more output than a transcript should ever hold.
+/// Rows shown for a result the reader has expanded.
 const MAX_EXPANDED_ROWS: usize = 400;
 
 const COLLAPSED_DIFF_ROWS: usize = 14;
@@ -20,12 +14,11 @@ const COLLAPSED_OUTPUT_ROWS: usize = 6;
 const COLLAPSED_LIST_ROWS: usize = 8;
 const COLLAPSED_ERROR_ROWS: usize = 3;
 
-/// One row of a result body, tagged with what it means rather than how it looks.
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Row {
     Plain(String),
-    /// One line of a diff, laid out but not yet painted. Painting reads a run of them at a
-    /// time, so a line that replaced exactly one other can be marked word by word.
+    /// One line of a diff, laid out but not yet painted.
     Diff(DiffLine),
     /// A file heading in a search result.
     Path {
@@ -63,7 +56,7 @@ impl Body {}
 /// A tool result ready to render: what it acted on, how it went, and what it produced.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ToolView {
-    /// What the call was about — a path, a command, a pattern.
+    
     pub subject: String,
     /// A short outcome shown beside the subject: `+3 -1`, `12 lines`, `exit 2`.
     pub detail: Option<String>,
@@ -88,8 +81,7 @@ impl ToolView {
         (rows, hidden)
     }
 
-    /// The body as rows. A search collapses to its file list and expands to the matching
-    /// lines, so the shape depends on the expansion state, not only its length.
+    /// The body as rows.
     fn rows(&self, expanded: bool) -> Vec<Row> {
         match &self.body {
             Body::Empty => Vec::new(),
@@ -126,7 +118,7 @@ impl ToolView {
     }
 }
 
-/// Interpret one tool result. `output` is `None` while the tool is still running.
+/// Interpret one tool result.
 pub fn view(name: &str, arguments: &Value, output: Option<&str>, is_error: bool) -> ToolView {
     let subject = subject(name, arguments);
 
@@ -156,7 +148,7 @@ pub fn view(name: &str, arguments: &Value, output: Option<&str>, is_error: bool)
 
 /// A failed call shows why, never the diff it did not apply.
 fn failure(name: &str, subject: String, output: &str) -> ToolView {
-    // Bash reports its exit status on the first line; it belongs beside the command.
+    
     let (detail, body) = match (name, output.split_once('\n')) {
         ("bash", Some((first, rest))) if first.starts_with("exit code ") => (
             Some(format!("exit {}", first.trim_start_matches("exit code "))),
@@ -185,9 +177,7 @@ fn file_change(name: &str, subject: String, arguments: &Value) -> ToolView {
         if formatted.is_empty() {
             return;
         }
-        // Each replacement is laid out on its own, so its line numbers count from the text
-        // the model quoted rather than from wherever the previous edit left off. The gap
-        // between two of them is the same elision that marks a gap inside one.
+        
         if !lines.is_empty() {
             lines.push(DiffLine {
                 kind: LineKind::Elision,
@@ -200,7 +190,7 @@ fn file_change(name: &str, subject: String, arguments: &Value) -> ToolView {
     };
 
     match name {
-        // A written file has no earlier text to place the change against; every line is new.
+        
         "write" => record("", field(arguments, "content")),
         "edit" => record(
             field(arguments, "old_string"),
@@ -366,7 +356,7 @@ fn subject_text(name: &str, arguments: &Value) -> String {
     }
 }
 
-/// Output that is a single remark rather than a result, such as `no matches for x`.
+
 fn aside(output: &str) -> Option<String> {
     let trimmed = output.trim();
     let is_aside = trimmed.starts_with("no matches for ")
@@ -420,7 +410,7 @@ fn group_matches(output: &str) -> (Vec<FileMatches>, Vec<String>) {
                     lines: vec![(number, text)],
                 }),
             },
-            // A line that is not `path:line:text` is the tool talking, not a match.
+            
             None => notes.push(trimmed.to_string()),
         }
     }
@@ -480,7 +470,7 @@ mod tests {
         view.visible(expanded).0
     }
 
-    /// A diff body as the gutter would show it, which is what the reader ends up reading.
+    
     fn gutters(view: &ToolView, expanded: bool) -> Vec<String> {
         let number_width = match &view.body {
             Body::Diff { number_width, .. } => *number_width,
@@ -518,8 +508,7 @@ mod tests {
 
         assert_eq!(view.subject, "src/main.rs");
         assert_eq!(view.detail.as_deref(), Some("+1 -1"));
-        // Numbered from the old file for context and removals, and from the new file for
-        // additions.
+        
         assert_eq!(
             gutters(&view, true),
             vec![" 1 fn main() {", "-2     old();", "+2     new();", " 3 }"]
@@ -542,7 +531,7 @@ mod tests {
         );
 
         assert_eq!(view.detail.as_deref(), Some("+2 -2"));
-        // Each edit is numbered from its own quoted text, with an elision between them.
+        
         assert_eq!(
             gutters(&view, true),
             vec!["-1 alpha", "+1 ALPHA", "   ...", "-1 omega", "+1 OMEGA"]

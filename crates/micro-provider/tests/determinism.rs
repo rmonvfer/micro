@@ -1,14 +1,4 @@
 //! The same request, assembled twice, is the same bytes.
-//!
-//! Caching is bought with byte equality: a provider reuses a prompt only when the opening
-//! of the request it is handed matches the last one exactly. Everything micro does to keep
-//! a prefix still is worth nothing if the translation from a [`Context`] to a body is not
-//! itself deterministic — a map iterated in hash order, a timestamp, an id minted per call,
-//! and the prompt is different every turn for a reason no ledger could ever explain.
-//!
-//! So this asserts the property directly, for every wire protocol micro speaks, over
-//! contexts carrying the things a real one carries: tools, images, thinking with its
-//! signature, tool calls and their results.
 
 use micro_models::WireApi;
 use micro_types::AssistantMessage;
@@ -186,9 +176,6 @@ fn contexts() -> Vec<(&'static str, Context)> {
 }
 
 /// The same context, handed to the same provider a hundred times, produces the same body.
-///
-/// A body that varies between two calls a microsecond apart carries something that is not
-/// the conversation: the clock, an id, or a map that iterates in whatever order it likes.
 #[test]
 fn one_context_serializes_to_one_body_however_often_it_is_asked_for() {
     for (api, provider, model) in protocols() {
@@ -213,11 +200,7 @@ fn one_context_serializes_to_one_body_however_often_it_is_asked_for() {
     }
 }
 
-/// Two contexts built separately but saying the same thing serialize the same way.
-///
-/// This is the property a session actually depends on: turn two assembles its own context
-/// from its own strings and vectors, and the provider has to arrive at the same bytes as
-/// turn one did, or nothing was cached.
+
 #[test]
 fn two_equal_contexts_serialize_to_equal_bodies() {
     for (api, provider, model) in protocols() {
@@ -233,10 +216,6 @@ fn two_equal_contexts_serialize_to_equal_bodies() {
 }
 
 /// Adding to the conversation leaves what came before it untouched.
-///
-/// The tail grows every turn; the head must not move when it does. Asserted on the
-/// serialized system prompt and tools rather than on the whole body, because those are
-/// what a provider caches and what micro hashes as the prefix.
 #[test]
 fn a_longer_conversation_opens_with_the_same_prefix() {
     for (api, provider, model) in protocols() {

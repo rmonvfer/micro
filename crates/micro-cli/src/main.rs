@@ -1,5 +1,4 @@
-//! Entry point. With no subcommand it opens the interface; `--print` runs one prompt and
-//! exits.
+//! Entry point.
 
 mod capabilities;
 mod commands;
@@ -22,7 +21,7 @@ use std::path::PathBuf;
 #[derive(Parser)]
 #[command(name = "micro", version, about = "A small coding agent")]
 struct Cli {
-    /// The prompt to run. Without --print this seeds the interface.
+    /// The prompt to run.
     prompt: Vec<String>,
 
     #[command(subcommand)]
@@ -48,7 +47,7 @@ struct Cli {
     #[arg(long, value_parser = parse_thinking)]
     thinking: Option<ThinkingLevel>,
 
-    /// Workspace root. Tools cannot read or write outside it.
+    /// Workspace root.
     #[arg(short = 'C', long, default_value = ".")]
     cwd: PathBuf,
 
@@ -120,13 +119,11 @@ struct Cli {
     #[arg(long = "sandbox", value_name = "POLICY")]
     sandbox: Option<String>,
 
-    /// Stop this session once it has spent this many dollars. Zero is no ceiling.
+    /// Stop this session once it has spent this many dollars.
     #[arg(long = "budget", value_name = "AMOUNT")]
     budget: Option<f64>,
 
     /// Set one config value for this run: `-c theme=dracula`, `-c show_images=false`.
-    ///
-    /// The key is a dotted path into the config file. Repeat the flag for more than one.
     #[arg(
         short = 'c',
         long = "config",
@@ -155,16 +152,16 @@ enum Command {
     Install {
         /// npm:name, a repository URL, or a path.
         source: String,
-        /// Install into this project rather than for every project.
+        
         #[arg(short, long)]
         local: bool,
     },
     /// Remove an installed extension package.
     #[command(alias = "uninstall")]
     Remove {
-        /// The source it was installed from.
+        
         source: String,
-        /// Remove it from this project rather than from every project.
+        
         #[arg(short, long)]
         local: bool,
     },
@@ -231,7 +228,7 @@ enum SessionAction {
     /// Show what a session recorded, turn by turn.
     Show {
         id: String,
-        /// One turn of it, rather than a listing of all of them.
+        
         #[arg(long)]
         turn: Option<u64>,
         /// Print the request as it went to the provider, rebuilt from what was recorded.
@@ -245,20 +242,13 @@ enum SessionAction {
 }
 
 /// Whether this project may run what it ships.
-///
-/// A project carrying none of it is used without a question. One that does is answered by
-/// what the run was told outright, then by whatever was decided about it before, then by
-/// the standing answer, and only then by asking. With nobody at a terminal there is
-/// nobody to ask, so it is not trusted.
 async fn project_trusted(
     root: &std::path::Path,
     settings: &micro_config::Settings,
     has_ui: bool,
     told: Option<bool>,
 ) -> bool {
-    // Said on the command line, this settles it for this run alone and is not written
-    // down: a scripted run says what it wants every time rather than leaving a decision
-    // behind on the machine it happened to run on.
+    
     if let Some(told) = told {
         return told;
     }
@@ -347,9 +337,7 @@ fn parse_thinking(value: &str) -> Result<ThinkingLevel, String> {
     }
 }
 
-/// Every long flag micro itself declares: those that stand alone, and those that take a
-/// value. Read from the parser, and from every subcommand's parser, so the two can never
-/// disagree about what micro knows.
+/// Every long flag micro itself declares: those that stand alone, and those that take a value.
 fn own_flags() -> (Vec<String>, Vec<String>) {
     use clap::CommandFactory;
 
@@ -375,15 +363,13 @@ fn own_flags() -> (Vec<String>, Vec<String>) {
     }
 
     walk(&Cli::command(), &mut switches, &mut valued);
-    // The parser writes these two itself and only names them once it has been built, which
-    // is after this is asked. They are micro's own whatever the parser says.
+    
     switches.push("help".to_string());
     switches.push("version".to_string());
     (switches, valued)
 }
 
-/// What a user settled once and left alone. A command-line argument still wins, which is
-/// what `resolve_from_env` layers for us.
+/// What a user settled once and left alone.
 fn settled(cli: &Cli) -> micro_config::Settings {
     let mut settings = micro_config::Config::load_with(&cli.config_override)
         .and_then(|config| {
@@ -394,9 +380,7 @@ fn settled(cli: &Cli) -> micro_config::Settings {
             })
         })
         .unwrap_or_else(|error| {
-            // A setting named on the command line is a thing just typed, so a bad one is
-            // a mistake to correct rather than something to fall back from: carrying on
-            // would run with settings other than the ones that were asked for.
+            
             if matches!(error, micro_config::ConfigError::Override { .. }) {
                 eprintln!("micro: {error}");
                 std::process::exit(2);
@@ -404,9 +388,7 @@ fn settled(cli: &Cli) -> micro_config::Settings {
             eprintln!("note: {error}; using defaults");
             micro_config::Settings::default()
         });
-    // A ceiling named on the command line stands for this run alone and is not written
-    // down, the same way trust said outright is: a scripted run says what it is willing to
-    // spend every time rather than leaving a limit behind on the machine it ran on.
+    
     if let Some(budget) = cli.budget {
         settings.budget = budget.max(0.0);
     }
@@ -415,11 +397,7 @@ fn settled(cli: &Cli) -> micro_config::Settings {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    // Linux has no way to confine a command from the outside: the restrictions have to be
-    // applied by the process that then becomes the command. So micro re-runs itself to run
-    // anything a session spawns, and this is that second run recognizing itself — before
-    // the parser, before the configuration, before anything that could fail and leave the
-    // command running unconfined.
+    
     #[cfg(target_os = "linux")]
     {
         let mut arguments = std::env::args();
@@ -429,10 +407,7 @@ async fn main() -> Result<()> {
         }
     }
 
-    // Flags micro does not know are held back rather than refused: an extension may have
-    // declared one, and the extensions have not loaded yet. Which flags micro knows is
-    // asked of the parser rather than listed here, because a list would drift from the
-    // parser the first time a flag was added and take that flag with it.
+    
     let (switches, valued) = own_flags();
     let (mine, given) = micro_extensions::split_unknown(
         std::env::args(),
@@ -462,8 +437,7 @@ async fn main() -> Result<()> {
         }
         Some(Command::List) => return subcommands::list_packages().await,
         Some(Command::Sessions { action }) => {
-            // Sessions are recorded against the resolved workspace, so listing has to use
-            // the same one rather than wherever the shell happens to be.
+            
             let root = runtime::workspace(&cli.cwd)?;
             return match action {
                 Some(SessionAction::List { all }) => subcommands::sessions_list(&root, *all).await,
@@ -496,9 +470,7 @@ async fn main() -> Result<()> {
     let root = runtime::workspace(&cli.cwd)?;
     let settings = settled(&cli);
 
-    // Each front end answers the policy its own way: the non-interactive path prompts on
-    // the terminal, while the interface routes requests to a modal over the transcript.
-    // Extensions ask their questions through the interface, when there is one.
+    
     let (asker, questions) = match cli.print || cli.rpc {
         true => (None, None),
         false => {
@@ -506,10 +478,7 @@ async fn main() -> Result<()> {
             (Some(asker), Some(requests))
         }
     };
-    // The reverse of the pair above: the interface asks the host about a key before acting
-    // on it itself, for `ctx.ui.onTerminalInput`. Built alongside `asker`/`questions` for
-    // the same reason and under the same condition — there is no terminal to read a key
-    // from, and so nothing to offer, wherever there is no interface.
+    
     let (terminal_input_asker, terminal_input_asks) = match cli.print || cli.rpc {
         true => (None, None),
         false => {
@@ -517,8 +486,7 @@ async fn main() -> Result<()> {
             (Some(asker), Some(asks))
         }
     };
-    // Another reverse pair, for whatever else the interface needs from the host off its
-    // render path — today, a keystroke for a `custom()` overlay that has focus.
+    
     let (host_asker, host_asks) = match cli.print || cli.rpc {
         true => (None, None),
         false => {
@@ -554,11 +522,9 @@ async fn main() -> Result<()> {
         (None, false) => None,
     };
 
-    // A project's own extensions and skills are things it asks micro to run, so whether
-    // to run them is settled before anything of the project's is loaded.
+    
     let has_ui = !cli.print && !cli.rpc;
-    // What an extension is told the run is, matching pi's own three: the interface, the
-    // headless protocol, and one prompt run to completion and printed.
+    
     let mode = match (cli.rpc, cli.print) {
         (true, _) => "rpc",
         (_, true) => "print",
@@ -570,9 +536,7 @@ async fn main() -> Result<()> {
         _ => None,
     };
     let trusted = project_trusted(&root, &settings, has_ui, told).await;
-    // Settled before anything of the project's is loaded and before the first command can
-    // be run, and settled once: the tools are built around it, and so is whatever an
-    // extension asks micro to run.
+    
     let confined = sandbox::around(
         sandbox::policy(cli.sandbox.as_deref(), &root, trusted, &settings)?,
         &root,
@@ -588,24 +552,18 @@ async fn main() -> Result<()> {
         confined.clone(),
     )
     .await?;
-    // Extensions are told the session has begun, and told again when it ends, which is
-    // where one that holds anything open gets to let go of it. `resources_discover` has
-    // already been asked and acted on by the time `build` returns — it needs to happen
-    // before skills and prompts are read, not after, so it lives inside `load_context`
-    // rather than out here.
+    
     let extensions = built.extensions.clone();
     if let Some(host) = extensions.as_ref() {
         let started = serde_json::json!({
-            // A resumed run opens directly on the session it was told to; nothing before
-            // this one was open in this process for `previousSessionFile` to name.
+            
             "reason": if resume.is_some() { "resume" } else { "startup" },
         });
         let _ = host.notify("session_start", started).await;
     }
 
     if let Some(host) = extensions.as_ref() {
-        // A flag written on the command line reaches whoever declared it. One nobody
-        // declared is said out loud, so a typo is visible rather than silent.
+        
         let declared = host.flags();
         for flag in &given {
             match declared.iter().find(|known| known.name == flag.name) {
@@ -625,14 +583,11 @@ async fn main() -> Result<()> {
             }
         }
 
-        // What the model's tools section actually said, for `getSystemPromptOptions()` —
-        // worked out once, here, rather than asked for again on every command a session
-        // runs: what a loaded extension registered does not change over the run.
+        
         let (tool_snippets, prompt_guidelines) =
             extensions::tool_prompt_options(&host.tools(), &built.tool_names);
 
-        // What the pump answers questions from: what is running, and the session it runs
-        // in. Filled in here because this is where both are known.
+        
         let state = std::sync::Arc::new(tokio::sync::RwLock::new(extensions::State {
             thinking: format!("{thinking:?}").to_lowercase(),
             model: built.model.id.clone(),
@@ -643,8 +598,7 @@ async fn main() -> Result<()> {
             reasoning: built.model.reasoning,
             tools: built.tool_names.clone(),
             offered_tools: std::sync::Arc::clone(&built.offered_tools),
-            // Described once. What a tool is, and what commands exist, are settled by the
-            // time loading has finished; only which tools are offered changes after that.
+            
             all_tools: extensions::all_tools(
                 &host.loaded().extensions,
                 &built.tool_definitions,
@@ -673,10 +627,7 @@ async fn main() -> Result<()> {
             state,
             std::sync::Arc::clone(&built.session),
         ));
-        // Spun up whenever there is a host to ask, whether or not anything has registered
-        // `ctx.ui.onTerminalInput` yet: the interface itself decides whether a keystroke is
-        // worth asking about — see `wants_terminal_input` — so this side only has to be
-        // ready to answer when one arrives.
+        
         if let Some(asks) = terminal_input_asks {
             tokio::spawn(extensions::serve_terminal_input(
                 std::sync::Arc::clone(host),
@@ -707,8 +658,7 @@ async fn main() -> Result<()> {
             .run(tokio::io::stdin(), tokio::io::stdout())
             .await
             .map_err(anyhow::Error::from);
-        // The agent lives inside the mode, and the writer runs until the agent's recorder
-        // closes. Letting go of the mode first is what ends it.
+        
         drop(rpc);
         let _ = writer.await;
         shut_down_extensions(extensions).await;
@@ -716,24 +666,21 @@ async fn main() -> Result<()> {
     }
 
     let result = if cli.print {
-        // Something that went wrong without stopping the run is said once, on the way
-        // past, and the run goes on without it.
+        
         for warning in &built.warnings {
             eprintln!("note: {warning}");
         }
         if prompt.trim().is_empty() {
             anyhow::bail!("--print needs a prompt");
         }
-        // Signing in is something micro does at a prompt, and there is no prompt here,
-        // so a run that cannot authenticate says so instead of spending a request.
+        
         if let Some(notice) = &built.notice {
             drop(built.agent);
             let _ = writer.await;
             shut_down_extensions(extensions).await;
             anyhow::bail!("{notice}");
         }
-        // What was typed goes past the extensions first here too, so a rewrite works the
-        // same whether or not there is an interface.
+        
         let prompt = match built.commands.submitted(prompt).await {
             Some(prompt) => prompt,
             None => {
@@ -744,12 +691,10 @@ async fn main() -> Result<()> {
             }
         };
 
-        // A slash command is run rather than sent: it is an instruction to micro, and
-        // handing it to the model would answer a question nobody asked.
+        
         match run_command_headlessly(&mut built.commands, &prompt).await {
             Some(said) => {
-                // The agent is what holds the recorder open, and nothing ran a turn, so
-                // it is let go here: the writer below waits for that channel to close.
+                
                 drop(built.agent);
                 if said.failed {
                     let _ = writer.await;
@@ -774,9 +719,7 @@ async fn main() -> Result<()> {
             terminal_input: terminal_input_asker,
             host_asker,
             self_framed_tools: built.self_framed_tools.clone(),
-            // What extensions registered is typed and run like any other command, so the
-            // menu offers it alongside the built-in ones rather than leaving a session
-            // answering to something it never lists.
+            
             extension_commands: built
                 .extensions
                 .as_ref()
@@ -793,12 +736,11 @@ async fn main() -> Result<()> {
                         .collect()
                 })
                 .unwrap_or_default(),
-            // Where a phone reaches this session, once `/remote` has handed it one.
+            
             remote: Some(built.remote),
-            // Without this every submitted line goes to the model, `/help` included.
+            
             commands: Some(Box::new(built.commands)),
-            // A warning joins the notice here rather than going to stderr, which the
-            // interface is about to paint over.
+            
             notice: match (built.notice, built.warnings.join("\n")) {
                 (notice, said) if said.is_empty() => notice,
                 (None, said) => Some(said),
@@ -811,42 +753,34 @@ async fn main() -> Result<()> {
             session_cost: initial_observability.and_then(|observed| observed.0),
             session_usage: initial_observability.map(|observed| (observed.1, observed.2)),
             experimental: micro_config::experimental_enabled(),
-            // Named on the command line for this run, in place of whatever was settled on.
+            
             theme: cli.theme.as_deref().and_then(micro_tui::Theme::named),
             resources: built.resources,
-            // Said on the command line for this run, otherwise whatever was settled on.
+            
             tui_mode: match cli.tui_mode.unwrap_or(settings.tui_mode) {
                 micro_config::TuiMode::Regular => micro_tui::TuiMode::Inline,
                 micro_config::TuiMode::Fullscreen => micro_tui::TuiMode::Fullscreen,
             },
             ..micro_tui::TuiOptions::default()
         };
-        // The conversation is persisted through the recorder, so the transcript the
-        // interface hands back on exit is already on disk.
+        
         let ran = micro_tui::run_with(built.agent, built.history, options)
             .await
             .map(|_| ());
-        // Said on the way out, where a shell keeps it: the id is the one thing a reader
-        // needs to come back, and it is not worth going and looking for.
+        
         if ran.is_ok() {
             say_how_to_resume(&session_id);
         }
         ran
     };
 
-    // The agent has been dropped by now, which closes the recorder and ends the writer.
-    // Waiting for it guarantees every message reached the log before the process exits —
-    // and, because the extensions are watching the same run, that everything the agent
-    // reported has reached them too before the host holding them is let go.
+    
     let _ = writer.await;
     shut_down_extensions(extensions).await;
     result
 }
 
 /// Leave the line that brings this conversation back.
-///
-/// Only where a person will see it: piped into something else, it would be one more line
-/// for that to deal with.
 fn say_how_to_resume(session_id: &str) {
     use std::io::IsTerminal;
     if session_id.is_empty() || !std::io::stdout().is_terminal() {
@@ -855,38 +789,23 @@ fn say_how_to_resume(session_id: &str) {
     println!("To resume this session: micro --resume {session_id}");
 }
 
-/// Let the extension host go, once nothing else needs it.
-///
-/// The host holds someone else's code in another process; leaving it running would
-/// outlive the session that started it.
+
 async fn shut_down_extensions(extensions: Option<std::sync::Arc<micro_extensions::Host>>) {
     let Some(host) = extensions else {
         return;
     };
-    // Not conditional on being the last holder: the pump, the hooks and the command
-    // runner all keep one, and the host has to be told either way or it is killed with
-    // the process, mid-sentence.
+    
     host.shutdown("quit").await;
 }
 
 /// Run a slash command with nobody watching, and say what it printed.
-///
-/// `None` means the line was not a command, and belongs to the model. Only commands whose
-/// whole answer is text can run here: anything that would open a picker or change the
-/// running conversation needs an interface to change.
 use micro_tui::Commands as _;
 
-/// What a headless slash command answered, and whether it should end the run the way an
-/// uncaught error would. Carried together rather than as a lone `bool` at the call site,
-/// which would read as nothing more than "the second thing `run_command_headlessly` hands
-/// back."
+/// What a headless slash command answered, and whether it should end the run the way an uncaught
+/// error would.
 struct HeadlessCommand {
     text: String,
-    /// Set for a command that answered by erroring — `/nonsense`, or an extension's own
-    /// handler that threw before it could write anything else — the same command outcome
-    /// [`micro_commands::CommandOutcome::error`] gives a raised handler that never reaches
-    /// `CliCommands::extension_command`'s `Ok` arm. pi's own print mode exits nonzero for a
-    /// command that raised rather than answered; this is how `--print` matches it.
+    /// Set for a command that answered by erroring.
     failed: bool,
 }
 
@@ -908,10 +827,7 @@ async fn run_command_headlessly(commands: &mut commands::CliCommands, line: &str
         });
     }
 
-    // Whatever the command settled on, said the way it would be said on screen. A run
-    // without an interface applies nothing else: there is no agent to hand a new model
-    // to and no scrollback to rebuild. None of these settle into an error outcome — that
-    // path always answers through `outcome.text()` above instead.
+    
     let note = match commands.apply(outcome).await {
         micro_tui::Applied::Note { text, .. } => Some(text),
         micro_tui::Applied::Conversation { note, .. } => note,
@@ -926,10 +842,7 @@ async fn run_command_headlessly(commands: &mut commands::CliCommands, line: &str
 mod flag_tests {
     use super::*;
 
-    /// Every flag micro declares has to be recognised as micro's own before the extensions
-    /// load, or it is held back as one an extension might have declared and never reaches
-    /// the parser. The list used to be written out by hand beside the parser, and drifted:
-    /// `--tui-mode` was declared, never listed, and so silently did nothing.
+    
     #[test]
     fn every_flag_micro_declares_is_known_to_be_its_own() {
         let (switches, valued) = own_flags();
@@ -966,8 +879,7 @@ mod flag_tests {
             assert!(known(flag), "`--{flag}` is not recognised as micro's own");
         }
 
-        // A flag that carries a value has to be in the other list, or the value after it
-        // is read as the prompt.
+        
         for flag in [
             "model",
             "cwd",
@@ -989,7 +901,7 @@ mod flag_tests {
             );
         }
 
-        // Subcommands declare flags too, and they are held to the same rule.
+        
         assert!(known("local") && known("live") && known("overwrite"));
         assert!(known("raw") && valued.iter().any(|known| known == "turn"));
         assert!(valued.iter().any(|known| known == "diff"));

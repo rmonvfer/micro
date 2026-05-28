@@ -1,5 +1,4 @@
-//! The shared diagram model. Flowchart, state, class and ER sources all parse
-//! into a [`Graph`]; only sequence diagrams have their own model.
+//! The shared diagram model.
 
 use std::collections::HashMap;
 
@@ -104,10 +103,6 @@ pub struct Graph {
     /// Set when a cap was hit; the caller abandons the parse.
     pub over_cap: bool,
     /// Text the flowchart grammar could not read and silently discarded.
-    ///
-    /// Flowchart parsing is deliberately lenient — a malformed statement
-    /// contributes whatever prefix parsed and the rest is dropped — so without
-    /// these the reader gets a clean diagram that is not what they wrote.
     pub warnings: Vec<String>,
     pub dir: Dir,
 }
@@ -127,9 +122,7 @@ impl Graph {
         }
     }
 
-    /// Index of `id`, creating the node if new. A later declaration carrying a
-    /// label overwrites the placeholder one an edge created. Returns `None`
-    /// once `MAX_NODES` is reached, which aborts the parse.
+    /// Index of `id`, creating the node if new.
     pub fn node_index(&mut self, id: &str, label: Option<&str>, shape: Shape) -> Option<usize> {
         if let Some(&existing) = self.index.get(id) {
             if let Some(label) = label {

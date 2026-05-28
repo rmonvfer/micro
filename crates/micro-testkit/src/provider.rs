@@ -17,10 +17,6 @@ use serde_json::Value;
 use tokio::sync::mpsc::UnboundedReceiver;
 
 /// One scripted model response: the events it streams and the message it assembles to.
-///
-/// The terminal [`StreamEvent::Done`] is appended when the turn is streamed, so a test
-/// describes the content and never has to keep the events and the assembled message in
-/// agreement by hand.
 #[derive(Debug, Clone, Default)]
 pub struct Turn {
     events: Vec<StreamEvent>,
@@ -56,29 +52,25 @@ impl Turn {
         Turn::new().with_streamed_text(chunks)
     }
 
-    /// A turn that fails outright. Nothing is streamed before the error, which is what a
-    /// request rejected at the HTTP layer looks like.
+    /// A turn that fails outright.
     pub fn error(message: impl Into<String>) -> Self {
         Turn::new().with_start(false).failing(message)
     }
 
-    /// End this turn with [`StreamEvent::Error`] instead of `Done`, after whatever it has
-    /// already streamed. Combined with content, this is a stream that died partway
-    /// through — the case where retrying would duplicate text the user has already seen.
+    /// End this turn with [`StreamEvent::Error`] instead of `Done`, after whatever it has already
+    /// streamed.
     pub fn failing(mut self, message: impl Into<String>) -> Self {
         self.failure = Some(message.into());
         self
     }
 
-    /// Emit [`StreamEvent::Start`] before whatever else this turn streams. On by default
-    /// for turns that carry content, off for [`Turn::error`].
+    /// Emit [`StreamEvent::Start`] before whatever else this turn streams.
     pub fn with_start(mut self, emit_start: bool) -> Self {
         self.emit_start = emit_start;
         self
     }
 
-    /// Drop the incremental events, keeping the assembled message. Models a provider that
-    /// answers with nothing but the terminal event.
+    /// Drop the incremental events, keeping the assembled message.
     pub fn without_deltas(mut self) -> Self {
         self.events.clear();
         self.emit_start = false;
@@ -141,8 +133,7 @@ impl Turn {
         self
     }
 
-    /// Ask for a tool. Unless a stop reason is set explicitly, a turn with any tool call
-    /// stops with [`StopReason::ToolUse`].
+    /// Ask for a tool.
     pub fn with_tool_call(
         mut self,
         id: impl Into<String>,
@@ -205,7 +196,7 @@ impl Turn {
         })
     }
 
-    /// The full event sequence, stamped with the provider and model the agent asked for.
+    
     fn into_events(self, provider: &str, model: &str) -> Vec<StreamEvent> {
         let mut events = Vec::with_capacity(self.events.len() + 2);
         if self.emit_start {
@@ -259,8 +250,7 @@ impl RecordedCall {
         &self.context.messages
     }
 
-    /// The shape of the conversation as `"user"` / `"assistant"` / `"tool_result"`, which
-    /// is the readable way to assert on message ordering.
+    /// The shape of the conversation as `"user"` / `"assistant"` / `"tool_result"`.
     pub fn message_roles(&self) -> Vec<&'static str> {
         self.context.messages.iter().map(role_of).collect()
     }
@@ -288,8 +278,7 @@ impl RecordedCall {
             .collect()
     }
 
-    /// Tool result ids with no matching tool call earlier in the conversation. A
-    /// well-formed context leaves this empty; providers reject the request otherwise.
+    /// Tool result ids with no matching tool call earlier in the conversation.
     pub fn orphaned_tool_results(&self) -> Vec<&str> {
         let mut requested: Vec<&str> = Vec::new();
         let mut orphaned = Vec::new();
@@ -309,8 +298,7 @@ impl RecordedCall {
         orphaned
     }
 
-    /// Tool call ids the conversation never answered. A context ending in an unanswered
-    /// call is the other half of the pairing invariant.
+    /// Tool call ids the conversation never answered.
     pub fn unanswered_tool_calls(&self) -> Vec<&str> {
         let answered: Vec<&str> = self
             .context
@@ -349,10 +337,6 @@ fn text_of(content: &[ContentBlock]) -> String {
 }
 
 /// A provider that replays scripted turns and records every request it was given.
-///
-/// Turns are consumed in order, one per request. Once the script runs out, further
-/// requests fail with [`FakeProvider::EXHAUSTED`] rather than hanging, so a loop that
-/// requests more turns than a test expected ends with a legible failure.
 #[derive(Clone)]
 pub struct FakeProvider {
     inner: Arc<Inner>,
@@ -365,8 +349,7 @@ struct Inner {
 }
 
 impl FakeProvider {
-    /// The error a request gets once the scripted turns are used up. Not retryable, so
-    /// the agent loop stops instead of spinning.
+    /// The error a request gets once the scripted turns are used up.
     pub const EXHAUSTED: &'static str = "fake provider: no turns left in the script";
 
     pub fn builder() -> FakeProviderBuilder {
@@ -410,9 +393,7 @@ impl Provider for FakeProvider {
         &self.inner.name
     }
 
-    /// There is no wire format here, so the body is the context itself: the same fields
-    /// every real provider translates, written out in a stable order so two identical
-    /// requests hash identically.
+    /// There is no wire format here.
     fn payload(&self, model: &Model, context: &Context) -> Value {
         serde_json::json!({
             "model": model.id,

@@ -13,7 +13,7 @@ use tokio::io::AsyncBufReadExt as _;
 use tokio::io::AsyncWriteExt as _;
 use tokio::sync::Mutex;
 
-/// A tool that takes long enough to be interrupted part way through.
+
 struct SlowTool;
 
 #[async_trait::async_trait]
@@ -70,9 +70,6 @@ async fn rpc_with(
 }
 
 /// `abort` reaches a turn that is still running.
-///
-/// Before the read loop ran alongside the turn, the abort sat unread in the pipe until
-/// the turn finished on its own — which for a thirty-second tool meant thirty seconds.
 #[tokio::test]
 async fn abort_stops_a_running_turn() {
     let provider = FakeProvider::builder()
@@ -90,7 +87,7 @@ async fn abort_stops_a_running_turn() {
         .write_all(b"{\"type\":\"prompt\",\"message\":\"go\",\"id\":\"1\"}\n")
         .await
         .unwrap();
-    // Long enough for the turn to have started the slow tool.
+    
     tokio::time::sleep(Duration::from_millis(200)).await;
     caller
         .write_all(b"{\"type\":\"abort\",\"id\":\"2\"}\n")
@@ -117,8 +114,7 @@ async fn abort_stops_a_running_turn() {
     let _ = tokio::time::timeout(Duration::from_secs(5), running).await;
 }
 
-/// A follow-up sent mid-turn continues the same run rather than being ignored or
-/// replayed as a second conversation.
+
 #[tokio::test]
 async fn a_follow_up_sent_mid_turn_continues_the_run() {
     let provider = FakeProvider::builder()
@@ -160,7 +156,7 @@ async fn a_follow_up_sent_mid_turn_continues_the_run() {
     }
 
     assert_eq!(turns, 2, "the prompt and the follow-up each took a turn");
-    assert_eq!(runs, 1, "and it stayed one run rather than becoming two");
+    assert_eq!(runs, 1, "follow-up should stay in one run");
     drop(caller);
     let _ = tokio::time::timeout(Duration::from_secs(5), running).await;
 }

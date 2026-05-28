@@ -55,8 +55,7 @@ impl Tool for Read {
         let path = resolve_path(&self.root, &required_str(arguments, "path")?)?;
         self.guard.read(&path)?;
 
-        // An image is something the model looks at, not something it reads. Handing back
-        // the bytes as text would only fail to decode.
+        
         if let Some(mime_type) = image_mime_type(&path) {
             let bytes = tokio::fs::read(&path)
                 .await
@@ -206,14 +205,13 @@ impl Tool for Edit {
             return Err("old_string and new_string are identical".to_string());
         }
 
-        // Read, change and write is one step as far as anything else is concerned.
+        
         let _held = crate::mutations::hold(&path).await;
         let contents = tokio::fs::read_to_string(&path)
             .await
             .map_err(|error| format!("cannot read {}: {error}", path.display()))?;
 
-        // An ambiguous match is a failure, never a guess: replacing the wrong occurrence
-        // silently corrupts the file.
+        
         let occurrences = crate::fuzzy::count(&contents, &old_string);
         match occurrences {
             0 => return Err(format!("old_string not found in {}", path.display())),
@@ -237,8 +235,7 @@ impl Tool for Edit {
             .await
             .map_err(|error| format!("cannot write {}: {error}", path.display()))?;
 
-        // Worth saying: matching this way rewrites the file's quotes, dashes and spacing
-        // into their plain forms, which is a change beyond the one that was asked for.
+        
         Ok(match fuzzy {
             true => format!(
                 "Edited {} (matched ignoring quote, dash and whitespace differences)",
@@ -309,8 +306,7 @@ impl Tool for MultiEdit {
             .await
             .map_err(|error| format!("cannot read {}: {error}", path.display()))?;
 
-        // Every edit is applied to this buffer, and the file is written only once the last
-        // one succeeds. A rejected edit therefore leaves the file exactly as it was.
+        
         let mut updated = contents;
         for (index, edit) in edits.iter().enumerate() {
             let position = index + 1;
@@ -328,8 +324,7 @@ impl Tool for MultiEdit {
                 ));
             }
 
-            // An ambiguous match is a failure, never a guess: replacing the wrong
-            // occurrence silently corrupts the file.
+            
             match crate::fuzzy::count(&updated, &old_string) {
                 0 => {
                     return Err(format!(
@@ -429,8 +424,7 @@ impl Tool for Ls {
             return Ok(format!("{} is empty", path.display()));
         }
 
-        // A directory longer than the limit says so, so the reader knows the listing is
-        // partial rather than complete.
+        
         let total = names.len();
         names.truncate(limit);
         let mut listing = names.join("\n");
@@ -678,9 +672,6 @@ mod tests {
 }
 
 /// What kind of image a path holds, going by its extension.
-///
-/// These are the formats a model is able to look at. Anything else is read as text, and
-/// fails as text if that is not what it is.
 fn image_mime_type(path: &Path) -> Option<&'static str> {
     let extension = path.extension()?.to_str()?.to_ascii_lowercase();
     match extension.as_str() {
@@ -712,8 +703,7 @@ mod images {
         0x15, 0xC4, 0x89,
     ];
 
-    /// An image comes back as something the model looks at, not as text that fails to
-    /// decode.
+    /// An image comes back as something the model looks at, not as text that fails to decode.
     #[tokio::test]
     async fn reading_an_image_hands_back_an_image() {
         let root = scratch("png");
@@ -779,8 +769,7 @@ mod forgiving_edits {
         dir
     }
 
-    /// A model that read the file through a renderer writes back curly quotes. The file
-    /// has straight ones, and the edit is still the edit it meant.
+    /// A model that read the file through a renderer writes back curly quotes.
     #[tokio::test]
     async fn an_edit_written_with_smart_quotes_still_lands() {
         let root = scratch("quotes");
@@ -800,7 +789,7 @@ mod forgiving_edits {
         assert!(after.contains("let name = \"pi\";"), "{after}");
     }
 
-    /// An en-dash where the file has a hyphen, which is what a text renderer produces.
+    
     #[tokio::test]
     async fn an_edit_written_with_a_dash_still_lands() {
         let root = scratch("dash");
@@ -819,8 +808,7 @@ mod forgiving_edits {
         assert!(after.contains("cargo test --all"), "{after}");
     }
 
-    /// Text that genuinely is not there still fails, rather than being matched loosely
-    /// enough to hit something else.
+    
     #[tokio::test]
     async fn an_edit_for_absent_text_still_fails() {
         let root = scratch("absent");
@@ -839,10 +827,6 @@ mod forgiving_edits {
 }
 
 /// What the policy does to a file tool.
-///
-/// These tools open paths in this process, so nothing outside it is in a position to stop
-/// them: the check is the enforcement, and the message it fails with is the whole of what
-/// the model has to go on.
 #[cfg(test)]
 mod policy {
     use super::*;
@@ -861,8 +845,7 @@ mod policy {
         )
     }
 
-    /// A workspace with a symlink out of it, which is the one way a path can pass the
-    /// lexical check and still land somewhere the policy does not allow.
+    /// A workspace with a symlink out of it.
     #[tokio::test]
     async fn a_write_that_leaves_the_workspace_by_symlink_is_refused_by_name() {
         let (dir, root) = workspace("symlink");
@@ -919,8 +902,8 @@ mod policy {
         );
     }
 
-    /// The policy does not narrow what the workspace was already good for: a tool inside
-    /// it works exactly as it did.
+    /// The policy does not narrow what the workspace was already good for: a tool inside it works
+    /// exactly as it did.
     #[tokio::test]
     async fn the_workspace_itself_is_untouched_by_the_default_policy() {
         let (_dir, root) = workspace("inside");
@@ -939,8 +922,8 @@ mod policy {
         assert!(listing.contains("nested/"), "{listing}");
     }
 
-    /// `.git` stays read-only inside a writable workspace: what runs on the next commit is
-    /// not something a session gets to rewrite.
+    /// `.git` stays read-only inside a writable workspace: what runs on the next commit is not
+    /// something a session gets to rewrite.
     #[tokio::test]
     async fn the_git_directory_stays_read_only_inside_a_writable_workspace() {
         let (_dir, root) = workspace("git");

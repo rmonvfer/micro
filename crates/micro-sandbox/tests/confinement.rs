@@ -1,8 +1,4 @@
 //! What the kernel actually does with a command micro wraps.
-//!
-//! These run the sandbox for real: every check below spawns a command through the
-//! argument list [`Sandbox::wrap`] produces and reads what came back. They are written
-//! once for both platforms that enforce, because the promise is the same on both.
 
 #![cfg(any(target_os = "macos", target_os = "linux"))]
 
@@ -12,8 +8,7 @@ use micro_sandbox::SandboxPolicy;
 use std::path::PathBuf;
 use std::process::ExitStatus;
 
-/// A workspace with a source directory and a `.git`, and the directory it sits in, which
-/// is outside the workspace and so out of bounds.
+/// A workspace with a source directory and a `.git`, and the directory it sits in.
 fn workspace(name: &str) -> (PathBuf, PathBuf) {
     let dir = std::env::temp_dir().join(format!("micro-sandbox-confinement-{name}"));
     let _ = std::fs::remove_dir_all(&dir);
@@ -103,9 +98,7 @@ fn the_network_is_out_of_reach_when_the_policy_does_not_allow_it() {
     let (_dir, workspace) = workspace("network");
     let sandbox = sandbox(SandboxPolicy::workspace_write(), &workspace);
 
-    // Reaching an address rather than a name, so the check is about opening the socket
-    // and not about whether anything answers. A machine with no connectivity fails here
-    // too, which is the same answer this asserts.
+    
     let (status, said) = run(&sandbox, "exec 3<>/dev/tcp/1.1.1.1/80");
     assert!(!status.success(), "{said}");
     assert!(is_likely_denied(&status, &said), "{said}");

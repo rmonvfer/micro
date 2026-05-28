@@ -1,11 +1,4 @@
 //! What an extension is allowed to ask micro for, proved through the real binary.
-//!
-//! Every test here runs the built program against the fake provider with a real extension
-//! host under Bun, so what is being checked is the refusal an extension actually receives
-//! and the line the session actually recorded — not a decision reconstructed inside the
-//! test. The TypeScript half of the manifest (the `capabilities` export, the identity each
-//! ask carries) has no separate harness; it is exercised from here, because that is where
-//! it is answerable.
 
 mod support;
 
@@ -44,9 +37,7 @@ fn crossings(fixture: &Fixture, id: &str) -> Vec<Value> {
         .collect()
 }
 
-/// An extension that declares a narrow manifest and then reaches past it: the ask is
-/// refused by a name it can catch, the command it was made from still finishes, the run
-/// still exits cleanly, and the attempt is in the session's own ledger.
+
 #[test]
 fn an_ask_outside_the_manifest_is_refused_by_name_and_the_session_continues() {
     if which_bun().is_none() {
@@ -88,8 +79,7 @@ export default (micro) => {
     assert_eq!(refusal["name"], "echo", "the ledger says what was asked for");
 }
 
-/// The same ask, from an extension whose manifest names it: answered for real, and the
-/// crossing recorded as having been allowed rather than not recorded at all.
+
 #[test]
 fn an_ask_inside_the_manifest_is_answered_and_recorded() {
     if which_bun().is_none() {
@@ -130,9 +120,7 @@ export default (micro) => {
     assert_eq!(allowed["allowed"], true);
 }
 
-/// Registering is an ask like any other. An extension without the `tools` capability never
-/// contributes a tool to what the model is told about — refused at load, with a note saying
-/// which tool and why, rather than offered and then refused when the model reaches for it.
+/// Registering is an ask like any other.
 #[test]
 fn a_tool_registered_without_the_capability_is_never_offered_to_the_model() {
     if which_bun().is_none() {
@@ -172,9 +160,7 @@ export default (micro) => {
     );
 }
 
-/// The compatibility promise: an extension written before manifests existed, in a project
-/// that has been trusted, runs exactly as it did — nobody is asked anything, and everything
-/// it reaches for is answered.
+
 #[test]
 fn a_legacy_extension_in_a_trusted_project_keeps_working_unprompted() {
     if which_bun().is_none() {
@@ -210,10 +196,7 @@ export default (micro) => {
     );
 }
 
-/// The same extension in a project nobody has vouched for, with nobody at a terminal to
-/// ask: it still loads, and the run still goes ahead, but it is granted nothing — so the
-/// command it tried to register is not there either. The reason is said out loud rather
-/// than left to be worked out from a command that has gone missing.
+
 #[test]
 fn a_legacy_extension_in_an_untrusted_project_is_granted_nothing_and_says_why() {
     if which_bun().is_none() {
@@ -221,8 +204,7 @@ fn a_legacy_extension_in_an_untrusted_project_is_granted_nothing_and_says_why() 
     }
     let api = FakeApi::start([Reply::text("nothing to do")]);
     let fixture = Fixture::new(&api);
-    // Outside `.micro/`, and named on the command line: a project's own extensions are not
-    // even discovered until it is trusted, so an untrusted one has to arrive this way.
+    
     let path = fixture.write(
         "probe.ts",
         r#"
@@ -258,15 +240,10 @@ export default (micro) => {
     );
 }
 
-/// How long a finished run gets to actually exit before it is judged wedged rather than
-/// merely slow. Generous next to what a scripted turn against a local fake provider takes,
-/// and far short of the point where a test runner gives up on the whole suite.
+
 const EXIT_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Run to completion or [`EXIT_TIMEOUT`], and say whether the process ever left.
-///
-/// The binary is killed rather than waited on forever, so a run that will not exit fails
-/// this one test with a legible reason instead of hanging every test that follows it.
 fn exits_on_its_own(fixture: &Fixture, arguments: &[&str]) -> bool {
     let mut command = fixture.micro();
     command.args(arguments);
@@ -291,16 +268,6 @@ fn exits_on_its_own(fixture: &Fixture, arguments: &[&str]) -> bool {
 }
 
 /// A finished run leaves.
-///
-/// The session log is closed by every way into it being let go, and the pump that answers
-/// the extensions holds one for as long as it is answering — which is until the host it
-/// answers for is gone, which is after the log has been closed. Holding that end strongly
-/// would deadlock the two against each other, and the symptom is not a failing assertion
-/// but a run that prints its answer and then never exits, which would wedge every test in
-/// every binary-level suite rather than fail one of them.
-///
-/// Both ways round: with an extension loaded, which is when the pump is running at all, and
-/// without one, since the tools hold their own way into the same log.
 #[test]
 fn a_finished_run_exits_whether_or_not_extensions_were_loaded() {
     if which_bun().is_none() {
@@ -330,8 +297,7 @@ export default (micro) => {
     );
 }
 
-/// `micro list` says what each installed package may do, and tells a set the extension
-/// declared apart from one micro worked out for it.
+
 #[test]
 fn listing_installed_packages_says_what_each_may_do() {
     if which_bun().is_none() {

@@ -56,18 +56,18 @@ async fn a_plain_text_turn_emits_its_events_in_order() {
         events.names(),
         vec![
             "AgentStart",
-            // The prompt enters the conversation before the first request goes out.
+            
             "MessageStart",
             "MessageEnd",
             "TurnStart",
-            // The assistant message opens once the provider streams anything.
+            
             "MessageStart",
-            "MessageDelta", // Start
-            "MessageDelta", // TextStart
-            "MessageDelta", // TextDelta "Hello"
-            "MessageDelta", // TextDelta ", "
-            "MessageDelta", // TextDelta "world"
-            "MessageDelta", // TextEnd
+            "MessageDelta", 
+            "MessageDelta", 
+            "MessageDelta", 
+            "MessageDelta", 
+            "MessageDelta", 
+            "MessageDelta", 
             "MessageEnd",
             "TurnEnd",
             "AgentEnd",
@@ -110,11 +110,11 @@ async fn a_tool_call_is_executed_and_its_result_feeds_the_next_request() {
 
     let (messages, events) = run_agent(&mut agent, Message::user("read a.txt")).await;
 
-    // The tool ran exactly once, with the arguments the model supplied.
+    
     assert_eq!(read.call_count(), 1);
     assert_eq!(read.call(0), json!({ "path": "a.txt" }));
 
-    // Its result was appended as a tool result carrying the matching call id.
+    
     let Some(Message::ToolResult {
         tool_call_id,
         tool_name,
@@ -132,7 +132,7 @@ async fn a_tool_call_is_executed_and_its_result_feeds_the_next_request() {
     assert!(!is_error);
     assert_eq!(tool_result_text(&messages[2]), "hello");
 
-    // The loop then issued a second request whose context contains that result.
+    
     assert_eq!(provider.call_count(), 2);
     let second = provider.call(1);
     assert_eq!(
@@ -187,7 +187,7 @@ async fn several_tool_calls_in_one_message_all_run_in_order() {
         ]
     );
 
-    // Every call is answered, in the order the model asked for them.
+    
     let second = provider.call(1);
     let ids: Vec<&str> = second
         .tool_results()
@@ -221,7 +221,7 @@ async fn a_failing_tool_produces_an_error_result_and_the_loop_continues() {
     assert!(is_error, "a tool error must be flagged on the result");
     assert_eq!(tool_result_text(&messages[2]), "permission denied");
 
-    // The failure is reported to the model rather than ending the run.
+    
     assert_eq!(provider.call_count(), 2);
     assert_eq!(
         provider.call(1).tool_results(),
@@ -249,7 +249,7 @@ async fn an_unknown_tool_produces_an_error_result_rather_than_a_panic() {
         "the result should name the missing tool, got {output:?}"
     );
 
-    // The loop keeps going and reports the failure back to the model.
+    
     assert_eq!(provider.call_count(), 2);
     let (_, _, _, result_is_error) = provider.call(1).tool_results()[0];
     assert!(result_is_error);
@@ -272,7 +272,7 @@ async fn a_length_stop_fails_every_tool_call_without_executing_it() {
 
     let (messages, events) = run_agent(&mut agent, Message::user("write two files")).await;
 
-    // The guard against silently truncated arguments: nothing ran.
+    
     assert_eq!(
         write.call_count(),
         0,
@@ -289,7 +289,7 @@ async fn a_length_stop_fails_every_tool_call_without_executing_it() {
         );
     }
 
-    // Both calls are still answered, so the next request is well formed.
+    
     let second = provider.call(1);
     assert!(second.unanswered_tool_calls().is_empty());
     assert!(second.tool_results().iter().all(|(.., is_error)| *is_error));
@@ -372,8 +372,7 @@ async fn retries_stop_at_the_attempt_cap() {
 
 #[tokio::test(start_paused = true)]
 async fn a_stream_that_failed_after_emitting_text_is_not_retried() {
-    // Content already shown to the user cannot be un-shown, so re-issuing an otherwise
-    // retryable request would duplicate it.
+    
     let provider = FakeProvider::builder()
         .turn(Turn::streamed_text(["partial"]).failing("Fake returned 429: slow down"))
         .turn(Turn::text("never reached"))
@@ -393,9 +392,7 @@ async fn a_stream_that_failed_after_emitting_text_is_not_retried() {
 
 #[tokio::test]
 async fn the_loop_runs_as_many_turns_as_the_model_asks_for() {
-    // Nothing in the loop caps the number of turns: it ends when the model stops
-    // requesting tools, or when the provider fails. See the report on the runaway risk
-    // this leaves open.
+    
     let provider = FakeProvider::builder()
         .turns((0..4).map(|turn| {
             Turn::new().with_tool_call(format!("call_{turn}"), "read", json!({ "n": turn }))
@@ -407,7 +404,7 @@ async fn the_loop_runs_as_many_turns_as_the_model_asks_for() {
     let (_, events) = run_agent(&mut agent, Message::user("keep going")).await;
 
     assert_eq!(read.call_count(), 4);
-    // Four scripted turns plus the request that ran the script out.
+    
     assert_eq!(provider.call_count(), 5);
     assert_eq!(
         events
@@ -437,16 +434,13 @@ async fn the_returned_messages_match_the_ones_reported_by_agent_end() {
         messages.iter().map(role_of).collect::<Vec<_>>(),
         vec!["user", "assistant", "tool_result", "assistant"]
     );
-    // The run's messages are also what the agent kept as the conversation.
+    
     assert_eq!(agent.messages(), messages.as_slice());
 }
 
 #[tokio::test]
 async fn a_turn_that_only_emits_done_still_reports_message_end() {
-    // A provider is free to answer with nothing but the terminal event. The loop must
-    // still close the assistant message. Note it emits no assistant `MessageStart` here,
-    // because that is triggered by the first streamed event rather than by the turn
-    // beginning — see the report on that asymmetry.
+    
     let provider = FakeProvider::once(Turn::text("instant").without_deltas());
     let mut agent = agent(&provider, Vec::new());
 
@@ -456,17 +450,11 @@ async fn a_turn_that_only_emits_done_still_reports_message_end() {
     assert_eq!(events.assistant_message_ends().len(), 1);
     assert_eq!(events.assistant_message_ends()[0].text(), "instant");
     assert_eq!(messages.len(), 2);
-    // Settling is the last thing a run says, after the run itself is reported over.
+    
     assert_eq!(events.names().last(), Some(&"AgentSettled"));
 }
 
-/// Documents a defect in `micro-agent`: a retried request emits a second assistant
-/// `MessageStart` without an intervening `MessageEnd`, so a consumer that opens a message
-/// bubble on `MessageStart` opens two for one response.
-///
-/// `stream_once` resets its `started` flag on every attempt, so any attempt that streams a
-/// non-content event (here `StreamEvent::Start`) before failing emits `MessageStart`
-/// again. Ignored until `micro-agent` tracks `started` across attempts.
+
 #[tokio::test(start_paused = true)]
 
 async fn a_retry_does_not_reopen_the_assistant_message() {
@@ -479,7 +467,7 @@ async fn a_retry_does_not_reopen_the_assistant_message() {
     let (_, events) = run_agent(&mut agent, Message::user("hi")).await;
 
     assert_eq!(events.retries().len(), 1);
-    // One for the prompt, one for the assistant response.
+    
     assert_eq!(
         events.count("MessageStart"),
         2,
@@ -500,8 +488,7 @@ fn role_of(message: &Message) -> &'static str {
 struct SlowTool {
     name: String,
     holds_for: std::time::Duration,
-    /// What this tool asks for via pi's `executionMode`. `None` is the common case: the
-    /// tool has no opinion, and the batch's own default decides.
+    /// What this tool asks for via pi's `executionMode`.
     execution_mode: Option<micro_types::ToolExecutionMode>,
 }
 
@@ -546,10 +533,6 @@ impl micro_tools::Tool for SlowTool {
 }
 
 /// The calls in one answer do not depend on each other, so they run together.
-///
-/// Three tools that each hold for 200ms take about 200ms between them when they run
-/// together, and about 600ms when they are run one after another. The bound sits between
-/// the two so the test says which happened without being sensitive to timing noise.
 #[tokio::test]
 async fn the_tools_in_one_answer_run_together() {
     let hold = std::time::Duration::from_millis(200);
@@ -577,10 +560,10 @@ async fn the_tools_in_one_answer_run_together() {
 
     assert!(
         took < hold * 2,
-        "three {hold:?} tools took {took:?}, which is one after another rather than together",
+        "parallel tools took {took:?} with a {hold:?} delay",
     );
 
-    // Every call is still answered, in the order the model asked for them.
+    
     let answered: Vec<String> = messages
         .iter()
         .filter_map(|message| match message {
@@ -591,8 +574,8 @@ async fn the_tools_in_one_answer_run_together() {
     assert_eq!(answered, vec!["c1", "c2", "c3"]);
 }
 
-/// A tool with no opinion on how it is scheduled is explicitly `Parallel`, not merely the
-/// absence of `Sequential` — asking every call for it changes nothing next to the default.
+/// A tool with no opinion on how it is scheduled is explicitly `Parallel`, not merely the absence
+/// of `Sequential`.
 #[tokio::test]
 async fn tools_explicitly_marked_parallel_still_run_together() {
     let hold = std::time::Duration::from_millis(200);
@@ -621,17 +604,11 @@ async fn tools_explicitly_marked_parallel_still_run_together() {
 
     assert!(
         took < hold * 2,
-        "three {hold:?} tools explicitly marked parallel took {took:?}, which is one after \
-         another rather than together",
+        "explicitly parallel tools took {took:?} with a {hold:?} delay",
     );
 }
 
-/// A tool that asks to run alone never overlaps another call from the same turn, even one
-/// that has no opinion on how it is scheduled itself.
-///
-/// Three 200ms tools running one after another take about 600ms; running together they
-/// take about 200ms. The bound sits between the two, the same way the parallel case above
-/// checks the opposite bound.
+
 #[tokio::test]
 async fn a_sequential_tool_does_not_overlap_another() {
     let hold = std::time::Duration::from_millis(200);
@@ -658,12 +635,10 @@ async fn a_sequential_tool_does_not_overlap_another() {
 
     assert!(
         took >= hold * 3 - std::time::Duration::from_millis(30),
-        "three {hold:?} tools, one of them sequential, took {took:?}, which is together \
-         rather than one after another",
+        "sequential tools completed too quickly: {took:?} with a {hold:?} delay",
     );
 
-    // A mixed batch still preserves the order the model asked for, one call fully
-    // answered before the next starts.
+    
     let ends: Vec<&str> = events
         .tool_ends()
         .into_iter()
@@ -681,14 +656,11 @@ async fn a_sequential_tool_does_not_overlap_another() {
     assert_eq!(answered, vec!["c1", "c2", "c3"]);
 }
 
-/// One sequential tool in a batch forces every call in that batch to run one at a time —
-/// not only the sequential one against the others, but the whole batch against itself —
-/// which is what pi's own `executionMode` scheduling does with a mixed batch.
+/// One sequential tool in a batch forces every call in that batch to run one at a time.
 #[tokio::test]
 async fn a_mixed_batch_runs_every_call_one_at_a_time_not_only_the_sequential_one() {
     let hold = std::time::Duration::from_millis(150);
-    // None of "one" and "three" ask for anything; "two" is the one call that forces the
-    // whole batch to stop running together.
+    
     let tools: Vec<Arc<dyn micro_tools::Tool>> = vec![
         Arc::new(SlowTool::new("one", hold)),
         Arc::new(SlowTool::new("two", hold).sequential()),
@@ -717,8 +689,7 @@ async fn a_mixed_batch_runs_every_call_one_at_a_time_not_only_the_sequential_one
     );
 }
 
-/// A turn that failed still ends. Anything counting starts against ends would be left
-/// waiting for one that never arrived.
+/// A turn that failed still ends.
 #[tokio::test]
 async fn a_failed_turn_still_reports_its_end() {
     let provider = FakeProvider::once(Turn::error("the provider refused"));
@@ -741,8 +712,8 @@ async fn a_failed_turn_still_reports_its_end() {
     assert!(starts > 0, "a turn did start");
 }
 
-/// A message left for a running turn reaches the model at the next turn, without a
-/// second run being started for it.
+/// A message left for a running turn reaches the model at the next turn, without a second run being
+/// started for it.
 #[tokio::test]
 async fn steering_reaches_the_run_that_is_already_going() {
     let provider = FakeProvider::builder()
@@ -755,7 +726,7 @@ async fn steering_reaches_the_run_that_is_already_going() {
     ));
     let mut agent = agent(&provider, vec![tool]);
 
-    // Taken before the run, since the run borrows the agent for as long as it lasts.
+    
     let steering = agent.steering();
     let steering_task = tokio::spawn(async move {
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
@@ -784,7 +755,7 @@ async fn steering_reaches_the_run_that_is_already_going() {
     );
 }
 
-/// A follow-up continues the run rather than ending it, so one conversation carries on.
+
 #[tokio::test]
 async fn a_follow_up_continues_the_same_run() {
     let provider = FakeProvider::builder()
@@ -811,8 +782,7 @@ async fn a_follow_up_continues_the_same_run() {
     assert!(steering.is_empty(), "the queue was drained");
 }
 
-/// A hook that answers every call the same way, so a test can state one decision and see
-/// what the loop does with it.
+
 struct Deciding(micro_agent::ToolDecision);
 
 #[async_trait::async_trait]
@@ -849,8 +819,7 @@ async fn a_hook_can_rewrite_a_call_before_it_runs() {
         "the tool was handed the rewritten arguments"
     );
 
-    // What is announced is what runs, so anything watching is not shown a call that never
-    // happened.
+    
     let announced = events
         .events()
         .iter()
@@ -904,9 +873,7 @@ async fn a_hook_that_proceeds_changes_nothing() {
     assert_eq!(read.call(0), json!({ "path": "asked.txt" }));
 }
 
-/// A credential is read for every request rather than copied once when the agent was
-/// built. A Copilot API token lives about half an hour, so a session that runs longer
-/// than that has to send the token the store has since minted, not the one it started on.
+
 #[tokio::test]
 async fn every_request_carries_the_credential_the_store_holds_now() {
     let root = std::env::temp_dir().join("micro-testkit-credential-per-request");
@@ -943,8 +910,7 @@ async fn every_request_carries_the_credential_the_store_holds_now() {
     assert_eq!(provider.call(1).api_key, "second");
 }
 
-/// A deferred tool is not described to the model and is still callable, which is the whole
-/// point: the model learns of it by searching and then calls it by name like any other.
+/// A deferred tool is not described to the model and is still callable.
 #[tokio::test]
 async fn a_deferred_tool_is_hidden_from_the_model_but_still_runs() {
     let provider = FakeProvider::builder()
@@ -981,8 +947,7 @@ async fn a_deferred_tool_is_hidden_from_the_model_but_still_runs() {
     );
 }
 
-/// A provider whose stream a test controls by hand, so a turn can be held open at a
-/// precise point rather than run to completion the way [`FakeProvider`] always does.
+/// A provider whose stream a test controls by hand.
 struct PausedProvider {
     stream: Mutex<Option<UnboundedReceiver<StreamEvent>>>,
 }
@@ -1006,12 +971,6 @@ impl Provider for PausedProvider {
 }
 
 /// A turn abandoned mid-answer still reports that the run ended.
-///
-/// `run_turn` in the TUI and `Command::Abort` in the RPC mode both stop an interrupted
-/// turn the same way: by dropping the future `Agent::run()` returns, mid-poll, well before
-/// it reaches its own `AgentEnd`/`AgentSettled` at the end of the function. Nothing
-/// forwarding those two events to an extension host — or to anything else watching this
-/// run from outside — ever hears them for that turn unless something else says so.
 #[tokio::test]
 async fn an_interrupted_turn_still_settles() {
     let (stream_tx, stream_rx) = tokio::sync::mpsc::unbounded_channel();
@@ -1023,8 +982,7 @@ async fn an_interrupted_turn_still_settles() {
     let (events_tx, mut events_rx) = tokio::sync::mpsc::unbounded_channel();
     let mut turn = Box::pin(agent.run(Message::user("go"), &events_tx));
 
-    // The response has begun; nothing sent after this would let the turn finish, so
-    // driving it further only ever waits on the next event from the stream.
+    
     stream_tx.send(StreamEvent::Start).expect("the agent is still listening");
 
     tokio::select! {
@@ -1032,8 +990,7 @@ async fn an_interrupted_turn_still_settles() {
         _ = tokio::time::sleep(Duration::from_millis(50)) => {}
     }
 
-    // Interrupted: the same as a reader's Ctrl+C, or an extension's `ctx.abort()` once
-    // that reaches this far — the future is abandoned, not awaited to completion.
+    
     drop(turn);
 
     let mut settled = false;

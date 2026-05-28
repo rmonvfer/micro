@@ -1,10 +1,4 @@
 //! What one service needs on top of the protocol it speaks.
-//!
-//! Two services can answer the same wire protocol and still disagree about the details:
-//! which field carries an output limit, whether a conversation may be stored, how
-//! reasoning effort is asked for. A model carries the answers for the service that serves
-//! it, so the client sends what that service accepts rather than what the protocol's
-//! originator accepts.
 
 use serde::Deserialize;
 use serde::Serialize;
@@ -19,7 +13,7 @@ pub enum MaxTokensField {
     MaxTokens,
 }
 
-/// How reasoning effort is asked for.
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum ThinkingFormat {
@@ -57,8 +51,8 @@ pub enum SessionAffinity {
     OpenaiNosession,
     /// `x-session-id`.
     Openrouter,
-    /// `x-affinity`, which is how Mistral routes a conversation back to the machine
-    /// holding its cached prompt.
+    /// `x-affinity`, which is how Mistral routes a conversation back to the machine holding its
+    /// cached prompt.
     Mistral,
 }
 
@@ -91,22 +85,8 @@ pub struct Compat {
     /// Whether a tool definition may carry `strict`.
     pub supports_strict_mode: bool,
     /// Whether Anthropic's Messages API will honor `strict` on a tool definition.
-    ///
-    /// A distinct flag from `supports_strict_mode` because Anthropic's gate is opt-in
-    /// rather than assumed: only the first-party Messages API understands it, so a Claude
-    /// model served through Bedrock, Vertex, or a gateway that merely speaks the same wire
-    /// shape defaults to not supporting it, unlike `supports_strict_mode`'s default.
     pub supports_strict_tools: bool,
     /// Whether Bedrock's Converse API will honor `strict` on a tool spec.
-    ///
-    /// Its own flag rather than a shared one, opt-in with the same shape as
-    /// `supports_strict_tools` but not the same meaning: Anthropic's Messages API and
-    /// Bedrock's Converse API are different protocols that happen to both gate `strict`
-    /// behind a default-off switch, and a model's support for one says nothing about the
-    /// other. No model in the bundled catalog sets this true yet — pi's own catalog
-    /// generator never has either, for any Bedrock model — so this is built and correct
-    /// but currently unreachable outside a manual catalog override, the same state grammar
-    /// constrained sampling is in.
     pub bedrock_supports_strict_tools: bool,
     pub cache_control_format: Option<CacheControlFormat>,
     /// Whether to tie a request to its conversation with headers.
@@ -121,24 +101,16 @@ pub struct Compat {
     /// Whether a tool definition may carry a cache marker.
     pub supports_cache_control_on_tools: bool,
     /// How long a tool call's id may be, when the service will not take an arbitrary one.
-    ///
-    /// Mistral accepts exactly nine alphanumeric characters and refuses anything else, so
-    /// an id has to be cut to fit before it is sent and put back on the way in.
     pub tool_call_id_length: Option<usize>,
-    /// Whether this model decides its own thinking rather than being given a budget.
-    ///
-    /// The newest Claude models are asked for an effort and left to spend it as they see
-    /// fit; the older ones are handed a token budget. Sending one the other's shape is
-    /// not what it expects.
+    
     pub force_adaptive_thinking: bool,
-    /// What each thinking level is called here. A level mapped to nothing is one this
-    /// model does not offer, and is left out of the request.
+    /// What each thinking level is called here.
     pub thinking: BTreeMap<String, Option<String>>,
 }
 
 impl Default for Compat {
-    /// What a service is assumed to accept when it says nothing: the protocol as its
-    /// originator defines it.
+    /// What a service is assumed to accept when it says nothing: the protocol as its originator
+    /// defines it.
     fn default() -> Self {
         Compat {
             supports_store: true,
@@ -168,8 +140,6 @@ impl Default for Compat {
 
 impl Compat {
     /// What this service calls one thinking level, or nothing when it does not offer it.
-    ///
-    /// A level the model says nothing about keeps the name the protocol gives it.
     pub fn level(&self, level: crate::ThinkingLevel) -> Option<String> {
         let name = level.as_str();
         match self.thinking.get(name) {
@@ -179,10 +149,6 @@ impl Compat {
     }
 
     /// What this model calls thinking being off, as far as it says anything.
-    ///
-    /// Three answers, and they are all different: a name to send, an explicit refusal to
-    /// take one, and silence. Silence is not the same as a refusal — a service that
-    /// spells "off" as a value of its own is told nothing unless the model named it.
     pub fn off(&self) -> OffLevel {
         match self.thinking.get("off") {
             Some(Some(named)) => OffLevel::Named(named.clone()),

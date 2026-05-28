@@ -1,11 +1,4 @@
 //! The multi-line input buffer.
-//!
-//! Pure state: text, a cursor, and the operations a key binding maps onto. It knows nothing
-//! about crossterm or ratatui, which is what makes the motion and deletion rules testable.
-//!
-//! Positions are byte offsets that always sit on a grapheme boundary, so a cursor never
-//! lands inside an emoji or a combining sequence. Vertical motion works on *visual* rows —
-//! a wrapped line is several rows, and pressing up inside one moves within it.
 
 mod kill_ring;
 mod paste;
@@ -49,15 +42,14 @@ pub struct Editor {
     kill: KillRing,
     /// Snapshots taken before each edit, coalesced a word at a time.
     undo: UndoStack,
-    /// What the last keystroke did, which decides whether a kill merges with the one before
-    /// it, whether yank-pop is allowed, and whether typing opens a new undo unit.
+    /// What the last keystroke did.
     last: LastAction,
     /// Large pastes held aside, stood in for by a marker in the text.
     pastes: PasteStore,
     /// Prompts already submitted, oldest first, browsed with up at the top of the buffer.
     history: Vec<String>,
-    /// Where in `history` the buffer currently sits, and what was being typed before
-    /// browsing started so it can be given back.
+    /// Where in `history` the buffer currently sits, and what was being typed before browsing
+    /// started so it can be given back.
     browsing: Option<Browsing>,
 }
 
@@ -93,9 +85,7 @@ impl Editor {
         }
     }
 
-    /// Record the buffer before an edit that is atomic on its own — a deletion, a newline, a
-    /// paste, a yank. Typing goes through [`Editor::checkpoint_typing`] instead, which
-    /// coalesces a run of word characters into one unit.
+    
     fn checkpoint(&mut self) {
         let snapshot = self.snapshot();
         self.undo.push(snapshot);
@@ -125,9 +115,6 @@ impl Editor {
     }
 
     /// Replace what yank just inserted with the kill before it.
-    ///
-    /// Only ever follows a yank: with anything else in between there is no way to know what
-    /// to take back out, so the keystroke does nothing rather than guessing.
     pub fn yank_pop(&mut self) -> bool {
         if self.last != LastAction::Yank || self.kill.len() < 2 {
             return false;
@@ -151,7 +138,7 @@ impl Editor {
         if prompt.trim().is_empty() {
             return;
         }
-        // A prompt sent twice in a row is one entry: browsing past a repeat is noise.
+        
         if self.history.last().map(String::as_str) != Some(prompt) {
             self.history.push(prompt.to_string());
         }
@@ -159,8 +146,7 @@ impl Editor {
         self.undo.clear();
     }
 
-    /// Step back through submitted prompts. Returns false when there is nothing older,
-    /// which is what tells the caller to move the cursor instead.
+    /// Step back through submitted prompts.
     pub fn history_previous(&mut self) -> bool {
         if self.history.is_empty() {
             return false;
@@ -202,7 +188,7 @@ impl Editor {
         true
     }
 
-    /// Whether the buffer is showing a prompt from history rather than a draft.
+    
     pub fn is_browsing_history(&self) -> bool {
         self.browsing.is_some()
     }
@@ -247,10 +233,8 @@ impl Editor {
         self.move_end();
     }
 
-    /// Replace the whole buffer and place the cursor exactly where asked, clamped to what
-    /// the new text actually has. For an edit computed elsewhere rather than typed at the
-    /// keyboard — an extension's own `applyCompletion`, say — which knows where its own
-    /// cursor belongs and would have it moved to the end, as plain `set_text` does, otherwise.
+    /// Replace the whole buffer and place the cursor exactly where asked, clamped to what the new
+    /// text actually has.
     pub fn set_text_with_cursor(&mut self, text: &str, row: usize, col: usize) {
         self.set_text(text);
         self.row = row.min(self.lines.len() - 1);
@@ -259,8 +243,6 @@ impl Editor {
     }
 
     /// Empty the buffer and return what it held.
-    /// Take the prompt to send: markers stand in on screen, but what leaves here is what
-    /// they stand for.
     pub fn take(&mut self) -> String {
         let text = self.expanded_text();
         self.clear();
@@ -272,17 +254,15 @@ impl Editor {
         self.row = 0;
         self.col = 0;
         self.sticky = None;
-        // An emptied buffer is no longer showing anything from history, and the run that was
-        // in progress ended with the text it applied to.
+        
         self.browsing = None;
         self.last = LastAction::Other;
-        // The pastes belonged to the prompt that just left; nothing still refers to them.
+        
         self.pastes.clear();
     }
 
     pub fn insert_char(&mut self, character: char) {
-        // A run of word characters is one undo unit; a space or a punctuation mark opens the
-        // next one, so undo takes back a word together with the space that preceded it.
+        
         if undo::opens_new_unit(character, self.last) {
             self.checkpoint();
         }
@@ -294,12 +274,7 @@ impl Editor {
         self.insert_inner(character.encode_utf8(&mut buffer));
     }
 
-    /// Insert text at the cursor. Newlines split the line, which is how a multi-line paste
-    /// stays one block instead of being submitted a line at a time.
-    /// Insert text as one atomic edit — a paste, or a completion being committed.
-    ///
-    /// It ends whatever run was in progress, which is what stops a kill that follows a
-    /// paste from merging with the kill that came before it.
+    /// Insert text at the cursor.
     pub fn insert_str(&mut self, text: &str) {
         self.checkpoint();
         self.last = LastAction::Other;
@@ -331,9 +306,6 @@ impl Editor {
     }
 
     /// Replace the `bytes` immediately before the cursor with `text`.
-    ///
-    /// This is how a completion commits: what the user typed toward the command is the run
-    /// of bytes behind the cursor, and the chosen command takes their place.
     pub fn replace_before_cursor(&mut self, bytes: usize, text: &str) {
         let start = self.col.saturating_sub(bytes);
         self.lines[self.row].replace_range(start..self.col, "");
@@ -341,13 +313,11 @@ impl Editor {
         self.insert_str(text);
     }
 
-    /// Delete one grapheme back. Plain deletion never touches the kill ring — only the
-    /// word and line kills do — and it ends whatever run was in progress.
+    /// Delete one grapheme back.
     pub fn backspace(&mut self) {
         self.checkpoint();
         self.last = LastAction::Other;
-        // A marker stands for a whole paste, so it goes all at once rather than losing its
-        // closing bracket and becoming ordinary text.
+        
         if let Some(marker) = self.marker_before_cursor() {
             self.delete_marker(marker);
             return;
@@ -369,13 +339,11 @@ impl Editor {
         self.sticky = None;
     }
 
-    /// Delete one grapheme forward. Like backspace, this never touches the kill ring and
-    /// ends whatever run was in progress.
+    /// Delete one grapheme forward.
     pub fn delete(&mut self) {
         self.checkpoint();
         self.last = LastAction::Other;
-        // A marker stands for a whole paste, so it goes all at once rather than losing its
-        // opening bracket and becoming ordinary text.
+        
         if let Some(marker) = self.marker_after_cursor() {
             self.delete_marker(marker);
             return;
@@ -441,8 +409,7 @@ impl Editor {
             self.record_kill(&killed, false);
             return;
         }
-        // At the end of a line the newline itself is what gets killed, and it joins the ring
-        // as a literal newline so yanking it back puts the break where it was.
+        
         if self.row + 1 < self.lines.len() {
             let next = self.lines.remove(self.row + 1);
             self.lines[self.row].push_str(&next);
@@ -477,8 +444,8 @@ impl Editor {
         self.record_kill("\n", false);
     }
 
-    /// Put killed text on the ring, merging with the kill before it when that is what the
-    /// last keystroke was.
+    /// Put killed text on the ring, merging with the kill before it when that is what the last
+    /// keystroke was.
     fn record_kill(&mut self, text: &str, backward: bool) {
         let accumulate = self.last == LastAction::Kill;
         self.kill.push(text, backward, accumulate);
@@ -486,7 +453,7 @@ impl Editor {
     }
 
     pub fn move_left(&mut self) {
-        // Motion steps over a marker whole; there is nothing meaningful inside it to land on.
+        
         if let Some(marker) = self.marker_before_cursor() {
             self.col = marker.start;
             self.sticky = None;
@@ -558,13 +525,7 @@ impl Editor {
         self.sticky = None;
     }
 
-    /// Move one display row up. Returns false when already on the first row, which lets a
-    /// caller give the key another meaning at the top of the buffer.
-    /// Take pasted text, holding a large paste aside behind a marker.
-    ///
-    /// A paste is cleaned first — line endings normalized, tabs widened, control characters
-    /// dropped — and a path pasted onto the end of a word gets a space before it, so
-    /// `cat` and `/etc/hosts` do not fuse into one token.
+    /// Move one display row up.
     pub fn paste(&mut self, text: &str) {
         let text = paste::clean(text);
         if text.is_empty() {
@@ -586,18 +547,12 @@ impl Editor {
         }
     }
 
-    /// The prompt as the model should see it, with every marker replaced by what it stands
-    /// for. [`Editor::text`] gives what is on screen; this gives what was meant.
+    
     pub fn expanded_text(&self) -> String {
         self.pastes.expand(&self.text())
     }
 
     /// Push the cursor out of any marker it landed inside.
-    ///
-    /// Word motion works on words, and a marker is full of them — but they describe the
-    /// paste rather than being part of the prompt, so a motion that lands inside one carries
-    /// on to its edge. Called after the move rather than before it, which is what makes it
-    /// hold however the cursor arrived.
     fn snap_out_of_marker(&mut self, forward: bool) {
         if let Some(marker) = paste::marker_containing(&self.lines[self.row], self.col) {
             self.col = match forward {
@@ -619,9 +574,6 @@ impl Editor {
     }
 
     /// Delete a whole marker and forget the paste behind it.
-    ///
-    /// The numbers of the pastes after it close up, and the markers still in the text are
-    /// rewritten to match, so a prompt never shows `#3` when it holds two pastes.
     fn delete_marker(&mut self, marker: paste::Marker) {
         self.lines[self.row].replace_range(marker.start..marker.end, "");
         self.col = marker.start;
@@ -638,10 +590,6 @@ impl Editor {
     }
 
     /// Move to the next occurrence of `target`, searching on across lines.
-    ///
-    /// The current line is searched from just past the cursor, and every line after it (or
-    /// before it, going backward) in full. With no match anywhere the cursor stays put,
-    /// rather than jumping somewhere arbitrary.
     pub fn jump_to_char(&mut self, target: char, forward: bool) {
         self.last = LastAction::Other;
         let rows: Vec<usize> = match forward {
@@ -670,9 +618,6 @@ impl Editor {
     }
 
     /// True when the character immediately before the cursor is a backslash.
-    ///
-    /// Enter then inserts a line break instead of submitting, and takes the backslash with
-    /// it — the way to type a multi-line prompt in a terminal that has no shift+enter.
     pub fn escapes_submit(&self) -> bool {
         self.lines[self.row][..self.col].ends_with('\\')
     }
@@ -689,8 +634,7 @@ impl Editor {
         self.insert_inner("\n");
     }
 
-    /// Rows a page key moves by: `max(5, floor(rows * 0.3))`, so a taller terminal pages
-    /// further but a short one still moves a useful distance.
+    /// Rows a page key moves by: `max(5, floor(rows * 0.3))`.
     pub fn page_rows(rows: usize) -> usize {
         5.max((rows as f64 * 0.3) as usize)
     }
@@ -722,7 +666,7 @@ impl Editor {
         true
     }
 
-    /// Move one display row down. Returns false when already on the last row.
+    /// Move one display row down.
     pub fn move_down(&mut self, width: usize) -> bool {
         let layout = self.layout(width);
         if layout.cursor_row + 1 >= layout.rows.len() {
@@ -776,8 +720,8 @@ impl Default for Editor {
     }
 }
 
-/// The cursor belongs to the row that contains it, and to the final row of a line when it
-/// sits at the very end. A position on a wrap boundary belongs to the row that starts there.
+/// The cursor belongs to the row that contains it, and to the final row of a line when it sits at
+/// the very end.
 fn cursor_row_matches(range: &Range<usize>, cursor: usize, line_length: usize) -> bool {
     if cursor < range.end {
         return cursor >= range.start;
@@ -787,8 +731,7 @@ fn cursor_row_matches(range: &Range<usize>, cursor: usize, line_length: usize) -
 
 /// The byte offset within `range` whose display column is closest to `column`.
 fn column_to_byte(line: &str, range: &Range<usize>, column: usize) -> usize {
-    // A row that ends mid-line is followed by another row starting at the same byte, so the
-    // cursor stops one grapheme short to stay visually on this row.
+    
     let limit = if range.end < line.len() {
         prev_boundary(line, range.end).max(range.start)
     } else {
@@ -824,10 +767,6 @@ fn next_boundary(text: &str, index: usize) -> usize {
 }
 
 /// What kind of character this is, for deciding where a word ends.
-///
-/// Punctuation is its own kind rather than a separator like whitespace. A path or a call
-/// is a run of words with punctuation between them, and treating the punctuation as a gap
-/// would step over `foo.bar` in one move where a reader expects three.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum CharClass {
     Whitespace,
@@ -840,7 +779,7 @@ fn class_of(text: &str) -> CharClass {
         Some(character) if character.is_whitespace() => CharClass::Whitespace,
         Some(character) if character.is_alphanumeric() || character == '_' => CharClass::Word,
         Some(character) if character.is_ascii_punctuation() => CharClass::Punctuation,
-        // Anything else — a symbol, an emoji — is a thing rather than a gap.
+        
         Some(_) => CharClass::Word,
         None => CharClass::Whitespace,
     }
@@ -896,8 +835,7 @@ fn word_end_after(text: &str, index: usize) -> usize {
     cursor
 }
 
-/// Collapse line endings and drop control characters the terminal cannot draw. Tabs survive
-/// because pasted code depends on them; they render one column wide.
+/// Collapse line endings and drop control characters the terminal cannot draw.
 fn normalize(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     let mut chars = text.chars().peekable();
@@ -937,8 +875,7 @@ mod tests {
         assert_eq!(editor.cursor(), (0, 5));
     }
 
-    /// Unlike plain `set_text`, which always lands the cursor at the end, this places it
-    /// exactly where asked — what an edit computed elsewhere, rather than typed, needs.
+    /// Unlike plain `set_text`.
     #[test]
     fn set_text_with_cursor_places_it_where_asked() {
         let mut editor = Editor::new();
@@ -947,8 +884,7 @@ mod tests {
         assert_eq!(editor.cursor(), (1, 1));
     }
 
-    /// A row or column past what the new text actually has is clamped rather than trusted,
-    /// since the caller computed it against text that may not match what lands here exactly.
+    
     #[test]
     fn set_text_with_cursor_clamps_past_the_end() {
         let mut editor = Editor::new();
@@ -1009,8 +945,7 @@ mod tests {
         assert_eq!(editor.text(), "ok ");
     }
 
-    /// Whitespace is a gap; punctuation is a stop of its own. `beta.gamma` is three
-    /// moves, not one, which is what a reader editing a path or a call expects.
+    /// Whitespace is a gap; punctuation is a stop of its own.
     #[test]
     fn word_motion_stops_at_punctuation_as_well_as_at_words() {
         let mut editor = editor_with("alpha  beta.gamma");
@@ -1094,7 +1029,7 @@ mod tests {
         assert_eq!(editor.text(), "/model ");
         assert_eq!(editor.cursor(), (0, 7));
 
-        // The rest of the line is left where it was.
+        
         let mut editor = editor_with("/mod tail");
         editor.move_line_start();
         for _ in 0..4 {
@@ -1143,7 +1078,7 @@ mod tests {
     #[test]
     fn vertical_motion_moves_within_a_wrapped_line() {
         let mut editor = editor_with("aaaa bbbb cccc");
-        // Rows at width 5: "aaaa ", "bbbb ", "cccc".
+        
         assert_eq!(editor.height(5), 3);
         assert!(editor.move_up(5));
         assert_eq!(editor.cursor(), (0, 9));
@@ -1222,8 +1157,8 @@ mod ring_tests {
         assert_eq!(editor.text(), "one two three");
     }
 
-    /// A kill that is not adjacent to the one before it starts its own entry, so yank
-    /// returns only the newer one.
+    /// A kill that is not adjacent to the one before it starts its own entry, so yank returns only
+    /// the newer one.
     #[test]
     fn a_kill_interrupted_by_typing_starts_its_own_entry() {
         let mut editor = editor("alpha beta");
@@ -1323,8 +1258,7 @@ mod ring_tests {
         assert_eq!(editor.expanded_text(), big(), "and comes back on submit");
     }
 
-    /// The marker is one unit: backspace takes all of it rather than breaking it into text
-    /// that no longer stands for anything.
+    
     #[test]
     fn backspace_takes_a_whole_marker() {
         let mut editor = Editor::new();
@@ -1335,8 +1269,7 @@ mod ring_tests {
         assert_eq!(editor.expanded_text(), "see ");
     }
 
-    /// Forward delete is the other half of the same rule: a marker in front of the cursor
-    /// goes all at once rather than losing its opening bracket.
+    
     #[test]
     fn forward_delete_takes_a_whole_marker() {
         let mut editor = Editor::new();
@@ -1371,8 +1304,8 @@ mod ring_tests {
         assert_eq!(editor.cursor().1, end, "and back past all of it");
     }
 
-    /// Deleting the first of two pastes renumbers the second, so the prompt never shows a
-    /// number higher than the count of pastes in it.
+    /// Deleting the first of two pastes renumbers the second, so the prompt never shows a number
+    /// higher than the count of pastes in it.
     #[test]
     fn removing_a_paste_renumbers_the_markers_after_it() {
         let mut editor = Editor::new();
@@ -1496,8 +1429,8 @@ mod ring_tests {
         assert!(!editor("").escapes_submit());
     }
 
-    /// A page is `max(5, floor(rows * 0.3))` rows, so a tall terminal pages further while a
-    /// short one still moves a useful distance.
+    /// A page is `max(5, floor(rows * 0.3))` rows, so a tall terminal pages further while a short
+    /// one still moves a useful distance.
     #[test]
     fn a_page_is_a_third_of_the_screen_but_never_under_five_rows() {
         assert_eq!(Editor::page_rows(10), 5);
@@ -1509,13 +1442,12 @@ mod ring_tests {
     fn paging_stops_at_the_edges_rather_than_running_off() {
         let mut editor = Editor::new();
         editor.insert_str("one\ntwo\nthree");
-        // Paging keeps the display column, the way every vertical motion does, so only the
-        // row is asserted here.
+        
         editor.page_up(40, 24);
         assert_eq!(
             editor.cursor().0,
             0,
-            "stopped at the top rather than running off"
+            "cursor should stop at the top"
         );
         editor.page_down(40, 24);
         assert_eq!(editor.cursor().0, 2, "and at the bottom");

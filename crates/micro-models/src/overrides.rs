@@ -13,16 +13,13 @@ pub fn config_dir() -> Result<PathBuf> {
     micro_dirs::config_dir().ok_or(Error::NoHomeDir)
 }
 
-/// The path the user catalog is read from.
+
 pub fn user_catalog_path() -> Result<PathBuf> {
     Ok(config_dir()?.join(USER_CATALOG_FILE))
 }
 
 impl Catalog {
     /// The bundled catalog with the user's overrides applied.
-    ///
-    /// A missing user file is not an error — that is the common case, and the
-    /// bundled catalog stands on its own.
     pub fn load() -> Result<Catalog> {
         Catalog::load_from(&user_catalog_path()?)
     }
@@ -55,8 +52,8 @@ mod tests {
     use std::env;
     use std::sync::atomic::{AtomicU32, Ordering};
 
-    /// A scratch directory that removes itself, so tests never read or write
-    /// the caller's real configuration directory.
+    /// A scratch directory that removes itself, so tests never read or write the caller's real
+    /// configuration directory.
     struct TempDir(PathBuf);
 
     impl TempDir {
@@ -89,8 +86,8 @@ mod tests {
         }
     }
 
-    /// The user's catalog is one of the things they wrote, so it sits with the settings
-    /// wherever those are.
+    /// The user's catalog is one of the things they wrote, so it sits with the settings wherever
+    /// those are.
     #[test]
     fn the_user_catalog_sits_in_the_configuration_directory() {
         assert_eq!(
@@ -172,8 +169,7 @@ mod tests {
 
     #[test]
     fn an_unreadable_user_catalog_is_reported_with_its_path() {
-        // A directory where a file is expected fails to read, but not with
-        // `NotFound` — so it surfaces rather than being treated as absent.
+        
         let dir = TempDir::new();
         fs::create_dir_all(dir.path(USER_CATALOG_FILE)).unwrap();
         let error = Catalog::load_from(&dir.path(USER_CATALOG_FILE)).unwrap_err();

@@ -1,14 +1,4 @@
 //! Settling what each loaded extension may do.
-//!
-//! An extension that declares its capabilities is held to what it declared, and nobody is
-//! asked anything: the manifest is the whole point, and needing to be vouched for besides
-//! would make it worth nothing. An extension that declares none is a file written before
-//! manifests existed, so what it would need is worked out from what it registered and the
-//! reader is asked about that set — once, and the answer is kept.
-//!
-//! A project that has been trusted skips the question entirely. Trusting a project is
-//! already the decision to run what it ships, and asking again for each extension it ships
-//! would be asking the same thing twice in different words.
 
 use micro_extensions::Capability;
 use micro_extensions::Grant;
@@ -23,10 +13,6 @@ pub struct Resolved {
 }
 
 /// Work out what every loaded extension may do.
-///
-/// `trusted` is the project's own decision, and `has_ui` says whether there is anybody to
-/// ask: headless, an extension that declared nothing gets nothing beyond the questions
-/// micro answers for anyone, and is told why.
 pub async fn resolve(
     loaded: &micro_extensions::Loaded,
     roots: &[(PathBuf, String)],
@@ -42,10 +28,7 @@ pub async fn resolve(
         let name = crate::runtime::extension_name(&extension.path, roots);
         let path = Path::new(&extension.path);
 
-        // What the extension itself said, from either place it can say it: an export beside
-        // its default one, or its package's own manifest. The export wins, being the more
-        // specific of the two — a package can carry several extensions, and only one of
-        // them may need to run a program.
+        
         let spoken = extension
             .capabilities
             .clone()
@@ -68,12 +51,10 @@ pub async fn resolve(
             continue;
         }
 
-        // Nothing declared. What it registered says part of what it needs; the rest is what
-        // any extension written before manifests existed expects to be able to do.
+        
         let would_need = micro_extensions::derived(extension);
         let allowed = if trusted {
-            // The compat promise: a project that has been vouched for runs what it ships
-            // exactly as it did before capabilities existed.
+            
             would_need
         } else if let Some(decision) = store.decision(path) {
             let (allowed, _) = micro_extensions::parse_all(&decision.capabilities);
@@ -125,9 +106,6 @@ pub async fn resolve(
 }
 
 /// Put the question to whoever is at the terminal, before the interface takes it over.
-///
-/// The same shape the project-trust question takes, and for the same reason: this is the
-/// last moment there is a plain terminal to ask on.
 fn ask_about_capabilities(
     name: &str,
     path: &str,
@@ -186,8 +164,8 @@ mod tests {
         }
     }
 
-    /// A declared manifest is the whole answer: what it named is what it may do, and
-    /// nothing it did not name comes along with it.
+    /// A declared manifest is the whole answer: what it named is what it may do, and nothing it did
+    /// not name comes along with it.
     #[tokio::test]
     async fn a_declared_manifest_grants_exactly_what_it_names() {
         let loaded = micro_extensions::Loaded {
@@ -206,8 +184,7 @@ mod tests {
         assert!(!grant.allows(Capability::SessionControl));
     }
 
-    /// A name micro has no capability for is said out loud rather than quietly ignored, and
-    /// the ones beside it still stand.
+    
     #[tokio::test]
     async fn a_capability_nobody_has_heard_of_is_reported() {
         let loaded = micro_extensions::Loaded {
@@ -234,8 +211,8 @@ mod tests {
             .allows(Capability::Exec));
     }
 
-    /// A trusted project runs what it ships exactly as it did before capabilities existed,
-    /// with nobody asked anything — the promise every vendored pi extension relies on.
+    /// A trusted project runs what it ships exactly as it did before capabilities existed, with
+    /// nobody asked anything.
     #[tokio::test]
     async fn a_legacy_extension_in_a_trusted_project_keeps_everything() {
         let loaded = micro_extensions::Loaded {
@@ -252,8 +229,7 @@ mod tests {
         assert!(resolved.notices.is_empty(), "{:?}", resolved.notices);
     }
 
-    /// Headless and untrusted there is nobody to ask, so it may only read, and the reason
-    /// is said rather than left for someone to work out from what stopped working.
+    /// Headless and untrusted there is nobody to ask.
     #[tokio::test]
     async fn a_legacy_extension_with_nobody_to_ask_can_only_read() {
         let loaded = micro_extensions::Loaded {
@@ -290,8 +266,7 @@ mod tests {
             declared: false,
             allowed: [Capability::Ui, Capability::Exec].into_iter().collect(),
         };
-        // Listed in the order capabilities are declared in, not the order they happen to
-        // sort in, so two runs describe the same set the same way.
+        
         assert_eq!(describe(&legacy), "legacy: exec, ui");
 
         let refused = Grant {

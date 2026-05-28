@@ -1,10 +1,4 @@
 //! What the two ends say to each other, inside the sealed frames.
-//!
-//! Field order matters here in a way it usually does not: the phone seals a payload by
-//! writing its object out in declaration order, and a frame is authenticated over
-//! exactly those bytes. A struct whose fields are declared in another order still
-//! round-trips against itself and still fails against the phone, so the order below is
-//! the phone's rather than one chosen for reading.
 
 use crate::crypto::open;
 use crate::crypto::seal;
@@ -64,7 +58,7 @@ pub enum PhonePayload {
     },
 }
 
-/// One thing the phone can ask for.
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum PhoneCommand {
@@ -90,17 +84,12 @@ pub enum PhoneCommand {
         level: String,
     },
     /// Anything a newer phone asks for that this machine has no answer to.
-    ///
-    /// Kept as a variant rather than a parse failure so the bridge can answer "I do
-    /// not know that one" — a phone waiting on a response it never gets is worse than
-    /// one told no.
     #[serde(other)]
     Unknown,
 }
 
 impl PhoneCommand {
-    /// What to call this command when answering it. The name travels back on the
-    /// response so a phone with several requests in flight can tell them apart.
+    /// What to call this command when answering it.
     pub fn name(&self) -> &'static str {
         match self {
             PhoneCommand::Prompt { .. } => "prompt",
@@ -119,9 +108,6 @@ impl PhoneCommand {
 }
 
 /// What a push notification carries.
-///
-/// Sealed under its own key and handed to the relay, which forwards it to Apple. The
-/// field order is the phone's; see this module's own note.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PushPayload {
     pub kind: PushKind,
@@ -173,9 +159,6 @@ impl FrameEncoder {
 }
 
 /// Opens incoming frames, refusing any that does not move the sequence forward.
-///
-/// The sequence is what closes the replay window: a frame captured off the wire and
-/// sent again carries a number already seen, and is dropped without being acted on.
 pub struct FrameDecoder {
     key: [u8; 32],
     last_seq: u64,
@@ -187,9 +170,6 @@ impl FrameDecoder {
     }
 
     /// The payload inside a frame, or nothing when there is no reason to trust it.
-    ///
-    /// A frame that will not open, will not parse, or repeats a number is dropped the
-    /// same way. None of them is worth telling the sender apart from the others.
     pub fn decode<T: for<'de> Deserialize<'de>>(&mut self, frame: &WireFrame) -> Option<T> {
         let plaintext = open(&self.key, frame).ok()?;
         let envelope: Envelope<T> = serde_json::from_str(&plaintext).ok()?;
@@ -201,9 +181,6 @@ impl FrameDecoder {
     }
 
     /// Forgets the sequence, for a channel that has been rebuilt from nothing.
-    ///
-    /// The peer starts counting from one again on a new connection, so a decoder that
-    /// kept the old high-water mark would drop everything the reconnected peer sent.
     pub fn reset(&mut self) {
         self.last_seq = 0;
     }
@@ -248,8 +225,8 @@ mod tests {
         assert!(decoder.decode::<MachinePayload>(&frame).is_none());
     }
 
-    /// A reconnected peer counts from one again, so the decoder has to be told the
-    /// channel is new or it drops everything that follows.
+    /// A reconnected peer counts from one again, so the decoder has to be told the channel is new
+    /// or it drops everything that follows.
     #[test]
     fn a_reset_decoder_accepts_the_sequence_starting_again() {
         let mut encoder = FrameEncoder::new(key());
@@ -284,8 +261,7 @@ mod tests {
         );
     }
 
-    /// A command from a newer phone parses rather than failing, so it can be answered
-    /// with a reason instead of leaving the phone waiting.
+    
     #[test]
     fn a_command_this_machine_does_not_know_still_parses() {
         let payload: PhonePayload = serde_json::from_str(
@@ -296,8 +272,8 @@ mod tests {
         assert_eq!(command, PhoneCommand::Unknown);
     }
 
-    /// The wire spells these in camelCase; a payload written any other way is one the
-    /// phone quietly ignores.
+    /// The wire spells these in camelCase; a payload written any other way is one the phone quietly
+    /// ignores.
     #[test]
     fn payloads_are_written_the_way_the_phone_reads_them() {
         let json = serde_json::to_value(MachinePayload::Response {
@@ -312,8 +288,7 @@ mod tests {
 
         assert_eq!(json["type"], "response");
         assert_eq!(json["sessionId"], "s1");
-        // A response that carries neither is written without them rather than with
-        // nulls, which is what the phone's decoder expects.
+        
         assert!(json.get("data").is_none());
         assert!(json.get("error").is_none());
     }

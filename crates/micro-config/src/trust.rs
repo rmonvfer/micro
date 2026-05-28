@@ -1,10 +1,4 @@
-//! Whether a project has been vouched for.
-//!
-//! A project carries things it would like micro to run: its own settings, the resources
-//! it points at, and the extensions it ships. Reading a directory is one thing; running
-//! what it contains is another, and that is what trusting it decides. The decision is
-//! kept per workspace and read when a run starts, so it survives the session that made
-//! it.
+
 
 use crate::config_dir;
 use crate::ConfigError;
@@ -18,9 +12,6 @@ use std::path::PathBuf;
 pub const TRUST_FILE_NAME: &str = "trust.json";
 
 /// What a project keeps under its own directory that micro would run or be steered by.
-///
-/// Reading a project is one thing; running what it ships is another. A project carrying
-/// none of these is used without a question, which is why most projects never see one.
 const TRUST_REQUIRING: &[&str] = &[
     "settings.json",
     "extensions",
@@ -71,8 +62,7 @@ pub struct TrustStore {
 }
 
 impl TrustStore {
-    /// Reads `trust.json` from the configuration directory. A missing file means nothing
-    /// has been decided yet, which is not an error.
+    /// Reads `trust.json` from the configuration directory.
     pub async fn load() -> Result<Self, ConfigError> {
         TrustStore::load_from(config_dir()?).await
     }
@@ -139,8 +129,8 @@ impl TrustStore {
     }
 }
 
-/// The key a workspace is filed under: its canonical path when it can be resolved, and
-/// what was asked for when it cannot, so a project that has since moved is still findable.
+/// The key a workspace is filed under: its canonical path when it can be resolved, and what was
+/// asked for when it cannot.
 fn key(workspace: &Path) -> String {
     let resolved: PathBuf = workspace
         .canonicalize()
@@ -213,8 +203,7 @@ mod tests {
         assert_eq!(store.decision("/project"), None);
     }
 
-    /// A project nobody has decided about is not trusted, which is not the same as one
-    /// that was refused: the first can still be asked about.
+    /// A project nobody has decided about is not trusted.
     #[test]
     fn an_undecided_project_is_not_a_refused_one() {
         let mut store = TrustStore::default();

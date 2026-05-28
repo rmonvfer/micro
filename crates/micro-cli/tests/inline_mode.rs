@@ -1,22 +1,5 @@
-//! Regression coverage for `Screen::fit_inline` (`crates/micro-tui/src/lib.rs`): when the
-//! inline region needs to grow — a menu opening, or narrowing to fewer, taller rows as it
-//! filters — the region has to end up one thing that changed size, not two things stacked on
-//! the screen at once.
-//!
-//! The mechanism is the same real pty `interactive_extension_compatibility.rs` uses:
-//! `tests/pty/drive.py` forks one, answers the two queries a real terminal must answer or
-//! the program hangs waiting for them, sends keystroke batches on a clock, and hands back
-//! the raw bytes a terminal would have shown. A literal-string probe on those bytes cannot
-//! tell a region that grew in place from one that left a duplicate behind — both contain the
-//! same strings, just at different rows — so this file carries its own small terminal grid
-//! reconstruction: apply cursor moves and erases the way a real terminal would, and read the
-//! result back as whatever is actually on screen at the end, not as a stream of bytes that
-//! happened to pass through the pty.
-//!
-//! Same ownership rule as the other pty-based file: this file and its own fixtures are the
-//! only things owned here. It does not, and must not, edit
-//! `crates/micro-cli/tests/interactive_extension_compatibility.rs`, `tests/pty/drive.py`, or
-//! anything under `crates/micro-extensions/`.
+//! Regression coverage for `Screen::fit_inline` (`crates/micro-tui/src/lib.rs`): when the inline
+//! region needs to grow.
 
 mod support;
 
@@ -31,8 +14,7 @@ fn drive_script() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/pty/drive.py")
 }
 
-/// A `python3 tests/pty/drive.py -- <micro binary> <args>` command carrying exactly the
-/// environment and working directory `fixture.micro()` already set up.
+
 fn pty_command(fixture: &Fixture, micro_args: &[&str]) -> Command {
     let base = fixture.micro();
     let mut command = Command::new("python3");
@@ -56,11 +38,7 @@ fn pty_command(fixture: &Fixture, micro_args: &[&str]) -> Command {
     command
 }
 
-/// A terminal cell grid, built up the way a real terminal builds one: text lands where the
-/// cursor is and advances it; `CUP` moves the cursor; erase-in-display and erase-in-line
-/// clear cells without moving anything. SGR, and every other CSI/OSC sequence this does not
-/// name, is skipped over rather than acted on — this is not a terminal emulator, only enough
-/// of one to answer "what does this row say," which is all a screen-content assertion needs.
+
 struct Grid {
     rows: usize,
     cols: usize,
@@ -97,8 +75,7 @@ impl Grid {
         }
     }
 
-    /// Erase in display, mode 0: from the cursor to the end of the screen. The only mode
-    /// ratatui's crossterm backend ever asks for here.
+    /// Erase in display, mode 0: from the cursor to the end of the screen.
     fn erase_to_end_of_screen(&mut self) {
         for cell in self.cells[self.row].iter_mut().skip(self.col) {
             *cell = ' ';
@@ -122,8 +99,7 @@ impl Grid {
     }
 }
 
-/// Replay a pty's raw bytes into a [`Grid`] the size the driver told the pty it was, and
-/// return what is actually on screen once every byte has been applied.
+
 fn screen(raw: &[u8], rows: usize, cols: usize) -> Vec<String> {
     let mut grid = Grid::new(rows, cols);
     let mut i = 0;
@@ -155,8 +131,7 @@ fn screen(raw: &[u8], rows: usize, cols: usize) -> Vec<String> {
                 i = (j + 1).min(raw.len());
             }
             0x1b if raw.get(i + 1) == Some(&b']') => {
-                // OSC: ESC ] ... terminated by BEL or ESC \. Nothing here reads one; skip it
-                // the same way `interactive_extension_compatibility.rs`'s `strip_ansi` does.
+                
                 let mut j = i + 2;
                 while j < raw.len()
                     && raw[j] != 0x07
@@ -195,14 +170,8 @@ fn screen(raw: &[u8], rows: usize, cols: usize) -> Vec<String> {
     grid.lines()
 }
 
-/// Typing `/` opens the full command menu; typing `s` on top of it narrows the match count
-/// from all of them down to a few, which changes the region's height a second time — the
-/// same "filtering narrows the list" resize a reader triggers on every keystroke once a menu
-/// is open. Before the fix, growing straight into `Terminal::with_options` — which ratatui
-/// always treats as a first construction, reserving the new height by printing bare
-/// newlines below wherever the cursor was left rather than where the region's own rows
-/// were — left the wider, first menu's own rows sitting above the narrower one rather than
-/// being replaced by it, which is what "clones down the screen" was a person seeing.
+/// Typing `/` opens the full command menu; typing `s` on top of it narrows the match count from all
+/// of them down to a few.
 #[test]
 fn a_menu_that_narrows_replaces_the_wider_one_instead_of_stacking_beneath_it() {
     let api = FakeApi::start([]);

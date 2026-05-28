@@ -12,25 +12,17 @@ use std::collections::HashSet;
 use std::sync::Arc;
 
 /// Characters per token.
-///
-/// The tokenizers behind the supported models average close to four characters per token
-/// on English prose and on code. That is coarse, but the number only has to decide *when*
-/// to compact, and unlike a tokenizer call it costs nothing to run on every turn. The
-/// estimate is deliberately anchored to reported usage where it exists; see
-/// [`estimate_context_tokens`].
 pub const CHARS_PER_TOKEN: usize = 4;
 
-/// What an image costs, expressed in the same characters the text estimate counts, since
-/// its base64 payload says nothing about the tokens the model spends on it.
+
 const IMAGE_CHARS: usize = 4_800;
 
 /// Wraps the summary so it stays recognisable after a round trip through session storage.
-/// Wraps a summary so a renderer can tell one from a prompt the user wrote.
 pub const SUMMARY_OPEN: &str = "<compaction-summary>";
 pub const SUMMARY_CLOSE: &str = "</compaction-summary>";
 
-/// The instruction handed to a summarizer, kept here so every implementation asks for the
-/// same shape of summary.
+/// The instruction handed to a summarizer, kept here so every implementation asks for the same
+/// shape of summary.
 pub const COMPACTION_PROMPT: &str = "\
 Summarize the conversation above so it can be continued without the original transcript.
 
@@ -52,11 +44,6 @@ Use this template:
 [Files read, edited, or created, with what matters about each]";
 
 /// A summary, and what asking for it cost.
-///
-/// The cost travels with the text because the only thing that knows it is whatever made
-/// the request, and by the time a summary has replaced half a conversation there is
-/// nothing left to ask. A summarizer that answers without a model behind it reports
-/// nothing spent, which is the truth.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Summary {
     pub text: String,
@@ -74,9 +61,6 @@ impl Summary {
 }
 
 /// Produces the summary that replaces the older half of a conversation.
-///
-/// The implementation lives with the caller, which is what keeps this crate free of any
-/// provider or agent dependency.
 #[async_trait]
 pub trait Summarizer: Send + Sync {
     async fn summarize(&self, messages: &[Message]) -> Result<Summary>;
@@ -148,7 +132,7 @@ pub struct Compacted {
     pub summary: String,
     /// What writing the summary cost, for whoever is accounting for the session.
     pub cost: CompactionCost,
-    /// How many messages the summary stands in for.
+    
     pub replaced: usize,
     pub tokens_before: usize,
     pub tokens_after: usize,
@@ -173,9 +157,7 @@ impl<S: Summarizer> Compactor<S> {
         estimate_context_tokens(messages) > self.config.trigger_tokens(context_window)
     }
 
-    /// Summarizes everything before the cut point and returns the conversation to continue
-    /// with. Fails with [`ContextError::NothingToCompact`] when the history is already
-    /// short enough that nothing can be given up.
+    /// Summarizes everything before the cut point and returns the conversation to continue with.
     pub async fn compact(&self, messages: &[Message], context_window: usize) -> Result<Compacted> {
         let cut = find_cut(messages, self.config.keep_recent_tokens(context_window));
         if cut == 0 {
@@ -199,8 +181,7 @@ impl<S: Summarizer> Compactor<S> {
         })
     }
 
-    /// Compacts only when the conversation has grown past the trigger. Returns `None` when
-    /// it has not, or when there is nothing that can be given up.
+    /// Compacts only when the conversation has grown past the trigger.
     pub async fn compact_if_needed(
         &self,
         messages: &[Message],
@@ -218,12 +199,6 @@ impl<S: Summarizer> Compactor<S> {
 }
 
 /// The index the kept history starts at.
-///
-/// Messages are taken from the end until the token budget is spent, and then kept being
-/// taken until the result stands on its own: a tool result whose call was left behind is
-/// rejected by every provider, so the cut moves back past the assistant message that
-/// requested it. Dropping a prefix can only ever orphan a result, never a call, because a
-/// result always follows the call it answers.
 pub fn find_cut(messages: &[Message], keep_recent_tokens: usize) -> usize {
     let mut orphans: HashSet<&str> = HashSet::new();
     let mut kept = 0usize;
@@ -231,8 +206,7 @@ pub fn find_cut(messages: &[Message], keep_recent_tokens: usize) -> usize {
 
     for index in (0..messages.len()).rev() {
         let estimate = estimate_message(&messages[index]);
-        // The budget only ends the scan at a point where the kept suffix is self-contained.
-        // At least one message is always kept, however large it is.
+        
         if kept + estimate > keep_recent_tokens && orphans.is_empty() && cut < messages.len() {
             break;
         }
@@ -256,8 +230,8 @@ pub fn find_cut(messages: &[Message], keep_recent_tokens: usize) -> usize {
     cut
 }
 
-/// Whether a conversation can be sent as it stands: every tool result it holds is answered
-/// by a tool call that appears before it.
+/// Whether a conversation can be sent as it stands: every tool result it holds is answered by a
+/// tool call that appears before it.
 pub fn is_self_contained(messages: &[Message]) -> bool {
     let mut called: HashSet<&str> = HashSet::new();
     for message in messages {
@@ -283,8 +257,8 @@ pub fn estimate_tokens(messages: &[Message]) -> usize {
     messages.iter().map(estimate_message).sum()
 }
 
-/// The characters-per-token estimate for one message, rounded up: part of a token still
-/// occupies a token.
+/// The characters-per-token estimate for one message, rounded up: part of a token still occupies a
+/// token.
 pub fn estimate_message(message: &Message) -> usize {
     let characters = match message {
         Message::User { content, .. } => content_chars(content),
@@ -297,18 +271,12 @@ pub fn estimate_message(message: &Message) -> usize {
 }
 
 /// What the next request will carry, in the most accurate form available.
-///
-/// A provider reports how large the context actually was for every assistant turn, so the
-/// most recent report anchors the estimate and only the messages after it are counted from
-/// their characters. A conversation with no reported usage falls back to counting all of
-/// them.
 pub fn estimate_context_tokens(messages: &[Message]) -> usize {
     for (index, message) in messages.iter().enumerate().rev() {
         let Message::Assistant(assistant) = message else {
             continue;
         };
-        // A failed turn reports nothing useful, and a turn with no usage at all would
-        // collapse the estimate to the trailing messages and stop compaction from firing.
+        
         if matches!(
             assistant.stop_reason,
             StopReason::Error | StopReason::Aborted
@@ -332,9 +300,7 @@ fn content_chars(content: &[ContentBlock]) -> usize {
             ContentBlock::Thinking { thinking, .. } => thinking.len(),
             ContentBlock::RedactedThinking { data } => data.len(),
             ContentBlock::Image { .. } => IMAGE_CHARS,
-            // A reasoning signature is a long opaque blob that goes on the wire and costs
-            // real tokens, so leaving it out would make the trigger fire late on a
-            // reasoning-heavy conversation.
+            
             ContentBlock::ToolCall {
                 name,
                 arguments,
@@ -348,10 +314,6 @@ fn content_chars(content: &[ContentBlock]) -> usize {
 }
 
 /// Builds the message that stands in for everything a compaction replaced.
-///
-/// It is a user message because every provider accepts one at the head of a conversation,
-/// and it carries a marker so a interface can render it as a summary rather than as
-/// something the user typed.
 pub fn summary_message(summary: &str) -> Message {
     Message::User {
         content: vec![ContentBlock::text(format!(
@@ -378,8 +340,7 @@ pub fn is_summary(message: &Message) -> bool {
     summary_text(message).is_some()
 }
 
-/// Flattens a conversation into the transcript a summarizer reads. Tool output is
-/// previewed rather than repeated in full, since a summary never needs all of it.
+/// Flattens a conversation into the transcript a summarizer reads.
 pub fn render_transcript(messages: &[Message]) -> String {
     const ARGUMENT_PREVIEW: usize = 200;
     const RESULT_PREVIEW: usize = 300;
@@ -541,7 +502,7 @@ mod tests {
     #[test]
     fn the_estimate_divides_characters_by_the_documented_ratio() {
         assert_eq!(estimate_message(&user(&"a".repeat(400))), 100);
-        // Rounded up, because part of a token still occupies one.
+        
         assert_eq!(estimate_message(&user("abcde")), 2);
         assert_eq!(estimate_message(&user("")), 0);
     }
@@ -621,7 +582,7 @@ mod tests {
     #[test]
     fn compaction_triggers_on_a_fraction_of_the_window() {
         let compactor = Compactor::new(Canned("s"), CompactionConfig::default());
-        // 4000 characters is 1000 tokens; the default trigger is 80% of the window.
+        
         let messages = vec![user(&"a".repeat(4_000))];
 
         assert!(!compactor.should_compact(&messages, 2_000));
@@ -630,7 +591,7 @@ mod tests {
 
     #[test]
     fn the_trigger_fraction_is_configurable() {
-        // 4000 characters is 1000 tokens, which is 5% of the window below.
+        
         let messages = vec![user(&"a".repeat(4_000))];
         let eager = Compactor::new(Canned("s"), CompactionConfig::new(0.04, 0.02).unwrap());
         let patient = Compactor::new(Canned("s"), CompactionConfig::new(0.9, 0.3).unwrap());
@@ -658,8 +619,7 @@ mod tests {
             assistant("done"),
         ];
 
-        // The result and the reply spend the whole budget, so a cut that only respected
-        // tokens would start at the result and leave its call behind.
+        
         let cut = find_cut(&messages, 1_005);
         assert_eq!(
             cut, 1,
@@ -757,7 +717,7 @@ mod tests {
         let summarized = compactor.summarizer.0.lock().unwrap().clone();
 
         assert_eq!(summarized, messages[..compacted.replaced]);
-        // Neither half may hold a result whose call ended up in the other one.
+        
         assert!(is_self_contained(&summarized));
         assert!(is_self_contained(&messages[compacted.replaced..]));
     }

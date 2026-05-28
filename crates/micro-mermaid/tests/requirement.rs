@@ -1,5 +1,5 @@
-//! Requirement diagrams, exercised through the public `render` entry point
-//! the way `tests/render.rs` exercises every other kind.
+//! Requirement diagrams, exercised through the public `render` entry point the way
+//! `tests/render.rs` exercises every other kind.
 
 use micro_mermaid::{diagram_kind, render};
 
@@ -7,8 +7,8 @@ fn plain(src: &str) -> Vec<String> {
     render(src).expect("drawn").plain
 }
 
-/// A requirement block draws as a bordered box carrying its stereotype,
-/// name and fields, corner to corner.
+/// A requirement block draws as a bordered box carrying its stereotype, name and fields, corner to
+/// corner.
 #[test]
 fn a_requirement_draws_a_bordered_box_with_its_fields() {
     let src = "requirementDiagram\nrequirement test_req {\nid: 1\n}";
@@ -25,8 +25,7 @@ fn a_requirement_draws_a_bordered_box_with_its_fields() {
     );
 }
 
-/// A relation between a requirement and an element is drawn as a routed,
-/// labelled arrow — two boxes, not two disconnected islands of text.
+/// A relation between a requirement and an element is drawn as a routed, labelled arrow.
 #[test]
 fn a_relation_connects_two_boxes_with_a_routed_labelled_arrow() {
     let src = "requirementDiagram\n\
@@ -51,13 +50,11 @@ fn a_relation_connects_two_boxes_with_a_routed_labelled_arrow() {
     );
 }
 
-/// An unparseable requirement diagram renders nothing, the same way an
-/// unparseable class diagram does.
+
 #[test]
 fn an_unparseable_requirement_diagram_renders_nothing() {
     let src = "requirementDiagram\nrequirement r {\nid 1\n}";
     assert!(render(src).is_none());
-    // `diagram_kind` still recognises the header, which is what tells a
-    // syntax error apart from a diagram type this renderer does not draw.
+    
     assert!(diagram_kind(src).is_some());
 }

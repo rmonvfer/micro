@@ -1,10 +1,4 @@
 //! Sequence diagram layout.
-//!
-//! Participants get one column each, with lifelines running the full height
-//! and a box repeated at top and bottom. Column gaps are solved from the
-//! widest thing that has to fit between any two columns — a message label, a
-//! note, a self-message stub — then items stack down the canvas in source
-//! order.
 
 use crate::canvas::{draw_text_over_edges, Canvas, D, L, R, U};
 use crate::graph::Shape;
@@ -78,7 +72,7 @@ pub fn layout_sequence(seq: &Sequence) -> CanvasResult {
         .map(|i| SEQ_GAP.max(box_w[i].div_ceil(2) + box_w[i + 1].div_ceil(2) + 1))
         .collect();
 
-    // Each requirement is "columns l..r together need at least `need` cells".
+    
     let mut reqs: Vec<(usize, usize, usize)> = Vec::new();
     for item in &seq.items {
         match item {
@@ -117,7 +111,7 @@ pub fn layout_sequence(seq: &Sequence) -> CanvasResult {
             SeqItem::Divider { .. } => {}
         }
     }
-    // Narrowest spans first, so a wide requirement absorbs what they already gave.
+    
     reqs.sort_by_key(|&(l, r, _)| r - l);
     for (l, r, need) in reqs {
         let cur: usize = gaps[l..r].iter().sum();
@@ -240,7 +234,7 @@ fn draw_message(canvas: &mut Canvas, item: &SeqItem, xs: &[usize], r: usize) {
     let line_ch = if *dashed { "╌" } else { "─" };
 
     if from == to {
-        // A stub that leaves the lifeline and returns two rows down.
+        
         let x = xs[*from];
         canvas.junction(x, r, R);
         canvas.set(x + 1, r, line_ch, Cls::Edge);
@@ -264,7 +258,7 @@ fn draw_message(canvas: &mut Canvas, item: &SeqItem, xs: &[usize], r: usize) {
     let x0 = xs[*from];
     let x1 = xs[*to];
     let rightward = x1 > x0;
-    // A labelled message writes its text on `r` and draws the arrow below it.
+    
     let arrow_row = if text.is_some() { r + 1 } else { r };
     let lo = x0.min(x1);
     let hi = x0.max(x1);

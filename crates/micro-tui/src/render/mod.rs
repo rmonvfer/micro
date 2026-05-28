@@ -1,12 +1,4 @@
 //! Frame layout.
-//!
-//! Flat and borderless: the transcript sits on the terminal's own background, and the input
-//! and footer are separated from it by a blank row and a background tint rather than a box.
-//!
-//! The frame is only as tall as it needs to be. [`plan`] measures it against the terminal
-//! and hands back both the height to ask for and whatever no longer fits, which the caller
-//! prints above the region into the terminal's own history. [`draw`] then lays the same
-//! bands out inside exactly that many rows, so the two always agree on where things go.
 
 mod editor;
 pub mod hints;
@@ -32,8 +24,7 @@ use ratatui::text::Line;
 use ratatui::text::Span;
 use ratatui::Frame;
 
-/// The share of the screen the input may grow to before it scrolls internally, and the
-/// fewest rows it may have whatever the screen's height.
+
 const EDITOR_SHARE: f32 = 0.3;
 const MIN_EDITOR_ROWS: usize = 5;
 
@@ -42,16 +33,8 @@ fn max_editor_rows(rows: u16) -> usize {
     ((rows as f32 * EDITOR_SHARE) as usize).max(MIN_EDITOR_ROWS)
 }
 /// Rows kept for the conversation behind an overlay, so opening one never hides all of it.
-///
-/// One. Everything else on the screen is the overlay's to use: a list is what the reader is
-/// working in while it is open, and one squeezed into a corner shows three or four rows
-/// wrapped in as much chrome again — an interface made mostly of margins.
 const ROWS_BEHIND_OVERLAY: u16 = 1;
 /// Rows kept for the spinner: a blank one, then the message.
-///
-/// Held from the first turn onward, whether or not one is running, so starting one never
-/// shifts the interface vertically. Before then they are not held at all: a screen that
-/// has done nothing has nothing to say there.
 const ACTIVITY_ROWS: u16 = 2;
 
 /// The rows the spinner is entitled to right now.
@@ -74,8 +57,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
 
     let content_padding = app.settings().content_padding;
     let content_width = content_width(area.width, content_padding);
-    // The frame is measured before anything is laid out against it: the transcript wraps to
-    // this width, and a page of scrolling moves by the rows the region turns out to have.
+    
     app.set_frame(content_width as usize, area.height);
     let chrome = chrome(app, &theme, area.width, area.height);
     let transcript_rows = area.height.saturating_sub(chrome.rows());
@@ -83,9 +65,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
 
     app.refresh_lines();
 
-    // Before anything has happened there is no conversation, and the screen introduces
-    // itself in the space one would have taken — an extension's own header in place of the
-    // built-in one, when `setHeader` gave it one.
+    
     let opening = match app.lines().is_empty() && !app.settings().quiet_startup {
         true => match app.header_override() {
             Some(lines) => lines
@@ -102,8 +82,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         false => Vec::new(),
     };
 
-    // The engine says how the rows divide; ratatui draws into what it decided. One
-    // calculation whether the interface has the whole screen or a region of it.
+    
     let rows = chrome.stack(Some(area.height as usize)).allocation(0);
     let [transcript_area, _, activity_area, overlay_area, widgets_above_area, editor_area, widgets_below_area, menu_area, status_area] =
         Layout::vertical(rows.iter().map(|rows| Constraint::Length(*rows as u16))).areas(area);
@@ -131,8 +110,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         &theme,
         false,
     );
-    // An overlay has the keyboard while it is up, so the cursor belongs to it rather than to
-    // an input the next keystroke will not reach.
+    
     let level = app.thinking_color();
     match app.editor_component_id() {
         Some(_) => editor::draw_component(
@@ -172,11 +150,9 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     }
     draw_status(frame, inset_by(status_area, content_padding), app, &theme);
 
-    // Last, once every line has been placed and its columns are settled: a hyperlink costs
-    // no width, so it can only go on after everything that measures width has finished.
+    
     app.links().apply(frame.buffer_mut(), area);
-    // Images are placed the same way and for the same reason: an escape that occupies no
-    // columns can only go on once every column is settled.
+    
     let first_visible = app
         .lines()
         .len()
@@ -214,29 +190,18 @@ impl Chrome {
     }
 
     /// Every region of the interface, in the order they are drawn.
-    ///
-    /// Given a screen's height the conversation is the first region and takes whatever the
-    /// others leave. Without one the stack is the chrome alone, which is what says how tall
-    /// the interface is before there is anywhere to put it — what drawing inline needs,
-    /// since there the region is only as tall as the interface turns out to be.
-    ///
-    /// One construction either way, so the height the caller reserves and the rows it draws
-    /// into can never disagree.
     fn stack(&self, height: Option<usize>) -> crate::layout::Stack {
         use crate::layout::{Child, Lines, Spacer, Stack};
         let stack = match height {
-            // The conversation gives way first when there is not enough: the prompt is
-            // what a reader is using.
+            
             Some(height) => Stack::within(height).with(Child::flexible(Spacer(0), 1)),
             None => Stack::new(),
         };
         stack
-            // The blank row above whatever is open.
+            
             .with(Child::content(Spacer(1)))
             .with(Child::content(Spacer(self.activity as usize)))
-            // An overlay stands where the prompt stands rather than above it: it is what
-            // the next keystroke reaches, so it is what occupies the place a reader is
-            // already looking at. The prompt is not drawn behind it.
+            
             .with(Child::content(Lines(self.overlay.clone())))
             .with(Child::content(Lines(self.widgets_above.clone())))
             .with(Child::content(Spacer(self.editor as usize)))
@@ -247,9 +212,6 @@ impl Chrome {
 }
 
 /// How many rows the interface itself needs, apart from the conversation.
-///
-/// What drawing inline asks for: the region is only as tall as the prompt, the footer and
-/// whatever is open above them, and the conversation goes to the terminal's own scrollback.
 pub fn interface_rows(app: &App, theme: &Theme, width: u16, height: u16) -> u16 {
     let width = margin(
         Rect {
@@ -269,9 +231,7 @@ fn chrome(app: &App, theme: &Theme, width: u16, height: u16) -> Chrome {
     let activity = activity_rows(app);
     let widgets_above = widget_lines(app.widgets_above(), theme);
     let widgets_below = widget_lines(app.widgets_below(), theme);
-    // The prompt's own rows, plus the rule above it and the rule below it. None at all
-    // while an overlay is up: the overlay has taken its place, and a prompt drawn below one
-    // that the keyboard does not reach is a second input that does nothing.
+    
     let editor = match overlay.is_empty() {
         true => {
             let content_rows = match app.editor_component_id() {
@@ -284,10 +244,7 @@ fn chrome(app: &App, theme: &Theme, width: u16, height: u16) -> Chrome {
     };
     let status = footer_height(app);
 
-    // A menu opens under the prompt, so it can only have rows nothing else is using. It is
-    // the one part of the interface that is there to be scrolled, and the prompt it belongs
-    // to has to stay whole: an input without its rules is not a smaller input, it is a
-    // different one.
+    
     let held = 1
         + overlay.len() as u16
         + activity
@@ -311,8 +268,7 @@ fn chrome(app: &App, theme: &Theme, width: u16, height: u16) -> Chrome {
     }
 }
 
-/// An extension's widgets, laid out one line per row in the order they were set — the same
-/// order a `BTreeMap` keeps them in, which is by the key each was set under.
+/// An extension's widgets, laid out one line per row in the order they were set.
 fn widget_lines(widgets: Vec<Vec<String>>, theme: &Theme) -> Vec<Line<'static>> {
     widgets
         .into_iter()
@@ -321,13 +277,9 @@ fn widget_lines(widgets: Vec<Vec<String>>, theme: &Theme) -> Vec<Line<'static>> 
         .collect()
 }
 
-/// The rows of whatever overlay is up, in the order of what is blocking on an answer: a
-/// credential first, then a list to choose from.
+
 fn overlay_lines(app: &App, theme: &Theme, width: usize) -> Vec<Line<'static>> {
-    // Sized against the screen, not against the region: the region is sized by what this
-    // turns out to need, so measuring it against itself would never settle. What is left
-    // after the footer, the spinner's rows and a glimpse of the conversation is the
-    // overlay's; the conversation gives way, which is what the layout does anyway.
+    
     let held = ROWS_BEHIND_OVERLAY + activity_rows(app) + footer_height(app) + 1;
     let budget = app.rows().saturating_sub(held).max(4) as usize;
 
@@ -403,16 +355,14 @@ fn draw_transcript(
         false => app.lines(),
     };
 
-    // The newest lines are the ones worth seeing, so the window sits at the end of what the
-    // conversation holds and moves back only as far as the reader has scrolled.
+    
     let first = rows
         .len()
         .saturating_sub(height)
         .saturating_sub(app.scroll());
     let shown = rows.len().saturating_sub(first).min(height);
 
-    // A conversation shorter than the region rests on the bottom of it, so it grows upward
-    // out of the input rather than hanging from the top of the screen with a gap beneath it.
+    
     let top = area.y + (height - shown) as u16;
     for (offset, line) in rows.iter().skip(first).take(height).enumerate() {
         frame
@@ -431,10 +381,6 @@ fn draw_transcript(
 }
 
 /// How far through the conversation the window is, drawn down the right edge.
-///
-/// Shown only where there is more than fits, unless the reader asked for it always. It sits
-/// in the last column of the region, over whatever is there: a conversation wraps to the
-/// content width, which already leaves that column clear.
 fn draw_scrollbar(
     frame: &mut Frame,
     area: Rect,
@@ -456,8 +402,7 @@ fn draw_scrollbar(
         return;
     }
 
-    // The thumb is as tall a share of the track as the window is of the conversation, and
-    // never shorter than one row: a mark that is not there says nothing about where you are.
+    
     let thumb = match overflows {
         true => (height * height / total).max(1),
         false => height,
@@ -473,7 +418,7 @@ fn draw_scrollbar(
         let (glyph, color) = match (offset >= at && offset < at + thumb, overflows) {
             (true, _) => ("│", theme.border_accent),
             (false, true) => ("│", theme.border_muted),
-            // Nothing to scroll, so the track is drawn without a road to travel down.
+            
             (false, false) => (" ", theme.border_muted),
         };
         frame.buffer_mut().set_string(
@@ -486,11 +431,6 @@ fn draw_scrollbar(
 }
 
 /// Lay a background across a whole row, exactly one row wide.
-///
-/// A tinted row is how this interface marks a region — the input, the footer, a code block,
-/// an approval prompt — so the background has to reach the edge rather than stopping where
-/// the text does. Anything past the edge is cut, since a tinted row that overruns would
-/// wrap and leave the block ragged.
 fn tint(line: Line<'static>, width: usize, background: Color) -> Line<'static> {
     let mut line = clip(line, width);
     let used: usize = line
@@ -510,8 +450,7 @@ fn tint(line: Line<'static>, width: usize, background: Color) -> Line<'static> {
     line
 }
 
-/// Cut a row at the width. A row that overruns would wrap and push everything below it out
-/// of place, so every row assembled by hand goes through here before it is drawn.
+/// Cut a row at the width.
 fn clip(line: Line<'static>, width: usize) -> Line<'static> {
     let mut spans: Vec<Span<'static>> = Vec::new();
     let mut used = 0;
@@ -529,8 +468,7 @@ fn clip(line: Line<'static>, width: usize) -> Line<'static> {
     Line::from(spans)
 }
 
-/// The keys worth knowing on the first screen. A key is dim and what it does is muted,
-/// which is how every hint in the interface is written.
+/// The keys worth knowing on the first screen.
 const HINTS: [(&str, &str); 5] = [
     ("escape", "interrupt"),
     ("ctrl+c/ctrl+d", "clear/exit"),
@@ -539,8 +477,7 @@ const HINTS: [(&str, &str); 5] = [
     ("ctrl+o", "more"),
 ];
 
-/// Every key, for the reader who asked for all of them. One per row rather than one row of
-/// all of them: this is a list to look something up in, not a line to glance at.
+/// Every key, for the reader who asked for all of them.
 const ALL_HINTS: [(&str, &str); 19] = [
     ("escape", "to interrupt"),
     ("ctrl+c", "to clear"),
@@ -563,14 +500,7 @@ const ALL_HINTS: [(&str, &str); 19] = [
     ("drop files", "to attach"),
 ];
 
-/// What the first screen says before anything has happened: what this is, the keys worth
-/// knowing, what was loaded, and that it can describe itself. Where the session is belongs
-/// to the footer, which says it on every screen rather than only on this one.
-///
-/// Two depths of it. Closed, the five keys worth knowing and each shelf by name, which is
-/// what someone starting work needs. Opened with `ctrl+o`, every key and the file each
-/// resource was read from, which is what someone asking why a skill did or did not load
-/// needs. The same key opens every tool result, so there is one way to ask for more.
+
 fn intro(
     theme: &Theme,
     width: usize,
@@ -595,14 +525,12 @@ fn intro(
         dim,
     )];
 
-    // No blank row at the end: the transcript's own gap row is directly below, and a second
-    // one would leave the opening screen floating above the input.
+    
     let mut out = vec![Line::default()];
     out.extend(wrap_spans(&logo, width, 0));
 
     match expanded {
-        // One shape for every hint in the interface, so a key is described the same way
-        // here as it is anywhere else — and reads as `option` on a Mac.
+        
         false => {
             out.extend(wrap_spans(&hints::hints(&HINTS, theme), width, 0));
             out.extend(wrap_spans(
@@ -634,10 +562,6 @@ fn intro(
 const LISTING_INDENT: &str = "  ";
 
 /// What was loaded, section by section.
-///
-/// Closed, a section is its names on one wrapped row, which says what is available without
-/// saying where any of it lives. Opened, it is one row per file, because the answer to
-/// "which of the two skills called this did I get" is a path and nothing else.
 fn resource_lines(
     resources: &crate::app::Resources,
     theme: &Theme,
@@ -656,8 +580,7 @@ fn resource_lines(
             0,
         ));
 
-        // Indented in, and only on the row it starts on: a list long enough to wrap reads
-        // as one run of names rather than as a column with a ragged left edge.
+        
         let dim = Style::new().fg(theme.dim);
         match expanded {
             false => out.extend(wrap_spans(
@@ -704,16 +627,12 @@ fn draw_activity(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
             line
         }
     };
-    // The first of the two rows stays blank; the message sits on the second, which is what
-    // keeps the gap above it the same whether or not a turn is running.
+    
     let row = area.y + u16::from(area.height > 1);
     frame.buffer_mut().set_line(area.x, row, &line, area.width);
 }
 
 /// Everything the footer reports about the session as it stands.
-///
-/// Built in one place so the rows drawn and the rows reserved for them are always the
-/// same rows.
 fn footer_for(app: &App) -> status::Footer<'_> {
     status::Footer {
         cwd: &app.cwd,
@@ -773,12 +692,6 @@ fn draw_status(frame: &mut Frame, content: Rect, app: &App, theme: &Theme) {
 }
 
 /// Pull an area in by the horizontal padding.
-/// Pull an area in by a chosen number of columns on each side.
-/// The interface's own area: the terminal, less the margin it keeps around itself.
-///
-/// Everything is laid out inside this, so the margin is there whatever is drawn — the
-/// rules above and below the input, a tinted band, the footer. A terminal too small to
-/// spare the room keeps as much of it as it can.
 fn margin(area: Rect, padding: u16) -> Rect {
     let horizontal = padding.min(area.width.saturating_sub(1) / 2);
     let vertical = padding.min(area.height.saturating_sub(1) / 2);
@@ -873,8 +786,7 @@ mod tests {
         }
     }
 
-    /// A widget an extension asked shown above the input is drawn where it asked, and one
-    /// asked below appears after it rather than instead of it.
+    
     #[test]
     fn extension_widgets_are_drawn_where_they_were_placed() {
         let mut app = App::new(&[], TuiOptions::default());
@@ -908,9 +820,8 @@ mod tests {
         assert!(above_row < below_row, "{rows:?}");
     }
 
-    /// Once `setEditorComponent` has replaced the built-in editor, its lines are what is
-    /// drawn in the input's place — not the built-in editor, even though it is still there
-    /// underneath, unseen.
+    /// Once `setEditorComponent` has replaced the built-in editor, its lines are what is drawn in
+    /// the input's place.
     #[test]
     fn an_editor_component_is_drawn_in_the_inputs_place() {
         let mut app = App::new(&[], TuiOptions::default());
@@ -939,9 +850,7 @@ mod tests {
         );
     }
 
-    /// A menu opens under the input and can be long. It may take rows the conversation is
-    /// not using, and no others: an input missing the rules that bound it is not a smaller
-    /// input, it is one a reader cannot see the edges of.
+    /// A menu opens under the input and can be long.
     #[test]
     fn opening_the_menu_does_not_take_the_rules_off_the_input() {
         let rules = |terminal: &Terminal<TestBackend>| {
@@ -987,8 +896,7 @@ mod tests {
             .collect()
     }
 
-    /// The first screen says what loaded, and `ctrl+o` is what turns a name into the file
-    /// it came from — the only way to tell two skills of the same name apart.
+    
     #[test]
     fn the_first_screen_names_what_loaded_and_opens_to_say_where_from() {
         let mut resources = crate::app::Resources::default();
@@ -1031,7 +939,7 @@ mod tests {
             "every key: {opened}"
         );
 
-        // And closes again, so the key is a toggle rather than a one-way door.
+        
         app.handle(Action::ToggleFocused);
         terminal.draw(|frame| draw(frame, &mut app)).expect("draws");
         assert!(screen(&terminal).join("\n").contains("humanizer, shadcn"));
@@ -1045,9 +953,7 @@ mod tests {
         assert!(resources.is_empty());
     }
 
-    /// The rows the spinner draws in are not held open until something has been worked
-    /// on, so a screen that has done nothing sits close to the input; from the first turn
-    /// onward they stay held, so the input does not jump as turns come and go.
+    /// The rows the spinner draws in are not held open until something has been worked on.
     #[test]
     fn the_spinner_holds_its_rows_only_once_there_has_been_a_turn() {
         /// Blank rows between the last thing said and the rule above the input.
@@ -1063,8 +969,7 @@ mod tests {
                 .count()
         }
 
-        // Ending on an answer rather than a question: a question's block carries a blank
-        // row of its own beneath it, which would be counted as part of the gap.
+        
         let mut app = App::new(&[], TuiOptions::default());
         app.transcript.push_user("a question");
         app.apply_event(AgentEvent::MessageDelta {
@@ -1088,7 +993,7 @@ mod tests {
             "on a screen of its own the rows go back to the conversation between turns"
         );
 
-        // And they stay held while one runs, so nothing shifts when it begins.
+        
         app.busy("thinking");
         let running = paint(&mut app, 40, 12);
         let rule = running
@@ -1101,9 +1006,7 @@ mod tests {
         );
     }
 
-    /// Drawing inline, the region is only as tall as the interface. Giving the spinner's
-    /// rows back between turns would shrink it, and the rows the terminal has already been
-    /// handed would scroll away — so once something has run they stay held.
+    /// Drawing inline, the region is only as tall as the interface.
     #[test]
     fn the_spinner_keeps_its_rows_between_turns_when_drawing_inline() {
         let mut app = App::new(
@@ -1124,8 +1027,7 @@ mod tests {
         );
     }
 
-    /// Options with the interface's margin turned off, for the tests that measure how
-    /// content wraps and fills rather than where it sits.
+    
     fn unpadded() -> TuiOptions {
         let mut options = TuiOptions::default();
         options.settings.interface_padding = 0;
@@ -1152,8 +1054,8 @@ mod tests {
         }
     }
 
-    /// Paint the way the real screen does: the whole terminal, with the interface laid out
-    /// inside it.
+    /// Paint the way the real screen does: the whole terminal, with the interface laid out inside
+    /// it.
     fn paint(app: &mut App, width: u16, height: u16) -> Vec<String> {
         let mut terminal = Terminal::new(TestBackend::new(width, height)).expect("test backend");
         terminal.draw(|frame| draw(frame, app)).expect("draw");
@@ -1161,8 +1063,8 @@ mod tests {
     }
 
     #[test]
-    /// The interface takes the whole screen, opening at the top and keeping the input on the
-    /// last rows however little there is to show.
+    /// The interface takes the whole screen, opening at the top and keeping the input on the last
+    /// rows however little there is to show.
     fn the_opening_screen_fills_the_terminal() {
         let mut app = App::new(&[], TuiOptions::default());
         let rows = paint(&mut app, 100, 50);
@@ -1172,12 +1074,12 @@ mod tests {
             .iter()
             .position(|row| row.trim().starts_with("micro v"))
             .expect("the logo is drawn");
-        // It rests just above the input rather than at the top of an empty screen.
+        
         assert!(logo > 30, "the opening sits above the input, at row {logo}");
     }
 
-    /// Nothing on the first screen is cut off: a line too long for the terminal takes
-    /// another row instead of losing its end.
+    /// Nothing on the first screen is cut off: a line too long for the terminal takes another row
+    /// instead of losing its end.
     #[test]
     fn the_opening_screen_wraps_rather_than_being_cut() {
         for width in [40u16, 56, 80] {
@@ -1217,8 +1119,7 @@ mod tests {
     }
 
     #[test]
-    /// A short conversation still fills the screen, and sits at the bottom of the transcript
-    /// region so the newest message is the one next to the input.
+    
     fn a_short_conversation_sits_above_the_input() {
         let mut app = App::new(&[], TuiOptions::default());
         app.transcript.push_user("hello");
@@ -1229,7 +1130,7 @@ mod tests {
             .iter()
             .position(|row| row.trim_start().starts_with("hello"))
             .expect("the prompt is drawn");
-        assert!(prompt > 25, "it sits near the input rather than at the top");
+        assert!(prompt > 25, "prompt should remain near the input");
     }
 
     #[test]
@@ -1246,8 +1147,7 @@ mod tests {
             24,
             "and fills it, with the input on the last rows"
         );
-        // The footer takes the last two rows of the region, so the conversation reaches all
-        // the way down to the input rather than stopping short of it.
+        
         let footer = rows.len() - 2;
         assert!(
             rows[footer].trim().starts_with('~') || rows[footer].starts_with('/'),
@@ -1262,8 +1162,7 @@ mod tests {
         );
     }
 
-    /// Every message stays reachable: the conversation is scrolled within the region rather
-    /// than handed away, so nothing is shown twice and nothing disappears.
+    
     #[test]
     fn every_message_is_reachable_by_scrolling() {
         let mut app = App::new(&[], TuiOptions::default());
@@ -1296,8 +1195,8 @@ mod tests {
         }
     }
 
-    /// The input is on the same rows whether or not a turn is running: the status area
-    /// holds its two rows either way, so nothing below it moves when an answer begins.
+    /// The input is on the same rows whether or not a turn is running: the status area holds its
+    /// two rows either way.
     #[test]
     fn starting_a_turn_does_not_shift_the_input() {
         let mut app = App::new(&[], TuiOptions::default());

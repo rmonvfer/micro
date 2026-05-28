@@ -1,12 +1,5 @@
-//! Packet diagrams: a bit-field table in the style of an RFC wire-format
-//! figure, wrapping at 32 bits per row.
-//!
-//! A packet is a byte layout, and the layout is the point, so it is drawn
-//! the way protocol specifications have always drawn one: bit numbers along
-//! the top, each field spanning exactly the columns its bits occupy. A
-//! field that crosses a 32-bit boundary is split across the two rows it
-//! actually falls in rather than forced onto one wide line, which is what
-//! keeps a large header no wider than any other diagram here.
+//! Packet diagrams: a bit-field table in the style of an RFC wire-format figure, wrapping at 32
+//! bits per row.
 
 use crate::canvas::{draw_text, Canvas, D, L, R, U};
 use crate::labels::{ascii_lower, clean_label, fit_label, strip_controls};
@@ -14,20 +7,16 @@ use crate::parse::statements_of;
 use crate::types::Cls;
 use crate::width::string_width;
 
-/// Bits a wire format is wrapped at, matching the RFC figures this style
-/// comes from.
+
 const ROW_BITS: u32 = 32;
 
-/// Columns given to each bit: enough for a three-digit bit number (headers
-/// past bit 99 still fit) with a leading space against its neighbour.
+
 const BIT_W: usize = 4;
 
-/// Fields past this and the packet is refused: a header this wide is a
-/// dump, not a diagram, and reads better as the source it came from.
+
 const MAX_FIELDS: usize = 128;
 
-/// Bits past this and the packet is refused, bounding the canvas the same
-/// way `graph::MAX_NODES` bounds a graph.
+
 const MAX_BITS: u32 = 512;
 
 struct Field {
@@ -65,10 +54,7 @@ pub(crate) fn render_packet(src: &str) -> Option<Canvas> {
         return None;
     }
 
-    // Bits a field leaves out before the next one are still part of the
-    // wire format — reserved padding, most often — so they get their own
-    // unlabelled cell rather than shrinking the field after them into the
-    // gap.
+    
     let mut fields: Vec<Field> = Vec::new();
     let mut cursor = 0u32;
     for field in declared {
@@ -113,10 +99,7 @@ fn read_field(st: &str) -> Option<Field> {
 fn draw(title: Option<&str>, fields: &[Field], total_bits: u32) -> Canvas {
     let row_count = total_bits.div_ceil(ROW_BITS).max(1) as usize;
     let top = usize::from(title.is_some());
-    // Each network row is four text rows tall — bit numbers, top border,
-    // field labels, bottom border — with one blank row between rows so
-    // consecutive 32-bit groups read as separate lines rather than a
-    // single fused block.
+    
     let row_height = 4;
     let height = top + row_count * row_height + row_count.saturating_sub(1);
 
@@ -124,8 +107,7 @@ fn draw(title: Option<&str>, fields: &[Field], total_bits: u32) -> Canvas {
         .map(|r| row_bit_count(r as u32, total_bits))
         .max()
         .unwrap_or(0);
-    // `n` bit cells need `n + 1` border columns — the right edge is a
-    // column of its own, past the last cell rather than inside it.
+    
     let width = (widest_row_bits as usize * BIT_W + 1).max(string_width(title.unwrap_or("")));
 
     let mut canvas = Canvas::new(width.max(1), height.max(1));
@@ -145,8 +127,7 @@ fn draw(title: Option<&str>, fields: &[Field], total_bits: u32) -> Canvas {
     canvas
 }
 
-/// How many of the 32 bits in network row `row` are actually part of the
-/// declared field set — the last row is often partial.
+
 fn row_bit_count(row: u32, total_bits: u32) -> u32 {
     let row_start = row * ROW_BITS;
     total_bits.saturating_sub(row_start).min(ROW_BITS)
@@ -200,10 +181,7 @@ fn draw_row(
     }
 }
 
-/// `Canvas::seg_h` accumulates its bits as `Cls::Edge`, which is right for a
-/// connector but not for a table's own border; this is the same
-/// bit-accumulation so junctions still resolve to the correct glyph, kept
-/// in the box-drawing class instead.
+/// `Canvas::seg_h` accumulates its bits as `Cls::Edge`.
 fn seg_h_border(canvas: &mut Canvas, y: usize, x0: usize, x1: usize) {
     let (a, b) = (x0.min(x1), x0.max(x1));
     for x in a..=b {
@@ -243,8 +221,8 @@ mod tests {
             .plain
     }
 
-    /// A field spans exactly the columns its bits occupy, with the bit
-    /// numbers for that span along the top.
+    /// A field spans exactly the columns its bits occupy, with the bit numbers for that span along
+    /// the top.
     #[test]
     fn a_field_spans_its_bit_range() {
         let rows = drawn(
@@ -261,7 +239,7 @@ mod tests {
             "{rows:?}"
         );
         assert!(rows.iter().any(|r| r.contains("31")), "{rows:?}");
-        // The right edge closes every row it opened, not just the left.
+        
         let top_border = rows
             .iter()
             .find(|r| r.starts_with('┌'))
@@ -274,8 +252,7 @@ mod tests {
         assert!(bottom_border.ends_with('┘'), "{bottom_border:?}");
     }
 
-    /// A gap between two declared fields is drawn as its own unlabelled
-    /// cell, so the bits it covers are still accounted for.
+    
     #[test]
     fn a_gap_between_fields_gets_an_unlabelled_cell() {
         let rows = drawn("packet-beta\n0-3: \"Version\"\n8-15: \"Length\"");
@@ -283,13 +260,12 @@ mod tests {
             .iter()
             .find(|r| r.starts_with('┌'))
             .expect("a border row");
-        // Version, the gap, and Length are three separate cells, so the top
-        // border has two internal tees besides its own corners.
+        
         assert_eq!(border_row.matches('┬').count(), 2, "{border_row:?}");
     }
 
-    /// A field wider than 32 bits is split across the rows it actually
-    /// falls in, each keeping its own copy of the label.
+    /// A field wider than 32 bits is split across the rows it actually falls in, each keeping its
+    /// own copy of the label.
     #[test]
     fn a_field_crossing_a_row_boundary_is_split_across_rows() {
         let rows = drawn("packet-beta\n0-39: \"Checksum\"");
@@ -300,14 +276,12 @@ mod tests {
     /// A single bit is a field of width one, same as any other.
     #[test]
     fn a_single_bit_is_a_field_of_width_one() {
-        // One bit is only `BIT_W` columns wide, so the label has to be
-        // short enough to actually fit rather than be truncated.
+        
         let rows = drawn("packet-beta\n0: \"Bit\"");
         assert!(rows.iter().any(|r| r.contains("Bit")), "{rows:?}");
     }
 
-    /// Anything that is not a packet diagram, or is one but malformed, is
-    /// refused rather than guessed at.
+    
     #[test]
     fn what_is_not_a_packet_diagram_is_left_alone() {
         assert!(render_packet("graph TD\n A --> B").is_none());

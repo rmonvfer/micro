@@ -1,13 +1,4 @@
 //! Skills: instructions a user writes once and the model reaches for when they apply.
-//!
-//! A skill is a Markdown file with frontmatter naming it and saying when it is useful. Its
-//! name and description go into the system prompt so the model knows the skill exists; the
-//! body is read only when the model asks for it, which is what keeps a shelf of them from
-//! filling the context window.
-//!
-//! Discovery follows the same rules the format specifies: a directory holding a `SKILL.md`
-//! *is* a skill and is not searched further, a directory without one is searched for its
-//! own `.md` files and then recursed into.
 
 mod frontmatter;
 
@@ -26,7 +17,7 @@ const MAX_DESCRIPTION: usize = 1024;
 pub struct Skill {
     pub name: String,
     pub description: String,
-    /// The file it was read from, which is what the model is told to read.
+    
     pub path: PathBuf,
     /// The directory it lives in, which anything it refers to is relative to.
     pub base_dir: PathBuf,
@@ -37,15 +28,14 @@ pub struct Skill {
 }
 
 impl Skill {
-    /// The line the system prompt carries: enough to know the skill exists and when it
-    /// applies, without its body.
+    /// The line the system prompt carries: enough to know the skill exists and when it applies,
+    /// without its body.
     pub fn summary(&self) -> String {
         format!("- {}: {}", self.name, self.description)
     }
 }
 
-/// Something wrong with a skill file, reported rather than thrown away silently — a skill
-/// that does not load is a skill the user thinks they have.
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Diagnostic {
     pub path: PathBuf,
@@ -59,10 +49,6 @@ pub struct Loaded {
 }
 
 /// Read the skills at `path`, which may be a directory of them or one file.
-///
-/// For a path named on the command line rather than found in one of the usual places: a
-/// reader who points at a file means that file, and one who points at a directory means
-/// whatever is in it.
 pub async fn load_from_path(path: impl AsRef<Path>, source: &str) -> Loaded {
     let path = path.as_ref();
     if path.is_dir() {
@@ -76,11 +62,6 @@ pub async fn load_from_path(path: impl AsRef<Path>, source: &str) -> Loaded {
 }
 
 /// Read every skill under `dir`.
-///
-/// A directory containing `SKILL.md` is itself a skill and is not searched further; one
-/// without is searched for `.md` files at its root and then recursed into. That is what
-/// lets a skill keep supporting files beside it without each of them being read as another
-/// skill.
 pub async fn load_from_dir(dir: impl AsRef<Path>, source: &str) -> Loaded {
     let mut loaded = Loaded::default();
     walk(dir.as_ref(), source, true, &mut loaded).await;
@@ -89,23 +70,11 @@ pub async fn load_from_dir(dir: impl AsRef<Path>, source: &str) -> Loaded {
 }
 
 /// Where a user's shared skills live, if a home directory is known.
-///
-/// These sit under the home directory rather than under micro's own, which `MICRO_DIR` is
-/// free to move somewhere else entirely. Reading the environment happens here, at the
-/// edge, so [`discover`] stays a function of its arguments.
 pub fn user_agents_dir() -> Option<PathBuf> {
     std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".agents/skills"))
 }
 
 /// Read the skills a workspace and a user have between them.
-///
-/// A project's own skills come first, so one written for the work at hand takes precedence
-/// over a general one with the same name.
-///
-/// Each of the two is looked for in two places: micro's own directory, and `.agents/skills`
-/// beside it. The second is where several agents now look, so a skill written once is
-/// found by all of them without being copied. micro's own directory is read first, so a
-/// name that is in both is micro's.
 pub async fn discover(
     workspace: impl AsRef<Path>,
     home: impl AsRef<Path>,
@@ -115,7 +84,7 @@ pub async fn discover(
     let mut loaded = Loaded::default();
     let mut roots: Vec<(PathBuf, &str)> = Vec::new();
 
-    // A project's own skills are offered only once the project has been trusted.
+    
     if trusted {
         roots.push((workspace.as_ref().join(".micro/skills"), "project"));
         roots.push((workspace.as_ref().join(".agents/skills"), "project"));
@@ -127,7 +96,7 @@ pub async fn discover(
     for (dir, source) in roots {
         let found = load_from_dir(&dir, source).await;
         for skill in found.skills {
-            // First one wins, which is what makes a project skill beat a user's.
+            
             if !loaded.skills.iter().any(|kept| kept.name == skill.name) {
                 loaded.skills.push(skill);
             }
@@ -154,8 +123,7 @@ async fn walk(dir: &Path, source: &str, include_root_files: bool, loaded: &mut L
         }
     }
 
-    // A directory that declares itself a skill is that skill, whole, and nothing inside it
-    // is another one.
+    
     if let Some(declared) = files.iter().find(|path| is_skill_file(path)) {
         read_skill(declared, dir, source, loaded).await;
         return;
@@ -195,8 +163,7 @@ async fn read_skill(path: &Path, base_dir: &Path, source: &str, loaded: &mut Loa
     let name = parsed
         .field("name")
         .map(str::to_string)
-        // A skill that does not name itself is named after the directory holding it, which
-        // is how a file called SKILL.md gets a name at all.
+        
         .or_else(|| directory_name(path, base_dir))
         .unwrap_or_default();
 
@@ -218,7 +185,7 @@ async fn read_skill(path: &Path, base_dir: &Path, source: &str, loaded: &mut Loa
         path: path.to_path_buf(),
         base_dir: base_dir.to_path_buf(),
         source: source.to_string(),
-        // Opting a skill out of model invocation leaves it for the user to ask for by name.
+        
         model_invocable: parsed.field("disable-model-invocation") != Some("true"),
     });
 }
@@ -230,8 +197,7 @@ fn directory_name(path: &Path, base_dir: &Path) -> Option<String> {
     }
 }
 
-/// A name is lowercase letters, digits and single hyphens, and no longer than the format
-/// allows. Anything else is reported rather than quietly renamed.
+/// A name is lowercase letters, digits and single hyphens, and no longer than the format allows.
 fn validate_name(name: &str) -> Vec<String> {
     let mut problems = Vec::new();
     if name.is_empty() {
@@ -276,9 +242,6 @@ fn validate_description(description: &str) -> Vec<String> {
 }
 
 /// The part of the system prompt that tells the model which skills it has.
-///
-/// Only names and descriptions: a skill's body is read when it is used, which is what keeps
-/// a shelf of them from crowding out the conversation.
 pub fn system_prompt_section(skills: &[Skill]) -> Option<String> {
     let usable: Vec<&Skill> = skills
         .iter()
@@ -328,8 +291,8 @@ mod tests {
         assert_eq!(loaded.skills[0].name, "review-code");
     }
 
-    /// A directory with no `SKILL.md` offers its own markdown files, which is how a flat
-    /// shelf of skills works.
+    /// A directory with no `SKILL.md` offers its own markdown files, which is how a flat shelf of
+    /// skills works.
     #[tokio::test]
     async fn loose_markdown_files_are_each_a_skill() {
         let root = scratch("loose");
@@ -411,8 +374,7 @@ mod tests {
         assert_eq!(loaded.skills[0].description, "The project's.");
     }
 
-    /// A skill written once under `.agents/skills` is found without being copied into
-    /// micro's own directory, at both the project and the user level.
+    
     #[tokio::test]
     async fn skills_are_read_from_the_shared_directory_too() {
         let root = scratch("shared");
@@ -454,7 +416,7 @@ mod tests {
         assert_eq!(loaded.skills[0].description, "micro's own.");
     }
 
-    /// A project's shared skills are project files too, so they wait on trust the same way.
+    
     #[tokio::test]
     async fn the_projects_shared_skills_wait_on_trust() {
         let root = scratch("shared-trust");

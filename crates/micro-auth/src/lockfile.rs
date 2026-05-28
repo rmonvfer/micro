@@ -1,14 +1,4 @@
 //! A lock held across processes while the credential file is rewritten.
-//!
-//! Two micro processes can want to write a credential at the same moment: a session
-//! refreshing a token that is about to expire while `micro auth login` stores a new one.
-//! Each would otherwise write a whole map built from the read it did on startup, and
-//! whichever finished last would erase the other's work without either noticing.
-//!
-//! The lock is a file created exclusively beside the credential file. Creating it is the
-//! atomic step, so exactly one process holds it; dropping the guard removes it. A lock
-//! left behind by a process that died is broken once it is old enough to be certain
-//! nobody is still working under it.
 
 use std::fs;
 use std::io;
@@ -26,7 +16,7 @@ const WAIT_LIMIT: Duration = Duration::from_secs(10);
 /// How long to wait between attempts.
 const RETRY_DELAY: Duration = Duration::from_millis(25);
 
-/// A held lock. Dropping it lets the next process in.
+/// A held lock.
 pub struct FileLock {
     path: PathBuf,
 }
@@ -48,8 +38,7 @@ impl FileLock {
             {
                 Ok(_) => return Ok(FileLock { path }),
                 Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
-                    // Someone holds it. Break it if it is old enough to be abandoned,
-                    // otherwise wait and look again.
+                    
                     if broke_stale_lock(&path) {
                         continue;
                     }
@@ -76,11 +65,10 @@ impl Drop for FileLock {
     }
 }
 
-/// Remove a lock old enough that whoever made it is gone. Says whether it removed one.
+/// Remove a lock old enough that whoever made it is gone.
 fn broke_stale_lock(path: &Path) -> bool {
     let Ok(metadata) = fs::metadata(path) else {
-        // It went away between the failed create and this look, which is the holder
-        // releasing it. Try again.
+        
         return true;
     };
     let held_for = metadata
@@ -128,7 +116,7 @@ mod tests {
         let target = scratch("contended");
         let held = FileLock::acquire(&target).expect("first take");
 
-        // The holder frees it shortly; the waiter should get it rather than fail.
+        
         let releasing = std::thread::spawn(move || {
             sleep(Duration::from_millis(120));
             drop(held);
@@ -148,13 +136,13 @@ mod tests {
         fs::create_dir_all(path.parent().unwrap()).unwrap();
         fs::write(&path, "").unwrap();
 
-        // Backdate it well past the point where a holder could still be working.
+        
         let old = SystemTime::now() - STALE_AFTER - Duration::from_secs(5);
         fs::File::open(&path)
             .unwrap()
             .set_modified(old)
             .expect("backdate the lock");
 
-        FileLock::acquire(&target).expect("the stale lock is broken rather than waited on");
+        FileLock::acquire(&target).expect("stale lock should be replaced");
     }
 }

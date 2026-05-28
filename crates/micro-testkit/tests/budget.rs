@@ -74,7 +74,7 @@ fn events(recorded: &mut tokio::sync::mpsc::UnboundedReceiver<Record>) -> Vec<Le
     collected
 }
 
-/// The error a run ends on, which is what a caller shows and what `--print` exits over.
+
 fn stopped_with(log: &micro_testkit::EventLog) -> Option<String> {
     log.assistant_message_ends()
         .iter()
@@ -82,8 +82,7 @@ fn stopped_with(log: &micro_testkit::EventLog) -> Option<String> {
         .find_map(|assistant| assistant.error.clone())
 }
 
-/// A turn that takes the session past its ceiling ends the run there: the tool the model
-/// asked for is not run, no second request goes out, and the ledger says why.
+
 #[tokio::test]
 async fn a_turn_past_the_ceiling_ends_the_run_and_records_why() {
     let provider = two_turns();
@@ -149,8 +148,7 @@ async fn a_run_inside_its_ceiling_is_left_alone() {
     assert_eq!(stopped_with(&log), None, "and nothing was reported wrong");
 }
 
-/// Reopening a session already over its ceiling answers once and stops again rather than
-/// refusing to run at all: the check is on what the next turn may do, not on the session.
+
 #[tokio::test]
 async fn a_session_reopened_over_its_ceiling_still_answers_once() {
     let provider = two_turns();
@@ -178,8 +176,7 @@ async fn a_session_reopened_over_its_ceiling_still_answers_once() {
     );
 }
 
-/// A run with no ceiling is charged nothing and stopped by nothing, which is what a
-/// session that never asked for a budget gets.
+
 #[tokio::test]
 async fn a_run_with_no_ceiling_is_never_stopped() {
     let provider = two_turns();

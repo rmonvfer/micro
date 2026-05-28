@@ -1,5 +1,5 @@
-//! End-to-end checks against the public API: the three layers a catalog is
-//! assembled from, and what a caller does with the result.
+//! End-to-end checks against the public API: the three layers a catalog is assembled from, and what
+//! a caller does with the result.
 
 use std::fs;
 use std::path::PathBuf;
@@ -10,8 +10,8 @@ use micro_models::{Catalog, Resolution, TokenUsage, WireApi, COPILOT_BASE_URL};
 const COPILOT_LISTING: &str = include_str!("../testdata/copilot-models.json");
 const OPENROUTER_LISTING: &str = include_str!("../testdata/openrouter-models.json");
 
-/// A scratch directory that removes itself, so tests never touch the caller's
-/// real configuration directory.
+/// A scratch directory that removes itself, so tests never touch the caller's real configuration
+/// directory.
 struct TempDir(PathBuf);
 
 impl TempDir {
@@ -67,7 +67,7 @@ fn the_three_layers_stack_in_order() {
         }}"#,
     );
 
-    // Layer 1 and 2: bundled catalog with the user's file applied.
+    
     let mut catalog = Catalog::load_from(&user_catalog).unwrap();
     assert_eq!(
         catalog.resolve("big").model().unwrap().qualified_id(),
@@ -78,7 +78,7 @@ fn the_three_layers_stack_in_order() {
         "Qwen3 Coder 30B"
     );
 
-    // Layer 3: a live listing lands on top without disturbing either.
+    
     catalog.merge_listing(micro_models::parse_openrouter(OPENROUTER_LISTING).unwrap());
 
     let opus = catalog
@@ -125,8 +125,7 @@ fn a_copilot_listing_narrows_the_catalog_to_the_entitled_models() {
     catalog.merge_listing(listed.clone());
     catalog.retain_providers(&["github-copilot"]);
 
-    // A listing only ever adds or updates; a caller that wants exactly the
-    // entitled set filters on the ids the listing returned.
+    
     let entitled: Vec<&str> = listed.iter().map(|m| m.id.as_str()).collect();
     let usable: Vec<&str> = catalog
         .models()

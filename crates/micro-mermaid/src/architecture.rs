@@ -1,15 +1,4 @@
-//! Architecture diagrams: services inside their group frames, connected by
-//! plain lines.
-//!
-//! A group is a subgraph and a service is a node with nowhere else to be —
-//! which is exactly what `graph::Graph` and `layout::layout_grouped` already
-//! draw for a flowchart's `subgraph`, so this reads architecture-beta's own
-//! syntax into that same shape rather than laying anything out itself. The
-//! `:L`/`R:` port hints on a connection say which side of a box a line
-//! should leave from; the layout this crate already has picks its own
-//! connection points from rank order instead; a line still runs unbroken
-//! from one box to the other either way, which is what the hint is really
-//! for.
+//! Architecture diagrams: services inside their group frames, connected by plain lines.
 
 use std::collections::HashMap;
 
@@ -19,8 +8,7 @@ use crate::labels::{ascii_lower, clean_label, is_id_char, strip_controls};
 use crate::layout::{layout_flowchart, layout_grouped};
 use crate::parse::statements_of;
 
-/// Draw `src` as an architecture diagram, or answer nothing when it is not
-/// one.
+/// Draw `src` as an architecture diagram, or answer nothing when it is not one.
 pub(crate) fn render_architecture(src: &str) -> Option<Canvas> {
     let graph = parse_architecture(src)?;
     if graph.groups.is_empty() {
@@ -88,9 +76,7 @@ fn parse_architecture(src: &str) -> Option<Graph> {
     Some(graph)
 }
 
-/// `title`, folded with its `«icon»` when both are present — the same
-/// stereotype convention a class diagram's annotation uses, so an icon
-/// reads as what it is: a type, not a name.
+/// `title`, folded with its `«icon»` when both are present.
 fn labelled(title: Option<String>, icon: Option<String>) -> Option<String> {
     match (title, icon) {
         (Some(t), Some(i)) => Some(format!("{t} «{i}»")),
@@ -100,9 +86,7 @@ fn labelled(title: Option<String>, icon: Option<String>) -> Option<String> {
     }
 }
 
-/// `id(icon)[Title]`, none of which but `id` is required. Returns whatever
-/// text follows the declaration unparsed, so the caller can read a trailing
-/// `in <group>` off it.
+/// `id(icon)[Title]`, none of which but `id` is required.
 fn parse_decl(s: &str) -> Option<(String, Option<String>, Option<String>, &str)> {
     let s = s.trim_start();
     let id_end = s
@@ -134,9 +118,7 @@ fn parse_decl(s: &str) -> Option<(String, Option<String>, Option<String>, &str)>
     Some((id, icon, title, rest.trim()))
 }
 
-/// The remainder of a `group`/`service` line after its declaration: empty,
-/// or `in <parent id>`. The parent must already have been declared — a
-/// forward reference to a group not seen yet is unreadable.
+/// The remainder of a `group`/`service` line after its declaration: empty, or `in <parent id>`.
 fn read_in_suffix(suffix: &str, group_index: &HashMap<String, usize>) -> Option<Option<usize>> {
     if suffix.is_empty() {
         return Some(None);
@@ -152,10 +134,8 @@ fn read_in_suffix(suffix: &str, group_index: &HashMap<String, usize>) -> Option<
     Some(Some(*group_index.get(parent_id)?))
 }
 
-/// `a:R -- L:b`, or the bare `a -- b` the same grammar also allows: the
-/// port letter sits beside whichever id it belongs to, so an id is always
-/// read as the text up to (or past) its own colon rather than the other
-/// side's.
+/// `a:R -- L:b`, or the bare `a -- b` the same grammar also allows: the port letter sits beside
+/// whichever id it belongs to.
 fn parse_connection(st: &str) -> Option<(String, String)> {
     let (left, right) = st.split_once("--")?;
     let from = left.trim().split(':').next()?.trim();
@@ -196,13 +176,11 @@ mod tests {
             text.contains("«database»"),
             "the icon reads as a stereotype: {text}"
         );
-        // The frame's own border sits outside the service's border — two
-        // separate top-left corners, one for each box.
+        
         assert_eq!(text.matches('┌').count(), 2, "{text}");
     }
 
-    /// A connection between two services is a drawn, unbroken line, the
-    /// port letters on either side spent only on telling the two ids apart.
+    
     #[test]
     fn a_connection_draws_a_line_between_two_services() {
         let rows = drawn(
@@ -219,16 +197,15 @@ mod tests {
         assert!(text.contains('─') || text.contains('│'), "{text}");
     }
 
-    /// A service with no group at all still draws, plainly, the way a
-    /// flowchart with no subgraph does.
+    /// A service with no group at all still draws, plainly, the way a flowchart with no subgraph
+    /// does.
     #[test]
     fn a_service_with_no_group_still_draws() {
         let rows = drawn("architecture-beta\n  service solo(server)[Solo]");
         assert!(rows.iter().any(|r| r.contains("Solo")), "{rows:?}");
     }
 
-    /// Anything that is not an architecture diagram, or is one but
-    /// malformed, is refused rather than guessed at.
+    
     #[test]
     fn what_is_not_an_architecture_diagram_is_left_alone() {
         assert!(render_architecture("graph TD\n A --> B").is_none());

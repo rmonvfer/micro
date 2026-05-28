@@ -5,13 +5,7 @@ use std::path::Component;
 use std::path::Path;
 use std::path::PathBuf;
 
-/// Resolve `path` against `base` and follow every symlink the filesystem can follow, so
-/// the policy check that follows sees the file that would actually be opened.
-///
-/// A path that does not exist yet still has to resolve — the write that creates it is
-/// exactly what needs checking — so the deepest ancestor that does exist is canonicalized
-/// and the remaining names are appended to it. Those names cannot be symlinks; nothing
-/// they could point at exists.
+/// Resolve `path` against `base` and follow every symlink the filesystem can follow.
 pub(crate) fn resolve(base: &Path, path: &Path) -> PathBuf {
     let mut resolved = if path.is_absolute() {
         PathBuf::new()
@@ -25,8 +19,7 @@ pub(crate) fn resolve(base: &Path, path: &Path) -> PathBuf {
             Component::RootDir => resolved.push(Component::RootDir.as_os_str()),
             Component::CurDir => {}
             Component::ParentDir => {
-                // Follow the link before stepping out of it: `link/..` belongs to the
-                // directory the link points into, not the one it sits in.
+                
                 if let Ok(canonical) = resolved.canonicalize() {
                     resolved = canonical;
                 }

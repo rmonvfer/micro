@@ -1,11 +1,5 @@
-// pi-tui's own fuzzy matcher, kept byte-for-byte: it is a pure function of its two
-// string arguments, so vendoring it exactly is what lets an extension's own filtering
-// (a command palette, a selector list) read the same as it would under pi.
-/**
- * Fuzzy matching utilities.
- * Matches if all query characters appear in order (not necessarily consecutive).
- * Lower score = better match.
- */
+
+/** Fuzzy matching utilities. */
 
 export interface FuzzyMatch {
 	matches: boolean;
@@ -34,24 +28,24 @@ export function fuzzyMatch(query: string, text: string): FuzzyMatch {
 			if (textLower[i] === normalizedQuery[queryIndex]) {
 				const isWordBoundary = i === 0 || /[\s\-_./:]/.test(textLower[i - 1]!);
 
-				// Reward consecutive matches
+				
 				if (lastMatchIndex === i - 1) {
 					consecutiveMatches++;
 					score -= consecutiveMatches * 5;
 				} else {
 					consecutiveMatches = 0;
-					// Penalize gaps
+					
 					if (lastMatchIndex >= 0) {
 						score += (i - lastMatchIndex - 1) * 2;
 					}
 				}
 
-				// Reward word boundary matches
+				
 				if (isWordBoundary) {
 					score -= 10;
 				}
 
-				// Slight penalty for later matches
+				
 				score += i * 0.1;
 
 				lastMatchIndex = i;
@@ -95,10 +89,7 @@ export function fuzzyMatch(query: string, text: string): FuzzyMatch {
 	return { matches: true, score: swappedMatch.score + 5 };
 }
 
-/**
- * Filter and sort items by fuzzy match quality (best matches first).
- * Supports whitespace- and slash-separated tokens: all tokens must match.
- */
+/** Filter and sort items by fuzzy match quality (best matches first). */
 export function fuzzyFilter<T>(items: T[], query: string, getText: (item: T) => string): T[] {
 	if (!query.trim()) {
 		return items;

@@ -1,14 +1,4 @@
 //! Amazon Bedrock, over the Converse Stream shape.
-//!
-//! Two things make this unlike every other client here. The request is signed rather than
-//! carrying a key — see [`crate::sigv4`] — unless the account uses a bearer token, which
-//! Bedrock also accepts. And the answer arrives as AWS's binary event stream rather than
-//! as server-sent events, so the frames are decoded by [`crate::eventstream`] before any
-//! of this reads them.
-//!
-//! The conversation shape is Bedrock's own: `messages` with `content` arrays, the system
-//! prompt in its own `system` field rather than as a message, and tools under
-//! `toolConfig`.
 
 use crate::eventstream::Decoder;
 use crate::json::parse_arguments;
@@ -32,7 +22,7 @@ use tokio::sync::mpsc::UnboundedSender;
 pub const PROVIDER: &str = "amazon-bedrock";
 /// What AWS calls this service when signing for it.
 const SERVICE: &str = "bedrock";
-/// Where Bedrock is served when the account says nothing else.
+
 const DEFAULT_REGION: &str = "us-east-1";
 
 /// Environment variables Bedrock reads, in the order AWS reads them.
@@ -108,11 +98,6 @@ impl crate::Provider for Bedrock {
 }
 
 /// How this account proves who it is.
-///
-/// Bedrock takes either a bearer token, which is sent as it is, or AWS credentials, which
-/// sign the request. A stored credential is treated as a bearer token, since that is the
-/// only kind micro can be handed directly; everything else comes from the environment the
-/// way every other AWS tool reads it.
 enum Authentication {
     Bearer(String),
     Signed(sigv4::Credentials),
@@ -149,7 +134,7 @@ fn authentication(api_key: &str) -> Result<Authentication, String> {
 
 /// Which region serves this account.
 pub(crate) fn region(base_url: &str) -> String {
-    // A base URL naming a region is the most specific thing there is.
+    
     if let Some(found) = region_in(base_url) {
         return found;
     }
@@ -179,13 +164,13 @@ fn region_in(base_url: &str) -> Option<String> {
     (!region.is_empty() && region != "amazonaws").then(|| region.to_string())
 }
 
-/// Where a model's stream is asked for.
+
 pub(crate) fn endpoint(base_url: &str, region: &str, model_id: &str) -> String {
     let root = match base_url.trim().trim_end_matches('/') {
         "" => format!("https://bedrock-runtime.{region}.amazonaws.com"),
         given => given.to_string(),
     };
-    // The id travels in the path, so a slash inside it would read as another segment.
+    
     let encoded = model_id.replace('/', "%2F");
     format!("{root}/model/{encoded}/converse-stream")
 }
@@ -300,7 +285,7 @@ pub(crate) fn build_payload(model: &Model, context: &Context) -> Result<Value, S
         "inferenceConfig": { "maxTokens": model.max_tokens },
     });
 
-    // The system prompt is its own field here rather than a message with a role.
+    
     if let Some(system) = context
         .system_prompt
         .as_deref()
@@ -323,10 +308,7 @@ pub(crate) fn build_payload(model: &Model, context: &Context) -> Result<Value, S
                 "description": tool.description,
                 "inputSchema": { "json": parameters },
             });
-            // Unlike the completions and Responses shapes, Bedrock's toolSpec has no
-            // "unresolved" spelling of `strict` — the field is only ever added, never
-            // sent false or null, so a tool that did not resolve to strict is left
-            // exactly as it always was: no such key at all.
+            
             if strict == Some(true) {
                 spec["strict"] = json!(true);
             }
@@ -339,9 +321,6 @@ pub(crate) fn build_payload(model: &Model, context: &Context) -> Result<Value, S
 }
 
 /// The conversation as Bedrock reads it.
-///
-/// A tool result is a user turn carrying a `toolResult` block, which is how Bedrock pairs
-/// an answer with the call that asked for it.
 fn build_messages(messages: &[Message]) -> Vec<Value> {
     let mut wire: Vec<Value> = Vec::new();
 
@@ -595,7 +574,7 @@ mod tests {
             address,
             "https://bedrock-runtime.eu-west-1.amazonaws.com/model/anthropic.claude-opus-4-v1:0/converse-stream"
         );
-        // An id with a slash is one segment, not two.
+        
         assert!(endpoint("", "us-east-1", "vendor/model").contains("vendor%2Fmodel"));
     }
 
@@ -606,7 +585,7 @@ mod tests {
             region("https://bedrock-runtime.ap-southeast-2.amazonaws.com"),
             "ap-southeast-2"
         );
-        // A custom endpoint says nothing about a region, so the environment decides.
+        
         assert!(region_in("https://my-proxy.example.com").is_none());
     }
 
@@ -646,7 +625,7 @@ mod tests {
         assert_eq!(result["status"], "success");
     }
 
-    /// A failed tool says so, so the model reads it as a failure rather than as an answer.
+    
     #[test]
     fn a_failed_tool_is_marked_as_one() {
         let context = Context {
@@ -695,10 +674,7 @@ mod tests {
         }
     }
 
-    /// No model in the bundled catalog claims this yet — matching pi, which has no
-    /// `generate-models.ts` rule for Bedrock the way it does for OpenAI-Responses and
-    /// Anthropic-Messages — so the default here is what every real request sees today.
-    /// A test states the flag explicitly to exercise the consumer regardless.
+    /// No model in the bundled catalog claims this yet.
     #[test]
     fn a_tool_preferring_strict_sampling_gets_it_when_the_service_claims_support() {
         let mut model = model();
@@ -716,9 +692,8 @@ mod tests {
         assert_eq!(spec["inputSchema"]["json"]["additionalProperties"], false);
     }
 
-    /// The default state: unaffected by a tool merely preferring constrained sampling, no
-    /// `strict` key at all, schema untouched — the same request Bedrock has always been
-    /// sent.
+    /// The default state: unaffected by a tool merely preferring constrained sampling, no `strict`
+    /// key at all, schema untouched.
     #[test]
     fn a_service_that_has_not_claimed_support_is_unaffected_by_a_tool_preferring_strict_sampling() {
         let original_parameters = json!({
@@ -744,8 +719,7 @@ mod tests {
         assert_eq!(spec["inputSchema"]["json"], original_parameters);
     }
 
-    /// `"require"` on a service that has not claimed support fails the request rather than
-    /// silently sending it under ordinary sampling.
+    
     #[test]
     fn requiring_strict_sampling_on_a_service_that_does_not_support_it_fails_the_request() {
         let context = Context {

@@ -1,9 +1,4 @@
 //! The seam between a slash command and the state it changes.
-//!
-//! A command reports what should happen; it never does it. Some of those outcomes are the
-//! interface's to carry out — showing a message, opening a picker, leaving — and the rest
-//! belong to whoever owns the agent, the catalog and the session log. This trait is how the
-//! interface hands those on and hears what to tell the user.
 
 use async_trait::async_trait;
 use micro_auth::PendingDeviceLogin;
@@ -14,8 +9,7 @@ use micro_types::Message;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct ConversationState {
     pub message_count: usize,
-    /// Everything the models have been billed for in this conversation, which only the
-    /// interface has seen: the session log records what was said, not what it cost.
+    /// Everything the models have been billed for in this conversation.
     pub usage: micro_types::Usage,
 }
 
@@ -30,20 +24,17 @@ pub enum Applied {
         text: String,
         kind: micro_commands::MessageKind,
     },
-    /// The conversation is now this. The scrollback is rebuilt from it, which is what
-    /// clearing, resuming, forking and compacting all look like from here.
+    /// The conversation is now this.
     Conversation {
         messages: Vec<Message>,
         note: Option<String>,
     },
-    /// Tell the model this instead of what it was told at launch. The conversation is
-    /// left alone: only the standing instructions change.
+    /// Tell the model this instead of what it was told at launch.
     SystemPrompt {
         prompt: String,
         note: Option<String>,
     },
-    /// Run this model from now on. The host resolves it, since it holds the catalog and the
-    /// credentials; the interface applies it, since it holds the agent.
+    /// Run this model from now on.
     Model {
         swap: Box<micro_agent::ModelSwap>,
         note: Option<String>,
@@ -85,8 +76,8 @@ impl Applied {
     }
 }
 
-/// What running a `!` command amounted to, when whatever was listening decided instead of
-/// the shell.
+/// What running a `!` command amounted to, when whatever was listening decided instead of the
+/// shell.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BashRun {
     pub output: String,
@@ -103,9 +94,6 @@ pub struct Listings {
 }
 
 /// How the interface runs slash commands.
-///
-/// Implemented by whoever built the agent, since that is who holds the catalog, the
-/// credentials, the session log and the conversation these outcomes change.
 #[async_trait]
 pub trait Commands: Send {
     /// Re-read durable cost and usage from the persisted ledger.
@@ -116,20 +104,12 @@ pub trait Commands: Send {
     }
 
     /// Tell whatever is listening what the user typed, before anything is done with it.
-    ///
-    /// The line comes back, possibly changed: an extension may rewrite what was submitted,
-    /// or swallow it by returning nothing.
     async fn submitted(&mut self, line: String) -> Option<String> {
         Some(line)
     }
 
-    /// Ask whatever is listening before running what the user typed with `!`, and let it
-    /// take over the run entirely.
-    ///
-    /// `None` runs the command against the shell as usual. `Some` is what running it
-    /// amounted to instead — the shell is never actually asked — which is how a `user_bash`
-    /// handler is honoured: an extension answering with its own result has decided what
-    /// happened, not merely watched it happen.
+    /// Ask whatever is listening before running what the user typed with `!`, and let it take over
+    /// the run entirely.
     async fn before_bash(
         &mut self,
         command: &str,
@@ -140,8 +120,7 @@ pub trait Commands: Send {
         None
     }
 
-    /// Run whatever is bound to this key, if anything is. `true` means it was handled and
-    /// the key should go no further.
+    /// Run whatever is bound to this key, if anything is.
     async fn shortcut(&mut self, key: &str) -> bool {
         let _ = key;
         false
@@ -153,9 +132,6 @@ pub trait Commands: Send {
     }
 
     /// Ask whatever is listening whether the conversation may be summarized.
-    ///
-    /// `false` stops it. Going ahead is the default, so a host that does not care about
-    /// compaction never has to say so.
     async fn compacting(&mut self) -> bool {
         true
     }
@@ -166,10 +142,6 @@ pub trait Commands: Send {
     }
 
     /// Start refreshing the model catalogs behind a list that has just opened.
-    ///
-    /// The list is drawn from what is already known and the refresh runs beside it, because
-    /// a list that waits for the network is a list that is not there when it was asked for.
-    /// `None` from a host with nothing to refresh, and the receiver answers once.
     fn begin_model_refresh(&mut self) -> Option<tokio::sync::oneshot::Receiver<Listings>> {
         None
     }
@@ -180,21 +152,17 @@ pub trait Commands: Send {
         None
     }
 
-    /// Run a submitted line. `None` means it was ordinary text for the model.
+    /// Run a submitted line.
     async fn dispatch(&mut self, line: &str, state: ConversationState) -> Option<CommandOutcome>;
 
-    /// Carry out an outcome the interface cannot: swapping the model or provider, replacing
-    /// the conversation, compacting it. Only outcomes the interface does not handle itself
-    /// reach here.
+    /// Carry out an outcome the interface cannot: swapping the model or provider, replacing the
+    /// conversation, compacting it.
     async fn apply(&mut self, outcome: CommandOutcome) -> Applied;
 
     /// Store a key the user typed at the interface's prompt.
     async fn store_api_key(&mut self, provider: String, key: String) -> Applied;
 
-    /// Wait for a device-code sign-in the user has been shown the code for.
-    ///
-    /// Separate from [`Commands::apply`] because the interface has to say where to go and
-    /// what to type before the waiting starts: the code is useless once the wait is over.
+    
     async fn finish_device_login(&mut self, pending: Box<PendingDeviceLogin>) -> Applied;
 }
 
@@ -244,10 +212,6 @@ pub enum DoubleEscape {
 }
 
 /// The preferences the interface honours, as it needs them.
-///
-/// Held here rather than reaching for [`micro_config`] so this crate stays a drawing
-/// crate: a caller with its own idea of where settings come from can still fill this in.
-/// When the conversation shows how far through it you are.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Scrollbar {
     #[default]
@@ -259,10 +223,10 @@ pub enum Scrollbar {
 /// What is left on the terminal after a full-screen session ends.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ExitOutput {
-    /// The conversation, so it is still there to read and copy from.
+    
     #[default]
     Transcript,
-    /// The line that brings it back, and nothing else.
+    
     ResumeHint,
 }
 
@@ -277,7 +241,7 @@ pub enum Mermaid {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Preferences {
-    /// Send every queued message at once when a turn ends, rather than the oldest alone.
+    
     pub steer_all_at_once: bool,
     /// When the conversation shows how far through it you are.
     pub scrollbar: Scrollbar,
@@ -287,7 +251,7 @@ pub struct Preferences {
     pub exit_output: ExitOutput,
     /// Whether rows the inline region gives up are cleared as it shrinks.
     pub clear_on_shrink: bool,
-    /// Keep the model's reasoning folded away until it is asked for.
+    
     pub hide_thinking: bool,
     /// Draw images in the terminal, where the terminal can.
     pub show_images: bool,

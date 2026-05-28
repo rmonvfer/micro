@@ -1,9 +1,4 @@
 //! Images placed on the frame, after the rows they occupy are known.
-//!
-//! The same problem hyperlinks have, and the same answer: the escape that draws an image
-//! occupies no columns, so it cannot ride in a span without breaking every width the layout
-//! depends on. Rows are reserved while the transcript is laid out, and the escape is put on
-//! the first cell of the first reserved row once those rows have landed somewhere.
 
 use crate::capabilities::ImageProtocol;
 use crate::images;
@@ -29,8 +24,8 @@ pub struct Pictures {
     reserved: usize,
     /// The widest a picture may be drawn, in cells.
     max_columns: usize,
-    /// Whether a picture wider than the room it has is shrunk to fit, or left at its own
-    /// size and cut off by the region it is drawn in.
+    /// Whether a picture wider than the room it has is shrunk to fit, or left at its own size and
+    /// cut off by the region it is drawn in.
     resize: bool,
 }
 
@@ -52,17 +47,14 @@ impl Pictures {
         self
     }
 
-    /// Claim the rows an image needs, returning how many. `None` when this terminal cannot
-    /// draw images at all, and the caller should describe it instead.
-    /// How many images have been reserved room for.
+    /// Claim the rows an image needs, returning how many.
     pub fn len(&self) -> usize {
         self.pictures.len()
     }
 
     /// Forget every image reserved after `kept`, whose rows are being drawn again.
     pub fn truncate(&mut self, kept: usize) {
-        // The rows a picture was given back are given up with it, so the next one reserved
-        // lands where the ones being redrawn used to be.
+        
         if let Some(first) = self.pictures.get(kept) {
             self.reserved = first.order;
         }
@@ -73,17 +65,15 @@ impl Pictures {
         let protocol = self.protocol?;
         let _ = protocol;
 
-        // Never wider than the room there is, and never wider than the user asked for.
+        
         let room = match self.resize {
             true => width.min(self.max_columns),
-            // Without resizing a picture keeps its own width, and the region cuts off
-            // whatever does not fit.
+            
             false => self.max_columns,
         }
         .max(1);
 
-        // The size is read from the image itself when it is a PNG; anything else is given a
-        // reasonable block rather than guessed at.
+        
         let (columns, rows) = match decoded_size(data) {
             Some((width_px, height_px)) => {
                 images::cell_size(width_px, height_px, room, Some(MAX_ROWS))
@@ -102,9 +92,6 @@ impl Pictures {
     }
 
     /// Draw every image into the rows it was given.
-    ///
-    /// `rows` are the transcript's lines as they were placed on screen, so an image whose
-    /// block scrolled out of the region is skipped rather than drawn somewhere wrong.
     pub fn apply(&self, buffer: &mut Buffer, area: Rect, first_visible: usize) {
         let Some(protocol) = self.protocol else {
             return;
@@ -132,9 +119,6 @@ const MAX_ROWS: usize = 20;
 const DEFAULT_MAX_COLUMNS: usize = 60;
 
 /// The pixel size of a base64 image, when it is a PNG and the header can be read.
-///
-/// Only the first bytes are decoded: a PNG's dimensions live in its first chunk, so there is
-/// no reason to decode megabytes to find them.
 fn decoded_size(data: &str) -> Option<(usize, usize)> {
     let head: String = data.chars().take(64).collect();
     let bytes = decode_base64(&head)?;
@@ -223,7 +207,7 @@ mod tests {
     #[test]
     fn an_image_is_given_the_rows_its_shape_asks_for() {
         let mut pictures = Pictures::new(Some(ImageProtocol::Kitty));
-        // Twice as wide as tall, in a space narrower than it.
+        
         let rows = pictures.reserve(&png(900, 450), 50).expect("reserved");
         assert_eq!(rows, 13);
     }

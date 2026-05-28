@@ -1,15 +1,4 @@
 //! A machine with no session behind it, for checking the wire against a real phone.
-//!
-//! It pairs, connects, offers a made-up session, and answers whatever arrives the way the
-//! bridge would. What it is for is the one thing the crate's own tests cannot do: proving
-//! that the phone's implementation and this one agree, rather than that this one agrees
-//! with itself.
-//!
-//! ```text
-//! cd locally && DB_PATH=:memory: PORT=8090 bun run relay/src/main.ts
-//! cargo run -p micro-remote --example machine -- http://localhost:8090
-//! # then type the printed code into the app, or pair phone-sim with a link
-//! ```
 
 use micro_remote::AvailableModel;
 use micro_remote::Bridge;
@@ -102,8 +91,7 @@ async fn main() -> Result<(), String> {
     let pairing = match micro_remote::load_pairing(&path) {
         Some(pairing) => pairing,
         None => {
-            // The same exchange `/remote pair` runs: publish a public half under a short
-            // code, wait for somebody to type it, and arrive at the shared secret.
+            
             let enrolment = micro_remote::begin_enrolment(&relay).await?;
             println!("\n  Pairing code:  {}\n", enrolment.code);
             println!("  Type it into Parley on your phone.\n");
@@ -155,10 +143,6 @@ async fn main() -> Result<(), String> {
 }
 
 /// A turn, played out at the speed one happens, for looking at what the phone draws.
-///
-/// The events are the shapes micro's own translator emits, so what the phone is shown
-/// here is what it is shown by a real session — which is the only reason a scripted one
-/// is worth anything.
 async fn replay(client: &RelayClient, bridge: &Bridge) {
     async fn beat(millis: u64) {
         tokio::time::sleep(std::time::Duration::from_millis(millis)).await;
@@ -178,7 +162,7 @@ async fn replay(client: &RelayClient, bridge: &Bridge) {
     }));
     beat(400).await;
 
-    // Reasoning, streamed the way a model produces it.
+    
     send(json!({ "type": "message_update", "assistantMessageEvent": { "type": "start" } }));
     send(json!({
         "type": "message_update",
@@ -196,7 +180,7 @@ async fn replay(client: &RelayClient, bridge: &Bridge) {
         "assistantMessageEvent": { "type": "thinking_end", "contentIndex": 0 },
     }));
 
-    // A command, from call to output.
+    
     send(json!({
         "type": "tool_execution_start",
         "toolCallId": "call_1",
@@ -212,7 +196,7 @@ async fn replay(client: &RelayClient, bridge: &Bridge) {
         "isError": false,
     }));
 
-    // Reading a file, which reads as what it explored rather than as a tool call.
+    
     send(json!({
         "type": "tool_execution_start",
         "toolCallId": "call_2",
@@ -228,7 +212,7 @@ async fn replay(client: &RelayClient, bridge: &Bridge) {
         "isError": false,
     }));
 
-    // An edit, which carries its own patch and tally.
+    
     send(json!({
         "type": "tool_execution_start",
         "toolCallId": "call_3",
@@ -248,7 +232,7 @@ async fn replay(client: &RelayClient, bridge: &Bridge) {
         "isError": false,
     }));
 
-    // A command that fails, so a failed row can be seen next to the finished ones.
+    
     send(json!({
         "type": "tool_execution_start",
         "toolCallId": "call_4",
@@ -264,7 +248,7 @@ async fn replay(client: &RelayClient, bridge: &Bridge) {
         "isError": true,
     }));
 
-    // The answer.
+    
     send(json!({
         "type": "message_update",
         "assistantMessageEvent": { "type": "text_start", "contentIndex": 1 },

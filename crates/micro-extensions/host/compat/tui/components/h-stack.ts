@@ -1,6 +1,4 @@
-// pi-tui's own horizontal layout component, vendored unchanged — see ../tui.ts for why
-// compositeTuiLine, the one thing it reaches for beyond this compat layer's other
-// vendored pieces, is real here too.
+
 import { compositeTuiLine } from "../tui.ts";
 import { visibleWidth } from "../utils.ts";
 import { allocateStackSizes, Stack, type StackChild, type StackOptions, visibleStackEntries } from "./stack.ts";

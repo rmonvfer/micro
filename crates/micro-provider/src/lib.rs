@@ -1,7 +1,4 @@
-//! Provider clients. A provider turns a [`Context`] into an HTTP request and the
-//! response body into a stream of [`StreamEvent`]s.
-//!
-//! [`registry`] is the way in for a caller that picks a provider at runtime.
+//! Provider clients.
 
 mod anthropic;
 mod bedrock;
@@ -42,10 +39,6 @@ use micro_types::StreamEvent;
 use tokio::sync::mpsc::UnboundedReceiver;
 
 /// Starts streaming requests against one wire format.
-///
-/// `stream` returns immediately; the request runs on a spawned task and pushes events
-/// into the returned receiver. The final event is always [`StreamEvent::Done`] or
-/// [`StreamEvent::Error`], so a consumer can drain until one of those arrives.
 pub trait Provider: Send + Sync {
     fn name(&self) -> &str;
 
@@ -56,8 +49,7 @@ pub trait Provider: Send + Sync {
         api_key: String,
     ) -> UnboundedReceiver<StreamEvent>;
 
-    /// Prepare the provider body for this credential. Most providers are credential-
-    /// independent; Anthropic subscription requests use a different tool spelling.
+    /// Prepare the provider body for this credential.
     fn request_payload(
         &self,
         model: &Model,
@@ -68,9 +60,7 @@ pub trait Provider: Send + Sync {
         Ok(self.payload(model, context))
     }
 
-    /// Send an already-prepared payload. Built-in providers override this so the value
-    /// retained by the ledger is the value passed to the HTTP client. Test providers may
-    /// keep using `stream` and the default fallback.
+    /// Send an already-prepared payload.
     fn stream_prepared(
         &self,
         model: Model,
@@ -83,14 +73,6 @@ pub trait Provider: Send + Sync {
     }
 
     /// The body [`Provider::stream`] would send for this model and this context.
-    ///
-    /// The same assembly the request itself goes through, so what comes back is what the
-    /// service is told rather than a description of it. The agent serializes and retains
-    /// this value at the provider boundary before calling `stream`.
-    ///
-    /// A body that cannot be assembled — a tool schema the service would refuse — is
-    /// answered as null rather than as an error: this is a reading of the request, and the
-    /// attempt to send it is where the refusal belongs.
     fn payload(&self, model: &Model, context: &Context) -> serde_json::Value;
 }
 
@@ -101,9 +83,6 @@ pub(crate) fn error_stream(message: String) -> UnboundedReceiver<StreamEvent> {
 }
 
 /// How long a request may go without producing anything before it is given up on.
-///
-/// A model that is thinking sends nothing for a while, so this is generous: it is there to
-/// notice a connection that has died, not to hurry an answer along.
 static IDLE_TIMEOUT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(120);
 
 /// Set the idle timeout every provider built from here on will use.
@@ -124,12 +103,6 @@ pub fn http_client() -> reqwest::Client {
 }
 
 /// What micro tells a service about itself.
-///
-/// Not telemetry: nothing is measured, nothing is sent anywhere micro chose, and there is
-/// no setting to turn off because there is nothing being collected. These are the headers a
-/// few services read to know which client is asking — OpenRouter lists the harnesses using
-/// it, and Nvidia and Cloudflare attribute a call the same way. A request carries the name
-/// of the program that made it, and that is all this is.
 pub fn attribution(base_url: &str) -> &'static [(&'static str, &'static str)] {
     const OPENROUTER: &[(&str, &str)] = &[
         ("HTTP-Referer", "https://github.com/rmonvfer/micro"),
@@ -147,8 +120,8 @@ pub fn attribution(base_url: &str) -> &'static [(&'static str, &'static str)] {
     }
 }
 
-/// The host an address names, for deciding what a service is without matching on the whole
-/// of its URL.
+/// The host an address names, for deciding what a service is without matching on the whole of its
+/// URL.
 fn host_of(base_url: &str) -> Option<String> {
     let rest = base_url.split_once("://").map(|(_, rest)| rest)?;
     let host = rest.split(['/', '?', '#']).next()?;
@@ -169,9 +142,6 @@ pub(crate) fn with_attribution(
 }
 
 /// Say which program is asking, then put the caller's own headers on top.
-///
-/// The caller's are applied last, so a header named by whoever assembled the request
-/// replaces both the one the provider set for itself and the one naming micro.
 pub(crate) fn with_carried_headers(
     request: reqwest::RequestBuilder,
     context: &micro_types::Context,
@@ -188,9 +158,8 @@ pub(crate) fn with_carried_headers(
 mod attribution_tests {
     use super::*;
 
-    /// A service that reads which client is asking is told micro, and one that does not is
-    /// told nothing. No setting gates this because nothing is being collected: it is the
-    /// name of the program on its own request.
+    /// A service that reads which client is asking is told micro, and one that does not is told
+    /// nothing.
     #[test]
     fn a_request_says_which_program_made_it() {
         let named =
@@ -221,8 +190,7 @@ mod attribution_tests {
         assert!(named("https://api.openai.com/v1").is_empty());
     }
 
-    /// The host decides, so a port, a userinfo or a path cannot make one service look like
-    /// another — and something that is not an address at all names nobody.
+    /// The host decides.
     #[test]
     fn the_host_is_read_from_the_address_and_nothing_else() {
         assert_eq!(

@@ -1,11 +1,4 @@
 //! The wire format: what arrives on stdin, and what goes out on stdout.
-//!
-//! One JSON object per line, framed on `\n` alone. A payload may hold other Unicode
-//! separators — U+2028 and U+2029 are legal inside a JSON string — so a reader that splits
-//! on anything else will cut a record in half.
-//!
-//! Every command may carry an `id`. It is echoed on the response, which is how a caller
-//! with several requests in flight tells the answers apart.
 
 use micro_types::ContentBlock;
 use micro_types::Message;
@@ -14,11 +7,11 @@ use serde::Deserialize;
 use serde::Serialize;
 use serde_json::Value;
 
-/// What a caller asks for.
+
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Command {
-    // Prompting
+    
     Prompt {
         #[serde(default)]
         id: Option<String>,
@@ -51,13 +44,13 @@ pub enum Command {
         id: Option<String>,
     },
 
-    // State
+    
     GetState {
         #[serde(default)]
         id: Option<String>,
     },
 
-    // Model
+    
     SetModel {
         #[serde(default)]
         id: Option<String>,
@@ -73,7 +66,7 @@ pub enum Command {
         id: Option<String>,
     },
 
-    // Thinking
+    
     SetThinkingLevel {
         #[serde(default)]
         id: Option<String>,
@@ -84,7 +77,7 @@ pub enum Command {
         id: Option<String>,
     },
 
-    // Compaction
+    
     Compact {
         #[serde(default)]
         id: Option<String>,
@@ -95,13 +88,12 @@ pub enum Command {
         enabled: bool,
     },
 
-    // Bash
+    
     Bash {
         #[serde(default)]
         id: Option<String>,
         command: String,
-        /// Run it without telling the model, for a command whose output is the caller's
-        /// business rather than the conversation's.
+        
         #[serde(default)]
         exclude_from_context: bool,
     },
@@ -110,7 +102,7 @@ pub enum Command {
         id: Option<String>,
     },
 
-    // Session
+    
     GetSessionStats {
         #[serde(default)]
         id: Option<String>,
@@ -120,15 +112,13 @@ pub enum Command {
         id: Option<String>,
         session_path: String,
     },
-    /// Move the open conversation back to an earlier entry. What came after stays in the
-    /// log as another branch.
+    /// Move the open conversation back to an earlier entry.
     NavigateTree {
         #[serde(default)]
         id: Option<String>,
         entry_id: String,
     },
-    /// Copy the conversation up to an entry into a session of its own, and carry on in
-    /// the copy. The session it came from is left as it was.
+    /// Copy the conversation up to an entry into a session of its own, and carry on in the copy.
     Fork {
         #[serde(default)]
         id: Option<String>,
@@ -158,13 +148,13 @@ pub enum Command {
         name: String,
     },
 
-    // Messages
+    
     GetMessages {
         #[serde(default)]
         id: Option<String>,
     },
 
-    // Commands available for invocation through a prompt
+    
     GetCommands {
         #[serde(default)]
         id: Option<String>,
@@ -353,9 +343,7 @@ mod tests {
         assert!(images.is_empty());
     }
 
-    /// Forking and moving within the conversation are different things, and a caller
-    /// asking for one must not get the other: a fork leaves the session it came from
-    /// alone, while navigating rewrites where the open session continues from.
+    
     #[test]
     fn forking_and_navigating_are_separate_commands() {
         let forked: Command = serde_json::from_str(r#"{"type":"fork","entry_id":"3"}"#).unwrap();

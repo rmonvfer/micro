@@ -1,12 +1,9 @@
-// pi-tui's own animated spinner, vendored unchanged: it drives its own `setInterval` and
-// asks whatever `TUI` it is given to `requestRender()` — a real call an extension's own
-// `ctx.ui`-backed `tui` handle already answers (see host-ui.ts's `tuiHandle`), not
-// something this file needs a real terminal for.
+
 import type { TUI } from "../tui.ts";
 import { Text } from "./text.ts";
 
 export interface LoaderIndicatorOptions {
-	/** Animation frames. Use an empty array to hide the indicator. */
+	/** Animation frames. */
 	frames?: string[];
 	/** Frame interval in milliseconds for animated indicators. */
 	intervalMs?: number;
@@ -15,9 +12,7 @@ export interface LoaderIndicatorOptions {
 const DEFAULT_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 const DEFAULT_INTERVAL_MS = 80;
 
-/**
- * Loader component that updates with an optional spinning animation.
- */
+/** Loader component that updates with an optional spinning animation. */
 export class Loader extends Text {
 	private frames = [...DEFAULT_FRAMES];
 	private intervalMs = DEFAULT_INTERVAL_MS;

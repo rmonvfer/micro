@@ -1,20 +1,4 @@
 //! Slash commands: what a user can type, and what each one asks the caller to do.
-//!
-//! Parsing and the command list live here; the effect does not. Running a command yields
-//! a [`CommandOutcome`] that the caller interprets, so a TUI and a headless CLI share
-//! every command without sharing a way of drawing.
-//!
-//! ```no_run
-//! use micro_commands::{dispatch, CommandContext, CommandOutcome};
-//!
-//! # async fn example(context: CommandContext<'_>) {
-//! match dispatch("/model opus", &context).await {
-//!     None => { /* ordinary text: send it to the model */ }
-//!     Some(CommandOutcome::SetModel { model }) => println!("now on {}", model.qualified_id()),
-//!     Some(outcome) => println!("{outcome:?}"),
-//! }
-//! # }
-//! ```
 
 mod auth;
 mod bill;
@@ -58,7 +42,6 @@ pub struct Command {
     /// Without the leading slash.
     pub name: &'static str,
     /// The argument as a user would see it written, or `None` when it takes none.
-    /// Square brackets mark an argument that may be left out.
     pub argument: Option<&'static str>,
     pub description: &'static str,
 }
@@ -269,10 +252,9 @@ pub fn find(name: &str) -> Option<&'static Command> {
 }
 
 /// Commands whose name starts with `prefix`, for the menu shown while a user types.
-/// A leading slash is accepted, since that is what they have typed so far.
 pub fn complete(prefix: &str) -> Vec<&'static Command> {
     let prefix = prefix.trim_start().trim_start_matches('/');
-    // Only the command word completes; once a space is typed the argument has begun.
+    
     if prefix.contains(char::is_whitespace) {
         return Vec::new();
     }
@@ -284,9 +266,6 @@ pub fn complete(prefix: &str) -> Vec<&'static Command> {
 }
 
 /// What a command needs to know about the state it runs in.
-///
-/// Borrowed throughout: a command reads this state and reports what should change, but
-/// never changes it.
 pub struct CommandContext<'a> {
     pub catalog: &'a Catalog,
     pub auth: &'a AuthStore,
@@ -303,16 +282,15 @@ pub struct CommandContext<'a> {
     pub message_count: usize,
     /// What the conversation has cost in tokens so far.
     pub usage: micro_types::Usage,
-    /// Show only the newest entry when the changelog is asked for.
+    
     pub collapse_changelog: bool,
-    /// The models a workspace put on its shortlist, as the patterns it named them by. The
-    /// model list opens on these; everything else is a keystroke away.
+    /// The models a workspace put on its shortlist, as the patterns it named them by.
     pub scoped_models: &'a [String],
     /// What the conversation tree shows before anything is asked of it.
     pub tree_filter: micro_config::TreeFilter,
 }
 
-/// Run a submitted line. `None` means it was ordinary text for the model.
+/// Run a submitted line.
 pub async fn dispatch(line: &str, context: &CommandContext<'_>) -> Option<CommandOutcome> {
     match parse(line) {
         Input::Prompt(_) => None,
@@ -354,9 +332,7 @@ pub async fn run(
         "trust" => trust(argument),
         "reload" => CommandOutcome::Reload,
         "share" => CommandOutcome::Share,
-        // Bare, this puts the session on whichever phone is already paired — which is
-        // what pairing once is for. `pair` is the one-off that bonds a phone in the
-        // first place, and the only thing that ever shows a link.
+        
         "remote" => CommandOutcome::RemoteControl {
             action: match argument.map(str::trim).unwrap_or_default() {
                 "pair" => RemoteAction::Pair { qr: false },
@@ -376,7 +352,7 @@ pub async fn run(
         "export" => CommandOutcome::Export {
             path: argument.map(str::to_string),
         },
-        // Clearing is what starting over means when the conversation is the only state.
+        
         "new" => CommandOutcome::Clear,
         "debug" => debug(context),
         "bill" => bill::command(argument, context).await,
@@ -396,9 +372,6 @@ pub async fn run(
 const CHANGELOG: &str = include_str!("../../../CHANGELOG.md");
 
 /// The changelog, whole or folded to its newest entry.
-///
-/// An entry starts at a `## ` heading, so folding keeps the title and everything under the
-/// first one.
 fn changelog(collapse: bool) -> String {
     let text = CHANGELOG.trim();
     if !collapse {
@@ -420,11 +393,8 @@ fn changelog(collapse: bool) -> String {
     out.trim_end().to_string()
 }
 
-/// `/trust` vouches for the project, so a later run may edit inside it without asking
-/// about every file. `/trust off` takes it back.
-///
-/// It never widens what a shell command may do: a command can reach anywhere, and saying
-/// a directory is safe says nothing about that.
+/// `/trust` vouches for the project, so a later run may edit inside it without asking about every
+/// file.
 fn trust(argument: Option<&str>) -> CommandOutcome {
     match argument
         .map(str::trim)
@@ -495,8 +465,8 @@ fn theme(argument: Option<&str>) -> CommandOutcome {
                     PickerItem::new("auto", "follow the terminal", "/theme auto"),
                 ],
             )
-            // A palette's name is short, so its column is held narrow: padding three names out
-            // to the width a model id needs would leave the descriptions stranded.
+            
+            
             .columns(12, 32),
         );
     };
@@ -520,8 +490,7 @@ fn theme(argument: Option<&str>) -> CommandOutcome {
 /// What skills were found, and anything that stopped one loading.
 async fn skills(context: &CommandContext<'_>) -> CommandOutcome {
     let home = micro_dirs::config_dir().unwrap_or_default();
-    // Listing what is on offer answers with what this run is actually offering, which is
-    // the project's own only when the project has been trusted.
+    
     let trusted = !micro_config::requires_decision(context.workspace)
         || micro_config::TrustStore::load()
             .await
@@ -536,9 +505,7 @@ async fn skills(context: &CommandContext<'_>) -> CommandOutcome {
     .await;
 
     if found.skills.is_empty() && found.diagnostics.is_empty() {
-        // The user's own directory is named as it resolved rather than as a default
-        // spelling, since where it lands depends on whether this install predates the
-        // split between configuration and data.
+        
         return CommandOutcome::info(format!(
             "No skills. Put a SKILL.md in .micro/skills/, {}, or ~/.agents/skills/.",
             home.join("skills").display()
@@ -563,11 +530,6 @@ async fn skills(context: &CommandContext<'_>) -> CommandOutcome {
 }
 
 /// Where every setting comes from, so a surprising one can be traced to its file.
-/// `/settings` offers what can be changed, each item carrying the command that changes it.
-///
-/// Every row here is honoured somewhere: a setting that controlled nothing would read as a
-/// feature and behave as a decoration.
-/// A variant's name as it is written on the command line: `OneAtATime` is `one-at-a-time`.
 fn kebab(name: &str) -> String {
     let mut out = String::new();
     for (index, character) in name.chars().enumerate() {
@@ -750,10 +712,6 @@ fn settings(context: &CommandContext<'_>) -> CommandOutcome {
 }
 
 /// The directories micro reads and writes, named as one where they are one.
-///
-/// An install that keeps everything together should be told so in a single path; one that
-/// keeps what the user wrote apart from what micro produced needs both halves named, since
-/// either is somewhere a reader might be going to look.
 fn kept_in() -> String {
     let config = micro_dirs::config_dir().unwrap_or_default();
     let data = micro_dirs::data_dir().unwrap_or_default();
@@ -764,10 +722,6 @@ fn kept_in() -> String {
 }
 
 /// The sandbox policy in force, as a name to show.
-///
-/// A policy can also be written as a table spelling out what it grants beyond the default,
-/// which has no short name to print; it is shown by the mode it builds on, since that is
-/// what a reader is looking for in a list of settings.
 fn policy_name(settings: &micro_config::Settings) -> &str {
     let Some(written) = &settings.sandbox else {
         return "workspace-write";
@@ -778,8 +732,7 @@ fn policy_name(settings: &micro_config::Settings) -> &str {
         .unwrap_or("workspace-write")
 }
 
-/// What a session may spend, as an amount to show. Nothing at all is written as such
-/// rather than as `$0.00`, which would read as a session that may spend nothing.
+/// What a session may spend, as an amount to show.
 fn spending_limit(budget: f64) -> String {
     match budget > 0.0 {
         true => format!("${budget:.2}"),
@@ -787,8 +740,7 @@ fn spending_limit(budget: f64) -> String {
     }
 }
 
-/// `/set <name> [value]` changes one setting and remembers it. Without a value it says
-/// what the setting is now and what it may be.
+/// `/set <name> [value]` changes one setting and remembers it.
 fn set(argument: Option<&str>) -> CommandOutcome {
     let Some(argument) = argument.map(str::trim).filter(|text| !text.is_empty()) else {
         return CommandOutcome::error("Usage: /set <setting> [value]");
@@ -808,8 +760,7 @@ fn set(argument: Option<&str>) -> CommandOutcome {
     };
 
     let Some(value) = value else {
-        // Named on its own, a setting offers what it may be rather than only saying what
-        // it is: a list you cannot change from is a list of things to go and type.
+        
         if let Some(choices) = settable(&config, name) {
             return CommandOutcome::Choose(Picker::new(name.to_string(), choices).titled());
         }
@@ -832,10 +783,6 @@ fn set(argument: Option<&str>) -> CommandOutcome {
 }
 
 /// One setting as it stands, and what it will take.
-/// What a setting may be set to, as a list to choose from.
-///
-/// Every setting that has a settled few values offers them; one that takes free text — a
-/// shortlist of models — has none to offer and is described instead.
 fn settable(config: &micro_config::Config, name: &str) -> Option<Vec<PickerItem>> {
     let now = config
         .resolve(&micro_config::Overrides::default(), |_| None)
@@ -1122,7 +1069,7 @@ fn describe(config: &micro_config::Config, name: &str) -> Option<String> {
     Some(text)
 }
 
-/// Put a value into the config, saying what went wrong rather than storing nonsense.
+
 fn assign(config: &mut micro_config::Config, name: &str, value: &str) -> Result<(), String> {
     let flag = || match value.to_ascii_lowercase().as_str() {
         "on" | "true" | "yes" | "1" => Ok(true),
@@ -1204,8 +1151,7 @@ fn assign(config: &mut micro_config::Config, name: &str, value: &str) -> Result<
             config.sandbox = Some(policy.into())
         }
         "budget" => {
-            // Written with the currency sign as often as without it, and the sign carries
-            // no information this has to keep.
+            
             let amount: f64 = value
                 .trim_start_matches('$')
                 .parse()
@@ -1319,9 +1265,6 @@ fn debug(context: &CommandContext<'_>) -> CommandOutcome {
 }
 
 /// `/hotkeys`, grouped as navigation, editing, and everything else.
-///
-/// What a row says is bound is what [`crate`]'s caller actually binds, so this is a
-/// description rather than a wish.
 fn hotkeys_text() -> String {
     let groups: &[(&str, &[(&str, &str)])] = &[
         (
@@ -1396,8 +1339,7 @@ fn hotkeys_text() -> String {
     out.trim_end().to_string()
 }
 
-/// A key as it is read rather than as it is written: every part capitalized, and `alt`
-/// named `Option` where the keyboard says Option.
+
 fn key_display(keys: &str) -> String {
     keys.split('/')
         .map(|combination| {
@@ -1459,8 +1401,7 @@ pub(crate) mod testing {
     use std::sync::atomic::AtomicU32;
     use std::sync::atomic::Ordering;
 
-    /// Everything a command reads, rooted in this process's own scratch directory so no
-    /// test touches a real credential file or session log.
+    
     pub struct Harness {
         pub catalog: Catalog,
         pub auth: AuthStore,
@@ -1535,8 +1476,7 @@ mod tests {
 
         for command in commands() {
             assert!(!command.description.is_empty(), "/{}", command.name);
-            // Lower case throughout, with a dash where a name is two words, which is what
-            // the parser accepts as a name and what completion offers.
+            
             assert!(command
                 .name
                 .chars()
@@ -1557,9 +1497,7 @@ mod tests {
         assert!(find("nope").is_none());
     }
 
-    /// Every registered command answers when it is run, and none of them panic on the
-    /// way. A command that is listed but not wired up would otherwise only be found by a
-    /// user typing it.
+    /// Every registered command answers when it is run, and none of them panic on the way.
     #[tokio::test]
     async fn every_registered_command_answers() {
         let root = std::env::temp_dir().join(format!("micro-every-command-{}", std::process::id()));
@@ -1599,8 +1537,7 @@ mod tests {
             tree_filter: Default::default(),
         };
 
-        // An argument each command will accept, for the ones that need one. A command that
-        // takes none is run bare.
+        
         let argument_for = |name: &str| match name {
             "import" => Some("nothing.jsonl"),
             "set" => Some("warnings"),
@@ -1615,7 +1552,7 @@ mod tests {
         };
 
         for command in commands() {
-            // Sign-in reaches the network, and quitting says nothing worth asserting.
+            
             if matches!(command.name, "login" | "quit") {
                 continue;
             }
@@ -1629,8 +1566,8 @@ mod tests {
         }
     }
 
-    /// Every setting `/settings` offers can be set, and every value it refuses is a value
-    /// nothing downstream would have honoured.
+    /// Every setting `/settings` offers can be set, and every value it refuses is a value nothing
+    /// downstream would have honoured.
     #[test]
     fn every_offered_setting_can_be_set() {
         let mut config = micro_config::Config::default();
@@ -1683,7 +1620,7 @@ mod tests {
         assert!(assign(&mut config, "image_width_cells", "wide").is_err());
         assert!(assign(&mut config, "http_idle_timeout", "0").is_err());
         assert!(assign(&mut config, "double_escape", "sideways").is_err());
-        // A transport micro cannot speak is refused rather than stored and ignored.
+        
         assert!(assign(&mut config, "transport", "websocket").is_err());
         assert!(assign(&mut config, "nothing_like_this", "on").is_err());
         assert_eq!(config, micro_config::Config::default(), "nothing stuck");
@@ -1729,8 +1666,7 @@ mod tests {
         }
     }
 
-    /// Every key the hotkey table names is one the interface actually listens for, so the
-    /// table is a description of the bindings rather than a wish list.
+    
     #[test]
     fn every_hotkey_row_names_a_key_that_is_bound() {
         let text = hotkeys_text();

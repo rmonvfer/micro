@@ -1,9 +1,4 @@
 //! What a session says it cost, against what the provider said it cost.
-//!
-//! The unit tests around the bill prove the shares of a turn add up to it. This proves the
-//! number they add up to is the right one: the sessions here are real runs of the binary,
-//! the usage is what a real provider reports on the wire, and the prices are the ones in
-//! the catalog the run reads.
 
 mod support;
 
@@ -14,17 +9,11 @@ use support::Fixture;
 use support::Reply;
 
 /// The rates the fixture's model is billed at, in dollars per million tokens.
-///
-/// Chosen so every figure below divides exactly: a bill that came out to a repeating
-/// fraction would prove the arithmetic and not much else.
 const INPUT: f64 = 3.0;
 const OUTPUT: f64 = 15.0;
 const CACHE_READ: f64 = 0.3;
 
 /// A reply that also says what the provider billed for it.
-///
-/// `prompt` counts the cached tokens too, which is how a real service reports it and why
-/// the fresh input a bill charges at the full rate is the difference between the two.
 fn billed(mut chunks: Vec<Value>, prompt: u64, cached: u64, completion: u64) -> Reply {
     chunks.push(json!({
         "choices": [],
@@ -60,10 +49,6 @@ fn asks_for_a_tool(prompt: u64, cached: u64, completion: u64) -> Reply {
 }
 
 /// Give the fixture's model a price, so there is something to bill.
-///
-/// The fixture writes a model with no cost at all, which every other test wants: a run
-/// that reports nothing is a run nothing distracts from. A bill has nothing to say about
-/// one, so this replaces the file with the same model priced.
 fn priced(fixture: &Fixture, api: &FakeApi) {
     std::fs::write(
         fixture.home().join("models.json"),
@@ -93,13 +78,8 @@ fn priced(fixture: &Fixture, api: &FakeApi) {
     .expect("write a priced models.json");
 }
 
-/// Write a session's log and sidecar straight to disk, in the format `docs/ledger.md`
-/// documents, and answer with its id.
-///
-/// A session put there by hand rather than by a run, so `micro bill` can be read against a
-/// ledger whose every number is known in advance. The turns are what a two-turn session
-/// records: a prompt, a request describing what it was assembled from, what the provider
-/// billed, and the answer.
+/// Write a session's log and sidecar straight to disk, in the format `docs/ledger.md` documents,
+/// and answer with its id.
 fn written(fixture: &Fixture, turns: &[(u64, u64, u64, u64)]) -> String {
     let id = format!("{}", 1_786_000_000_000u64 + std::process::id() as u64);
     let sessions = fixture.home().join("sessions");
@@ -131,8 +111,7 @@ fn written(fixture: &Fixture, turns: &[(u64, u64, u64, u64)]) -> String {
                     "type": "turn_request", "turn": turn,
                     "provider": "openai", "model": "test-model",
                     "prefix_hash": "aa", "request_hash": "bb",
-                    // Named but not written: a blob that is not there leaves the tools out
-                    // of the sharing rather than failing the bill.
+                    
                     "tools_blob": "cc", "model_blob": "dd",
                     "prefix_spans": [
                         { "source": "system_prompt", "bytes": 400, "hash": "ee" },
@@ -261,9 +240,7 @@ fn blocks(report: &str) -> Vec<Block> {
     read
 }
 
-/// `micro bill <session>` against a ledger written by hand: every figure in it is known in advance,
-/// so what the subcommand prints can be checked rather than merely parsed.
-///
+/// `micro bill <session>` against a ledger written by hand: every figure in it is known in advance.
 #[test]
 fn the_bill_subcommand_reads_a_recorded_ledger() {
     let api = FakeApi::start([]);
@@ -324,12 +301,7 @@ fn the_bill_subcommand_reads_a_recorded_ledger() {
     missing.expect_failure("a turn nobody billed");
 }
 
-/// The bill's arithmetic, end to end: every line item adds up to its turn, every turn adds
-/// up to the total, and the total is what the provider's own numbers price out to.
-///
-/// The two turns are deliberately different shapes — one that asked for a tool and one that
-/// answered, one that paid for its whole prompt and one that read most of it back out of
-/// cache — because a bill that only ever sees one shape proves nothing about the other.
+
 #[test]
 fn a_bill_adds_up_to_what_the_provider_reported() {
     let api = FakeApi::start([
@@ -366,8 +338,7 @@ fn a_bill_adds_up_to_what_the_provider_reported() {
         );
     }
 
-    // What the two turns should come to, worked out from the numbers the fake provider
-    // reported and the rates the catalog carries, with nothing read out of the report.
+    
     let first = (1_000.0 * INPUT + 200.0 * OUTPUT) / 1e6;
     let second = (500.0 * INPUT + 100.0 * OUTPUT + 1_000.0 * CACHE_READ) / 1e6;
     assert!((read[0].total - first).abs() < 5e-7, "turn 1: {report}");
@@ -397,8 +368,7 @@ fn a_bill_names_where_the_money_went() {
     for named in ["system_prompt", "project_instructions", "user", "model"] {
         assert!(report.contains(named), "no {named} line: {report}");
     }
-    // A tool is charged for being offered as well as for what it answers, so it is on the
-    // bill of a turn that never called one.
+    
     assert!(report.contains("tool:read"), "no tool lines: {report}");
     assert!(
         report.contains("always add up to the turn"),
@@ -406,8 +376,7 @@ fn a_bill_names_where_the_money_went() {
     );
 }
 
-/// `--diff` answers a different question from the bill: not what the session cost, but
-/// what one turn added to it, and what about that turn made it cost that.
+
 #[test]
 fn the_diff_of_a_turn_says_what_it_added_and_why() {
     let api = FakeApi::start([
@@ -452,8 +421,7 @@ fn the_diff_of_a_turn_says_what_it_added_and_why() {
     );
 }
 
-/// `/bill` is the same reading from inside a session, so a run that is already open does
-/// not have to be left to find out what it has spent.
+/// `/bill` is the same reading from inside a session.
 #[test]
 fn the_bill_command_reports_on_the_session_it_is_run_in() {
     let api = FakeApi::start([answer("done", 1_000, 0, 200)]);
@@ -481,15 +449,11 @@ fn the_bill_command_reports_on_the_session_it_is_run_in() {
     assert_eq!(
         api.request_count(),
         1,
-        "a slash command is run rather than sent to the model"
+        "slash command should run locally"
     );
 }
 
-/// A ceiling stops the run at the first turn boundary past it, says so where an error
-/// would be said, and leaves the reason on the ledger.
-///
-/// The budget here is smaller than one turn on purpose: what is being proved is that the
-/// check happens and lands, not where the threshold sits.
+
 #[test]
 fn a_session_over_its_budget_stops_and_says_so() {
     let api = FakeApi::start([answer("done", 1_000, 0, 200)]);
@@ -530,9 +494,7 @@ fn a_session_over_its_budget_stops_and_says_so() {
     );
 }
 
-/// Reopening a session that is already over its ceiling has to work. The stop is a fact
-/// about what a turn may do next, not a lock on the file: raising the limit lifts it, and
-/// the conversation carries on from where it stopped.
+/// Reopening a session that is already over its ceiling has to work.
 #[test]
 fn raising_the_budget_lets_a_stopped_session_carry_on() {
     let api = FakeApi::start([
@@ -557,8 +519,7 @@ fn raising_the_budget_lets_a_stopped_session_carry_on() {
     assert_eq!(api.request_count(), 2, "both prompts reached the provider");
 }
 
-/// A ceiling covers the session rather than each run of it, so what earlier runs spent
-/// counts against it — otherwise reopening a session would hand it the whole budget again.
+
 #[test]
 fn what_earlier_runs_spent_counts_against_the_budget() {
     let api = FakeApi::start([
@@ -568,8 +529,7 @@ fn what_earlier_runs_spent_counts_against_the_budget() {
     let fixture = Fixture::new(&api);
     priced(&fixture, &api);
 
-    // One turn costs $0.006, so a six-tenths-of-a-cent ceiling survives the first run and
-    // not the second.
+    
     let ceiling = "0.0065";
     fixture
         .print(&["-m", "test", "--budget", ceiling, "hello"])

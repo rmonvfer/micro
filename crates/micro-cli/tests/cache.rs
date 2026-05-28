@@ -1,9 +1,4 @@
 //! What the binary actually sends, turn after turn.
-//!
-//! The unit tests around the prefix prove the agent holds one still and records it when it
-//! moves. This proves the same thing about the bytes on the wire: the requests here are the
-//! ones a real provider would have received, read back off the fake service that answered
-//! them, and the ledger lines are the ones a real session wrote to disk.
 
 mod support;
 
@@ -69,10 +64,6 @@ fn messages(request: &Value) -> Vec<Value> {
 }
 
 /// Two turns of one run open with the same bytes, and the session says the same.
-///
-/// The second request is the first one with the conversation continued: everything ahead of
-/// the messages is untouched, the messages it already had are still there unchanged, and
-/// what it recorded about its own prefix is the same hash both times.
 #[test]
 fn a_second_turn_sends_the_first_turns_prefix_unchanged() {
     let api = FakeApi::start([
@@ -97,7 +88,7 @@ fn a_second_turn_sends_the_first_turns_prefix_unchanged() {
     );
     assert_eq!(first["tools"], second["tools"], "the tools moved");
 
-    // The tail only grew: what the second request opens with is the first request.
+    
     let (had, has) = (messages(&first), messages(&second));
     assert!(has.len() > had.len(), "the conversation grew");
     assert_eq!(has[..had.len()], had[..], "and only at the end");
@@ -119,7 +110,7 @@ fn a_second_turn_sends_the_first_turns_prefix_unchanged() {
         "and nothing claimed it changed"
     );
 
-    // The session can say so itself, which is the whole point of recording it.
+    
     let explained = fixture.micro_run(&["why-miss", &session_id(&fixture), "2"]);
     explained.expect_success("micro why-miss");
     assert!(
@@ -129,13 +120,7 @@ fn a_second_turn_sends_the_first_turns_prefix_unchanged() {
     );
 }
 
-/// Changing the project's instructions mid-session and reloading moves the prefix exactly
-/// once, reaches the next request, and is explainable afterwards.
-///
-/// Driven through a real terminal because `/reload` is a slash command and slash commands
-/// need an interface: this is the only path that exercises the whole of it — the command,
-/// the host re-reading the workspace, the agent taking the change up at a turn boundary,
-/// and the ledger line that says why.
+
 #[test]
 fn reloading_mid_session_reaches_the_next_request_and_why_miss_names_the_span() {
     if Command::new("python3").arg("--version").output().is_err() {
@@ -146,10 +131,7 @@ fn reloading_mid_session_reaches_the_next_request_and_why_miss_names_the_span() 
     let api = FakeApi::start([Reply::text("first answer"), Reply::text("second answer")]);
     let fixture = Fixture::new(&api);
     fixture.write("AGENTS.md", "Always run the linter.");
-    // With an extension loaded there is a second thing between the agent and the provider,
-    // and it used to hold a copy of the system prompt that it wrote over every request —
-    // which made `/reload` change nothing at all. The extension registers a command and
-    // does nothing else; being loaded is the whole of its job here.
+    
     if micro_extensions::which_bun().is_some() {
         fixture.write(
             ".micro/extensions/noop.ts",
@@ -237,9 +219,7 @@ fn drive_script() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/pty/drive.py")
 }
 
-/// A `python3 tests/pty/drive.py -- <micro binary> <args>` command carrying exactly the
-/// environment `fixture.micro()` set up, read back through `Command`'s own introspection so
-/// it cannot drift from what the rest of the suite runs against.
+
 fn pty_command(fixture: &Fixture, micro_args: &[&str]) -> Command {
     let base = fixture.micro();
     let mut command = Command::new("python3");

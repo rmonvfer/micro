@@ -17,15 +17,11 @@ use micro_types::ThinkingLevel;
 use std::sync::Arc;
 
 /// A [`Summarizer`] backed by the same provider the agent talks to.
-///
-/// The request carries no tools and one user message, so the model has nothing to do but
-/// write the summary.
 pub struct ProviderSummarizer {
     provider: Arc<dyn Provider>,
     model: Model,
     api_key: ApiKey,
-    /// What the conversation being summarized is called, so a provider that caches against
-    /// a name sees this request as part of it rather than as a stranger.
+    /// What the conversation being summarized is called.
     cache_key: Option<String>,
 }
 
@@ -40,11 +36,6 @@ impl ProviderSummarizer {
     }
 
     /// Summarize as part of a named conversation.
-    ///
-    /// The transcript this request carries is the conversation's own opening, so a backend
-    /// that routes by session name has the rest of it warm. Sent under a name of its own it
-    /// would land somewhere with nothing cached and pay full price for a prompt the service
-    /// already holds.
     pub fn for_conversation(mut self, key: Option<String>) -> Self {
         self.cache_key = key;
         self
@@ -64,8 +55,7 @@ impl Summarizer for ProviderSummarizer {
         };
 
         let mut model = self.model.clone();
-        // Restating a transcript is not a reasoning task, and thinking output is discarded
-        // rather than kept as the summary.
+        
         model.thinking = ThinkingLevel::Off;
 
         let mut stream = self
@@ -76,16 +66,13 @@ impl Summarizer for ProviderSummarizer {
             match event {
                 StreamEvent::Done { message } => {
                     let summary = message.text().trim().to_string();
-                    // An empty summary would replace the history with nothing, which loses
-                    // the conversation more thoroughly than not compacting at all.
+                    
                     if summary.is_empty() {
                         return Err(ContextError::summarizer("the model returned no summary"));
                     }
                     return Ok(Summary {
                         text: summary,
-                        // Carried back rather than dropped: this was a request to a model
-                        // like any other, and a session that cannot say what compaction
-                        // cost cannot say what it cost.
+                        
                         cost: CompactionCost {
                             usage: message.usage,
                             provider: message.provider,

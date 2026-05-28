@@ -1,15 +1,4 @@
 //! Durable session storage.
-//!
-//! A session is a JSONL file holding one serialized [`Message`] per line, appended as
-//! each message is produced, plus a sidecar metadata file listings read instead of
-//! replaying the log. The log is never rewritten, so a crash costs at most the line
-//! being written and [`SessionStore::load`] skips whatever it cannot parse.
-//!
-//! The same log carries the ledger: everything a run did that is not something that was
-//! said, written as [`LedgerLine`] envelopes between the messages. Content a fact refers
-//! to rather than contains — a system prompt, a set of tool definitions — is stored beside
-//! the log under the hash of its bytes, so a prompt that stood unchanged for a hundred
-//! turns is on disk once.
 
 mod error;
 mod meta;
@@ -72,8 +61,7 @@ impl SessionStore {
         &self.root
     }
 
-    /// Starts a session and claims its id. The workspace is canonicalized so listings
-    /// match regardless of which symlinked spelling of the path the caller used.
+    /// Starts a session and claims its id.
     pub async fn create(
         &self,
         workspace: impl AsRef<Path>,
@@ -102,14 +90,14 @@ impl SessionStore {
         Ok(session)
     }
 
-    /// Reopens a session: its history, a handle ready for more appends, and a count of
-    /// unreadable lines.
+    /// Reopens a session: its history, a handle ready for more appends, and a count of unreadable
+    /// lines.
     pub async fn load(&self, id: &str) -> Result<LoadedSession> {
         validate_id(id)?;
         let raw = self.read_log(id).await?;
         let (lines, skipped_lines) = parse_log(&raw);
         let tree = Tree::from_lines(lines);
-        // What the model is shown is the branch in use, not every message ever written.
+        
         let messages = tree.path();
 
         let meta = self.meta_for(id).await?;
@@ -120,8 +108,7 @@ impl SessionStore {
             meta_path: self.meta_path(id),
             blobs_path: self.blobs_path(id),
             meta,
-            // Numbering carries on from the highest sequence the log already holds, so a
-            // fact recorded after a resume sorts after everything recorded before it.
+            
             next_seq: tree
                 .ledger()
                 .iter()
@@ -131,15 +118,12 @@ impl SessionStore {
             tree,
         };
 
-        // A crash can leave the log ending mid-line. Terminating it now keeps the next
-        // append on its own line instead of gluing it onto the unreadable fragment.
+        
         if !raw.is_empty() && !raw.ends_with('\n') {
             session.seal_partial_line().await?;
         }
 
-        // A crash between the log write and the metadata write, or a skipped line, leaves
-        // the recorded count out of step with what the log yields. The count describes all
-        // recorded conversation entries, including entries left on another branch.
+        
         let entry_count = session.tree.entries().len();
         if session.meta.message_count != entry_count {
             session.meta.message_count = entry_count;
@@ -159,8 +143,7 @@ impl SessionStore {
         self.meta_for(id).await
     }
 
-    /// A session's log exactly as it is on disk, for a caller handing over the whole
-    /// ledger rather than reading anything out of it.
+    
     pub async fn raw_log(&self, id: &str) -> Result<String> {
         validate_id(id)?;
         self.read_log(id).await
@@ -183,14 +166,6 @@ impl SessionStore {
     }
 
     /// What the model was shown at one turn, put back together from the log.
-    ///
-    /// The conversation is read as it stood when the turn was recorded rather than as it
-    /// stands now: the log is replayed in order and stopped at the line the request was
-    /// written on, so a branch taken afterwards, or a summary written since, does not
-    /// change what an earlier turn is said to have seen.
-    ///
-    /// A turn re-issued after a transient failure was recorded once per attempt. The last
-    /// of them is the one that produced the answer, so it is the one described here.
     pub async fn reconstruct_turn(&self, id: &str, turn: u64) -> Result<ReconstructedTurn> {
         validate_id(id)?;
         let raw = self.read_log(id).await?;
@@ -280,7 +255,7 @@ impl SessionStore {
         })
     }
 
-    /// A blob read back as whatever it was serialized from.
+    
     async fn parsed_blob<T: serde::de::DeserializeOwned>(&self, id: &str, hash: &str) -> Result<T> {
         let raw = self.blob(id, hash).await?;
         serde_json::from_slice(&raw)
@@ -310,8 +285,7 @@ impl SessionStore {
             Err(source) => return Err(SessionError::io(log_path, source)),
         }
 
-        // What the session's facts referred to goes with them; a blob is worth keeping
-        // only for as long as something names it.
+        
         let _ = tokio::fs::remove_dir_all(self.blobs_path(id)).await;
 
         let meta_path = self.meta_path(id);
@@ -322,8 +296,8 @@ impl SessionStore {
         }
     }
 
-    /// Branches a conversation: copies messages `0..=through_index` of `id` into a fresh
-    /// session that records `id` as its parent. The source session is left untouched.
+    /// Branches a conversation: copies messages `0..=through_index` of `id` into a fresh session
+    /// that records `id` as its parent.
     pub async fn fork(&self, id: &str, through_index: usize) -> Result<Session> {
         let source = self.load(id).await?;
         if through_index >= source.messages.len() {
@@ -347,11 +321,6 @@ impl SessionStore {
     }
 
     /// Takes a session log written elsewhere and files it here as a session of its own.
-    ///
-    /// The conversation is copied rather than adopted in place: the file that was imported
-    /// keeps whatever it was, and the session that comes back is written to like any
-    /// other. Lines that cannot be read are counted rather than aborting the import, so a
-    /// log that was cut short still brings back everything before the damage.
     pub async fn import(
         &self,
         source: impl AsRef<Path>,
@@ -423,9 +392,7 @@ impl SessionStore {
         Ok(listed)
     }
 
-    /// Reads a session's metadata, rebuilding it from the log when the sidecar is missing
-    /// or unreadable and reconciling stale listing fields when valid entries remain in the
-    /// log. A damaged log leaves its last readable metadata intact.
+    
     async fn meta_for(&self, id: &str) -> Result<SessionMeta> {
         let path = self.meta_path(id);
         match tokio::fs::read(&path).await {
@@ -441,10 +408,6 @@ impl SessionStore {
     }
 
     /// Bring a readable log's derived title and entry count back into step with its sidecar.
-    ///
-    /// A title supplied through `/name` wins over the title derived from the first prompt.
-    /// When no valid entry is left in the log, metadata is retained because it is the only
-    /// trustworthy record remaining.
     async fn reconcile_meta(&self, id: &str, mut meta: SessionMeta) -> Result<SessionMeta> {
         let raw = self.read_log(id).await?;
         let (lines, _) = parse_log(&raw);
@@ -485,13 +448,12 @@ impl SessionStore {
         Ok(meta)
     }
 
-    /// Reconstructs what the log and the filesystem still know: the title, the message
-    /// count, and the timestamps. The workspace and model are not recoverable.
+    /// Reconstructs what the log and the filesystem still know: the title, the message count, and
+    /// the timestamps.
     async fn rebuild_meta(&self, id: &str) -> Result<SessionMeta> {
         let raw = self.read_log(id).await?;
         let (lines, _) = parse_log(&raw);
-        // Every message counts toward the metadata, not only the branch in use: the count
-        // describes the file, and the title comes from the first thing ever asked.
+        
         let messages: Vec<Message> = Tree::from_lines(lines)
             .entries()
             .iter()
@@ -535,14 +497,13 @@ impl SessionStore {
             .map_err(|source| SessionError::io(path, source))
     }
 
-    /// Takes the first free id at the current millisecond. `create_new` makes the claim
-    /// atomic, so concurrent creators never land on the same session file.
+    /// Takes the first free id at the current millisecond.
     async fn claim_id(&self) -> Result<(String, File)> {
         let stamp = micro_types::now_ms();
         for attempt in 0..MAX_ID_ATTEMPTS {
             let id = match attempt {
                 0 => stamp.to_string(),
-                // Zero padded so ids stay in creation order under a plain string sort.
+                
                 _ => format!("{stamp}-{attempt:03}"),
             };
             let path = self.log_path(&id);
@@ -574,8 +535,7 @@ impl SessionStore {
         self.root.join(format!("{id}.meta.json"))
     }
 
-    /// Where one session's content-addressed blobs live: a sibling of its log, named the
-    /// same way its metadata is.
+    
     fn blobs_path(&self, id: &str) -> PathBuf {
         self.root.join(format!("{id}.blobs"))
     }
@@ -585,19 +545,17 @@ impl SessionStore {
 #[derive(Debug, Clone, PartialEq)]
 pub struct ReconstructedTurn {
     pub turn: u64,
-    /// Which try produced this record. Above one, the earlier attempts failed in a way
-    /// worth re-issuing the request for.
+    /// Which try produced this record.
     pub attempt: u32,
     pub provider: String,
     pub model_id: String,
-    /// The model as it was configured for the request, which is what makes the body
-    /// rebuildable rather than merely describable.
+    
     pub model: Model,
     pub prefix_hash: String,
     pub request_hash: String,
     /// Exact serialized provider body for ledgers written by versions that retain it.
     pub recorded_request_body: Option<Vec<u8>>,
-    /// Where each stretch of the system prompt came from.
+    
     pub prefix_spans: Vec<PrefixSpan>,
     pub system_prompt: Option<String>,
     pub tools: Vec<ToolDefinition>,
@@ -609,8 +567,7 @@ pub struct ReconstructedTurn {
     pub stop_reason: Option<StopReason>,
 }
 
-/// An open session. Appends land at the end of the log immediately; nothing earlier in
-/// the file is ever rewritten.
+/// An open session.
 #[derive(Debug)]
 pub struct Session {
     log: File,
@@ -619,8 +576,8 @@ pub struct Session {
     /// Where content a ledger event names by hash is kept.
     blobs_path: PathBuf,
     meta: SessionMeta,
-    /// The shape of the conversation, so an appended message knows what it followed and a
-    /// branch can be taken from anywhere in it.
+    /// The shape of the conversation, so an appended message knows what it followed and a branch
+    /// can be taken from anywhere in it.
     tree: Tree,
     /// The number the next fact recorded here is given.
     next_seq: u64,
@@ -637,11 +594,6 @@ impl Session {
     }
 
     /// Continue from an earlier entry, keeping everything that came after it.
-    ///
-    /// The next message appended hangs off that entry instead of the end, which is what
-    /// makes a second answer to the same question a branch rather than a replacement. The
-    /// move is recorded, so reopening the session continues from where the conversation
-    /// was left rather than from whatever was written last.
     pub async fn branch_from(&mut self, id: &str) -> Result<bool> {
         if !self.tree.branch_from(id) {
             return Ok(false);
@@ -653,7 +605,7 @@ impl Session {
         Ok(true)
     }
 
-    /// The conversation along the current branch, which is what the model is shown.
+    
     pub fn branch(&self) -> Vec<Message> {
         self.tree.path()
     }
@@ -669,16 +621,14 @@ impl Session {
         self.write_meta().await
     }
 
-    /// Give the session a title of its own, in place of the one taken from the first
-    /// message. It sticks, because a title that is set is never derived over.
+    /// Give the session a title of its own, in place of the one taken from the first message.
     pub async fn rename(&mut self, title: &str) -> Result<()> {
         self.meta.title = title.trim().to_string();
         self.meta.updated_at = micro_types::now_ms();
         self.write_meta().await
     }
 
-    /// Record something beside the conversation. It is written to the log and read back
-    /// on the next open, and the model never sees it.
+    /// Record something beside the conversation.
     pub async fn append_custom(
         &mut self,
         custom_type: &str,
@@ -689,11 +639,6 @@ impl Session {
     }
 
     /// Record that a stretch of the conversation has been summarized.
-    ///
-    /// `kept` is how many of the most recent messages are still part of the conversation,
-    /// and `cost` is what the request that wrote the summary was billed. Nothing is removed
-    /// from the log; what is written is where the conversation now starts reading from, so
-    /// reopening the session costs no summarizing.
     pub async fn compacted(
         &mut self,
         summary: &str,
@@ -702,9 +647,7 @@ impl Session {
     ) -> Result<()> {
         let compaction = self.tree.push_compaction(summary, kept);
         self.write_line(&compaction).await?;
-        // Recorded twice over, and for two different readers: the compaction line is what
-        // the conversation is read through when the session reopens, and the ledger event
-        // is what says a compaction happened here to anything accounting for the session.
+        
         let summary_blob = self.store_blob(summary.as_bytes()).await?;
         self.append_event(LedgerEvent::Compaction {
             summary_blob,
@@ -722,10 +665,6 @@ impl Session {
     }
 
     /// Record one fact about the run, in the envelope every ledger line is written in.
-    ///
-    /// The sequence number is assigned here and nowhere else: it is what orders facts
-    /// against each other across a session, including across the reopenings that split one
-    /// conversation over several runs.
     pub async fn append_event(&mut self, event: LedgerEvent) -> Result<u64> {
         let mut event = event;
         self.stamp(&mut event);
@@ -744,10 +683,6 @@ impl Session {
     }
 
     /// Fill in what only the session can know.
-    ///
-    /// A turn request names the entries the conversation stood at when it went out.
-    /// Whoever produced the request has the messages but not their ids — the tree assigns
-    /// those as they are written — so the names are put on here, where the tree is.
     fn stamp(&self, event: &mut LedgerEvent) {
         let message_entry_ids = match event {
             LedgerEvent::TurnRequest {
@@ -764,10 +699,6 @@ impl Session {
     }
 
     /// File a piece of content under the hash of its bytes, and answer with that name.
-    ///
-    /// Write-once, because the name is the content: a blob that is already there holds
-    /// exactly these bytes and is left alone. Written through a temporary file, so a crash
-    /// mid-write cannot leave a blob whose name lies about what is in it.
     pub async fn store_blob(&self, content: &[u8]) -> Result<String> {
         let hash = content_hash(content);
         let path = self.blobs_path.join(&hash);
@@ -825,9 +756,7 @@ impl Session {
         self.append_all(std::slice::from_ref(message)).await
     }
 
-    /// Appends a run of messages as one write, then republishes the metadata. The log is
-    /// written first: a crash in between leaves a stale count that [`SessionStore::load`]
-    /// repairs, whereas the reverse order would claim messages that were never stored.
+    /// Appends a run of messages as one write, then republishes the metadata.
     pub async fn append_all(&mut self, messages: &[Message]) -> Result<()> {
         if messages.is_empty() {
             return Ok(());
@@ -835,8 +764,7 @@ impl Session {
 
         let mut lines = Vec::new();
         for message in messages {
-            // Written as an entry rather than a bare message, so what it followed is on
-            // disk and a branch taken later still knows where it came from.
+            
             let entry = self.tree.push(message.clone());
             serde_json::to_writer(&mut lines, &entry)
                 .map_err(|source| SessionError::json(&self.log_path, source))?;
@@ -861,8 +789,7 @@ impl Session {
         write_meta(&self.meta_path, &self.meta).await
     }
 
-    /// Closes off a line a crash left unfinished, so it stays one skipped line rather
-    /// than swallowing whatever is appended next.
+    
     async fn seal_partial_line(&mut self) -> Result<()> {
         self.log
             .write_all(b"\n")
@@ -896,9 +823,6 @@ pub struct LoadedSession {
 }
 
 /// Where sessions are written: the `sessions` directory under micro's data directory.
-///
-/// A session is something micro produced rather than something the user wrote, which is
-/// why it goes with the data rather than with the settings.
 pub fn default_root() -> Result<PathBuf> {
     let data = micro_dirs::data_dir().ok_or(SessionError::NoHome {
         env: micro_dirs::MICRO_DIR_ENV,
@@ -907,11 +831,6 @@ pub fn default_root() -> Result<PathBuf> {
 }
 
 /// Parses a log, returning the messages it yields and how many lines were unreadable.
-/// Blank lines are not corruption and are not counted.
-/// Read a log into its lines, counting the ones that could not be read.
-///
-/// A line is either an entry with its place in the tree or, in a session written before
-/// sessions had one, a bare message. Both are accepted, so an old log still opens.
 fn parse_log(raw: &str) -> (Vec<tree::Line>, usize) {
     let mut lines = Vec::new();
     let mut skipped = 0;
@@ -927,8 +846,8 @@ fn parse_log(raw: &str) -> (Vec<tree::Line>, usize) {
     (lines, skipped)
 }
 
-/// Replaces the metadata sidecar through a temporary file, so a reader never observes a
-/// half-written record.
+/// Replaces the metadata sidecar through a temporary file, so a reader never observes a half-
+/// written record.
 async fn write_meta(path: &Path, meta: &SessionMeta) -> Result<()> {
     let encoded = serde_json::to_vec(meta).map_err(|source| SessionError::json(path, source))?;
     let temporary = path.with_extension("tmp");
@@ -992,8 +911,7 @@ mod tests {
         })
     }
 
-    /// An imported log becomes a session of micro's own: what it held is copied in, the
-    /// file it came from is left alone, and damage in it costs only the lines affected.
+    
     #[tokio::test]
     async fn importing_copies_a_log_written_elsewhere() {
         let root = scratch("import");
@@ -1017,7 +935,7 @@ mod tests {
         assert_eq!(imported.messages.len(), 2);
         assert_eq!(imported.skipped_lines, 1);
 
-        // The imported session stands on its own, and the file it came from is untouched.
+        
         let reopened = store.load(imported.session.id()).await.unwrap();
         assert_eq!(reopened.messages.len(), 2);
         assert_eq!(tokio::fs::read_to_string(&source).await.unwrap(), written);
@@ -1036,8 +954,7 @@ mod tests {
             .is_err());
     }
 
-    /// A branch taken in one run is still there in the next: what came after the branch
-    /// point is on disk, and the conversation reopens on the branch that was in use.
+    
     #[tokio::test]
     async fn a_branch_survives_being_reopened() {
         let store = SessionStore::new(scratch("branching"));
@@ -1051,7 +968,7 @@ mod tests {
             .await
             .expect("wrote");
 
-        // Go back to the question and answer it differently.
+        
         assert!(session.branch_from("1").await.expect("moved"));
         session
             .append(&Message::user("second answer"))
@@ -1138,7 +1055,7 @@ mod tests {
         session.append(&Message::user("intact")).await.unwrap();
         session.append(&assistant("also intact")).await.unwrap();
 
-        // A crash mid-write leaves a partial JSON object with no terminating newline.
+        
         let mut raw = std::fs::read_to_string(&path).unwrap();
         raw.push_str("{\"role\":\"user\",\"content\":[{\"type\":\"tex");
         std::fs::write(&path, raw).unwrap();
@@ -1191,7 +1108,7 @@ mod tests {
         let reloaded = store.load(&id).await.unwrap();
         assert_eq!(reloaded.messages.len(), 2);
         assert_eq!(reloaded.messages[1], assistant("recovered"));
-        // The fragment stayed one unreadable line instead of swallowing the next message.
+        
         assert_eq!(reloaded.skipped_lines, 1);
     }
 
@@ -1220,7 +1137,7 @@ mod tests {
         let branch = store.load(&forked_id).await.unwrap();
         assert_eq!(branch.messages, written[..2]);
 
-        // Forking must not disturb the session it branched from.
+        
         let original = store.load(&id).await.unwrap();
         assert_eq!(original.messages.len(), 3);
         assert!(original.session.meta().parent.is_none());
@@ -1304,7 +1221,7 @@ mod tests {
             .unwrap();
         session.append(&assistant("done")).await.unwrap();
 
-        // Replacing the log with garbage would break any listing that parsed messages.
+        
         std::fs::write(session.path(), "not json\nnot json either\n").unwrap();
 
         let listed = store.list().await.unwrap();
@@ -1436,8 +1353,8 @@ mod tests {
         assert_eq!(std::fs::read(session.path()).unwrap().len(), 0);
     }
 
-    /// A ledger line is written between the messages and read back as what it was, and
-    /// the conversation around it is untouched by it.
+    /// A ledger line is written between the messages and read back as what it was, and the
+    /// conversation around it is untouched by it.
     #[tokio::test]
     async fn a_recorded_fact_survives_being_reopened() {
         let store = SessionStore::new(scratch("ledger-round-trip"));
@@ -1466,8 +1383,7 @@ mod tests {
         );
     }
 
-    /// Numbering is what orders facts against each other, so it has to carry on across a
-    /// reopening rather than start over and leave two facts claiming the same place.
+    /// Numbering is what orders facts against each other.
     #[tokio::test]
     async fn sequence_numbers_carry_on_after_a_reload() {
         let store = SessionStore::new(scratch("ledger-seq"));
@@ -1508,8 +1424,7 @@ mod tests {
         assert_eq!(seqs, vec![1, 2, 3, 4]);
     }
 
-    /// A session written before any of this existed holds messages and nothing else. It
-    /// has to open exactly as it always did, with no facts invented for it.
+    
     #[tokio::test]
     async fn a_session_written_before_the_ledger_still_loads() {
         let store = SessionStore::new(scratch("legacy"));
@@ -1518,7 +1433,7 @@ mod tests {
         let path = session.path().to_path_buf();
         drop(session);
 
-        // Bare messages, the shape the very first sessions were written in.
+        
         let mut written = String::new();
         for message in [Message::user("first"), assistant("second")] {
             written.push_str(&serde_json::to_string(&message).unwrap());
@@ -1536,8 +1451,7 @@ mod tests {
         ));
     }
 
-    /// Content a fact refers to is stored once under the hash of its bytes: two turns
-    /// naming the same system prompt name the same blob, and nothing is written twice.
+    
     #[tokio::test]
     async fn content_is_stored_once_under_the_hash_of_its_bytes() {
         let store = SessionStore::new(scratch("blobs"));
@@ -1557,8 +1471,7 @@ mod tests {
         ));
     }
 
-    /// What a turn saw is the conversation as it stood when the request went out, not as
-    /// it stands now: a branch taken afterwards cannot rewrite an earlier turn's record.
+    
     #[tokio::test]
     async fn a_turn_is_rebuilt_as_the_conversation_stood_then() {
         let store = SessionStore::new(scratch("reconstruct"));
@@ -1608,7 +1521,7 @@ mod tests {
             })
             .await
             .unwrap();
-        // Everything after the turn: another branch, and more conversation on it.
+        
         session.branch_from("1").await.unwrap();
         session.append(&Message::user("second")).await.unwrap();
 
@@ -1623,8 +1536,7 @@ mod tests {
         assert_eq!(rebuilt.stop_reason, Some(StopReason::Stop));
     }
 
-    /// Moving the conversation back to an earlier entry is a fact about the session, so
-    /// reopening it continues from where it was left rather than from the last line.
+    /// Moving the conversation back to an earlier entry is a fact about the session.
     #[tokio::test]
     async fn moving_the_head_is_recorded() {
         let store = SessionStore::new(scratch("head-moved"));
@@ -1654,8 +1566,7 @@ mod tests {
         );
     }
 
-    /// Logs are written rather than authored, so they follow the data directory wherever
-    /// it goes rather than sitting with the settings.
+    
     #[test]
     fn the_root_sits_under_the_data_directory() {
         assert_eq!(

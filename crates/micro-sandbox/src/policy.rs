@@ -1,8 +1,4 @@
-//! What a session may touch, expressed as a policy the OS sandbox and the file tools
-//! both read.
-//!
-//! Derived from openai/codex codex-rs/core/src/protocol.rs at commit a8c7f5391c and
-//! codex-rs/protocol/src/protocol.rs at commit 486df09a00; modified.
+//! What a session may touch, expressed as a policy the OS sandbox and the file tools both read.
 
 use serde::de::Error as _;
 use serde::Deserialize;
@@ -14,10 +10,7 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::str::FromStr;
 
-/// The directory names that stay read-only at the top of every writable root, because a
-/// process that can rewrite them can talk the next run into granting itself more than the
-/// policy did: `.git` carries hooks that run on the user's next commit, and `.micro`
-/// carries the project settings micro itself trusts.
+/// The directory names that stay read-only at the top of every writable root.
 pub const PROTECTED_NAMES: [&str; 2] = [".git", ".micro"];
 
 const READ_ONLY: &str = "read-only";
@@ -25,26 +18,22 @@ const WORKSPACE_WRITE: &str = "workspace-write";
 const FULL: &str = "full";
 
 /// What commands run under this session are allowed to do.
-///
-/// Reading is unrestricted under every policy. A coding agent that cannot read the
-/// system it is working on is useless, and the interesting damage — writing outside the
-/// workspace, reaching the network — is on the other side.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SandboxPolicy {
     /// Read anything, write nothing, no network.
     ReadOnly,
 
-    /// Read anything; write inside the workspace and whatever else was granted
-    /// explicitly, minus the protected paths inside those roots.
+    /// Read anything; write inside the workspace and whatever else was granted explicitly, minus
+    /// the protected paths inside those roots.
     WorkspaceWrite {
         /// Directories beyond the workspace that may be written to.
         writable_roots: Vec<PathBuf>,
 
-        /// Whether the command may reach the network. Off unless asked for.
+        /// Whether the command may reach the network.
         allow_network: bool,
     },
 
-    /// No confinement at all. Whatever micro runs, the user's account can do.
+    /// No confinement at all.
     Full,
 }
 
@@ -55,7 +44,7 @@ impl Default for SandboxPolicy {
 }
 
 impl SandboxPolicy {
-    /// The default policy: the workspace is writable, nothing else is, network off.
+    
     pub fn workspace_write() -> Self {
         SandboxPolicy::WorkspaceWrite {
             writable_roots: Vec::new(),
@@ -63,8 +52,7 @@ impl SandboxPolicy {
         }
     }
 
-    /// The name this policy is written as in config, on the command line, and in the
-    /// ledger.
+    /// The name this policy is written as in config, on the command line, and in the ledger.
     pub fn name(&self) -> &'static str {
         match self {
             SandboxPolicy::ReadOnly => READ_ONLY,
@@ -103,10 +91,6 @@ impl fmt::Display for SandboxPolicy {
 }
 
 /// A directory that may be written to, along with the paths inside it that may not.
-///
-/// The read-only subpaths are absolute paths under `root`, and they are listed whether or
-/// not they exist yet: forbidding `mkdir .git` matters as much as forbidding a write to
-/// an existing one.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WritableRoot {
     pub root: PathBuf,
@@ -114,8 +98,7 @@ pub struct WritableRoot {
 }
 
 impl WritableRoot {
-    /// Whether `path` may be written to. `path` is expected to be absolute and already
-    /// resolved through any symlinks, which is what [`crate::Sandbox`] hands over.
+    /// Whether `path` may be written to.
     pub fn is_path_writable(&self, path: &Path) -> bool {
         if !path.starts_with(&self.root) {
             return false;

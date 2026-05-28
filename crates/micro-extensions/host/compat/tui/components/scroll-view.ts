@@ -1,6 +1,4 @@
-// pi-tui's own scroll-position bookkeeping, vendored unchanged: it tracks where a scroll
-// region is and clips its single child's already-rendered lines, with no dependency on
-// how — or whether — a terminal draws the result.
+
 import { LAYOUT_NODE, type ScrollLayoutNode } from "../layout-node.ts";
 import { type Component, Container } from "../tui.ts";
 

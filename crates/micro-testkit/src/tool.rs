@@ -11,10 +11,6 @@ use serde_json::json;
 use serde_json::Value;
 
 /// A tool that returns canned output and counts its invocations.
-///
-/// By default it succeeds with `"ok"`. [`FakeTool::returning`] and [`FakeTool::failing`]
-/// change the standing answer; [`FakeTool::responses`] queues a sequence for tests that
-/// call the same tool more than once.
 #[derive(Clone)]
 pub struct FakeTool {
     inner: Arc<Inner>,
@@ -26,8 +22,7 @@ struct Inner {
     queued: Mutex<VecDeque<Result<String, String>>>,
     standing: Mutex<Result<String, String>>,
     calls: Mutex<Vec<Value>>,
-    /// What [`Tool::execution_mode`] reports. `None` by default, matching a tool with no
-    /// opinion on how its calls are scheduled against the rest of a turn's.
+    /// What [`Tool::execution_mode`] reports.
     execution_mode: Option<micro_types::ToolExecutionMode>,
 }
 
@@ -59,8 +54,8 @@ impl FakeTool {
         self.mutate(|definition| definition.parameters = parameters)
     }
 
-    /// Declare how this tool's calls are scheduled against the rest of a turn's, the way
-    /// an extension's `executionMode` does.
+    /// Declare how this tool's calls are scheduled against the rest of a turn's, the way an
+    /// extension's `executionMode` does.
     pub fn with_execution_mode(self, mode: micro_types::ToolExecutionMode) -> Self {
         let mut inner = Arc::try_unwrap(self.inner)
             .unwrap_or_else(|_| panic!("configure a FakeTool before sharing it with an agent"));
@@ -76,15 +71,14 @@ impl FakeTool {
         self
     }
 
-    /// Fail with `error` on every call. The agent turns this into a tool result flagged
-    /// as an error rather than aborting the run.
+    /// Fail with `error` on every call.
     pub fn failing(self, error: impl Into<String>) -> Self {
         *self.inner.standing.lock().expect("standing lock") = Err(error.into());
         self
     }
 
-    /// Answer successive calls from `responses`, falling back to the standing answer once
-    /// they run out.
+    /// Answer successive calls from `responses`, falling back to the standing answer once they run
+    /// out.
     pub fn responses(self, responses: impl IntoIterator<Item = Result<String, String>>) -> Self {
         self.inner
             .queued
@@ -107,8 +101,8 @@ impl FakeTool {
         self.inner.calls.lock().expect("calls lock").len()
     }
 
-    /// The arguments of call `index`, panicking with a legible message when the tool was
-    /// called fewer times than that.
+    /// The arguments of call `index`, panicking with a legible message when the tool was called
+    /// fewer times than that.
     pub fn call(&self, index: usize) -> Value {
         let calls = self.calls();
         assert!(
@@ -121,8 +115,8 @@ impl FakeTool {
         calls[index].clone()
     }
 
-    /// Mutating the definition is only sound before the tool is shared with an agent,
-    /// which is how the builder methods are used.
+    /// Mutating the definition is only sound before the tool is shared with an agent, which is how
+    /// the builder methods are used.
     fn mutate(self, edit: impl FnOnce(&mut ToolDefinition)) -> Self {
         let mut inner = Arc::try_unwrap(self.inner)
             .unwrap_or_else(|_| panic!("configure a FakeTool before sharing it with an agent"));

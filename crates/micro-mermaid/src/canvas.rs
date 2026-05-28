@@ -1,13 +1,9 @@
-//! The drawing surface: a grid of cells that accumulate direction bits and
-//! glyphs, resolving into finished rows of text once a diagram is fully
-//! routed.
+
 
 use crate::types::{Cls, Span};
 use crate::width::measured;
 
-/// Sentinel occupying the trailing column of a wide glyph. Never emitted: the
-/// line builder skips it so a CJK character claims two cells of layout but
-/// contributes one character of output.
+/// Sentinel occupying the trailing column of a wide glyph.
 pub const CONT: &str = "\0";
 
 /// Connection direction bits, combined into a box-drawing glyph by `mask_char`.
@@ -21,21 +17,14 @@ pub const STY_DOT: u8 = 1;
 pub const STY_THICK: u8 = 2;
 pub const STY_SOLID: u8 = 4;
 
-/// The rows a finished canvas resolves into. `plain[i]` and `styled[i]`
-/// describe the same row; see [`crate::types::Art`] for how the two differ.
+
 pub struct Lines {
     pub plain: Vec<String>,
     pub styled: Vec<Vec<Span>>,
     pub width: usize,
 }
 
-/// A grid of cells. Edges accumulate as direction bits rather than glyphs so
-/// that crossings and junctions resolve correctly whatever order they are
-/// drawn in; `finalize_mask` turns the accumulated bits into characters at the
-/// end.
-///
-/// `occupied` marks cells claimed by a box, which edge bits must not
-/// overwrite.
+/// A grid of cells.
 pub struct Canvas {
     pub w: usize,
     pub h: usize,
@@ -76,8 +65,6 @@ impl Canvas {
     }
 
     /// Accumulate direction bits on a free cell, claiming it for `cls`.
-    /// `border` cells are never reclassified, so a connector meeting a box
-    /// keeps the box's styling.
     pub fn add_bits(&mut self, x: usize, y: usize, bits: u8, cls: Cls) {
         if x >= self.w || y >= self.h {
             return;
@@ -93,8 +80,7 @@ impl Canvas {
         }
     }
 
-    /// `add_bits` claiming the cell as a plain edge, which is what every
-    /// connector-routing call site wants unless it says otherwise.
+    
     pub fn add_edge_bits(&mut self, x: usize, y: usize, bits: u8) {
         self.add_bits(x, y, bits, Cls::Edge);
     }
@@ -118,8 +104,7 @@ impl Canvas {
         }
     }
 
-    /// Add direction bits even to an occupied cell, so an edge can meet a
-    /// border.
+    /// Add direction bits even to an occupied cell, so an edge can meet a border.
     pub fn junction(&mut self, x: usize, y: usize, bits: u8) {
         if x >= self.w || y >= self.h {
             return;
@@ -177,8 +162,7 @@ impl Canvas {
         }
     }
 
-    /// Mirror top-to-bottom for `BT`. Rows reorder but within-row text does
-    /// not, so labels stay readable; box-drawing glyphs flip to match.
+    /// Mirror top-to-bottom for `BT`.
     pub fn flip_vertical(&mut self) {
         for y in 0..self.h / 2 {
             let y2 = self.h - 1 - y;
@@ -194,8 +178,7 @@ impl Canvas {
         }
     }
 
-    /// Mirror left-to-right for `RL`. Mirroring reverses each row, so after
-    /// flipping glyphs each text/label run is reversed back to reading order.
+    /// Mirror left-to-right for `RL`.
     pub fn flip_horizontal(&mut self) {
         for y in 0..self.h {
             for x in 0..self.w / 2 {
@@ -227,15 +210,14 @@ impl Canvas {
         }
     }
 
-    /// Group each row into runs of one class, dropping wide-glyph
-    /// continuations, and trim blank rows from the top and bottom.
+    /// Group each row into runs of one class, dropping wide-glyph continuations, and trim blank
+    /// rows from the top and bottom.
     pub fn to_lines(&self) -> Lines {
         let mut plain: Vec<String> = Vec::new();
         let mut styled: Vec<Vec<Span>> = Vec::new();
         let mut width = 0usize;
         for y in 0..self.h {
-            // A trailing CONT counts as painted: it is the second cell of a wide
-            // glyph, so the row really does reach that column.
+            
             let mut last = 0usize;
             for x in (0..self.w).rev() {
                 if self.ch[self.idx(x, y)] != " " {
@@ -272,9 +254,7 @@ impl Canvas {
                 });
             }
             styled.push(spans);
-            // Only ASCII spaces, which is all a blank cell ever holds. Trimming
-            // Unicode whitespace would eat a trailing NBSP that `styled` keeps,
-            // desyncing the two.
+            
             plain.push(plain_row.trim_end_matches(' ').to_string());
         }
         let mut first = 0;
@@ -294,9 +274,6 @@ impl Canvas {
 }
 
 /// Paint `text` at `x, y`, one grapheme cluster per cell.
-///
-/// A wide cluster claims a second cell, marked with `CONT` so the line builder
-/// emits one character for it rather than a stray space.
 pub fn draw_text(canvas: &mut Canvas, text: &str, x: usize, y: usize, cls: Cls) {
     let mut cur = x;
     for (cluster, cw) in measured(text) {
@@ -312,9 +289,6 @@ pub fn draw_text(canvas: &mut Canvas, text: &str, x: usize, y: usize, cls: Cls) 
 }
 
 /// Paint `text` at `x, y`, clearing any edge bits underneath first.
-///
-/// Used where text sits on top of a drawn line (sequence messages, dividers,
-/// compartment rows) and must win over it.
 pub fn draw_text_over_edges(canvas: &mut Canvas, text: &str, x: usize, y: usize, cls: Cls) {
     let mut cur = x;
     for (cluster, cw) in measured(text) {
@@ -335,16 +309,16 @@ pub fn draw_text_over_edges(canvas: &mut Canvas, text: &str, x: usize, y: usize,
 pub fn mask_char(mask: u8) -> &'static str {
     match mask {
         0 => " ",
-        1..=3 => "│",      // U, D, U|D
-        4 | 8 | 12 => "─", // L, R, L|R
-        10 => "┌",         // D|R
-        6 => "┐",          // D|L
-        9 => "└",          // U|R
-        5 => "┘",          // U|L
-        11 => "├",         // U|D|R
-        7 => "┤",          // U|D|L
-        14 => "┬",         // D|L|R
-        13 => "┴",         // U|L|R
+        1..=3 => "│",      
+        4 | 8 | 12 => "─", 
+        10 => "┌",         
+        6 => "┐",          
+        9 => "└",          
+        5 => "┘",          
+        11 => "├",         
+        7 => "┤",          
+        14 => "┬",         
+        13 => "┴",         
         _ => "┼",
     }
 }

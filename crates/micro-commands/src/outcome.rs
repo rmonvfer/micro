@@ -1,7 +1,4 @@
 //! What a command asks the caller to do.
-//!
-//! A command never draws, prompts, or edits the conversation itself. It returns one of
-//! these, and the caller — a TUI, a headless CLI, a test — decides how to carry it out.
 
 use micro_auth::PendingDeviceLogin;
 use micro_models::ModelDef;
@@ -16,18 +13,13 @@ pub enum MessageKind {
 }
 
 /// Which palette to paint in, or a return to letting the terminal decide.
-/// What `/remote` was asked to do.
-///
-/// Pairing and publishing are separate on purpose. A phone is paired once, to the
-/// machine rather than to a session; after that, putting a session on it is not a thing
-/// anyone should have to hold a phone up to a screen for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RemoteAction {
     /// Put this session on the paired phone.
     Publish,
     /// Bond a phone to this machine, showing it what it needs.
     Pair {
-        /// Whether to draw the link as a scannable code rather than as text.
+        
         qr: bool,
     },
 }
@@ -47,20 +39,18 @@ pub struct InspectionItem {
 }
 
 pub enum CommandOutcome {
-    /// Text to show. Nothing else changes.
+    /// Text to show.
     Message {
         kind: MessageKind,
         text: String,
     },
-    /// Read-only session data shown outside the conversation. The TUI opens an overlay;
-    /// headless callers can print `text`.
+    /// Read-only session data shown outside the conversation.
     Inspect {
         title: String,
         text: String,
         items: Vec<InspectionItem>,
     },
-    /// Send this to the model in place of what was typed, which is what running a prompt
-    /// written for the purpose does.
+    
     Send {
         prompt: String,
     },
@@ -76,7 +66,7 @@ pub enum CommandOutcome {
     SetThinking {
         level: micro_types::ThinkingLevel,
     },
-    /// Repaint in this theme. Nothing about the conversation changes.
+    /// Repaint in this theme.
     SetTheme {
         theme: ThemeChoice,
     },
@@ -114,8 +104,7 @@ pub enum CommandOutcome {
     RemoteControl {
         action: RemoteAction,
     },
-    /// Offer a choice. Each item carries the line to dispatch once it is picked, so a
-    /// caller can render a picker without knowing what it is choosing between.
+    /// Offer a choice.
     Choose(Picker),
     /// Ask the user for a key, then hand it to [`micro_auth::AuthStore::store_api_key`].
     PromptForApiKey {
@@ -136,8 +125,7 @@ pub enum CommandOutcome {
     Fork {
         session_id: String,
         through_index: usize,
-        /// Set when the whole conversation is being copied rather than a point in it,
-        /// which is the difference between cloning and forking.
+        
         whole: bool,
     },
     /// Summarize the conversation so far and continue from the summary.
@@ -210,47 +198,38 @@ impl CommandOutcome {
     }
 }
 
-/// A list to choose from. `title` says what is being chosen.
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Picker {
     pub title: String,
     pub items: Vec<PickerItem>,
     /// Something to say about what the list leaves out.
     pub hint: Option<String>,
-    /// Whether the list has a query line to narrow it. A short list of settled choices is
-    /// read rather than searched, and a line to type into would only be another row.
+    /// Whether the list has a query line to narrow it.
     pub searchable: bool,
-    /// Whether the list names itself and says which keys work. A list opened in place of
-    /// the prompt needs neither: what it is, is plain, and the keys are the ones that were
-    /// already working. A question put by an extension is not opened by the reader and does
-    /// need both.
+    /// Whether the list names itself and says which keys work.
     pub titled: bool,
     /// How a row is put together.
     pub layout: PickerLayout,
-    /// How narrow and how wide the label's column may be. A list whose labels are all short
-    /// still lines its details up somewhere sensible rather than against the labels.
+    /// How narrow and how wide the label's column may be.
     pub column: (usize, usize),
-    /// The same choices cut down to what the workspace put on its shortlist, when it has
-    /// one. The list opens on these and can be switched to the whole of it.
+    /// The same choices cut down to what the workspace put on its shortlist, when it has one.
     pub scoped: Vec<PickerItem>,
-    /// Whether this list is of models, and so worth asking the providers about while it is
-    /// open: what they serve changes between releases, and the bundled catalog does not.
+    
     pub refreshes: bool,
 }
 
-/// How wide a label's column is when the picker says nothing else.
+
 pub const DEFAULT_COLUMN: usize = 32;
 
 /// How a picker's rows are laid out.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum PickerLayout {
-    /// The label in a column of its own, the detail lined up after it. What a list of
-    /// settings or themes wants: the second column is read down, not across.
+    /// The label in a column of its own, the detail lined up after it.
     #[default]
     Columns,
-    /// The label, then the detail as a badge one space after it, and the chosen row's
-    /// note beneath the list. What a list of models wants: an id is as long as it is, and
-    /// padding it to a column leaves a gulf in every row.
+    /// The label, then the detail as a badge one space after it, and the chosen row's note beneath
+    /// the list.
     Badges,
 }
 
@@ -327,12 +306,10 @@ pub struct PickerItem {
     pub command: String,
     /// This item is what is in use now, so a caller can mark it.
     pub current: bool,
-    /// What a query is matched against, when that is more than what is on the row. A model
-    /// is looked up by the name its maker gave it as readily as by its id, and the name is
-    /// not on the row.
+    /// What a query is matched against, when that is more than what is on the row.
     pub search: Option<String>,
-    /// A line shown under the list while this row is the chosen one, for what does not fit
-    /// on the row itself.
+    /// A line shown under the list while this row is the chosen one, for what does not fit on the
+    /// row itself.
     pub note: Option<String>,
 }
 
@@ -370,8 +347,8 @@ impl PickerItem {
     }
 }
 
-/// Written by hand because a pending device login holds an HTTP-facing authorization
-/// that is not worth printing in full.
+/// Written by hand because a pending device login holds an HTTP-facing authorization that is not
+/// worth printing in full.
 impl fmt::Debug for CommandOutcome {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {

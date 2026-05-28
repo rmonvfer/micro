@@ -30,7 +30,6 @@ typst-render = "0.13.1"
 unicode-segmentation = "1"
 unicode-width = "0.2"
 
-# Reading the terminal's OSC 11 reply needs a timed read on the input descriptor, which
-# crossterm does not expose.
+# Required for timed OSC 11 reads.
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

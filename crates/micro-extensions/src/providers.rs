@@ -1,12 +1,4 @@
 //! A provider an extension declared, turned into something the catalog understands.
-//!
-//! pi's `registerProvider` describes a provider the way a person would write it: camelCase
-//! keys, a credential that may be a literal, an environment variable, or a command to run.
-//! micro's catalog reads a different spelling, so the two are translated here rather than
-//! at the point of use.
-//!
-//! Declaring a provider that already exists changes it: a base URL alone points an existing
-//! provider somewhere else, which is how a proxy is put in front of one.
 
 use serde_json::json;
 use serde_json::Map;
@@ -49,8 +41,7 @@ pub fn declare(name: &str, config: &Value) -> Result<Declared, String> {
         provider.insert("models".into(), Value::Array(described?));
     }
 
-    // A provider with nothing to say about itself changes nothing, and saying so is more
-    // useful than merging an empty object into the catalog.
+    
     if provider.is_empty() {
         return Err(format!("{name} was declared without anything to apply"));
     }
@@ -114,10 +105,6 @@ fn model(described: &Value) -> Result<Value, String> {
 }
 
 /// The credential, from whichever of pi's three spellings was used.
-///
-/// `$NAME` and `${NAME}` read the environment. A leading `!` runs a command and takes what
-/// it printed, which is how a key kept in a password manager is fetched. Anything else is
-/// the key itself.
 pub fn resolve_key(written: &str) -> Result<String, String> {
     let written = written.trim();
 
@@ -139,9 +126,6 @@ pub fn resolve_key(written: &str) -> Result<String, String> {
 }
 
 /// Run a command and take what it printed as the key.
-///
-/// The command is the user's own configuration rather than anything a model wrote, and it
-/// is written as a command line, so it is run as one.
 fn from_command(command: &str) -> Result<String, String> {
     if command.is_empty() {
         return Err("no command to read the key from".to_string());
@@ -222,11 +206,11 @@ mod tests {
         let model = catalog.get("my-proxy", "fast").expect("the model is there");
         assert_eq!(model.base_url, "https://proxy.example.com");
         assert_eq!(model.context_window, 128000);
-        // A model that says nothing about its name is named after itself.
+        
         assert_eq!(model.name, "fast");
     }
 
-    /// Naming a provider that already exists changes it rather than adding a second one.
+    
     #[test]
     fn a_base_url_alone_points_an_existing_provider_somewhere_else() {
         let declared = declare(

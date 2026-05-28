@@ -1,4 +1,4 @@
-// pi-tui's own vertical layout component, vendored unchanged.
+
 import { allocateStackSizes, Stack, type StackChild, type StackOptions, visibleStackEntries } from "./stack.ts";
 
 export class VStack extends Stack {

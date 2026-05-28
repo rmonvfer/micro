@@ -1,15 +1,4 @@
 //! Tools the model is told about only once it goes looking for them.
-//!
-//! Every tool on offer is described in full on every request: its name, what it is for,
-//! and the shape of its arguments. That is worth paying for a handful of tools and not
-//! worth paying for a hundred, which is what a few MCP servers between them come to. The
-//! description of tools the model never calls is charged for on every turn of the
-//! conversation.
-//!
-//! A deferred tool is left out of that list and can still be called. In its place goes
-//! [`ToolSearch`], which the model asks for what it needs, and which answers with the
-//! same descriptions it would otherwise have been given up front. One extra exchange buys
-//! back the rest of them.
 
 use crate::truncate;
 use crate::Tool;
@@ -23,12 +12,7 @@ use std::sync::Arc;
 /// How many tools a search answers with when the caller does not say.
 const DEFAULT_LIMIT: usize = 8;
 
-/// A tool that is not described until it is searched for.
-///
-/// Wrapping rather than a flag on the tool itself, so that what defers a tool is the
-/// company it keeps rather than anything about the tool: the same MCP server's tools are
-/// worth describing up front when they are the only ones and worth deferring when they
-/// are one server of six.
+
 pub struct Deferred(Arc<dyn Tool>);
 
 impl Deferred {
@@ -70,9 +54,7 @@ impl Tool for Deferred {
 
 /// The one tool that stands in for all the deferred ones.
 pub struct ToolSearch {
-    /// Described on demand rather than up front. Held as definitions because that is all
-    /// a search has to answer with; calling one goes through the agent's own dispatch,
-    /// the same as any tool the model was told about from the start.
+    
     hidden: Vec<ToolDefinition>,
 }
 
@@ -87,17 +69,13 @@ impl ToolSearch {
         }
     }
 
-    /// Whether there is anything to search, so a caller can leave the tool out entirely
-    /// when nothing was deferred.
+    /// Whether there is anything to search, so a caller can leave the tool out entirely when
+    /// nothing was deferred.
     pub fn is_empty(&self) -> bool {
         self.hidden.is_empty()
     }
 
     /// The names on offer, grouped by the prefix they share.
-    ///
-    /// A name like `mcp__github__create_issue` says where it came from, and saying the
-    /// groups is what makes the search worth calling: the model can see that there is
-    /// something about GitHub to find without being told what every one of them does.
     fn groups(&self) -> Vec<String> {
         let mut groups: Vec<String> = Vec::new();
         for definition in &self.hidden {
@@ -160,9 +138,7 @@ impl Tool for ToolSearch {
             .unwrap_or(DEFAULT_LIMIT)
             .max(1);
 
-        // Every word has to appear somewhere, so a query of several words narrows rather
-        // than widens. Matching the description as well as the name is what lets the model
-        // search for what a tool does when it does not know what it is called.
+        
         let matched: Vec<&ToolDefinition> = self
             .hidden
             .iter()
@@ -195,8 +171,7 @@ impl Tool for ToolSearch {
 
         let mut answer = serde_json::to_string_pretty(&json!({ "tools": described }))
             .map_err(|error| format!("cannot describe the tools found: {error}"))?;
-        // A search that found more than it showed says so, rather than reading as though
-        // it found everything there was.
+        
         if total > limit {
             answer.push_str(&format!(
                 "\n\n{total} tools match; {limit} are shown. Search again with a narrower \
@@ -274,7 +249,7 @@ mod tests {
             .unwrap();
         assert!(found.contains("mcp__github__create_issue"), "{found}");
         assert!(!found.contains("mcp__notes__append"), "{found}");
-        // The arguments come back too, so the model can call it without asking again.
+        
         assert!(found.contains("parameters"), "{found}");
     }
 

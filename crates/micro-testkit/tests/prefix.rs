@@ -73,8 +73,7 @@ fn prefix_hashes(events: &[LedgerEvent]) -> Vec<String> {
         .collect()
 }
 
-/// Two turns of one run send the same prefix, byte for byte, and the session says so: the
-/// hash it records is the same one twice, and nothing claims anything changed.
+
 #[tokio::test]
 async fn consecutive_turns_open_with_the_same_prefix() {
     let provider = FakeProvider::builder()
@@ -101,15 +100,14 @@ async fn consecutive_turns_open_with_the_same_prefix() {
     assert_eq!(hashes[0], hashes[1], "and the same head on both");
     assert!(prefix_changes(&events).is_empty(), "nothing moved");
 
-    // What the provider was actually handed agrees with what was recorded about it.
+    
     assert_eq!(provider.call(0).system_prompt(), Some("be brief"));
     assert_eq!(provider.call(1).system_prompt(), Some("be brief"));
     assert_eq!(provider.call(0).tool_names(), provider.call(1).tool_names());
 }
 
-/// Re-reading the project's instructions reaches the model at the next turn, and reaches
-/// the ledger with the reason it happened. The request already in flight keeps the prompt
-/// it was built with.
+/// Re-reading the project's instructions reaches the model at the next turn, and reaches the ledger
+/// with the reason it happened.
 #[tokio::test]
 async fn a_reloaded_prompt_lands_at_the_next_turn_and_is_recorded_once() {
     let provider = FakeProvider::builder()
@@ -144,8 +142,7 @@ async fn a_reloaded_prompt_lands_at_the_next_turn_and_is_recorded_once() {
         ],
         "reload",
     );
-    // Read back before any turn runs: whoever asked for the change is answered with what
-    // they asked for, not with what the last request happened to carry.
+    
     assert!(prefix.system_prompt().contains("run the tests"));
 
     run_agent(&mut agent, Message::user("second")).await;
@@ -166,8 +163,7 @@ async fn a_reloaded_prompt_lands_at_the_next_turn_and_is_recorded_once() {
         Some("be brief\n\nthe project says: run the tests"),
     );
 
-    // The recorded spans describe the prompt that was sent, so a reader can say which part
-    // of it moved rather than only that something did.
+    
     let sources: Vec<EventSource> = second
         .iter()
         .find_map(|event| match event {
@@ -184,9 +180,7 @@ async fn a_reloaded_prompt_lands_at_the_next_turn_and_is_recorded_once() {
     );
 }
 
-/// Narrowing the tools is a change to the head of the request, so it waits for a boundary
-/// and is recorded when it lands — rather than taking effect silently in the middle of a
-/// run, which is what reading the list on every request amounted to.
+/// Narrowing the tools is a change to the head of the request.
 #[tokio::test]
 async fn narrowing_the_tools_lands_at_a_turn_boundary_and_is_recorded() {
     let provider = FakeProvider::builder()
@@ -223,8 +217,7 @@ async fn narrowing_the_tools_lands_at_a_turn_boundary_and_is_recorded() {
     assert_eq!(provider.call(2).tool_names(), vec!["read"]);
 }
 
-/// A change asked for while a turn is running does not reach that turn. Anything else
-/// would rewrite a request the ledger had already described.
+/// A change asked for while a turn is running does not reach that turn.
 #[tokio::test]
 async fn a_change_asked_for_mid_turn_waits_for_the_next_one() {
     struct AsksMidTurn {
@@ -275,9 +268,7 @@ async fn a_change_asked_for_mid_turn_waits_for_the_next_one() {
     assert_eq!(changes[0].0, "extension");
 }
 
-/// A conversation that arrives holding an unanswered tool call is repaired where it
-/// arrives, so the repair is not still being made between two turns of a live session —
-/// which would move the middle of a history a provider had already cached.
+/// A conversation that arrives holding an unanswered tool call is repaired where it arrives.
 #[tokio::test]
 async fn a_history_is_repaired_where_it_is_installed_and_not_between_turns() {
     let abandoned = vec![
@@ -323,8 +314,7 @@ async fn a_history_is_repaired_where_it_is_installed_and_not_between_turns() {
     let second_call = provider.call(1);
     let second = second_call.messages();
 
-    // The second request opens with exactly the first one's messages: nothing was inserted
-    // into the middle of the conversation between the two turns.
+    
     assert_eq!(
         second[..repaired.len()],
         repaired[..],

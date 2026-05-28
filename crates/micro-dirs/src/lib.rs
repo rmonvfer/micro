@@ -1,26 +1,4 @@
 //! Where micro keeps things.
-//!
-//! Two directories, settled by one rule so every crate that stores anything agrees on
-//! where it went:
-//!
-//! 1. `MICRO_DIR` names a single directory and everything lives in it. A test run or a
-//!    second profile sets one variable and nothing of the real setup is touched.
-//! 2. Otherwise, an existing `~/.micro` is used for everything. An install that predates
-//!    the split keeps working exactly where it already is; nothing moves under anyone.
-//! 3. Otherwise the two are separate, where the XDG base directory specification says
-//!    they belong: what the user wrote under `$XDG_CONFIG_HOME/micro`, and what micro
-//!    produced under `$XDG_DATA_HOME/micro`.
-//!
-//! The split is between authorship, not importance. Settings, credentials, trust
-//! decisions, themes and prompts are things a person wrote and would carry to another
-//! machine; sessions, their blobs and installed extensions are things micro made and
-//! could make again.
-//!
-//! ```no_run
-//! let config = micro_dirs::config_dir().expect("a home directory");
-//! let sessions = micro_dirs::data_dir().expect("a home directory").join("sessions");
-//! println!("{} and {}", config.display(), sessions.display());
-//! ```
 
 use std::path::PathBuf;
 
@@ -39,26 +17,17 @@ pub const DIR_NAME: &str = "micro";
 /// The single directory micro used before it had two, and still uses wherever one exists.
 pub const LEGACY_DIR_NAME: &str = ".micro";
 
-/// The directory holding what the user has settled: settings, credentials, trust and
-/// capability decisions, the model catalog, themes, prompts and standing instructions.
-///
-/// Nothing when there is no home directory and no variable naming one, which leaves the
-/// caller to say what it could not read.
+
 pub fn config_dir() -> Option<PathBuf> {
     Places::from_env().config_dir()
 }
 
-/// The directory holding what micro produced: sessions and their blobs, installed
-/// extensions, and the pairing a phone was bonded with.
+
 pub fn data_dir() -> Option<PathBuf> {
     Places::from_env().data_dir()
 }
 
 /// The variables a resolution depends on, read once.
-///
-/// Taken as a value rather than read where it is needed, so the rule can be exercised
-/// against directories that exist without a test having to change the environment of the
-/// process it is running in.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Places {
     /// `MICRO_DIR`: one directory for everything.
@@ -91,12 +60,8 @@ impl Places {
             .or_else(|| self.under(self.data_home.as_deref(), &[".local", "share"]))
     }
 
-    /// The directory that holds everything, when there is one: what `MICRO_DIR` names, or
-    /// a `~/.micro` that is already there.
-    ///
-    /// Only an existing directory counts for the second half. A machine that has never run
-    /// micro should not have one conjured, and a machine that has one should never be told
-    /// its settings are somewhere else.
+    /// The directory that holds everything, when there is one: what `MICRO_DIR` names, or a
+    /// `~/.micro` that is already there.
     fn single(&self) -> Option<PathBuf> {
         if let Some(named) = &self.micro_dir {
             return Some(named.clone());
@@ -109,12 +74,7 @@ impl Places {
         self.home.as_ref().map(|home| home.join(LEGACY_DIR_NAME))
     }
 
-    /// `<base>/micro`, where the base is what the XDG variable names or, when it names
-    /// nothing usable, the default beneath the home directory.
-    ///
-    /// A relative path is not a base directory the specification recognises, so one is
-    /// read as if the variable were unset rather than resolved against whatever directory
-    /// micro happens to have been started in.
+    
     fn under(&self, named: Option<&std::path::Path>, default: &[&str]) -> Option<PathBuf> {
         let base = match named.filter(|path| path.is_absolute()) {
             Some(named) => named.to_path_buf(),
@@ -146,8 +106,8 @@ mod tests {
     use super::*;
     use std::path::Path;
 
-    /// A directory of its own for each test, so one that creates a legacy `.micro` cannot
-    /// change what another resolves.
+    /// A directory of its own for each test, so one that creates a legacy `.micro` cannot change
+    /// what another resolves.
     fn scratch(label: &str) -> PathBuf {
         let path = std::env::temp_dir().join(format!(
             "micro-dirs-{label}-{}-{:?}",
@@ -183,8 +143,7 @@ mod tests {
         assert_eq!(places.data_dir(), Some(PathBuf::from("/opt/micro")));
     }
 
-    /// The promise to an install that predates the split: it stays where it is, and both
-    /// halves keep resolving to the one directory its files are already in.
+    
     #[test]
     fn an_existing_micro_directory_keeps_holding_everything() {
         let home = scratch("legacy");
@@ -218,8 +177,7 @@ mod tests {
         assert_eq!(places.data_dir(), Some(PathBuf::from("/srv/state/micro")));
     }
 
-    /// An existing `~/.micro` is answered for before the XDG variables are consulted, so
-    /// setting them does not silently strand an install that is already running.
+    /// An existing `~/.micro` is answered for before the XDG variables are consulted.
     #[test]
     fn the_xdg_variables_do_not_move_an_install_that_already_exists() {
         let home = scratch("xdg-legacy");

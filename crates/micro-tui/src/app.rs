@@ -1,12 +1,4 @@
 //! What the interface knows.
-//!
-//! Every key press becomes an [`Action`], and every action is answered here: the editor, the
-//! transcript, whatever overlay is up, and the turn in flight are all state on [`App`]. The
-//! event loop owns the terminal and the agent; this owns everything they are showing.
-//!
-//! Nothing here draws. [`App::refresh_lines`] turns the transcript into wrapped rows and
-//! caches them against the width and the transcript's version, so a frame arriving between
-//! two streamed tokens reuses what the last one wrapped.
 
 use crate::capabilities::ImageProtocol;
 use crate::clipboard;
@@ -40,16 +32,10 @@ use std::path::PathBuf;
 use std::time::Duration;
 use std::time::Instant;
 
-/// Rows a page moves, as a share of the visible transcript. A page that moved the whole
-/// height would leave nothing in common between the two screens.
+/// Rows a page moves, as a share of the visible transcript.
 const PAGE_OVERLAP: usize = 2;
 
 /// How the interface is set up before it runs.
-/// One kind of thing that was loaded before the session started.
-///
-/// A name is enough to know a skill is there; where it came from is what a reader wants
-/// when two shelves offer the same name and it matters which one answered. So both are
-/// carried, and `ctrl+o` chooses between them.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ResourceSection {
     /// What the section is called, written as `[Context]`, `[Skills]` and so on.
@@ -67,8 +53,7 @@ pub struct Resources {
 }
 
 impl Resources {
-    /// Add a section, unless nothing was found for it. An empty heading says less than no
-    /// heading at all.
+    /// Add a section, unless nothing was found for it.
     pub fn add(&mut self, name: &str, names: Vec<String>, paths: Vec<String>) {
         if names.is_empty() {
             return;
@@ -92,21 +77,20 @@ pub struct TuiOptions {
     pub model: String,
     pub context_window: u32,
     pub thinking: ThinkingLevel,
-    /// The palette to paint in. Worked out from the terminal when it is left open.
+    /// The palette to paint in.
     pub theme: Option<Theme>,
     /// Where tool calls come to be approved, when anything is gating them.
-    /// Where questions from extensions arrive, when anything can ask them.
     pub questions: Option<crate::ui::UiRequests>,
-    /// How a slash command is run. Without this every submitted line goes to the model.
+    /// How a slash command is run.
     pub commands: Option<Box<dyn Commands + 'static>>,
     /// What the user settled in `/settings`.
     pub settings: Preferences,
-    /// Something to say before anything else happens, such as that nobody is signed in
-    /// to the service serving the chosen model.
+    /// Something to say before anything else happens, such as that nobody is signed in to the
+    /// service serving the chosen model.
     pub notice: Option<String>,
     /// The provider serving the model, named in the footer when the model does not say.
     pub provider: String,
-    /// Whether the credential in use bills a plan rather than each request.
+    
     pub subscription: bool,
     /// Whether the conversation summarizes itself once it fills the window.
     pub auto_compact: bool,
@@ -116,25 +100,20 @@ pub struct TuiOptions {
     pub session_cost: Option<f64>,
     /// Durable all-turn and latest-turn usage read from the session ledger.
     pub session_usage: Option<(micro_types::Usage, micro_types::Usage)>,
-    /// Whether this run has experimental behavior turned on, which is worth showing
-    /// because it changes what micro does.
+    /// Whether this run has experimental behavior turned on, which is worth showing because it
+    /// changes what micro does.
     pub experimental: bool,
     /// How much of the terminal to take.
     pub tui_mode: crate::TuiMode,
     /// What was loaded before the session started, named on the first screen.
     pub resources: Resources,
-    /// Where a key is offered before the interface acts on it itself, when an extension
-    /// asked `ctx.ui.onTerminalInput` to be told about every one.
+    
     pub terminal_input: Option<crate::ui::TerminalInputAsker>,
-    /// Where the interface asks the host something off the render path — a keystroke for a
-    /// `custom()` overlay that has focus, a completion list for the menu.
+    /// Where the interface asks the host something off the render path.
     pub host_asker: Option<crate::ui::HostAsker>,
-    /// Names of tools whose `render_shell` asked for `"self"`, so their calls skip micro's
-    /// own band and draw only what renderCall/renderResult answered. Fixed for the run, sent
-    /// once rather than carried on every render message — see [`Transcript::set_self_framed_tools`].
+    /// Names of tools whose `render_shell` asked for `"self"`.
     pub self_framed_tools: HashSet<String>,
-    /// The commands loaded extensions registered, offered in the menu beside the built-in
-    /// ones. Fixed for the run: what an extension registered does not change after loading.
+    /// The commands loaded extensions registered, offered in the menu beside the built-in ones.
     pub extension_commands: Vec<crate::menu::MenuItem>,
     /// Where a phone reaches this session, once one has been handed it.
     pub remote: Option<crate::remote::Remote>,
@@ -171,13 +150,9 @@ impl Default for TuiOptions {
 }
 
 /// What the event loop should do about a key it has already been handled.
-///
-/// Everything an action changes on screen is done by the time this comes back; these are
-/// only the things the interface cannot do for itself, because they need the terminal, the
-/// agent, or the process.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Outcome {
-    /// Nothing further. The action was dealt with here.
+    /// Nothing further.
     Handled,
     /// Leave.
     Quit,
@@ -193,20 +168,18 @@ pub enum Outcome {
     Suspend,
 }
 
-/// A credential being collected. The key is held here rather than in the editor so it is
-/// never drawn, never kept in the prompt's history, and never submitted to the model.
+/// A credential being collected.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct KeyPrompt {
-    /// What is being asked for, which is the provider when a credential is wanted and the
-    /// question itself when an extension is asking.
+    /// What is being asked for, which is the provider when a credential is wanted and the question
+    /// itself when an extension is asking.
     pub provider: String,
     /// The variables that would supply the key instead, worth naming while asking.
     pub env_names: Vec<String>,
     key: String,
     /// Set when the user pressed enter, so the loop can collect it.
     done: bool,
-    /// Whether what is typed is drawn back. A credential never is; an answer to a question
-    /// always is, or the person cannot see what they are writing.
+    /// Whether what is typed is drawn back.
     pub masked: bool,
 }
 
@@ -225,8 +198,7 @@ impl KeyPrompt {
         &self.key
     }
 
-    /// A prompt with a key already in it, for a renderer's tests. The key is private
-    /// everywhere else, so there is no other way to build one part-typed.
+    /// A prompt with a key already in it, for a renderer's tests.
     #[cfg(test)]
     pub fn for_test(provider: &str, env_names: Vec<String>, key: &str) -> Self {
         KeyPrompt {
@@ -249,12 +221,9 @@ struct Turn {
 }
 
 /// The wrapped transcript, kept between frames.
-///
-/// Wrapping a long conversation is the most expensive thing a frame does, and a streamed
-/// answer would otherwise pay for it once per token.
 #[derive(Default)]
 struct Cache {
-    /// What the kept rows were drawn for. `None` forces the next frame to draw it all.
+    
     shape: Option<Shape>,
     rendered: Rendered,
     /// Where each entry's rows begin, so a conversation can be redrawn from the middle.
@@ -264,8 +233,7 @@ struct Cache {
     pictures_from: Vec<usize>,
 }
 
-/// What every entry's rows depend on beyond the entry itself. A change to any of these
-/// means the conversation is drawn again from the start; nothing else does.
+/// What every entry's rows depend on beyond the entry itself.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Shape {
     width: usize,
@@ -289,8 +257,7 @@ pub struct App {
     pub workspace: PathBuf,
     /// Advanced by the event loop, so the spinner turns while a turn runs.
     pub tick: usize,
-    /// Whether anything has been worked on yet, which is what decides whether the rows the
-    /// spinner draws in are held open. See [`App::reserves_activity_rows`].
+    
     worked: bool,
     /// Whether the previous action was escape, so two escapes can clear the prompt.
     escape_pending: bool,
@@ -311,19 +278,17 @@ pub struct App {
     question: Option<crate::ui::UiRequest>,
     /// What each extension is reporting, by the key it reports under.
     pub extension_status: std::collections::BTreeMap<String, String>,
-    /// The workspace's files, for completing a name after `@`. Worked out on first use.
+    /// The workspace's files, for completing a name after `@`.
     file_index: Option<Vec<String>>,
-    /// How many rows of the conversation the terminal has been given, when the interface
-    /// is drawing inline rather than taking the whole screen.
+    
     handed_over: usize,
-    /// Whether the credential in use bills a plan rather than each request, which is why
-    /// a session against it shows no running cost.
+    
     pub subscription: bool,
     /// Whether the conversation summarizes itself once it fills the window.
     pub auto_compact: bool,
     /// The provider serving the model, named in the footer when the model does not say.
     pub provider: String,
-    /// What a million tokens costs, for the running total. Absent when nothing is charged.
+    /// What a million tokens costs, for the running total.
     pub price: Option<micro_models::ModelCost>,
     session_cost: Option<f64>,
     session_usage: Option<(micro_types::Usage, micro_types::Usage)>,
@@ -333,7 +298,7 @@ pub struct App {
     focus: Option<usize>,
     /// How far back from the end of the conversation the reader has scrolled.
     scroll: usize,
-    /// Rows the transcript has to draw in, which is what a page moves by.
+    
     viewport: usize,
     /// The columns content wraps to, and the rows the whole frame has.
     width: usize,
@@ -349,91 +314,65 @@ pub struct App {
     settings: Preferences,
     /// What was loaded before the session started.
     resources: Resources,
-    /// How much of the terminal this run took, which decides whether the spinner's rows
-    /// are held open while nothing is running.
+    /// How much of the terminal this run took, which decides whether the spinner's rows are held
+    /// open while nothing is running.
     tui_mode: crate::TuiMode,
-    /// The branch the workspace is on, for the footer. Read once: a session that changes
-    /// branch under itself is rarer than a frame, and this is drawn on every one of them.
+    /// The branch the workspace is on, for the footer.
     branch: Option<String>,
-    /// Whether the first screen shows the whole of what it knows: every key rather than
-    /// the five worth knowing, and where each resource was read from rather than its name.
-    /// The same key that opens every tool result opens this.
+    
     startup_expanded: bool,
-    /// What an extension asked the activity line to call what is happening, in place of
-    /// the turn's own word for it. `None` leaves [`App::activity`] to the turn.
+    /// What an extension asked the activity line to call what is happening, in place of the turn's
+    /// own word for it.
     working_message: Option<String>,
-    /// Whether the spinner's row is drawn at all, apart from whether its rows are held
-    /// open — see [`App::reserves_activity_rows`] for the row, this for what goes in it.
+    /// Whether the spinner's row is drawn at all, apart from whether its rows are held open.
     working_visible: bool,
-    /// The spinner's animation, in place of the built-in braille frames. `None` is the
-    /// default; `Some` with no frames hides the animation without hiding the row.
+    /// The spinner's animation, in place of the built-in braille frames.
     working_indicator: Option<WorkingIndicator>,
-    /// The label a folded reasoning block collapses to. `None` is "Thinking...".
+    /// The label a folded reasoning block collapses to.
     hidden_thinking_label: Option<String>,
-    /// Lines an extension asked shown above or below the input, by the key it asked
-    /// under. A key with nothing to show is not in the map at all.
+    /// Lines an extension asked shown above or below the input, by the key it asked under.
     widgets: std::collections::BTreeMap<String, Widget>,
-    /// Whether an extension is listening to every key before the interface decides what
-    /// to do with it. Kept as a flag rather than discovered from the channel, so a
-    /// keystroke costs nothing beyond reading a `bool` while nothing is listening.
+    /// Whether an extension is listening to every key before the interface decides what to do with
+    /// it.
     wants_terminal_input: bool,
-    /// A terminal title an extension asked for since the last frame, taken and written
-    /// once by whoever owns the terminal.
+    /// A terminal title an extension asked for since the last frame, taken and written once by
+    /// whoever owns the terminal.
     title_change: Option<String>,
-    /// Lines standing in for the opening screen, from `setHeader`. `None` is the built-in
-    /// one; shown only where the built-in one is, before anything else is on screen.
+    /// Lines standing in for the opening screen, from `setHeader`.
     header_override: Option<Vec<String>>,
-    /// Lines standing in for the footer, from `setFooter`. `None` is the built-in one.
+    /// Lines standing in for the footer, from `setFooter`.
     footer_override: Option<Vec<String>>,
-    /// What a live component's lines are standing in for, by the id it was registered
-    /// under — so a `component_changed` push, which names only the id, knows where the
-    /// fresh lines that come with it belong. A component that was never told about here
-    /// (already retired, or one this session never asked about) is one this map has
-    /// nothing to say about, and its push changes nothing.
+    /// What a live component's lines are standing in for, by the id it was registered under.
     component_slots: std::collections::HashMap<String, ComponentSlot>,
-    /// A live component shown with keyboard focus, from `custom()`. `None` when nothing is
-    /// open this way.
+    /// A live component shown with keyboard focus, from `custom()`.
     component_overlay: Option<ComponentOverlay>,
     /// A local, read-only ledger view opened by `/bill`, `/why-miss`, or `/request`.
     inspection: Option<InspectionOverlay>,
-    /// The component `setEditorComponent` replaced the built-in editor with, and what it
-    /// last looked like. `None` is the built-in editor.
+    /// The component `setEditorComponent` replaced the built-in editor with, and what it last
+    /// looked like.
     editor_component: Option<ComponentOverlay>,
-    /// Which extension put each lasting thing on the screen — see [`Drawn`].
+    
     drawn: Drawn,
     /// Tools a deactivated extension provided, waiting to be taken off the agent.
-    ///
-    /// Noted here rather than removed on the spot because the agent is not this type's to
-    /// hold, and a deactivation can arrive while a turn is running and holding it. Taken by
-    /// the event loop at the top of its next pass — see `answer_question` in `lib.rs` —
-    /// which is before the next turn asks what tools there are.
     retired_tools: Vec<String>,
-    /// Names of tools whose `render_shell` asked for `"self"`, kept so a conversation
-    /// rebuilt mid-run — see [`App::apply_result`] — can be tagged the same way the first
-    /// one was, without asking the host again for something that never changes.
+    /// Names of tools whose `render_shell` asked for `"self"`, kept so a conversation rebuilt mid-
+    /// run.
     self_framed_tools: HashSet<String>,
-    /// The commands loaded extensions registered, offered in the slash menu beside the
-    /// built-in ones so what is listed matches what the session answers to.
+    
     extension_commands: Vec<crate::menu::MenuItem>,
-    /// A multi-line editor shown for an extension's `editor()`, holding the keyboard until
-    /// it submits or is cancelled. `None` when nothing is open this way.
+    /// A multi-line editor shown for an extension's `editor()`, holding the keyboard until it
+    /// submits or is cancelled.
     extension_editor: Option<ExtensionEditorOverlay>,
-    /// Every character that opens an extension's own completion menu, from every
-    /// `addAutocompleteProvider` registration's own `triggerCharacters` — accumulated the
-    /// same way pi's `setupAutocompleteProvider` does, told once through `watch_autocomplete`
-    /// rather than carried on every keystroke.
+    
     autocomplete_triggers: Vec<char>,
-    /// A `getSuggestions` question `sync_menu` owes an extension, taken once by the event
-    /// loop — see [`App::take_pending_suggestion_request`].
+    /// A `getSuggestions` question `sync_menu` owes an extension, taken once by the event loop.
     pending_suggestion_request: Option<SuggestionRequest>,
-    /// An `applyCompletion` question queued by committing an extension's own menu item,
-    /// taken once by the event loop — see [`App::take_pending_completion_request`].
+    /// An `applyCompletion` question queued by committing an extension's own menu item, taken once
+    /// by the event loop.
     pending_completion_request: Option<CompletionRequest>,
 }
 
-/// What the interface asks an extension's `getSuggestions` about: the buffer as it stands,
-/// where the cursor sits in it, and the word the menu opened for — carried whole because the
-/// question is answered off the render path, well after `sync_menu` that raised it returned.
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct SuggestionRequest {
     pub lines: Vec<String>,
@@ -442,8 +381,8 @@ pub struct SuggestionRequest {
     pub prefix: String,
 }
 
-/// What the interface asks an extension's `applyCompletion` about, once the reader commits
-/// one of its items: the buffer, the cursor, which item, and the word it is replacing.
+/// What the interface asks an extension's `applyCompletion` about, once the reader commits one of
+/// its items: the buffer, the cursor.
 #[derive(Debug, Clone, PartialEq)]
 pub struct CompletionRequest {
     pub lines: Vec<String>,
@@ -453,9 +392,7 @@ pub struct CompletionRequest {
     pub prefix: String,
 }
 
-/// A live component holding keyboard focus in place of something built in — the overlay,
-/// from `custom()`, or the editor, from `setEditorComponent`. Both are only ever an id and
-/// whatever lines it last drew, so one shape serves both.
+/// A live component holding keyboard focus in place of something built in.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct ComponentOverlay {
     component_id: String,
@@ -472,17 +409,14 @@ struct InspectionOverlay {
     scroll: usize,
 }
 
-/// A real [`Editor`] shown for an extension's `editor()`, unlike [`ComponentOverlay`] — there
-/// is no remote side answering render/input here, since nothing about a multi-line text field
-/// needs an extension in the loop once it is open. `title` is what `render::overlay` labels
-/// it with.
+/// A real [`Editor`] shown for an extension's `editor()`, unlike [`ComponentOverlay`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct ExtensionEditorOverlay {
     title: String,
     editor: Editor,
 }
 
-/// What a registered component stands in for.
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum ComponentSlot {
     Header,
@@ -491,11 +425,6 @@ enum ComponentSlot {
 }
 
 /// Which extension put each lasting thing on the screen.
-///
-/// An extension that draws is asking for something that outlives the call it asked in — a
-/// widget stays until it is replaced, a status line until it is cleared. Letting an
-/// extension go has to take those back, and nothing about a widget's key or a status line's
-/// text says whose it was, so it is recorded when it arrives rather than worked out later.
 #[derive(Debug, Default)]
 struct Drawn {
     /// The extension behind each widget key, and each status key.
@@ -532,8 +461,7 @@ impl Drawn {
 }
 
 /// A slot as `register_component_slot`'s detail names it: `"header"`, `"footer"`, or
-/// `"widget:<key>"`. `None` for anything else, which leaves the registration unread rather
-/// than guessed at.
+/// `"widget:<key>"`.
 fn component_slot_named(name: Option<&str>) -> Option<ComponentSlot> {
     match name? {
         "header" => Some(ComponentSlot::Header),
@@ -547,7 +475,7 @@ fn component_slot_named(name: Option<&str>) -> Option<ComponentSlot> {
 /// A spinner's animation, asked for in place of the built-in one.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WorkingIndicator {
-    /// The frames to cycle through. Empty hides the animation outright.
+    
     pub frames: Vec<String>,
     /// How long each frame is shown before the next.
     pub interval_ms: u64,
@@ -567,23 +495,14 @@ struct Widget {
     placement: WidgetPlacement,
 }
 
-/// Widget lines are cut off past this many rows — past that a widget is reading material,
-/// not a status line.
+
 const MAX_WIDGET_LINES: usize = 10;
 
-/// The zero-width marker pi's own components emit at the cursor position when they want a
-/// hardware cursor shown — see `CURSOR_MARKER` in `pi/packages/tui/src/tui.ts`. Stripped out
-/// of every live-component line rather than left in: a terminal is expected to pass an
-/// unrecognised APC sequence through invisibly, but nothing here relies on that being true
-/// for every terminal a reader might be running.
+/// The zero-width marker pi's own components emit at the cursor position when they want a hardware
+/// cursor shown.
 const CURSOR_MARKER: &str = "\x1b_pi:c\x07";
 
 /// A live component's lines, with the cursor marker taken out of whichever one carried it.
-///
-/// The position it named is not read yet — placing micro's own hardware cursor inside an
-/// overlay it does not otherwise track is its own piece of work — so this only keeps a
-/// component's own text from ever showing raw escape bytes on screen; nothing yet asks for
-/// the position `.1` holds.
 fn strip_cursor_marker(lines: Vec<String>) -> (Vec<String>, Option<(usize, usize)>) {
     for (row, line) in lines.iter().enumerate() {
         if let Some(at) = line.find(CURSOR_MARKER) {
@@ -596,9 +515,6 @@ fn strip_cursor_marker(lines: Vec<String>) -> (Vec<String>, Option<(usize, usize
 }
 
 /// The branch a workspace is on, or nothing when it is not a repository.
-///
-/// Asked of git rather than read out of `.git` by hand: a worktree, a submodule and a
-/// detached head all live somewhere different, and git already knows which.
 fn git_branch(workspace: &std::path::Path) -> Option<String> {
     let asked = std::process::Command::new("git")
         .args(["rev-parse", "--abbrev-ref", "HEAD"])
@@ -610,7 +526,7 @@ fn git_branch(workspace: &std::path::Path) -> Option<String> {
         return None;
     }
     let branch = String::from_utf8_lossy(&asked.stdout).trim().to_string();
-    // A detached head answers `HEAD`, which names nothing a reader would recognise.
+    
     (!branch.is_empty() && branch != "HEAD").then_some(branch)
 }
 
@@ -666,8 +582,7 @@ impl App {
             jump: None,
             answers: 0,
             hyperlinks: capabilities.hyperlinks,
-            // A terminal that can draw images still does not when the user would rather
-            // read the conversation without them.
+            
             images: match options.settings.show_images {
                 true => capabilities.images,
                 false => None,
@@ -699,8 +614,7 @@ impl App {
             pending_completion_request: None,
         };
 
-        // Said before the first frame, so the reason nothing can be sent is on screen
-        // rather than waiting to be discovered by sending something.
+        
         if let Some(notice) = notice {
             app.notice(notice, MessageKind::Info);
         }
@@ -713,19 +627,11 @@ impl App {
     }
 
     /// Whether the two rows the spinner draws in are held open.
-    ///
-    /// They are not, until something has been worked on. A screen that has done nothing
-    /// yet sits close to the input; once a turn has run, the rows stay held whether or not
-    /// one is running, so the input never jumps as turns come and go.
     pub fn reserves_activity_rows(&self) -> bool {
         match self.tui_mode {
-            // Inline, the region is only as tall as the interface, and letting it shrink
-            // between turns would scroll away rows the terminal has already been given. So
-            // once something has run the rows stay held.
+            
             crate::TuiMode::Inline => self.worked,
-            // On a screen of its own there is nothing to lose by giving the rows back, and
-            // holding two blank rows above the prompt while nothing is running only pushes
-            // the conversation away from it.
+            
             crate::TuiMode::Fullscreen => self.is_running(),
         }
     }
@@ -739,8 +645,7 @@ impl App {
         self.model = model;
     }
 
-    /// Price the session against a different model's rates, which is what the footer's
-    /// running total is worked out from once a session has switched models.
+    /// Price the session against a different model's rates.
     pub fn set_price(&mut self, price: micro_models::ModelCost) {
         self.price = Some(price);
     }
@@ -801,12 +706,6 @@ impl App {
     }
 
     /// The conversation the terminal should keep, which the live region no longer needs.
-    ///
-    /// Drawing inline means the interface occupies only the rows it is using, so what the
-    /// conversation has finished with is handed to the terminal itself: the shell's own
-    /// scrollback, search and selection reach it there, which is the point of not taking
-    /// the whole screen. Nothing is handed over while a turn is running — what is still
-    /// being written is still being redrawn.
     pub fn take_scrolled_out(&mut self) -> Vec<Line<'static>> {
         if self.turn.is_some() {
             return Vec::new();
@@ -820,8 +719,7 @@ impl App {
         taken
     }
 
-    /// Forget what has been handed over, for a conversation that was replaced rather than
-    /// continued: a resumed session or a fork is not the one that was on screen.
+    
     pub fn forget_scrolled_out(&mut self) {
         self.handed_over = 0;
     }
@@ -847,11 +745,7 @@ impl App {
         self.picker.as_ref()
     }
 
-    /// The built-in editor's text as it stands right now. Read, not asked for: unlike
-    /// `getEditorText()`'s echo of the last text an extension itself set, this is the real
-    /// buffer — what `setEditorComponent`'s consume-or-fallback path needs to hand a
-    /// component so it can draw itself against what a key it did not consume actually did,
-    /// the way pi's `CustomEditor` sees it for free by inheriting the same buffer.
+    /// The built-in editor's text as it stands right now.
     pub fn editor_text(&self) -> String {
         self.editor.text()
     }
@@ -860,8 +754,7 @@ impl App {
         self.key_prompt.as_ref()
     }
 
-    /// Whether something is holding the keyboard, which is also what decides where the
-    /// cursor is drawn: an input the next keystroke will not reach must not blink.
+    /// Whether something is holding the keyboard.
     pub fn overlay_is_open(&self) -> bool {
         self.key_prompt.is_some()
             || self.picker.is_some()
@@ -886,10 +779,6 @@ impl App {
     }
 
     /// What the activity line calls what is happening.
-    ///
-    /// An extension's own wording, when it asked for one, stands in for the turn's —
-    /// `setWorkingMessage` is a request about what the line says, not about which turn is
-    /// running, so it overrides every label rather than only the default one.
     pub fn activity(&self) -> String {
         match &self.working_message {
             Some(message) => message.clone(),
@@ -902,20 +791,12 @@ impl App {
         }
     }
 
-    /// Whether the activity line is drawn at all right now. Distinct from
-    /// [`App::reserves_activity_rows`]: that decides whether its rows are held open, this
-    /// decides whether anything is painted into them.
+    /// Whether the activity line is drawn at all right now.
     pub fn working_visible(&self) -> bool {
         self.working_visible
     }
 
-    /// The spinner glyph for this frame: a custom animation's frame at its own pace when an
-    /// extension asked for one, the built-in braille frames advanced by `tick` otherwise.
-    ///
-    /// Empty frames is what `setWorkingIndicator({ frames: [] })` asks for, and it is
-    /// answered the same way here: nothing is returned to draw, but the row and the rest of
-    /// the line — the label, the elapsed time, the interrupt hint — stay exactly as they
-    /// were, since hiding the indicator is not the same request as hiding the whole line.
+    
     pub fn indicator_frame(&self) -> &str {
         match &self.working_indicator {
             Some(indicator) if indicator.frames.is_empty() => "",
@@ -936,14 +817,14 @@ impl App {
             .unwrap_or("Thinking...")
     }
 
-    /// Lines an extension asked shown above the input, each already cut to
-    /// [`MAX_WIDGET_LINES`] with a note when it was.
+    /// Lines an extension asked shown above the input, each already cut to [`MAX_WIDGET_LINES`]
+    /// with a note when it was.
     pub fn widgets_above(&self) -> Vec<Vec<String>> {
         self.widgets_for(WidgetPlacement::Above)
     }
 
-    /// Lines an extension asked shown below the input, each already cut to
-    /// [`MAX_WIDGET_LINES`] with a note when it was.
+    /// Lines an extension asked shown below the input, each already cut to [`MAX_WIDGET_LINES`]
+    /// with a note when it was.
     pub fn widgets_below(&self) -> Vec<Vec<String>> {
         self.widgets_for(WidgetPlacement::Below)
     }
@@ -963,33 +844,27 @@ impl App {
             .collect()
     }
 
-    /// Whether an extension is listening to every key before the interface itself acts on
-    /// it. Checked once per keystroke, so a session with nothing listening pays nothing for
-    /// the possibility.
+    /// Whether an extension is listening to every key before the interface itself acts on it.
     pub fn wants_terminal_input(&self) -> bool {
         self.wants_terminal_input
     }
 
-    /// A terminal title an extension asked for since this was last called. Taken rather
-    /// than read, so whoever owns the terminal writes it exactly once.
+    /// A terminal title an extension asked for since this was last called.
     pub fn take_title_change(&mut self) -> Option<String> {
         self.title_change.take()
     }
 
-    /// Lines standing in for the opening screen, from `setHeader` — `None` for the built-in
-    /// one.
+    
     pub fn header_override(&self) -> Option<&[String]> {
         self.header_override.as_deref()
     }
 
-    /// Lines standing in for the footer, from `setFooter` — `None` for the built-in one.
+    
     pub fn footer_override(&self) -> Option<&[String]> {
         self.footer_override.as_deref()
     }
 
-    /// The component id a `custom()` overlay currently has the keyboard for, so the event
-    /// loop knows to route a key to it rather than to the editor. `None` when no such
-    /// overlay is open.
+    
     pub fn component_overlay_id(&self) -> Option<&str> {
         self.component_overlay
             .as_ref()
@@ -1027,8 +902,7 @@ impl App {
         });
     }
 
-    /// Redraw the open `custom()` overlay with what its component looked like after
-    /// handling a key. A stale answer for an overlay that has since closed changes nothing.
+    /// Redraw the open `custom()` overlay with what its component looked like after handling a key.
     pub fn set_component_overlay_lines(&mut self, component_id: &str, lines: Vec<String>) {
         if let Some(overlay) = self.component_overlay.as_mut() {
             if overlay.component_id == component_id {
@@ -1037,17 +911,14 @@ impl App {
         }
     }
 
-    /// The component id `setEditorComponent` replaced the built-in editor with, so the
-    /// event loop knows to offer it a key before the built-in editor sees one. `None` while
-    /// the built-in editor is in use.
+    /// The component id `setEditorComponent` replaced the built-in editor with.
     pub fn editor_component_id(&self) -> Option<&str> {
         self.editor_component
             .as_ref()
             .map(|component| component.component_id.as_str())
     }
 
-    /// What the editor's replacement is currently drawn with. Empty while nothing has
-    /// replaced it.
+    /// What the editor's replacement is currently drawn with.
     pub fn editor_component_lines(&self) -> &[String] {
         self.editor_component
             .as_ref()
@@ -1055,9 +926,7 @@ impl App {
             .unwrap_or_default()
     }
 
-    /// Redraw the editor's replacement with what it looked like after handling a key. A
-    /// stale answer for a component that is no longer the one replacing the editor changes
-    /// nothing.
+    /// Redraw the editor's replacement with what it looked like after handling a key.
     pub fn set_editor_component_lines(&mut self, component_id: &str, lines: Vec<String>) {
         if let Some(component) = self.editor_component.as_mut() {
             if component.component_id == component_id {
@@ -1066,16 +935,14 @@ impl App {
         }
     }
 
-    /// The title an extension's `editor()` opened with, so `render::overlay` can label the
-    /// dialog. `None` while nothing is open this way.
+    /// The title an extension's `editor()` opened with, so `render::overlay` can label the dialog.
     pub fn extension_editor_title(&self) -> Option<&str> {
         self.extension_editor
             .as_ref()
             .map(|overlay| overlay.title.as_str())
     }
 
-    /// The editor an extension's `editor()` is currently driving, so `render::overlay` can
-    /// draw it. `None` while nothing is open this way.
+    /// The editor an extension's `editor()` is currently driving, so `render::overlay` can draw it.
     pub fn extension_editor(&self) -> Option<&Editor> {
         self.extension_editor
             .as_ref()
@@ -1111,7 +978,7 @@ impl App {
 
     /// Put a line of the interface's own into the conversation.
     pub fn notice(&mut self, text: impl Into<String>, kind: MessageKind) {
-        // A warning nobody wants to see is not shown at all, rather than shown quietly.
+        
         if matches!(kind, MessageKind::Warning) && !self.settings.warnings {
             return;
         }
@@ -1123,12 +990,12 @@ impl App {
         self.transcript.push_notice(text, level);
     }
 
-    /// Say something that is worth knowing but not worth stopping for.
+    
     pub fn warn(&mut self, text: impl Into<String>) {
         self.notice(text, MessageKind::Warning);
     }
 
-    /// Open a list for the user to choose from.
+    
     pub fn open_picker(&mut self, choices: micro_commands::Picker) {
         self.picker = Some(Picker::new(choices));
     }
@@ -1165,9 +1032,8 @@ impl App {
             .unwrap_or_else(|| self.transcript.last_usage())
     }
 
-    /// The provider to name in the footer, which is nothing when the model already says
-    /// which one is serving it.
-    /// The branch the workspace is on, when it is a repository at all.
+    /// The provider to name in the footer, which is nothing when the model already says which one
+    /// is serving it.
     pub fn branch(&self) -> Option<&str> {
         self.branch.as_deref()
     }
@@ -1183,10 +1049,6 @@ impl App {
     }
 
     /// Take back everything one extension drew.
-    ///
-    /// Only what it is still behind: a widget it set and another extension has since
-    /// replaced belongs to the other one now, and taking it away would be taking away
-    /// something still being asked for.
     fn drop_drawings_of(&mut self, extension: &str) {
         for key in Drawn::keys_of(&self.drawn.widgets, extension) {
             self.widgets.remove(&key);
@@ -1217,20 +1079,16 @@ impl App {
     }
 
     /// Show a question an extension asked, in whatever suits it.
-    ///
-    /// The question is held until it is answered or closed, so however the overlay ends,
-    /// the extension is told something rather than left waiting.
     pub fn ask_question(&mut self, request: crate::ui::UiRequest) {
         match request.method.as_str() {
-            // Not a question: a message an extension wants said, which goes into the
-            // conversation as though the user had written it.
+            
             "send_user_message" => {
                 let mut request = request;
                 self.queue_line(request.title.clone());
                 request.answer(serde_json::json!({ "queued": true }));
                 return;
             }
-            // Something an extension drew: the title names it, the options are its lines.
+            
             "custom_message" => {
                 let mut request = request;
                 self.transcript
@@ -1244,10 +1102,7 @@ impl App {
                 request.answer(serde_json::json!({}));
                 return;
             }
-            // A tool's renderCall/renderResult answered: the title names the call it
-            // belongs to, the detail is the component id it registered under, the options
-            // are the lines it drew. Told apart from `component_changed` below because
-            // this one always knows which call it is for; that one only knows the id.
+            
             "tool_call_rendered" => {
                 let mut request = request;
                 self.transcript.set_tool_call_render(
@@ -1268,12 +1123,7 @@ impl App {
                 request.answer(serde_json::json!({}));
                 return;
             }
-            // A registered component said its own lines changed, on its own schedule
-            // rather than in answer to anything this side asked for — the title is the
-            // component id, the options are its fresh lines. A tool call's own render or
-            // its result is checked first, since a tool call registers by id the moment it
-            // renders; `component_slots` is what a widget, the header or the footer
-            // registered under instead. Neither if the id belongs to nothing here anymore.
+            
             "component_changed" => {
                 let mut request = request;
                 let handled = self
@@ -1298,11 +1148,7 @@ impl App {
                 request.answer(serde_json::json!({}));
                 return;
             }
-            // An extension has been let go. Everything it left on the screen goes with it:
-            // the widgets it drew, the status lines it kept, the header, the footer, the
-            // editor it replaced. What it registered with the agent is taken back before
-            // this arrives — see `answer_question` in `lib.rs`, which holds the agent this
-            // does not.
+            
             "deactivate_extension" => {
                 let mut request = request;
                 self.drop_drawings_of(&request.title);
@@ -1310,8 +1156,7 @@ impl App {
                 request.answer(serde_json::json!({ "ok": true }));
                 return;
             }
-            // Not a question: a line an extension keeps in the footer until it changes
-            // it. Text it does not give takes the line away again.
+            
             "set_status" => {
                 let mut request = request;
                 match request.detail.clone() {
@@ -1357,9 +1202,7 @@ impl App {
                     micro_commands::Picker::new(request.title.clone(), items).titled(),
                 );
             }
-            // The title is what to open the editor with, the detail its prefill — left open
-            // the same way `select`/`confirm` are, answered from `handle_extension_editor`
-            // when the reader submits or backs out.
+            
             "editor" => {
                 let mut editor = Editor::new();
                 if let Some(prefill) = request.detail.clone() {
@@ -1370,19 +1213,14 @@ impl App {
                     editor,
                 });
             }
-            // The title is the component's id; the options are the lines it drew when it
-            // was registered. Left open the same way `select`/`confirm` are — answered by
-            // `handle_component_overlay` when the reader backs out, or by `custom_done`
-            // below when the component decides for itself that it is finished.
+            
             "custom" => {
                 self.component_overlay = Some(ComponentOverlay {
                     component_id: request.title.clone(),
                     lines: strip_cursor_marker(request.options.clone()).0,
                 });
             }
-            // The component itself decided it was finished — `done(result)` on its side —
-            // rather than the reader backing out of the overlay. The detail is the result,
-            // carried as the JSON it already was rather than taken apart into a string.
+            
             "custom_done" => {
                 let mut request = request;
                 self.component_overlay = None;
@@ -1397,8 +1235,7 @@ impl App {
                 request.answer(serde_json::json!({}));
                 return;
             }
-            // The rest are all requests rather than questions: something to change, said
-            // and answered in the same breath rather than left open for an overlay.
+            
             "set_title" => {
                 let mut request = request;
                 self.title_change = Some(request.title.clone());
@@ -1417,9 +1254,7 @@ impl App {
                 request.answer(serde_json::json!({}));
                 return;
             }
-            // "reset" restores the built-in spinner; anything else carries its own frames
-            // (empty ones included, which is what hides the animation) and, optionally, its
-            // own pace.
+            
             "set_working_indicator" => {
                 let mut request = request;
                 self.working_indicator = match request.title.as_str() {
@@ -1442,9 +1277,7 @@ impl App {
                 request.answer(serde_json::json!({}));
                 return;
             }
-            // The title names the widget; empty lines is indistinguishable from having
-            // nothing to show, so both take the widget out of the map rather than leaving
-            // an entry that draws nothing.
+            
             "set_widget" => {
                 let mut request = request;
                 match request.options.is_empty() {
@@ -1474,8 +1307,7 @@ impl App {
                 request.answer(serde_json::json!({}));
                 return;
             }
-            // Empty options is "restore the built-in one" for both, the same convention
-            // `set_widget` uses for "nothing to show here anymore".
+            
             "set_header" => {
                 let mut request = request;
                 self.header_override =
@@ -1500,15 +1332,11 @@ impl App {
                 request.answer(serde_json::json!({}));
                 return;
             }
-            // The title is the component's id; the detail names what it is standing in
-            // for — `"header"`, `"footer"`, or `"widget:<key>"`. Told once, right after
-            // the pump fetched that component's first lines, so a later `component_changed`
-            // naming only the id already knows where to send what it fetches next.
+            
             "register_component_slot" => {
                 let mut request = request;
                 if let Some(slot) = component_slot_named(request.detail.as_deref()) {
-                    // Whatever id used to back this same slot is retired along with it —
-                    // a replaced component leaves no stale id still pointing here.
+                    
                     self.component_slots.retain(|_, existing| *existing != slot);
                     self.component_slots.insert(request.title.clone(), slot);
                 }
@@ -1522,8 +1350,7 @@ impl App {
                 request.answer(serde_json::json!({}));
                 return;
             }
-            // Routed through the editor's own paste handling, so a large one collapses
-            // behind a marker the same way text pasted at the keyboard does.
+            
             "paste_to_editor" => {
                 let mut request = request;
                 self.editor
@@ -1531,10 +1358,7 @@ impl App {
                 request.answer(serde_json::json!({}));
                 return;
             }
-            // The title is the component's id, empty for "restore the built-in editor";
-            // the options are its first lines. A keystroke from here on is offered to it
-            // first — see `offer_editor_component_input` in `lib.rs` — and only reaches the
-            // built-in editor if the component says it did not consume it.
+            
             "set_editor_component" => {
                 let mut request = request;
                 self.editor_component = (!request.title.is_empty()).then(|| ComponentOverlay {
@@ -1549,9 +1373,7 @@ impl App {
                 request.answer(serde_json::json!({}));
                 return;
             }
-            // The title names the theme; the detail, when there is one, is a JSON object of
-            // token colors an extension resolved itself — a name asks micro to look one up
-            // on its own, anything else is carried whole rather than piece by piece.
+            
             "set_theme" => {
                 let mut request = request;
                 let colors = request
@@ -1586,22 +1408,14 @@ impl App {
                 request.answer(serde_json::json!({}));
                 return;
             }
-            // Interrupt the turn the same way Ctrl+C does — only there is one to
-            // interrupt: `interrupt()` sets `turn.interrupting` and says so by returning
-            // `Outcome::Interrupt` when a turn is running, and does something else
-            // entirely (clearing the prompt, asking to quit) when nothing is. `run_turn`
-            // watches `is_interrupting()` after every question is answered and stops the
-            // turn when it sees it, the same way it would from the keyboard; the other
-            // outcomes are this method's business, not the run's.
+            
             "abort" => {
                 let mut request = request;
                 let interrupted = matches!(self.interrupt(), Outcome::Interrupt);
                 request.answer(serde_json::json!({ "interrupted": interrupted }));
                 return;
             }
-            // Not a question either: told through the same channel a question would use,
-            // since it is what carries an extension's asks to the interface, but answered
-            // at once rather than left for the reader.
+            
             "watch_terminal_input" => {
                 let mut request = request;
                 self.wants_terminal_input = true;
@@ -1614,10 +1428,7 @@ impl App {
                 request.answer(serde_json::json!({}));
                 return;
             }
-            // Every trigger character any `addAutocompleteProvider` registration has ever
-            // declared, sent whole each time rather than diffed — replacing what was known
-            // before is simpler than reconciling an addition against it, and correct either
-            // way since micro asks nothing until a word actually begins with one of them.
+            
             "watch_autocomplete" => {
                 let mut request = request;
                 self.autocomplete_triggers = request
@@ -1628,14 +1439,13 @@ impl App {
                 request.answer(serde_json::json!({}));
                 return;
             }
-            // Anything else is asked in words.
+            
             _ => self.open_input(request.title.clone(), request.detail.clone()),
         }
         self.question = Some(request);
     }
 
-    /// Ask for a credential. What is typed is held apart from the prompt, so it is never
-    /// drawn, never remembered, and never sent anywhere but the credential store.
+    /// Ask for a credential.
     pub fn open_key_prompt(&mut self, provider: String, env_names: Vec<String>) {
         self.key_prompt = Some(KeyPrompt {
             provider,
@@ -1647,9 +1457,6 @@ impl App {
     }
 
     /// Ask the user something in words, and show what they type.
-    ///
-    /// The same overlay as a credential prompt, drawn plainly: an extension asking a
-    /// question is not asking for a secret.
     pub fn open_input(&mut self, question: String, placeholder: Option<String>) {
         self.key_prompt = Some(KeyPrompt {
             provider: question,
@@ -1676,12 +1483,6 @@ impl App {
     }
 
     /// The next prompt to send, if one has been submitted.
-    /// The next prompt to send, if one has been submitted.
-    ///
-    /// A line the interface queued for itself always goes on its own — it is a command,
-    /// and running two at once would mean neither saw what the other did. What the user
-    /// queued while a turn ran goes one at a time, or all of it as a single message, as
-    /// they asked: a train of thought written in three messages is often one message.
     pub fn take_submission(&mut self) -> Option<String> {
         if let Some(line) = self.injected.pop_front() {
             return Some(line);
@@ -1693,25 +1494,17 @@ impl App {
         Some(all.join("\n\n"))
     }
 
-    /// Send a line as though the user had typed it. Used where the interface knows the
-    /// command it wants rather than making the user find it.
+    /// Send a line as though the user had typed it.
     pub fn queue_line(&mut self, line: impl Into<String>) {
         self.injected.push_back(line.into());
     }
 
-    /// Record a command the user ran themselves, so the transcript shows it where it
-    /// happened rather than only in what the model was told.
-    ///
-    /// `shared` is whether the model is being told: a command run with `!!` is shown to the
-    /// user and to nobody else.
+    /// Record a command the user ran themselves.
     pub fn push_bash(&mut self, command: &str, shared: bool) {
         self.transcript.push_bash(command, shared);
     }
 
     /// Take a submitted line and make the message the agent will be given.
-    ///
-    /// Attachments ride in front of the text, which is the order every provider expects,
-    /// and are handed over exactly once.
     pub fn begin_turn(&mut self, line: &str) -> Message {
         self.transcript.push_user(line);
         let attached = std::mem::take(&mut self.attachments);
@@ -1732,7 +1525,6 @@ impl App {
     }
 
     /// The turn is over, however it ended.
-    ///
     pub fn finish_turn(&mut self, aborted: bool) {
         self.transcript.close();
         self.turn = None;
@@ -1751,9 +1543,8 @@ impl App {
         }
     }
 
-    /// A turn that wrote the cache without reading any of it paid twice for a context it
-    /// already had. Only worth saying after the first answer, when there was a cache to
-    /// have read.
+    /// A turn that wrote the cache without reading any of it paid twice for a context it already
+    /// had.
     fn report_cache_miss(&mut self, answers_before: usize) {
         if !self.settings.cache_miss_notices || answers_before == 0 {
             return;
@@ -1772,19 +1563,17 @@ impl App {
     pub fn apply_result(&mut self, applied: Applied) {
         match applied {
             Applied::Nothing => {}
-            // Both of these need the agent, which this type does not hold. They are
-            // intercepted by the caller before reaching here.
+            
             Applied::Model { .. } | Applied::SystemPrompt { .. } => {}
             Applied::Note { text, kind } => self.notice(text, kind),
             Applied::Conversation { messages, note } => {
-                // The conversation is the host's to define; the scrollback is rebuilt from
-                // whatever it says the conversation now is.
+                
                 self.transcript = Transcript::from_messages(&messages);
                 self.transcript
                     .set_self_framed_tools(self.self_framed_tools.clone());
                 self.cache.shape = None;
                 self.focus = None;
-                // A replaced conversation is read from its end, like any new one.
+                
                 self.scroll = 0;
                 if let Some(note) = note {
                     self.notice(note, MessageKind::Info);
@@ -1854,17 +1643,15 @@ impl App {
         }
     }
 
-    /// Wrap the transcript for the frame about to be drawn, reusing the last frame's rows
-    /// when nothing that affects them has changed.
+    /// Wrap the transcript for the frame about to be drawn, reusing the last frame's rows when
+    /// nothing that affects them has changed.
     pub fn refresh_lines(&mut self) {
         let shape = Shape {
             width: self.width,
             show_thinking: self.show_thinking,
             focus: self.focus,
         };
-        // Anything that changes how every entry is drawn — the width it wraps to, whether
-        // reasoning is shown, which result is picked out — means starting again. Otherwise
-        // only what the conversation itself has changed is drawn again.
+        
         let from = match self.cache.shape == Some(shape) {
             true => self.transcript.dirty_from().min(self.cache.starts.len()),
             false => 0,
@@ -1874,15 +1661,9 @@ impl App {
             return;
         }
 
-        // Everything before the first changed entry is exactly as it was drawn, so its rows
-        // stay and the rest are thrown away. A link is numbered by the order it was drawn
-        // in, so the ones belonging to the rows being replaced go with them, and the ones
-        // before keep the numbers already written into their rows.
-        // How tall the conversation was before this, for keeping a reader who has scrolled
-        // back over the same lines as more arrive below them.
+        
         let was = self.cache.rendered.lines.len();
-        // An entry added at the end starts where the conversation currently ends, so there
-        // is nothing to throw away and everything already drawn is kept.
+        
         let kept_rows = self
             .cache
             .starts
@@ -1945,14 +1726,13 @@ impl App {
             &mut rendered,
             &mut self.cache.starts,
         );
-        // Where each entry's links and images begin, so the next redraw can cut back to it.
+        
         while self.cache.links_from.len() < self.cache.starts.len() {
             self.cache.links_from.push(rendered.links.len());
             self.cache.pictures_from.push(rendered.pictures.len());
         }
 
-        // A reader who has scrolled back stays over the same lines when more arrive
-        // below them, rather than being carried along by the conversation growing.
+        
         let grew = rendered.lines.len().saturating_sub(was);
         self.cache.shape = Some(shape);
         self.cache.rendered = rendered;
@@ -1968,12 +1748,11 @@ impl App {
         if !matches!(action, Action::Cancel) {
             self.escape_pending = false;
         }
-        // Asking again only counts while it is still the question being answered.
+        
         if !matches!(action, Action::Interrupt | Action::Resize | Action::Ignored) {
             self.quitting = false;
         }
-        // An overlay owns the keyboard while it is up, in the order of what is blocking
-        // on an answer: a credential first, then a list to choose from.
+        
         if self.key_prompt.is_some() {
             return self.handle_key_prompt(action);
         }
@@ -1990,7 +1769,7 @@ impl App {
             return self.handle_extension_editor(action);
         }
 
-        // Armed by jump-to-char: the next printable key is a destination, not text.
+        
         if let Some(forward) = self.jump {
             if let Action::Insert(text) = &action {
                 self.jump = None;
@@ -2131,13 +1910,7 @@ impl App {
         Outcome::Handled
     }
 
-    /// Ctrl+C. What it stops depends on what is going on: a turn, then a half-written
-    /// prompt, and with neither there is nothing to interrupt but the wait itself.
-    /// Ctrl+C: stop what is running, clear what is written, or leave.
-    ///
-    /// On an empty prompt with nothing running there is nothing to interrupt, so it asks
-    /// before leaving: pressed again it quits, and anything else typed in between takes
-    /// the question back.
+    /// Ctrl+C.
     fn interrupt(&mut self) -> Outcome {
         if let Some(turn) = self.turn.as_mut() {
             turn.interrupting = true;
@@ -2156,22 +1929,17 @@ impl App {
         Outcome::Handled
     }
 
-    /// Enter. A menu takes it before the prompt does, so a completion is committed rather
-    /// than a half-typed command being sent.
+    /// Enter.
     fn submit(&mut self) -> Outcome {
-        // An extension's own menu has no fixed splice to commit here — see
-        // `queue_extension_completion` — so it is asked about before anything else gets a
-        // say in what Enter does.
+        
         if self.queue_extension_completion() {
             return Outcome::Handled;
         }
-        // Enter takes a completion only when there is something left to complete. A
-        // command typed out in full is a command the user meant to send, and swallowing
-        // that press to add a space would make every short command need two.
+        
         if self.completion_would_change_the_line() && self.commit_completion() {
             return Outcome::Handled;
         }
-        // A trailing backslash means the line is being continued, not finished.
+        
         if self.editor.escapes_submit() {
             self.editor.escape_newline();
             return Outcome::Handled;
@@ -2187,7 +1955,7 @@ impl App {
         Outcome::Handled
     }
 
-    /// Alt+Enter: send this after whatever is running rather than instead of it.
+    
     fn queue_follow_up(&mut self) -> Outcome {
         let line = self.editor.take();
         self.menu = None;
@@ -2195,8 +1963,7 @@ impl App {
             return Outcome::Handled;
         }
         self.pending.push_back(line);
-        // Set to interrupt, a follow-up is meant to replace what is running rather than
-        // to wait behind it, so the turn is stopped and the prompt goes next.
+        
         match self.settings.follow_up_interrupts && self.is_running() {
             true => self.interrupt(),
             false => Outcome::Handled,
@@ -2226,8 +1993,8 @@ impl App {
         }
     }
 
-    /// Take the highlighted completion, replacing what was typed toward it and leaving
-    /// anything past the cursor where it is.
+    /// Take the highlighted completion, replacing what was typed toward it and leaving anything
+    /// past the cursor where it is.
     fn commit_completion(&mut self) -> bool {
         let Some(menu) = self.menu.as_ref() else {
             return false;
@@ -2241,8 +2008,7 @@ impl App {
         true
     }
 
-    /// Up: through the menu when one is open, through the prompt while it has rows above
-    /// the cursor, and back through the conversation once the prompt is empty.
+    
     fn move_up(&mut self) -> Outcome {
         if let Some(menu) = self.menu.as_mut() {
             menu.select_previous();
@@ -2251,9 +2017,7 @@ impl App {
         if self.editor.move_up(self.width) {
             return Outcome::Handled;
         }
-        // An empty prompt reads back through the conversation first. Once it is at its
-        // start there is nothing further to show, and the same key reaches what was typed
-        // before — so one key does both without the reader choosing between them.
+        
         if self.editor.is_empty() && !self.editor.is_browsing_history() && self.scroll_by(1) {
             return Outcome::Handled;
         }
@@ -2276,7 +2040,7 @@ impl App {
         Outcome::Handled
     }
 
-    /// Escape. It backs out of one thing at a time, nearest first.
+    /// Escape.
     fn cancel(&mut self) -> Outcome {
         if self.menu.take().is_some() {
             self.escape_pending = false;
@@ -2313,27 +2077,23 @@ impl App {
         Outcome::Handled
     }
 
-    /// The command menu belongs to whatever is being typed, so it is rebuilt from the
-    /// prompt after every change rather than opened and closed by hand.
+    /// The command menu belongs to whatever is being typed.
     fn sync_menu(&mut self) {
         let (row, column) = self.editor.cursor();
         let line = self.editor.lines().get(row).cloned().unwrap_or_default();
-        // Only the first line can hold a command, and only when nothing precedes it.
+        
         if row == 0 {
             if let Some(menu) = Menu::open_for(&line, column, &self.extension_commands) {
                 self.menu = Some(menu);
                 return;
             }
         }
-        // A file can be named anywhere in the prompt, so `@` is looked for on every line.
+        
         if wants_file_menu(&line, column) {
             self.menu = Menu::files_for(&line, column, self.workspace_files());
             return;
         }
-        // Nothing built in claimed the word under the cursor; an extension's own trigger
-        // characters get the same chance `@` already had. The menu opens empty and asks —
-        // see `take_pending_suggestion_request` — since nothing here knows what an
-        // extension would answer until it does.
+        
         self.menu = Menu::extension_for(&line, column, &self.autocomplete_triggers);
         if let Some(menu) = &self.menu {
             self.pending_suggestion_request = Some(SuggestionRequest {
@@ -2345,15 +2105,13 @@ impl App {
         }
     }
 
-    /// The `getSuggestions` question `sync_menu` raised, if any, and only once — a frame that
-    /// never looks does not leave the next one to ask the same thing twice.
+    /// The `getSuggestions` question `sync_menu` raised, if any, and only once.
     pub fn take_pending_suggestion_request(&mut self) -> Option<SuggestionRequest> {
         self.pending_suggestion_request.take()
     }
 
-    /// Fill the open extension menu with what `getSuggestions` answered, when it still
-    /// belongs to the prefix it was asked about — see `Menu::set_extension_items` for what
-    /// makes an answer late rather than stale.
+    /// Fill the open extension menu with what `getSuggestions` answered, when it still belongs to
+    /// the prefix it was asked about.
     pub fn apply_extension_suggestions(&mut self, prefix: &str, items: Vec<serde_json::Value>) {
         let Some(menu) = self.menu.as_mut() else {
             return;
@@ -2365,11 +2123,8 @@ impl App {
         menu.set_extension_items(prefix, items);
     }
 
-    /// Queue the `applyCompletion` question committing an open extension menu's highlighted
-    /// item raises, so the event loop can ask off the render path. `false` when there is
-    /// nothing here for an extension to answer — no menu, not this offering, or an item with
-    /// no raw shape to hand back — which leaves the key free for whatever it would otherwise
-    /// do, the same as `commit_completion` returning `false` does for the built-in menus.
+    /// Queue the `applyCompletion` question committing an open extension menu's highlighted item
+    /// raises.
     fn queue_extension_completion(&mut self) -> bool {
         let Some(menu) = self.menu.as_ref() else {
             return false;
@@ -2392,16 +2147,13 @@ impl App {
         true
     }
 
-    /// The `applyCompletion` question committing an extension's menu item raised, if any,
-    /// and only once.
+    /// The `applyCompletion` question committing an extension's menu item raised, if any, and only
+    /// once.
     pub fn take_pending_completion_request(&mut self) -> Option<CompletionRequest> {
         self.pending_completion_request.take()
     }
 
-    /// Carry out what `applyCompletion` answered: the buffer it says the edit leaves behind,
-    /// and the cursor where it says the edit leaves it — an extension's own splice, in place
-    /// of the fixed one `commit_completion` writes for a built-in menu. The menu closes
-    /// either way; a stale answer for one already closed still has nothing left to reopen.
+    
     pub fn apply_extension_completion(
         &mut self,
         lines: Vec<String>,
@@ -2419,10 +2171,7 @@ impl App {
         self.sync_menu();
     }
 
-    /// Every file in the workspace, worked out the first time one is asked for.
-    ///
-    /// Walking is not free and the answer barely changes within a session, so it is done
-    /// once. `/reload` is what re-reads the workspace.
+    
     fn workspace_files(&mut self) -> &[String] {
         if self.file_index.is_none() {
             self.file_index = Some(walk_workspace(std::path::Path::new(&self.cwd)));
@@ -2449,8 +2198,7 @@ impl App {
             Action::Submit => {
                 prompt.done = true;
                 let said = prompt.text().to_string();
-                // A question asked in words is answered here; a credential is collected by
-                // the loop, which is what `take_key_prompt` is for.
+                
                 if let Some(mut question) = self.question.take() {
                     self.key_prompt = None;
                     question.answer(serde_json::json!({ "value": said }));
@@ -2462,7 +2210,7 @@ impl App {
                     question.cancel();
                 }
             }
-            // Nothing is written in an overlay, so this is only ever the leaving half.
+            
             Action::QuitOrDelete => return Outcome::Quit,
             _ => {}
         }
@@ -2476,7 +2224,7 @@ impl App {
         match action {
             Action::MoveUp => picker.select_previous(),
             Action::MoveDown => picker.select_next(),
-            // Between the workspace's shortlist and the whole of it.
+            
             Action::Tab => picker.toggle_scope(),
             Action::Insert(text) => picker.push(&text),
             Action::Backspace => picker.backspace(),
@@ -2484,7 +2232,7 @@ impl App {
                 let chosen = picker.commit();
                 self.picker = None;
                 match self.question.take() {
-                    // The chosen item carries the answer, not a command to run.
+                    
                     Some(mut question) => {
                         let answer = match (question.method.as_str(), chosen.as_deref()) {
                             ("confirm", Some(said)) => {
@@ -2508,19 +2256,14 @@ impl App {
                     question.cancel();
                 }
             }
-            // Nothing is written in an overlay, so this is only ever the leaving half.
+            
             Action::QuitOrDelete => return Outcome::Quit,
             _ => {}
         }
         Outcome::Handled
     }
 
-    /// Back out of a `custom()` overlay. Every other key reaches the component itself, but
-    /// not through here — that goes straight from the event loop to the extension host and
-    /// back (see `offer_component_input` in `lib.rs`), since answering it needs a round
-    /// trip this synchronous method cannot make. Escape and interrupt are the exception:
-    /// closing the overlay is the interface's own to decide, the same as it is for a
-    /// picker or a credential prompt, not the component's.
+    /// Back out of a `custom()` overlay.
     fn handle_component_overlay(&mut self, action: Action) -> Outcome {
         match action {
             Action::Cancel | Action::Interrupt => {
@@ -2530,7 +2273,7 @@ impl App {
                 }
                 Outcome::Handled
             }
-            // Nothing is written in an overlay, so this is only ever the leaving half.
+            
             Action::QuitOrDelete => Outcome::Quit,
             _ => Outcome::Handled,
         }
@@ -2594,12 +2337,7 @@ impl App {
         Outcome::Handled
     }
 
-    /// Drive an extension's `editor()` overlay. Unlike a `custom()` component this is a real
-    /// [`Editor`], entirely local, so every editing and motion key is handled the same way
-    /// the built-in prompt handles it — see the same actions in [`App::handle`]'s own match —
-    /// rather than round-tripping to an extension that has no say in any of it. Enter submits
-    /// with the text as it stands; shift+enter, like the built-in prompt, writes a newline
-    /// instead of closing anything.
+    /// Drive an extension's `editor()` overlay.
     fn handle_extension_editor(&mut self, action: Action) -> Outcome {
         let Some(overlay) = self.extension_editor.as_mut() else {
             return Outcome::Handled;
@@ -2646,15 +2384,14 @@ impl App {
                     question.cancel();
                 }
             }
-            // Nothing is written outside the editor's own buffer, so this is only ever the
-            // leaving half — the same reading `handle_key_prompt` and `handle_picker` give it.
+            
             Action::QuitOrDelete => return Outcome::Quit,
             _ => {}
         }
         Outcome::Handled
     }
 
-    /// Move the reader's selection between tool results, which is what can be opened up.
+    
     fn move_focus(&mut self, forward: bool) -> Outcome {
         let positions = self.transcript.tool_positions();
         if positions.is_empty() {
@@ -2688,8 +2425,7 @@ impl App {
                 self.transcript.toggle_expanded(index);
             }
             None => {
-                // Nothing is singled out, so this opens everything at once — including the
-                // first screen, which is all there is to open before a conversation exists.
+                
                 let opening = self.transcript.any_collapsed() || !self.startup_expanded;
                 self.transcript.set_all_expanded(opening);
                 self.startup_expanded = opening;
@@ -2699,9 +2435,6 @@ impl App {
     }
 
     /// The conversation as it was drawn, as plain rows.
-    ///
-    /// For handing back to the terminal when a full screen goes: what a reader keeps is
-    /// what they were looking at, folded the way they folded it.
     pub fn plain_lines(&mut self) -> Vec<String> {
         self.refresh_lines();
         self.cache
@@ -2751,10 +2484,7 @@ impl App {
         self.viewport.saturating_sub(PAGE_OVERLAP).max(1)
     }
 
-    /// Move the window back through the conversation. Positive is toward the start.
-    ///
-    /// Answers whether it moved, so a caller that scrolls before it does anything else can
-    /// tell when the conversation has no more to give.
+    /// Move the window back through the conversation.
     fn scroll_by(&mut self, lines: isize) -> bool {
         let before = self.scroll;
         let scroll = self.scroll as isize + lines;
@@ -2763,8 +2493,8 @@ impl App {
         self.scroll != before
     }
 
-    /// Scrolling stops at the first line: past it there is nothing to show, and the window
-    /// would drift off the top of the conversation.
+    /// Scrolling stops at the first line: past it there is nothing to show, and the window would
+    /// drift off the top of the conversation.
     fn clamp_scroll(&mut self) {
         let furthest = self
             .cache
@@ -2858,9 +2588,6 @@ mod tests {
     }
 
     /// Press up until the conversation has no more to show and the key reaches the history.
-    ///
-    /// Counted rather than fixed, because how many presses that takes is how tall the
-    /// conversation renders, which is not what either test is about.
     fn press_up_until_history(app: &mut App) {
         for _ in 0..500 {
             app.handle(Action::MoveUp);
@@ -2982,8 +2709,8 @@ mod tests {
         app.ask_question(request);
     }
 
-    /// A trigger character nobody registered opens nothing, the way `@` would if nothing
-    /// under it named a file.
+    /// A trigger character nobody registered opens nothing, the way `@` would if nothing under it
+    /// named a file.
     #[test]
     fn an_unregistered_trigger_opens_nothing() {
         let mut app = app();
@@ -2991,8 +2718,8 @@ mod tests {
         assert!(app.menu().is_none());
     }
 
-    /// A registered trigger opens the menu empty and queues the `getSuggestions` question
-    /// the event loop owes the extension.
+    /// A registered trigger opens the menu empty and queues the `getSuggestions` question the event
+    /// loop owes the extension.
     #[test]
     fn a_registered_trigger_opens_an_empty_menu_and_queues_a_suggestion_request() {
         let mut app = app();
@@ -3012,8 +2739,8 @@ mod tests {
         );
     }
 
-    /// What `getSuggestions` answers lands in the menu the reader is still looking at, shown
-    /// by its label.
+    /// What `getSuggestions` answers lands in the menu the reader is still looking at, shown by its
+    /// label.
     #[test]
     fn an_extension_answer_fills_the_open_menu() {
         let mut app = app();
@@ -3047,8 +2774,8 @@ mod tests {
         assert!(app.menu().unwrap().items().is_empty());
     }
 
-    /// Enter on an extension's own item queues `applyCompletion` instead of committing a
-    /// fixed splice — there is none for this offering to fall back to.
+    /// Enter on an extension's own item queues `applyCompletion` instead of committing a fixed
+    /// splice.
     #[test]
     fn enter_on_an_extension_item_queues_apply_completion_instead_of_submitting() {
         let mut app = app();
@@ -3077,8 +2804,8 @@ mod tests {
         );
     }
 
-    /// What `applyCompletion` answers replaces the buffer and places the cursor exactly
-    /// where it says to, and closes the menu.
+    /// What `applyCompletion` answers replaces the buffer and places the cursor exactly where it
+    /// says to, and closes the menu.
     #[test]
     fn apply_extension_completion_writes_what_was_answered() {
         let mut app = app();
@@ -3106,8 +2833,8 @@ mod tests {
         assert_eq!(app.editor.text(), "plain\t");
     }
 
-    /// Committing replaces what was typed toward the command, not the whole prompt: an
-    /// argument already written stays where it is.
+    /// Committing replaces what was typed toward the command, not the whole prompt: an argument
+    /// already written stays where it is.
     #[test]
     fn committing_keeps_what_follows_the_cursor() {
         let mut app = app();
@@ -3238,8 +2965,8 @@ mod tests {
         assert!(text.contains("now on claude-opus-5"));
     }
 
-    /// An attached image rides in front of the text, which is the order every provider
-    /// expects, and is handed over exactly once.
+    /// An attached image rides in front of the text, which is the order every provider expects, and
+    /// is handed over exactly once.
     #[test]
     fn an_attached_image_goes_with_the_next_prompt() {
         let mut app = app();
@@ -3273,8 +3000,7 @@ mod tests {
         app.set_viewport(10);
         app.refresh_lines();
 
-        // With the prompt empty, up reads back through the conversation; once it is at
-        // its start the same key reaches what was typed before.
+        
         app.handle(Action::MoveUp);
         assert!(app.scroll() > 0);
         assert_eq!(app.editor.text(), "");
@@ -3283,9 +3009,7 @@ mod tests {
         assert_eq!(app.editor.text(), "the first thing asked");
     }
 
-    /// Ctrl+C clears a half-written prompt before it interrupts anything, which is what
-    /// makes it safe to press when nothing is running.
-    /// On an empty prompt with nothing running, ctrl+c asks before it leaves.
+    
     #[test]
     fn interrupting_an_empty_prompt_twice_leaves() {
         let mut app = app();
@@ -3294,8 +3018,8 @@ mod tests {
         assert_eq!(app.handle(Action::Interrupt), Outcome::Quit);
     }
 
-    /// Typing something in between takes the question back, so a stray press cannot
-    /// combine with a later one to close the session.
+    /// Typing something in between takes the question back, so a stray press cannot combine with a
+    /// later one to close the session.
     #[test]
     fn a_press_between_the_two_takes_the_question_back() {
         let mut app = app();
@@ -3310,8 +3034,7 @@ mod tests {
         );
     }
 
-    /// What is written is cleared before anything else is considered, so a half-typed
-    /// prompt is never lost to a press meant for something else.
+    /// What is written is cleared before anything else is considered.
     #[test]
     fn interrupting_clears_the_prompt_before_it_stops_anything() {
         let mut app = app();
@@ -3319,7 +3042,7 @@ mod tests {
         assert_eq!(app.handle(Action::Interrupt), Outcome::Handled);
         assert!(app.editor.is_empty());
 
-        // With nothing left to clear it asks about leaving, and leaves on the next press.
+        
         assert_eq!(app.handle(Action::Interrupt), Outcome::Handled);
         assert_eq!(app.handle(Action::Interrupt), Outcome::Quit);
     }
@@ -3361,8 +3084,8 @@ mod tests {
         assert_eq!(app.queued(), 1);
     }
 
-    /// A line the interface asked for itself goes out before anything the user typed: it
-    /// is the answer to a key they just pressed.
+    /// A line the interface asked for itself goes out before anything the user typed: it is the
+    /// answer to a key they just pressed.
     #[test]
     fn an_injected_line_goes_before_a_queued_prompt() {
         let mut app = app();
@@ -3419,19 +3142,19 @@ mod tests {
         app.set_viewport(10);
         app.refresh_lines();
 
-        // Wheel up moves back a few lines.
+        
         app.handle(Action::ScrollUp);
         assert_eq!(app.scroll(), 3);
         app.handle(Action::ScrollUp);
         assert_eq!(app.scroll(), 6);
 
-        // Arrow keys on an empty prompt scroll line by line.
+        
         app.handle(Action::MoveUp);
         assert_eq!(app.scroll(), 7);
         app.handle(Action::MoveUp);
         assert_eq!(app.scroll(), 8);
 
-        // Arrow keys scroll back down.
+        
         app.handle(Action::MoveDown);
         assert_eq!(app.scroll(), 7);
         app.handle(Action::ScrollDown);
@@ -3460,8 +3183,8 @@ mod tests {
         assert_eq!(app.menu().unwrap().selected(), 0);
     }
 
-    /// Someone reading back through the conversation stays where they are when an answer
-    /// arrives beneath them.
+    /// Someone reading back through the conversation stays where they are when an answer arrives
+    /// beneath them.
     #[test]
     fn arriving_content_does_not_move_what_is_being_read() {
         let mut app = app();
@@ -3544,10 +3267,7 @@ mod tests {
         assert_eq!(app.transcript.last_answer().as_deref(), Some("the answer"));
     }
 
-    /// A turn writes to the entry it is on and nothing else, so the rows already drawn for
-    /// everything before it are kept. Without that a long conversation is drawn again from
-    /// the beginning on every frame, and the cost of showing it grows with its length until
-    /// a frame takes longer than a frame is allowed to.
+    
     #[test]
     fn a_long_conversation_redraws_only_what_changed() {
         let conversation = |count: usize| {
@@ -3582,7 +3302,7 @@ mod tests {
             "the long conversation really is longer"
         );
 
-        // One update to the last entry, which is what a running tool does.
+        
         let update = |app: &mut App, count: usize| {
             app.apply_event(AgentEvent::ToolUpdate {
                 id: format!("c{}", count - 1),
@@ -3594,8 +3314,7 @@ mod tests {
             started.elapsed()
         };
 
-        // Warm both, then compare: the work is the one entry that changed, so the long one
-        // costs about what the short one does rather than sixteen times as much.
+        
         let _ = update(&mut short, 5);
         let _ = update(&mut long, 80);
         let brief: std::time::Duration = (0..20).map(|_| update(&mut short, 5)).sum();
@@ -3615,8 +3334,7 @@ mod tests {
         assert!(transcript_text(&mut app).contains("! ls -la"));
     }
 
-    /// A command run with `!!` is shown, and shown as the one the model was not told about:
-    /// the two are the same keystrokes apart, and which it was decides what the model knows.
+    
     #[test]
     fn a_command_kept_back_is_marked_as_one() {
         let mut app = app();
@@ -3624,7 +3342,7 @@ mod tests {
         assert!(transcript_text(&mut app).contains("!! cat ~/.ssh/config"));
     }
 
-    /// The arrow keys stop at the edge of the prompt rather than wrapping around it.
+    
     #[test]
     fn the_arrow_keys_stop_at_the_edge_of_the_prompt() {
         let mut app = app();
@@ -3640,8 +3358,8 @@ mod tests {
         assert_eq!(app.editor.cursor(), (0, 3));
     }
 
-    /// Up at the top of a multi-line prompt moves through the rows before it reaches back
-    /// for what was sent earlier.
+    /// Up at the top of a multi-line prompt moves through the rows before it reaches back for what
+    /// was sent earlier.
     #[test]
     fn moving_up_walks_the_prompt_before_the_history() {
         let mut app = app();
@@ -3661,8 +3379,7 @@ mod tests {
         assert_eq!(app.editor.text(), "an earlier prompt");
     }
 
-    /// A trailing backslash continues the line instead of sending it, which is how a
-    /// prompt gets a newline on a keyboard that cannot send shift+enter.
+    /// A trailing backslash continues the line instead of sending it.
     #[test]
     fn a_trailing_backslash_continues_the_line() {
         let mut app = app();
@@ -3693,7 +3410,7 @@ mod tests {
         assert_eq!(app.scroll(), 0, "then where the reader had scrolled to");
     }
 
-    /// Jump-to-char takes the next key as a destination rather than as text.
+    
     #[test]
     fn jump_to_char_moves_the_cursor_instead_of_typing() {
         let mut app = app();
@@ -3753,8 +3470,8 @@ mod tests {
         assert!(transcript_text(&mut app).contains("half an answer"));
     }
 
-    /// Wrapping is the most expensive thing a frame does, so it is not redone when
-    /// nothing that affects it has changed.
+    /// Wrapping is the most expensive thing a frame does, so it is not redone when nothing that
+    /// affects it has changed.
     #[test]
     fn the_wrapped_transcript_is_kept_between_frames() {
         let mut app = app();
@@ -3784,8 +3501,7 @@ mod tests {
         )
     }
 
-    /// Every preference the interface takes changes what it does, so a setting is a
-    /// setting rather than a row in a menu.
+    
     #[test]
     fn hiding_thinking_starts_it_folded_away() {
         assert!(
@@ -3890,8 +3606,7 @@ mod tests {
         assert_eq!(app.menu_rows(), 3);
     }
 
-    /// A terminal that can draw images still does not when the reader would rather it
-    /// did not.
+    /// A terminal that can draw images still does not when the reader would rather it did not.
     #[test]
     fn turning_images_off_stops_them_being_drawn() {
         let app = app_with(Preferences {
@@ -3912,8 +3627,8 @@ mod tests {
         assert!(!transcript_text(&mut app).contains("Cache miss"));
     }
 
-    /// A credential is handed over only once enter has been pressed on it, so a key that
-    /// is still being typed is never sent anywhere.
+    /// A credential is handed over only once enter has been pressed on it, so a key that is still
+    /// being typed is never sent anywhere.
     #[test]
     fn a_key_is_only_handed_over_once_it_is_finished() {
         let mut app = app();
@@ -4020,8 +3735,7 @@ mod tests {
         app.set_viewport(10);
         app.refresh_lines();
 
-        // The up-presses read back through the conversation until it is at its start;
-        // then the same key walks back through what was sent.
+        
         press_up_until_history(&mut app);
         assert_eq!(app.editor.text(), "second thing");
         app.handle(Action::MoveUp);
@@ -4088,8 +3802,7 @@ mod tests {
         assert!(!app.is_running());
     }
 
-    /// A prompt sent while the conversation is scrolled back brings the reader to the end,
-    /// since what they just asked is the thing worth watching.
+    
     #[test]
     fn sending_a_prompt_returns_to_the_end_of_the_conversation() {
         let mut app = app();
@@ -4138,8 +3851,8 @@ mod tests {
         assert_eq!(human_size(5 * 1_048_576), "5.0 MB");
     }
 
-    /// Build a request the way an extension's ask arrives, hand it to `ask_question`, and
-    /// read back whatever it answered.
+    /// Build a request the way an extension's ask arrives, hand it to `ask_question`, and read back
+    /// whatever it answered.
     fn ask(
         app: &mut App,
         method: &str,
@@ -4177,10 +3890,7 @@ mod tests {
         answered.try_recv().expect("ask_question answers at once")
     }
 
-    /// Letting an extension go takes back everything it drew — its widget, its status line,
-    /// the header and the footer it replaced — and leaves what another extension drew
-    /// exactly where it was. The tools it provided are noted for the event loop to remove,
-    /// since the agent they are on is not this type's to hold.
+    /// Letting an extension go takes back everything it drew.
     #[test]
     fn deactivating_an_extension_takes_back_only_what_it_drew() {
         let mut app = app();
@@ -4218,8 +3928,7 @@ mod tests {
         );
     }
 
-    /// An "abort" question interrupts a running turn the same way Ctrl+C does, and says
-    /// so; with nothing running there is nothing to interrupt, and it says that too.
+    
     #[test]
     fn an_abort_question_interrupts_a_running_turn_and_says_so() {
         let mut app = app();
@@ -4277,9 +3986,8 @@ mod tests {
         assert!(app.footer_override().is_none());
     }
 
-    /// Once a component has registered for a slot, a `component_changed` push naming its id
-    /// updates whichever slot that was — the header, the footer, or a widget by its key —
-    /// without saying which kind of slot it is again.
+    /// Once a component has registered for a slot, a `component_changed` push naming its id updates
+    /// whichever slot that was.
     #[test]
     fn a_component_changed_push_reaches_the_slot_it_registered_for() {
         let mut app = app();
@@ -4322,8 +4030,7 @@ mod tests {
             Some(["fresh footer".to_string()].as_slice())
         );
 
-        // The widget has to exist before a push can update its lines — the same as any
-        // other widget, registering only says where a later push for this id should land.
+        
         ask(
             &mut app,
             "set_widget",
@@ -4347,7 +4054,7 @@ mod tests {
         );
         assert_eq!(app.widgets_above(), vec![vec!["second".to_string()]]);
 
-        // An id nothing registered changes nothing, and answers rather than panicking.
+        
         let answer = ask(
             &mut app,
             "component_changed",
@@ -4358,8 +4065,7 @@ mod tests {
         assert_eq!(answer, serde_json::json!({}));
     }
 
-    /// Registering a new id for a slot retires whichever id was there before, so a stale
-    /// push from a replaced component can no longer reach it.
+    /// Registering a new id for a slot retires whichever id was there before.
     #[test]
     fn registering_a_slot_again_retires_the_previous_id() {
         let mut app = app();
@@ -4410,7 +4116,7 @@ mod tests {
             Vec::new(),
         );
         assert_eq!(app.activity(), "cooking up an answer");
-        // With nothing given back, the turn's own word returns.
+        
         ask(&mut app, "set_working_message", "", None, Vec::new());
         assert_eq!(app.activity(), "thinking");
     }
@@ -4428,7 +4134,7 @@ mod tests {
     #[test]
     fn a_working_indicator_can_be_set_hidden_and_reset() {
         let mut app = app();
-        // The built-in frames, before anything asks for anything else.
+        
         assert_eq!(
             app.indicator_frame(),
             crate::render::status::spinner_frame(0)
@@ -4443,7 +4149,7 @@ mod tests {
         );
         assert_eq!(app.indicator_frame(), "*");
 
-        // Empty frames hides the glyph without hiding the row.
+        
         ask(&mut app, "set_working_indicator", "set", None, Vec::new());
         assert_eq!(app.indicator_frame(), "");
 
@@ -4488,7 +4194,7 @@ mod tests {
         );
         assert!(app.widgets_below().is_empty());
 
-        // An empty set of lines is the same request as never having set one.
+        
         ask(
             &mut app,
             "set_widget",
@@ -4513,7 +4219,7 @@ mod tests {
         assert_eq!(app.widgets_below(), vec![vec!["hello".to_string()]]);
     }
 
-    /// A widget past the line cap is cut off with a note rather than shown whole.
+    
     #[test]
     fn a_long_widget_is_cut_off_with_a_note() {
         let mut app = app();
@@ -4531,9 +4237,8 @@ mod tests {
         }
     }
 
-    /// A tool's renderCall answer lands on the call it was asked about, by id, and is read
-    /// straight off the entry — no round trip through `render::tool::lines` needed to prove
-    /// the answer reached the transcript.
+    /// A tool's renderCall answer lands on the call it was asked about, by id, and is read straight
+    /// off the entry.
     #[test]
     fn a_tools_rendercall_answer_is_stored_on_its_entry() {
         let mut app = app();
@@ -4557,8 +4262,7 @@ mod tests {
         assert!(tool.has_custom_render());
     }
 
-    /// renderResult's answer is kept apart from renderCall's — both make up the row, in
-    /// call-then-result order.
+    
     #[test]
     fn a_tools_renderresult_answer_joins_its_rendercall_answer() {
         let mut app = app();
@@ -4586,9 +4290,7 @@ mod tests {
         assert_eq!(tool.render_lines(), vec!["lima:", "sunny, 18°C"]);
     }
 
-    /// A component pushing its own change — `ctx.invalidate()`, not a Rust-observed state
-    /// change — is found by the id it registered under and updates just that half of the
-    /// row.
+    /// A component pushing its own change.
     #[test]
     fn a_pushed_component_change_updates_whichever_renderer_registered_it() {
         let mut app = app();
@@ -4623,8 +4325,7 @@ mod tests {
         ask(&mut app, "set_editor_text", "", Some("hello"), Vec::new());
         assert_eq!(app.editor.text(), "hello");
 
-        // Routed through `Editor::paste` rather than inserted plainly, so a large paste
-        // still collapses behind a marker.
+        
         let large = "x".repeat(5000);
         ask(&mut app, "paste_to_editor", "", Some(&large), Vec::new());
         assert!(app.editor.text().contains("hello"));
@@ -4674,9 +4375,7 @@ mod tests {
         assert_eq!(app.theme, before);
     }
 
-    /// The shape `getTheme` hands an extension back — a name and every token's resolved
-    /// color — is exactly what `setTheme` accepts to switch to a theme carried whole rather
-    /// than looked up again by name.
+    /// The shape `getTheme` hands an extension back.
     #[test]
     fn a_theme_snapshot_can_be_set_back() {
         let mut app = app();
@@ -4704,8 +4403,7 @@ mod tests {
         assert!(app.component_overlay_id().is_none());
         assert!(!app.overlay_is_open());
 
-        // Left open rather than answered at once, the same as `select`/`confirm` — there is
-        // nothing yet to answer it with until the overlay closes.
+        
         let (request, _answered) = crate::ui::UiRequest::for_test(
             "custom",
             "component-1",
@@ -4721,9 +4419,7 @@ mod tests {
         assert!(app.overlay_is_open());
     }
 
-    /// Escape backs out of the overlay itself, the same as it does for a picker — it is not
-    /// forwarded to the component, which is why `handle_component_overlay` answers it rather
-    /// than routing it through `lib.rs`'s asynchronous input relay.
+    /// Escape backs out of the overlay itself, the same as it does for a picker.
     #[test]
     fn escape_closes_a_custom_overlay_and_cancels_the_question() {
         let mut app = app();
@@ -4740,9 +4436,7 @@ mod tests {
         );
     }
 
-    /// The component finishing on its own — `done(result)` — closes the overlay and answers
-    /// the original question with whatever it passed, the same result an interactive reader
-    /// backing out with a choice would have produced.
+    /// The component finishing on its own.
     #[test]
     fn a_component_finishing_itself_closes_the_overlay_with_its_result() {
         let mut app = app();
@@ -4773,8 +4467,7 @@ mod tests {
             Some(["v1".to_string()].as_slice())
         );
 
-        // An answer for a component that is not (or no longer) the open overlay changes
-        // nothing — it may have arrived after the overlay already closed.
+        
         app.set_component_overlay_lines("some-other-component", vec!["stale".to_string()]);
         assert_eq!(
             app.component_overlay_lines(),
@@ -4832,18 +4525,14 @@ fn wants_file_menu(line: &str, cursor: usize) -> bool {
     typed.get(start..).is_some_and(|word| word.starts_with('@'))
 }
 
-/// A byte offset into `line`, in characters instead — what the wire sends a cursor position
-/// as, since the extension process reads JavaScript strings, which index by character rather
-/// than by byte.
+/// A byte offset into `line`, in characters instead.
 fn char_offset(line: &str, byte_col: usize) -> usize {
     line.get(..byte_col)
         .map(|typed| typed.chars().count())
         .unwrap_or_else(|| line.chars().count())
 }
 
-/// The byte offset in `line` that is `char_col` characters in — the reverse of
-/// [`char_offset`], needed when an extension's answer names a cursor position in characters
-/// and [`Editor`] wants a byte index. Past the end of the line lands at the end of it.
+/// The byte offset in `line` that is `char_col` characters in.
 fn byte_offset(line: &str, char_col: usize) -> usize {
     line.char_indices()
         .nth(char_col)
@@ -4852,15 +4541,9 @@ fn byte_offset(line: &str, char_col: usize) -> usize {
 }
 
 /// How many files are worth offering to complete against.
-///
-/// A workspace larger than this is one where a name is quicker to type than to pick, and
-/// walking all of it would cost more than the completion is worth.
 const MAX_INDEXED_FILES: usize = 20_000;
 
 /// Every file in the workspace, as paths relative to it.
-///
-/// What the workspace ignores is ignored here too: a completion offering build output
-/// would bury the files someone actually means.
 fn walk_workspace(root: &std::path::Path) -> Vec<String> {
     let mut builder = ignore::WalkBuilder::new(root);
     builder

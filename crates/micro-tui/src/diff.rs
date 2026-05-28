@@ -1,12 +1,4 @@
 //! Line-based differencing.
-//!
-//! The file tools report what they did as a sentence, not as a patch, so the diff shown in
-//! the transcript is derived from the arguments the model sent: the text it asked to remove
-//! against the text it asked to insert. That is exactly the change it made, which is what a
-//! reader wants to check.
-//!
-//! The alignment is Myers' O(ND) algorithm over lines, with the common prefix and suffix
-//! trimmed first so a small edit inside a large block stays cheap.
 
 use crate::theme::Theme;
 use ratatui::style::Color;
@@ -15,7 +7,6 @@ use ratatui::style::Style;
 use ratatui::text::Span;
 
 /// Beyond this many lines the alignment is abandoned in favour of a wholesale replacement.
-/// A diff that large is unreadable anyway, and the quadratic worst case is not worth paying.
 const MAX_ALIGNED_LINES: usize = 4_000;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -62,8 +53,7 @@ pub fn diff_lines(old: &str, new: &str) -> Vec<Change> {
     changes
 }
 
-/// Split text into lines, treating a trailing newline as a terminator rather than as the
-/// start of an empty final line.
+
 fn split_lines(text: &str) -> Vec<&str> {
     if text.is_empty() {
         return Vec::new();
@@ -96,13 +86,12 @@ fn align(old: &[&str], new: &[&str]) -> Vec<Change> {
     myers(old, new)
 }
 
-/// Myers' greedy algorithm: advance the furthest-reaching path on each diagonal until one
-/// reaches the end, keeping every intermediate state so the path can be walked back.
+
 fn myers(old: &[&str], new: &[&str]) -> Vec<Change> {
     let n = old.len() as isize;
     let m = new.len() as isize;
     let max = (old.len() + new.len()) as isize;
-    // Diagonals run from -max to max, and the search reads one past each end.
+    
     let offset = max + 1;
     let mut furthest = vec![0isize; (2 * max + 3) as usize];
     let mut trace: Vec<Vec<isize>> = Vec::new();
@@ -188,9 +177,6 @@ pub enum LineKind {
 }
 
 /// One line of a diff as it is shown: a marker, a line number, and the text.
-///
-/// The number is the new file's for an added line and the old file's for a removed or
-/// unchanged one.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DiffLine {
     pub kind: LineKind,
@@ -204,8 +190,7 @@ pub const DEFAULT_CONTEXT: usize = 4;
 /// A tab is this many spaces, so a diff of indented code lines up.
 const TAB: &str = "   ";
 
-/// Lay a change out: numbered lines, context trimmed to `context` either side of each
-/// change, and everything further away replaced by one elision.
+
 pub fn format(old: &str, new: &str, context: usize) -> Vec<DiffLine> {
     let parts = parts(&diff_lines(old, new));
     let mut lines = Vec::new();
@@ -298,7 +283,7 @@ pub fn format(old: &str, new: &str, context: usize) -> Vec<DiffLine> {
                             &mut new_number,
                         );
                     }
-                    // Unchanged text far from every change is not shown at all.
+                    
                     (false, false) => {
                         old_number += texts.len();
                         new_number += texts.len();
@@ -348,8 +333,8 @@ pub fn number_width(old: &str, new: &str) -> usize {
     count(old).max(count(new)).to_string().len()
 }
 
-/// The text of one line, gutter included: the marker, the number padded to `width`, a
-/// space, and the content with tabs expanded.
+/// The text of one line, gutter included: the marker, the number padded to `width`, a space, and
+/// the content with tabs expanded.
 pub fn gutter(line: &DiffLine, width: usize) -> String {
     let marker = match line.kind {
         LineKind::Added => '+',
@@ -364,11 +349,6 @@ pub fn gutter(line: &DiffLine, width: usize) -> String {
 }
 
 /// Paint a laid-out diff, one styled line per input line.
-///
-/// A line that replaced exactly one other is compared word by word and the words that
-/// actually differ are shown in inverse video, which is how a small edit inside a long line
-/// is drawn. Anything larger is a block rewrite, where marking words is noise, so the lines
-/// are shown whole.
 pub fn paint(lines: &[DiffLine], width: usize, theme: &Theme) -> Vec<Vec<Span<'static>>> {
     let mut painted = Vec::new();
     let mut index = 0;
@@ -460,8 +440,7 @@ fn intra_line(
     (left, right)
 }
 
-/// Adds a run of changed words in inverse video. The indentation ahead of the first change
-/// is left alone, so a line that only shifted right is not lit up end to end.
+/// Adds a run of changed words in inverse video.
 fn push_changed(spans: &mut Vec<Span<'static>>, text: &str, style: Style, first: &mut bool) {
     let mut text = text;
     if *first {
@@ -480,8 +459,7 @@ fn push_changed(spans: &mut Vec<Span<'static>>, text: &str, style: Style, first:
     }
 }
 
-/// Align two lines word by word, each word carrying the whitespace that follows it so a
-/// change lands on a word rather than on the gap beside it.
+
 fn diff_words(old: &str, new: &str) -> Vec<Change> {
     let old_tokens = word_tokens(old);
     let new_tokens = word_tokens(new);
@@ -537,7 +515,6 @@ mod tests {
     }
 
     /// Applying the deletions and insertions to `old` must reproduce `new` exactly.
-    /// Lines added and removed across a change list.
     fn counts(changes: &[Change]) -> (usize, usize) {
         changes
             .iter()
@@ -668,7 +645,7 @@ mod tests {
         let old = numbered(12, 1);
         let new = old.replace("line 12", "line twelve");
         let lines = laid_out(&old, &new, 1);
-        // Two digits wide, so single-digit numbers carry a leading space.
+        
         assert!(lines.iter().any(|line| line == " 11 line 11"));
         assert!(lines.iter().any(|line| line == "-12 line 12"));
         assert!(lines.iter().any(|line| line == "+12 line twelve"));
@@ -703,7 +680,7 @@ mod tests {
             .replace("line 4", "LINE 4");
         let lines = laid_out(&old, &new, 4);
 
-        // Two lines separate the changes, well under twice the context, so nothing elides.
+        
         assert!(!lines.iter().any(|line| line.ends_with("...")));
         assert!(lines.iter().any(|line| line == " 2 line 2"));
         assert!(lines.iter().any(|line| line == " 3 line 3"));
@@ -717,9 +694,7 @@ mod tests {
             .replace("line 25", "LINE 25");
         let lines = laid_out(&old, &new, 2);
 
-        // The 22 lines between the two changes elide down to their two edges, and the tail
-        // past the second change elides too. The single line before the first change is
-        // shorter than the context, so it is kept whole.
+        
         assert_eq!(lines.iter().filter(|line| line.ends_with("...")).count(), 2);
         assert!(lines.iter().any(|line| line == "  4 line 4"));
         assert!(lines.iter().any(|line| line == " 23 line 23"));
@@ -727,7 +702,7 @@ mod tests {
             !lines.iter().any(|line| line.contains("line 13")),
             "the middle of the gap should be gone"
         );
-        // The elision keeps the gutter's width so the numbers stay in column.
+        
         assert!(lines.contains(&"    ...".to_string()));
     }
 
@@ -751,7 +726,7 @@ mod tests {
         let new = old.replace("line 25", "LINE 25");
         let lines = laid_out(&old, &new, 2);
 
-        // The skipped lines still advance the count, so what follows is numbered correctly.
+        
         assert!(lines.iter().any(|line| line == "-25 line 25"));
         assert!(lines.iter().any(|line| line == "+25 LINE 25"));
     }
@@ -829,7 +804,7 @@ mod tests {
         assert_eq!(painted.len(), 2);
         assert_eq!(painted_text(&painted[0]), "-1 let value = compute(a);");
         assert_eq!(painted_text(&painted[1]), "+1 let value = compute(b);");
-        // The shared words are not lit up, only the one that differs.
+        
         assert_eq!(inverted(&painted[0]), vec!["compute(a);"]);
         assert_eq!(inverted(&painted[1]), vec!["compute(b);"]);
     }
@@ -844,7 +819,7 @@ mod tests {
 
         assert_eq!(inverted(&painted[0]), vec!["alpha"]);
         assert_eq!(inverted(&painted[1]), vec!["beta"]);
-        // The indentation is still there, just not marked.
+        
         assert_eq!(painted_text(&painted[0]), "-1     alpha");
     }
 
@@ -857,7 +832,7 @@ mod tests {
         let painted = paint(&lines, number_width(old, new), &theme);
 
         assert_eq!(painted.len(), 4);
-        // Removed lines come first, then added, and none carry inverse marks.
+        
         assert_eq!(painted_text(&painted[0]), "-1 one");
         assert_eq!(painted_text(&painted[1]), "-2 two");
         assert_eq!(painted_text(&painted[2]), "+1 three");

@@ -1,13 +1,4 @@
 //! Maths, written the way a terminal can show it.
-//!
-//! A model asked about anything mathematical answers in LaTeX, and a terminal has no way
-//! to typeset it. What it does have is a large part of the same alphabet: Unicode carries
-//! the Greek letters, the operators, the arrows, and enough superscripts and subscripts to
-//! read an exponent. Rendering here means substituting those, and arranging the few
-//! structures — fractions, roots, accents — that have no single character.
-//!
-//! What cannot be shown is left as it was written. A reader who knows LaTeX can still read
-//! `\begin{matrix}`; a reader who does not is no worse off than with a blank.
 
 /// Symbols, and the characters they are drawn as.
 const SYMBOLS: &[(&str, &str)] = &[
@@ -342,7 +333,7 @@ const ACCENTS: &[(&str, &str)] = &[
     ("widehat", "\u{0302}"),
     ("widetilde", "\u{0303}"),
 ];
-/// Commands that stand for a word rather than a symbol: `\sin`, `\log`, `\max`.
+
 const NAMED_OPERATORS: &[&str] = &[
     "arccos", "arcsin", "arctan", "arg", "cos", "cosh", "cot", "coth", "csc", "deg", "det", "dim",
     "exp", "gcd", "hom", "inf", "ker", "lg", "lim", "liminf", "limsup", "ln", "log", "max", "min",
@@ -402,9 +393,6 @@ fn look_up<'a>(table: &'a [(&'a str, &'a str)], name: &str) -> Option<&'a str> {
 }
 
 /// Map every character of `value` through a table, or nothing when one has no mapping.
-///
-/// All or nothing on purpose: half a superscript reads as a mistake rather than as maths,
-/// so an exponent with no character for one of its digits is written the plain way.
 fn map_all(value: &str, table: &[(&str, &str)]) -> Option<String> {
     value
         .chars()
@@ -413,10 +401,6 @@ fn map_all(value: &str, table: &[(&str, &str)]) -> Option<String> {
 }
 
 /// Render LaTeX as text a terminal can show, or nothing when there is nothing to show.
-/// Draw an expression the way display maths is set: a fraction stacked over its rule, a
-/// big operator carrying its limits above and below.
-///
-/// Several rows, so it belongs on lines of its own rather than in a sentence.
 pub fn render_display(source: &str) -> Option<String> {
     let trimmed = source.trim();
     if trimmed.is_empty() {
@@ -429,8 +413,8 @@ pub fn render_display(source: &str) -> Option<String> {
     (!drawn.trim().is_empty()).then_some(drawn)
 }
 
-/// A piece of drawn maths: its rows, how wide they are, and which row sits on the line
-/// everything beside it is written on.
+/// A piece of drawn maths: its rows, how wide they are, and which row sits on the line everything
+/// beside it is written on.
 struct Drawn {
     lines: Vec<String>,
     width: usize,
@@ -438,9 +422,6 @@ struct Drawn {
 }
 
 /// Set `text` out over as many rows as its stacked pieces need.
-///
-/// Every piece beside another is lined up on its baseline — the row a reader follows across
-/// — so a fraction and the `=` next to it sit on the same line however tall the fraction is.
 fn lay_out(text: &str, pieces: &[Stacked]) -> Drawn {
     let mut rows: Vec<String> = Vec::new();
     let mut first_baseline = 0;
@@ -504,7 +485,7 @@ fn draw_piece(piece: &Stacked, pieces: &[Stacked]) -> Drawn {
         Stacked::Fraction { above, below } => {
             let above = lay_out(above, pieces);
             let below = lay_out(below, pieces);
-            // A space each side of the rule, so a fraction does not touch what abuts it.
+            
             let inner = above.width.max(below.width).max(1);
             let width = inner + 2;
             let mut lines: Vec<String> = above
@@ -580,7 +561,7 @@ fn alongside(pieces: &[Drawn]) -> Drawn {
     for row in 0..=baseline + below {
         let mut line = String::new();
         for piece in pieces {
-            // Where this row falls in a piece whose baseline may sit higher than the whole.
+            
             let at = (row + piece.baseline).checked_sub(baseline);
             match at.and_then(|at| piece.lines.get(at)) {
                 Some(text) => {
@@ -614,11 +595,9 @@ pub fn render(source: &str) -> Option<String> {
 struct Renderer {
     characters: Vec<char>,
     at: usize,
-    /// Whether a fraction is stacked over a rule and an operator's limits sit above and
-    /// below it, rather than everything being written on one line.
+    
     display: bool,
-    /// The stacked pieces met so far. What is rendered carries a marker in their place,
-    /// because how wide one is cannot be known until the line around it has been read.
+    /// The stacked pieces met so far.
     layout: Vec<Stacked>,
 }
 
@@ -635,13 +614,11 @@ enum Stacked {
     },
 }
 
-/// Where a stacked piece stands in the line around it. Private-use characters, so nothing
-/// a source could contain is mistaken for one.
+/// Where a stacked piece stands in the line around it.
 const MARK_START: char = '\u{f0000}';
 const MARK_END: char = '\u{f0001}';
 
-/// The operators whose limits are written above and below them in display maths, rather
-/// than beside them.
+
 const BIG_OPERATORS: [&str; 10] = ["∑", "∏", "∐", "∫", "∬", "∭", "∮", "⋃", "⋂", "⨆"];
 
 /// Move every mark in `text` on by `base`, for splicing one renderer's pieces onto another's.
@@ -692,8 +669,7 @@ impl Renderer {
         let mut out = String::new();
         while self.at < self.characters.len() {
             let piece = self.step();
-            // A big operator's limits are written beside it on one line and above and below
-            // it where there are three, which is what `\sum_{i=1}^{n}` is asking for.
+            
             let piece = match self.display && BIG_OPERATORS.contains(&piece.trim()) {
                 true => {
                     let operator = piece.trim().to_string();
@@ -703,7 +679,7 @@ impl Renderer {
             };
             out.push_str(&piece);
         }
-        // A named operator sits against what follows it; a space keeps `\sin x` readable.
+        
         out.replace("  ", " ")
     }
 
@@ -734,10 +710,6 @@ impl Renderer {
     }
 
     /// Render a piece of source with this renderer's style, keeping whatever it stacks.
-    ///
-    /// A sub-renderer numbers its own stacked pieces from zero, so they are renumbered onto
-    /// the end of this one's list and the marks in its text moved to match. Without that a
-    /// fraction inside a fraction would point at the wrong piece.
     fn render_inner(&mut self, inner: &str) -> String {
         let mut sub = Renderer::styled(inner, self.display);
         let text = sub.run();
@@ -763,7 +735,7 @@ impl Renderer {
                 self.script(kind, &value)
             }
             '$' => {
-                // A delimiter that reached here is part of the text, not a boundary.
+                
                 self.at += 1;
                 String::new()
             }
@@ -793,7 +765,7 @@ impl Renderer {
         }
         let inner: String = self.characters[start..self.at].iter().collect();
         if self.at < self.characters.len() {
-            // Step over the closing brace.
+            
             self.at += 1;
         }
         self.render_inner(&inner)
@@ -819,12 +791,12 @@ impl Renderer {
 
     /// The name after a backslash.
     fn command_name(&mut self) -> String {
-        // Step over the backslash.
+        
         self.at += 1;
         if self.at >= self.characters.len() {
             return String::new();
         }
-        // A command whose name is punctuation is one character long.
+        
         if !self.characters[self.at].is_ascii_alphabetic() {
             let single = self.characters[self.at];
             self.at += 1;
@@ -844,8 +816,7 @@ impl Renderer {
             "frac" | "dfrac" | "tfrac" => {
                 let numerator = self.argument();
                 let denominator = self.argument();
-                // Written out on one line where there is only one line to write on, and
-                // stacked over a rule where there is room for three.
+                
                 return match self.display {
                     true => self.stack(Stacked::Fraction {
                         above: numerator,
@@ -855,7 +826,7 @@ impl Renderer {
                 };
             }
             "sqrt" => {
-                // An index in brackets makes it a root of that degree.
+                
                 let degree = self.bracketed();
                 let value = self.argument();
                 return match degree {
@@ -867,7 +838,7 @@ impl Renderer {
                 let value = self.argument();
                 return map_all(&value, BLACKBOARD).unwrap_or(value);
             }
-            // A style command shows its argument and nothing of itself.
+            
             name if IGNORED_COMMANDS.contains(&name) => {
                 return match self.characters.get(self.at) {
                     Some('{') => {
@@ -890,14 +861,14 @@ impl Renderer {
             return symbol.to_string();
         }
 
-        // Nothing known by that name, so it is written as it was.
+        
         match name.is_empty() {
             true => "\\".to_string(),
             false => format!("\\{name}"),
         }
     }
 
-    /// A `[...]` argument, which is how a root's degree is given.
+    
     fn bracketed(&mut self) -> Option<String> {
         if self.characters.get(self.at) != Some(&'[') {
             return None;
@@ -923,7 +894,7 @@ impl Renderer {
         };
         match map_all(value, table) {
             Some(mapped) => mapped,
-            // Nothing to raise it with, so it is written the way it was typed.
+            
             None => format!("{kind}({value})"),
         }
     }
@@ -933,8 +904,7 @@ impl Renderer {
 mod tests {
     use super::*;
 
-    /// Display maths is set over rows: a fraction stacked over its rule, and whatever is
-    /// beside it lined up on that rule rather than on the top of it.
+    
     #[test]
     fn a_fraction_is_stacked_over_its_rule() {
         assert_eq!(
@@ -947,7 +917,7 @@ mod tests {
         );
     }
 
-    /// A big operator carries its limits above and below rather than beside it.
+    
     #[test]
     fn an_operators_limits_sit_above_and_below_it() {
         assert_eq!(
@@ -985,14 +955,13 @@ mod tests {
         assert_eq!(render(r"\infty").as_deref(), Some("∞"));
     }
 
-    /// An exponent is raised where every character can be, and written plainly where one
-    /// cannot: half a raised number reads as a mistake rather than as maths.
+    
     #[test]
     fn an_exponent_is_raised_when_it_can_be() {
         assert_eq!(render(r"x^2").as_deref(), Some("x²"));
         assert_eq!(render(r"x^{10}").as_deref(), Some("x¹⁰"));
         assert_eq!(render(r"e^{-x}").as_deref(), Some("e⁻ˣ"));
-        // No raised form for this, so it stays legible instead.
+        
         assert_eq!(render(r"x^{\alpha}").as_deref(), Some("x^(α)"));
     }
 
@@ -1015,8 +984,8 @@ mod tests {
         assert_eq!(render(r"\sqrt[3]{x}").as_deref(), Some("³√(x)"));
     }
 
-    /// A named operator is a word, and keeps a space around it so it does not run into
-    /// what it applies to.
+    /// A named operator is a word, and keeps a space around it so it does not run into what it
+    /// applies to.
     #[test]
     fn a_named_operator_stays_a_word() {
         assert_eq!(render(r"\sin x").as_deref(), Some("sin x"));
@@ -1050,8 +1019,8 @@ mod tests {
         assert_eq!(render(r"\text{if } x > 0").as_deref(), Some("if x > 0"));
     }
 
-    /// What cannot be shown is left as it was written, so a reader who knows LaTeX can
-    /// still read it.
+    /// What cannot be shown is left as it was written, so a reader who knows LaTeX can still read
+    /// it.
     #[test]
     fn what_cannot_be_shown_is_left_alone() {
         let rendered = render(r"\begin{matrix} a \end{matrix}").expect("it renders something");

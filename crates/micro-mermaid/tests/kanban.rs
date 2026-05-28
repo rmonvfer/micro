@@ -1,5 +1,5 @@
-//! Kanban boards, exercised through the public `render` entry point the way
-//! `tests/render.rs` exercises every other kind.
+//! Kanban boards, exercised through the public `render` entry point the way `tests/render.rs`
+//! exercises every other kind.
 
 use micro_mermaid::{diagram_kind, render};
 
@@ -7,8 +7,8 @@ fn plain(src: &str) -> Vec<String> {
     render(src).expect("drawn").plain
 }
 
-/// Columns of cards are drawn side by side, each task its own bordered card
-/// under its column's heading.
+/// Columns of cards are drawn side by side, each task its own bordered card under its column's
+/// heading.
 #[test]
 fn columns_of_cards_are_drawn_side_by_side() {
     let src = "kanban\n  todo[To Do]\n    t1[Write docs]\n  done[Done]\n    t2[Ship it]@{ assigned: 'Alice', priority: 'High' }";
@@ -23,8 +23,7 @@ fn columns_of_cards_are_drawn_side_by_side() {
     );
 }
 
-/// An unparseable kanban board renders nothing, the same way an
-/// unparseable class diagram does.
+
 #[test]
 fn an_unparseable_kanban_board_renders_nothing() {
     let src = "kanban\n  [Column with no id]";

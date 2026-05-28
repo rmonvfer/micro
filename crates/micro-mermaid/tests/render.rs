@@ -1,7 +1,4 @@
-//! End-to-end tests against the public API: `render`, `diagram_kind` and
-//! `source_box`. Every expected `plain` array here was captured by running
-//! the original grok-mermaid TypeScript implementation on the same source, so
-//! a mismatch means this port's layout or drawing has actually diverged.
+//! End-to-end tests against the public API: `render`, `diagram_kind` and `source_box`.
 
 use micro_mermaid::{diagram_kind, render, source_box, Cls, DiagramKind};
 
@@ -11,7 +8,7 @@ fn plain(src: &str) -> Vec<String> {
         .plain
 }
 
-// ------------------------------------------------------------------ flowchart
+
 
 #[test]
 fn a_simple_chain_flows_left_to_right() {
@@ -299,7 +296,7 @@ fn subgraphs_nested_past_the_depth_cap_refuse_to_render() {
     assert!(render(&src).is_none());
 }
 
-// ---------------------------------------------------------------------- state
+
 
 #[test]
 fn a_state_diagram_draws_start_and_end_markers() {
@@ -362,7 +359,7 @@ fn a_bad_final_line_is_dropped_and_reported() {
     );
 }
 
-// ---------------------------------------------------------------------- class
+
 
 #[test]
 fn a_class_diagram_divides_its_box_into_compartments() {
@@ -441,12 +438,11 @@ fn a_dependency_relation_draws_a_dotted_line() {
 fn an_unparseable_class_diagram_renders_nothing() {
     let src = "classDiagram\n  this is not valid at all !!!";
     assert!(render(src).is_none());
-    // `diagram_kind` still recognises the header, which is what tells a
-    // syntax error apart from a diagram type this renderer does not draw.
+    
     assert_eq!(diagram_kind(src), Some(DiagramKind::Class));
 }
 
-// ------------------------------------------------------------------------ er
+
 
 #[test]
 fn an_er_diagram_shows_crows_foot_cardinality() {
@@ -471,7 +467,7 @@ fn an_er_diagram_shows_crows_foot_cardinality() {
     );
 }
 
-// ------------------------------------------------------------------ sequence
+
 
 #[test]
 fn a_sequence_diagram_draws_lifelines_and_messages() {
@@ -568,12 +564,11 @@ fn a_sequence_loop_block_draws_dividers() {
     );
 }
 
-// -------------------------------------------------------------------- general
+
 
 #[test]
 fn diagram_kind_is_none_for_a_grammar_this_renderer_does_not_draw() {
-    // A grammar with no drawing here is refused outright, so the caller can show the
-    // source instead of a picture that would be wrong.
+    
     assert_eq!(diagram_kind("zenuml\n  A->B: hi"), None);
     assert!(render("zenuml\n  A->B: hi").is_none());
     assert_eq!(diagram_kind("C4Context\n  title System"), None);
@@ -621,7 +616,7 @@ fn diagram_kind_recognises_every_supported_grammar() {
     );
 }
 
-// ---------------------------------------------------------------- source box
+
 
 #[test]
 fn source_box_frames_an_unsupported_diagram() {

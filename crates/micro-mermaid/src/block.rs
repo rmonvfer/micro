@@ -1,14 +1,4 @@
 //! Block diagrams, drawn as a grid of boxes with arrows between them.
-//!
-//! A block diagram already declares its own layout — `columns N` says how
-//! many boxes make a row, so there is no ranking or crossing-reduction to do
-//! the way a flowchart needs. What is left is the part flowchart layout
-//! already solves well: a bordered box for one block (`draw_box`), a framed
-//! box holding a grid of its own for a `block:id … end` group, and a
-//! right-angle line between any two boxes once both have a position. Every
-//! block, wherever it is nested, ends up with one absolute position on the
-//! root canvas, so an arrow can join any two of them without having to know
-//! or care which group either one is inside.
 
 use std::collections::HashMap;
 
@@ -22,15 +12,12 @@ use crate::layout::{draw_box, Placed};
 use crate::types::Cls;
 use crate::width::string_width;
 
-/// Blocks and groups combined, past which there is nothing left to read as a
-/// grid — the spirit of `MAX_NODES` in `graph.rs`, applied to a different
-/// kind of item.
+/// Blocks and groups combined, past which there is nothing left to read as a grid.
 const MAX_CELLS: usize = 128;
-/// `block:id` nested inside `block:id` this many times and the diagram is
-/// refused rather than laid out.
+
 const MAX_DEPTH: usize = 6;
-/// Space between grid cells, wide enough for an arrow's right-angle bend to
-/// have a row or column of its own to turn in.
+/// Space between grid cells, wide enough for an arrow's right-angle bend to have a row or column of
+/// its own to turn in.
 const GRID_GAP: usize = 3;
 const PAD: usize = 1;
 const MAX_CANVAS_CELLS: usize = 1 << 21;
@@ -127,7 +114,7 @@ pub(crate) fn render_block(src: &str) -> Option<Canvas> {
     for line in lines {
         apply(line, &mut parser)?;
     }
-    // An unclosed `block:` is a broken diagram, not a partial one.
+    
     if !parser.stack.is_empty() || parser.top_children.is_empty() {
         return None;
     }
@@ -198,8 +185,7 @@ fn apply(line: &str, p: &mut Parser) -> Option<()> {
         return Some(());
     }
 
-    // A row of a block diagram is written as several blocks on one line — that is what
-    // `columns` is counting — so the line is split before any of it is read as a block.
+    
     for declaration in declarations(line) {
         if p.cell_count >= MAX_CELLS {
             return None;
@@ -222,9 +208,6 @@ fn apply(line: &str, p: &mut Parser) -> Option<()> {
 }
 
 /// The block declarations on one line.
-///
-/// Blocks are separated by spaces, but a label may hold spaces of its own, so the split
-/// only happens outside brackets: `A["One thing"] B["Another"]` is two blocks, not four.
 fn declarations(line: &str) -> Vec<&str> {
     let mut out = Vec::new();
     let mut depth = 0usize;
@@ -253,9 +236,7 @@ fn declarations(line: &str) -> Vec<&str> {
     out
 }
 
-/// `id`, `id[Label]`, `id(Label)`, `id((Label))` or `id{Label}` — enough of
-/// flowchart's bracket vocabulary to shape a block, without needing that
-/// grammar's full generality.
+/// `id`, `id[Label]`, `id(Label)`, `id((Label))` or `id{Label}`.
 fn parse_head(s: &str) -> (String, Option<String>, Shape) {
     let id_end = s.find(|c: char| !is_id_char(c)).unwrap_or(s.len());
     let id = s[..id_end].to_string();
@@ -275,9 +256,7 @@ fn parse_head(s: &str) -> (String, Option<String>, Shape) {
     (id, None, Shape::Rect)
 }
 
-/// `A --> B`, ignoring anything past the target id — an edge label on a
-/// block arrow has nowhere natural to sit once the boxes are placed by grid
-/// position rather than by rank, so it is read and set aside.
+/// `A --> B`, ignoring anything past the target id.
 fn parse_arrow(line: &str) -> Option<(String, String)> {
     let (lhs, rhs) = line.split_once("-->")?;
     let from = lhs.trim();
@@ -345,9 +324,7 @@ fn measure(cell: &Cell) -> MeasuredCell {
     }
 }
 
-/// Lay `cells` into a grid of `columns` columns, filled row-major, every cell
-/// sharing the width and height of the widest and tallest one: a block
-/// diagram reads as a table, and a table's cells line up.
+
 fn pack_grid(
     cells: Vec<MeasuredCell>,
     columns: usize,
@@ -424,25 +401,7 @@ fn draw(parser: &Parser) -> Option<Canvas> {
     Some(canvas)
 }
 
-/// Join two boxes with a single right-angle bend, entering whichever side of
-/// the target faces the source: below/above when the vertical gap is the
-/// larger one, left/right otherwise, matching how the grid itself reads —
-/// row-major, so a jump to a later row is the common case.
-///
-/// The line routes through open space with `seg_v`/`seg_h`, which will not
-/// draw over a box's own cells — but a block nested in a group sits flush
-/// against that group's border, with no open cell of its own to land on. The
-/// two ends that actually touch a box, source and target alike, go through
-/// `junction` instead, the same way flowchart routing meets a box border:
-/// that call adds its bit even to a cell a box has already claimed.
-///
-/// What this does not do is route around a third box sitting between source
-/// and target: the bend is always the midpoint of the straight span between
-/// them, so a line that has to pass near unrelated content on its way can
-/// come out short where that content blocks it, the same way a flowchart's
-/// own edges are not guaranteed clear of everything they pass near. The
-/// arrowhead itself is drawn unconditionally, so the target is always
-/// visibly the one being pointed to even on a route that loses a few cells.
+
 fn connect(
     canvas: &mut Canvas,
     from: (usize, usize, usize, usize),
@@ -493,22 +452,19 @@ mod tests {
             .plain
     }
 
-    /// `columns N` arranges the blocks into a grid that many wide, wrapping
-    /// to a new row after each `N` blocks.
+    /// `columns N` arranges the blocks into a grid that many wide, wrapping to a new row after each
+    /// `N` blocks.
     #[test]
     fn columns_wraps_blocks_into_a_grid() {
         let rows = drawn("block-beta\n  columns 2\n  a\n  b\n  c");
         let joined = rows.join("\n");
         assert!(joined.contains('a') && joined.contains('b') && joined.contains('c'));
-        // Three blocks at two columns: the third starts a second row, so it
-        // is drawn below the first rather than beside it.
+        
         let row_of = |c: char| rows.iter().position(|r| r.contains(c)).unwrap();
         assert!(row_of('c') > row_of('a'), "{rows:?}");
     }
 
-    /// `space` reserves a grid cell without drawing into it, so the block
-    /// after it lands one slot further along instead of right beside its
-    /// neighbour.
+    /// `space` reserves a grid cell without drawing into it.
     #[test]
     fn space_leaves_a_gap_in_the_grid() {
         let with_space = drawn("block-beta\n  columns 3\n  a\n  space\n  b");
@@ -521,8 +477,8 @@ mod tests {
         assert!(col_of(&with_space, 'b') > col_of(&without, 'b'));
     }
 
-    /// A `block:id … end` group is drawn as a frame around its own grid of
-    /// children, labelled with its id.
+    /// A `block:id … end` group is drawn as a frame around its own grid of children, labelled with
+    /// its id.
     #[test]
     fn a_block_group_frames_its_children() {
         let rows = drawn("block-beta\n  block:grp\n    a\n    b\n  end");
@@ -535,8 +491,8 @@ mod tests {
         );
     }
 
-    /// An arrow between two top-level blocks is drawn as a right-angle line
-    /// with an arrowhead at the target.
+    /// An arrow between two top-level blocks is drawn as a right-angle line with an arrowhead at
+    /// the target.
     #[test]
     fn an_arrow_joins_two_blocks() {
         let rows = drawn("block-beta\n  columns 1\n  a\n  b\n  a --> b");
@@ -544,9 +500,7 @@ mod tests {
         assert!(joined.contains('▼'), "{rows:?}");
     }
 
-    /// An arrow can reach a block nested inside a group just as well as a
-    /// top-level one, because every block gets one absolute position
-    /// regardless of how deep it is declared.
+    /// An arrow can reach a block nested inside a group just as well as a top-level one.
     #[test]
     fn an_arrow_can_reach_into_a_group() {
         let rows = drawn("block-beta\n  columns 1\n  a\n  block:grp\n    b\n  end\n  a --> b");
@@ -561,8 +515,7 @@ mod tests {
         assert!(rows.join("\n").contains("Start Here"), "{rows:?}");
     }
 
-    /// Anything that is not a block diagram, or breaks down partway through,
-    /// is refused rather than drawn wrong.
+    
     #[test]
     fn what_is_not_a_block_diagram_is_left_alone() {
         assert!(render_block("graph TD\n A --> B").is_none());

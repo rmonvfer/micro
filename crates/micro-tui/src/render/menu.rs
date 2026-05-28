@@ -1,8 +1,4 @@
 //! The slash-command menu, drawn under the input.
-//!
-//! An arrow marks the highlighted row, the command names sit in a column of their own,
-//! descriptions fill what is left, and a count appears when the list is longer than the
-//! window.
 
 use crate::menu::Menu;
 #[cfg(test)]
@@ -16,7 +12,7 @@ use ratatui::text::Span;
 
 /// Below this the description column is dropped and only names are shown.
 const MIN_WIDTH_FOR_DESCRIPTIONS: usize = 40;
-/// Columns the selection arrow occupies. It is three bytes wide but two columns.
+/// Columns the selection arrow occupies.
 const MARKER_WIDTH: usize = 2;
 /// Gap between the name column and the descriptions.
 const COLUMN_GAP: usize = 2;
@@ -44,7 +40,7 @@ pub fn lines(menu: &Menu, theme: &Theme, width: usize, rows: usize) -> Vec<Line<
         })
         .collect();
 
-    // The count only earns its row when the window is hiding something.
+    
     if window.len() < menu.items().len() {
         out.push(super::clip(
             Line::from(vec![Span::styled(
@@ -69,8 +65,7 @@ fn row(
         true => "→ ",
         false => "  ",
     };
-    // The highlighted row runs whole through `accent` — description included — and every
-    // other row stays in the default foreground with its description in `muted`.
+    
     let name = match selected {
         true => Style::new().fg(theme.accent),
         false => Style::new().fg(theme.text),

@@ -1,15 +1,8 @@
 //! Large pastes, held aside and stood in for by a marker.
-//!
-//! Dropping a thousand lines into the prompt makes the prompt unreadable and unusable — the
-//! cursor has to travel through it, wrapping recomputes over it, and none of it is what the
-//! user wants to look at. So a large paste is kept off to one side and a short marker takes
-//! its place: `[paste #1 +123 lines]`. The marker behaves as one character would — motion
-//! steps over it whole and backspace takes all of it — and the real text goes back in when
-//! the prompt is sent.
 
 use std::collections::BTreeMap;
 
-/// A paste longer than this many lines is held aside rather than inserted.
+
 const MAX_LINES: usize = 10;
 /// So is one longer than this many characters.
 const MAX_CHARS: usize = 1_000;
@@ -47,10 +40,6 @@ impl PasteStore {
     }
 
     /// Forget one paste and close the gap its number left.
-    ///
-    /// Every higher number moves down one so the markers stay a run from one, which is what
-    /// keeps `#3` from appearing in a prompt that has only two pastes in it. Returns the
-    /// renumbering, so the text holding the markers can be rewritten to match.
     pub fn remove(&mut self, id: usize) -> Vec<(usize, usize)> {
         if self.entries.remove(&id).is_none() {
             return Vec::new();
@@ -83,7 +72,7 @@ impl PasteStore {
             out.push_str(&rest[..found.start]);
             match self.get(found.id) {
                 Some(paste) => out.push_str(paste),
-                // A marker with nothing behind it is text the user typed, and is left alone.
+                
                 None => out.push_str(&rest[found.start..found.end]),
             }
             rest = &rest[found.end..];
@@ -93,7 +82,7 @@ impl PasteStore {
     }
 }
 
-/// Where a marker sits in some text, and which paste it stands for.
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Marker {
     pub start: usize,
@@ -107,9 +96,6 @@ pub fn is_large(text: &str) -> bool {
 }
 
 /// The marker for a paste: lines when there are too many of them, characters otherwise.
-///
-/// The line form wins when a paste is over both limits, because a count of lines is what
-/// tells someone what they just pasted.
 pub fn marker_for(id: usize, text: &str) -> String {
     let lines = text.split('\n').count();
     match lines > MAX_LINES {
@@ -119,10 +105,6 @@ pub fn marker_for(id: usize, text: &str) -> String {
 }
 
 /// Tidy pasted text into something that can go in a prompt.
-///
-/// Line endings are normalized, tabs become spaces so the width is predictable, and every
-/// other control character is dropped — a terminal will happily paste escape sequences, and
-/// none of them belong in a prompt.
 pub fn clean(text: &str) -> String {
     text.replace("\r\n", "\n")
         .replace('\r', "\n")
@@ -161,7 +143,7 @@ pub fn find_marker(text: &str) -> Option<Marker> {
     None
 }
 
-/// The marker ending exactly at `index`, which is what backspace is about to delete.
+
 pub fn marker_ending_at(text: &str, index: usize) -> Option<Marker> {
     let mut from = 0;
     while let Some(marker) = find_marker(&text[from..]) {
@@ -218,7 +200,7 @@ pub fn marker_containing(text: &str, index: usize) -> Option<Marker> {
 /// Rewrite the numbers in markers after a paste was removed.
 pub fn renumber(text: &str, moved: &[(usize, usize)]) -> String {
     let mut out = text.to_string();
-    // Ascending, so a number never lands on one still waiting to move.
+    
     let mut moved = moved.to_vec();
     moved.sort_by_key(|(from, _)| *from);
     for (from, to) in moved {
@@ -237,8 +219,7 @@ fn parse_marker(text: &str) -> Option<(usize, usize)> {
     let id = digits.parse().ok()?;
     let after = &rest[digits.len()..];
     let close = after.find(']')?;
-    // Only the forms a placeholder is written in count; anything else is text that happens
-    // to look close.
+    
     let body = &after[..close];
     let valid = body.is_empty()
         || (body.starts_with(" +") && body.ends_with(" lines"))

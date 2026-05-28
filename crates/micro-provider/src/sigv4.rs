@@ -1,15 +1,4 @@
 //! Signing a request the way AWS expects to be asked.
-//!
-//! AWS authenticates a request by having the caller prove it holds the secret, without
-//! ever sending it: the request is reduced to a canonical form, that form is hashed, and
-//! the hash is signed with a key derived from the secret, the date, the region and the
-//! service. The signature travels in the `Authorization` header alongside the parts of
-//! the request that were signed, so the service can repeat the calculation and compare.
-//!
-//! What matters here is that the canonical form is byte-exact. A header in the wrong
-//! order, a missing trailing newline, or a differently-cased name produces a different
-//! hash and a rejected request, with an error that says only that the signature did not
-//! match.
 
 use hmac::Mac;
 use sha2::Digest;
@@ -38,17 +27,12 @@ pub struct Request<'a> {
     pub path: &'a str,
     /// The query string as it appears after `?`, or empty.
     pub query: &'a str,
-    /// Header names and values. Names are lowercased and sorted here, so the caller may
-    /// supply them in any order.
+    /// Header names and values.
     pub headers: Vec<(String, String)>,
     pub body: &'a [u8],
 }
 
 /// The headers that carry the signature, ready to be added to the request.
-///
-/// `timestamp` is the moment the request is made, formatted as AWS expects it:
-/// `YYYYMMDDTHHMMSSZ`. It is passed in rather than read from the clock so a signature can
-/// be checked against a known one.
 pub fn sign(
     request: &Request<'_>,
     credentials: &Credentials,
@@ -59,7 +43,7 @@ pub fn sign(
     let date = &timestamp[..8];
     let scope = format!("{date}/{region}/{service}/{TERMINATOR}");
 
-    // Every header travels signed, plus the ones AWS adds for the signature itself.
+    
     let mut headers: Vec<(String, String)> = request
         .headers
         .iter()
@@ -81,7 +65,7 @@ pub fn sign(
         .collect();
     let payload_hash = hex(&Sha256::digest(request.body));
 
-    // The order and the newlines are the format, not decoration.
+    
     let canonical_request = format!(
         "{}\n{}\n{}\n{}\n{}\n{}",
         request.method,
@@ -114,8 +98,8 @@ pub fn sign(
     out
 }
 
-/// The key the signature is made with, derived one step at a time so the secret itself
-/// never signs anything directly.
+/// The key the signature is made with, derived one step at a time so the secret itself never signs
+/// anything directly.
 fn signing_key(credentials: &Credentials, date: &str, region: &str, service: &str) -> Chained {
     let start = format!("AWS4{}", credentials.secret_access_key);
     Chained(start.into_bytes())
@@ -165,9 +149,6 @@ pub fn timestamp_now() -> String {
 }
 
 /// Seconds since the epoch as `YYYYMMDDTHHMMSSZ`.
-///
-/// Written out rather than taken from a date library: this is the only date micro
-/// formats, and the calendar arithmetic for it is short enough to read.
 pub fn format_timestamp(epoch_seconds: u64) -> String {
     let days = epoch_seconds / 86_400;
     let seconds_today = epoch_seconds % 86_400;
@@ -177,7 +158,7 @@ pub fn format_timestamp(epoch_seconds: u64) -> String {
         seconds_today % 60,
     );
 
-    // Days since 1970-01-01, walked forward a year at a time and then a month at a time.
+    
     let mut year = 1970;
     let mut left = days;
     loop {
@@ -234,11 +215,7 @@ fn month_lengths(year: u64) -> [u64; 12] {
 mod tests {
     use super::*;
 
-    /// AWS publishes a worked example for this scheme. Matching it byte for byte is the
-    /// only way to know the canonical form is right, since a wrong one fails with an
-    /// error that says nothing about which part was wrong.
-    ///
-    /// Source: the `get-vanilla` case of AWS's Signature Version 4 test suite.
+    /// AWS publishes a worked example for this scheme.
     #[test]
     fn it_matches_the_published_example() {
         let credentials = Credentials {
@@ -355,9 +332,9 @@ mod tests {
     #[test]
     fn a_timestamp_is_written_the_way_aws_reads_it() {
         assert_eq!(format_timestamp(0), "19700101T000000Z");
-        // 2015-08-30T12:36:00Z, the moment in AWS's own example.
+        
         assert_eq!(format_timestamp(1_440_938_160), "20150830T123600Z");
-        // A leap day, which the year-then-month walk has to land on exactly.
+        
         assert_eq!(format_timestamp(1_709_208_000), "20240229T120000Z");
     }
 }

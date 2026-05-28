@@ -19,8 +19,7 @@ use std::path::PathBuf;
 use std::time::SystemTime;
 use std::time::UNIX_EPOCH;
 
-/// Files past this size are skipped. Searching one costs more memory than the match is
-/// worth, and files this large are generated rather than written.
+/// Files past this size are skipped.
 const MAX_SEARCHED_FILE_BYTES: u64 = 8 * 1024 * 1024;
 
 /// How much of a file is inspected for the NUL byte that marks it binary.
@@ -111,8 +110,7 @@ impl Tool for Grep {
             .and_then(Value::as_u64)
             .unwrap_or(0) as usize;
 
-        // A literal pattern is escaped rather than compiled as written, so a dot means a
-        // dot and a bracket means a bracket.
+        
         let expression = match literal {
             true => regex::escape(&pattern),
             false => pattern.clone(),
@@ -136,7 +134,7 @@ impl Tool for Grep {
             mode,
         };
 
-        // Walking a tree and reading every file blocks; keep it off the async runtime.
+        
         tokio::task::spawn_blocking(move || search.run())
             .await
             .map_err(|error| format!("search failed: {error}"))?
@@ -236,7 +234,7 @@ struct Search {
     regex: Regex,
     glob: Option<String>,
     mode: OutputMode,
-    /// Lines to show either side of a match. Zero shows only the matching line.
+    /// Lines to show either side of a match.
     context: usize,
 }
 
@@ -246,7 +244,7 @@ impl Search {
         let mut capped = false;
 
         for entry in walker(&self.start, self.glob.as_deref())? {
-            // An unreadable directory is worth stepping over, not failing the search.
+            
             let Ok(entry) = entry else { continue };
             if !entry.file_type().is_some_and(|kind| kind.is_file()) {
                 continue;
@@ -279,8 +277,7 @@ impl Search {
                         let first = index.saturating_sub(self.context);
                         let last = (index + self.context).min(lines.len().saturating_sub(1));
                         for around in first..=last {
-                            // A match is separated from its surroundings by the marker, the
-                            // way a context-carrying search has always shown it.
+                            
                             let marker = match around == index {
                                 true => ':',
                                 false => '-',
@@ -296,7 +293,7 @@ impl Search {
                             break;
                         }
                     }
-                    // The listing modes only need to know that the file matched at all.
+                    
                     OutputMode::Files => break,
                     OutputMode::Count => {}
                 }
@@ -357,7 +354,7 @@ impl Lookup {
             return Ok(format!("no files match {}", self.pattern));
         }
 
-        // Path breaks ties so two files written in the same instant keep a stable order.
+        
         found.sort_by(|left, right| right.0.cmp(&left.0).then_with(|| left.1.cmp(&right.1)));
 
         let total = found.len();
@@ -378,12 +375,6 @@ impl Lookup {
 }
 
 /// A walker that honours the workspace's ignore files.
-///
-/// Global git configuration is left out so a search depends only on the workspace rather
-/// than on the machine, and `require_git` is off so a `.gitignore` still counts in a
-/// directory that is not a checkout. Hidden files are searched: a dotfile is where a
-/// project keeps its configuration, and leaving it out means answering a question about
-/// the workspace with only part of it while appearing to have read all of it.
 fn walker(start: &Path, glob: Option<&str>) -> Result<Walk, String> {
     let mut builder = WalkBuilder::new(start);
     builder
@@ -409,8 +400,7 @@ fn walker(start: &Path, glob: Option<&str>) -> Result<Walk, String> {
     Ok(builder.build())
 }
 
-/// A NUL byte among the leading bytes is how a binary file gives itself away. Searching
-/// one produces noise rather than information.
+/// A NUL byte among the leading bytes is how a binary file gives itself away.
 fn is_binary(bytes: &[u8]) -> bool {
     bytes
         .iter()
@@ -728,8 +718,7 @@ mod hidden {
         std::fs::write(path, contents).unwrap();
     }
 
-    /// A dotfile is part of the workspace, and a search that skipped it would answer with
-    /// only part of the project while looking like it had read all of it.
+    
     #[tokio::test]
     async fn grep_reads_hidden_files() {
         let root = scratch("grep");
@@ -762,8 +751,8 @@ mod hidden {
         assert!(output.contains("README.md"), "{output}");
     }
 
-    /// What a workspace ignores is still ignored: reading hidden files is not the same as
-    /// ignoring `.gitignore`.
+    /// What a workspace ignores is still ignored: reading hidden files is not the same as ignoring
+    /// `.gitignore`.
     #[tokio::test]
     async fn an_ignored_path_stays_ignored() {
         let root = scratch("ignored");

@@ -15,8 +15,7 @@ use std::path::PathBuf;
 pub async fn auth_status() -> Result<()> {
     let store = AuthStore::open()?;
     let listed = store.status();
-    // Wide enough for the longest name on the list, so the columns line up whatever is
-    // on it.
+    
     let width = listed
         .iter()
         .map(|status| status.provider.chars().count())
@@ -24,8 +23,7 @@ pub async fn auth_status() -> Result<()> {
         .unwrap_or(0);
 
     for status in listed {
-        // A credential can be stored and still be blank, which reads as "ready" everywhere
-        // else and as a missing authentication header at the provider. Say so here.
+        
         let blank = store
             .get(&status.provider)
             .is_some_and(|credential| credential.token().trim().is_empty());
@@ -93,8 +91,7 @@ pub async fn models(query: Option<&str>, live: bool) -> Result<()> {
         let store = AuthStore::open()?;
         let client = reqwest::Client::new();
         let copilot = store.resolve(micro_auth::GITHUB_COPILOT).await.ok();
-        // The token says which host serves this account; only an individual plan is
-        // served by the default one.
+        
         let copilot_base = copilot
             .as_ref()
             .and_then(|credential| micro_auth::copilot::base_url_from_token(credential.token()));
@@ -151,11 +148,7 @@ pub async fn sessions_list(workspace: &std::path::Path, all: bool) -> Result<()>
     Ok(())
 }
 
-/// `micro sessions show <id>` — what the session's ledger recorded.
-///
-/// Without a turn, the turns it holds; with one, what the model was shown at that turn,
-/// each stretch of the prompt named by whoever supplied it. With `--raw`, the request
-/// itself, rebuilt from what was recorded and printed as it went out.
+
 pub async fn sessions_show(id: &str, turn: Option<u64>, raw: bool) -> Result<()> {
     let store = SessionStore::from_env()?;
     let loaded = store.load(id).await?;
@@ -167,10 +160,7 @@ pub async fn sessions_show(id: &str, turn: Option<u64>, raw: bool) -> Result<()>
             loaded.session.meta().model_id,
             loaded.session.meta().workspace.display()
         );
-        println!(
-            "No turns recorded. A session written before the ledger existed holds its \
-             conversation and nothing else."
-        );
+        println!("No recorded turns.");
         return Ok(());
     };
 
@@ -213,11 +203,7 @@ struct RecordedTurn {
     usage: micro_types::Usage,
 }
 
-/// `micro sessions export <id>` — the whole ledger, as it is on disk.
-///
-/// Every line, in the order it was written: the conversation, the facts recorded beside
-/// it, and the records that say where the conversation is read from. A line that cannot
-/// be read is counted rather than printed, so what comes out is JSONL throughout.
+
 pub async fn sessions_export(id: &str) -> Result<()> {
     let raw = SessionStore::from_env()?
         .raw_log(id)
@@ -240,11 +226,7 @@ pub async fn sessions_export(id: &str) -> Result<()> {
     Ok(())
 }
 
-/// `micro bill <session> [--diff <turn>]` — what a session cost, and what it went on.
-///
-/// The reading of the ledger is [`micro_commands::bill`], the same one `/bill` shows.
-/// Priced against the catalog as it stands, which is what makes an old session billable at
-/// all: the ledger recorded what was used, not what it was worth at the time.
+
 pub async fn bill(id: &str, diff: Option<u64>) -> Result<()> {
     let store = SessionStore::from_env()?;
     let catalog = Catalog::load().unwrap_or_else(|_| Catalog::bundled());
@@ -262,10 +244,7 @@ pub async fn bill(id: &str, diff: Option<u64>) -> Result<()> {
     Ok(())
 }
 
-/// `micro why-miss <session> [turn]` — why a turn paid for a prompt the provider had.
-///
-/// The reading of the ledger is [`micro_commands::why_miss`], the same one `/why-miss`
-/// shows, so what a session says about itself does not depend on where it was asked.
+
 pub async fn why_miss(id: &str, turn: u64) -> Result<()> {
     let store = SessionStore::from_env()?;
     let explanation = micro_commands::why_miss(&store, id, Some(turn))
@@ -276,9 +255,6 @@ pub async fn why_miss(id: &str, turn: u64) -> Result<()> {
 }
 
 /// Every turn the session recorded a request for, in order and without repeats.
-///
-/// A turn re-issued after a transient failure was recorded once per attempt, and the last
-/// attempt is the one that produced the answer, so it is the one kept here.
 fn recorded_turns(session: &micro_session::Session) -> Vec<RecordedTurn> {
     let mut turns: Vec<RecordedTurn> = Vec::new();
     for recorded in session.events() {
@@ -340,8 +316,7 @@ fn print_turn(id: &str, turn: &micro_session::ReconstructedTurn) {
 
     println!("\nmessages ({})", turn.messages.len());
     for (index, message) in turn.messages.iter().enumerate() {
-        // Named by the entry it was read from where there is one. The summary a
-        // compaction left in its place is not an entry and has no name.
+        
         let named = match turn.message_entry_ids.len() == turn.messages.len() {
             true => turn.message_entry_ids[index].clone(),
             false => "-".to_string(),
@@ -364,8 +339,7 @@ fn print_turn(id: &str, turn: &micro_session::ReconstructedTurn) {
     println!("request  {}", turn.request_hash);
 }
 
-/// The request as it went out. New ledgers retain the exact serialized body. Older ones
-/// are reconstructed and printed only when that reconstruction matches the recorded hash.
+/// The request as it went out.
 fn print_request(id: &str, turn: &micro_session::ReconstructedTurn) -> Result<()> {
     if let Some(body) = &turn.recorded_request_body {
         let hash = micro_types::content_hash(body);
@@ -399,16 +373,13 @@ fn print_request(id: &str, turn: &micro_session::ReconstructedTurn) -> Result<()
         messages: turn.messages.clone(),
         tools: turn.tools.clone(),
         headers: Vec::new(),
-        // The session names the conversation, which is what a provider that caches a
-        // prompt is told; it was the session's own id then and it is now.
+        
         cache_key: Some(id.to_string()),
     };
     let payload = micro_provider::client_for_model(model).payload(&turn.model, &context);
     let body = serde_json::to_vec(&payload)?;
 
-    // The record says what was sent. If what was rebuilt hashes to something else, the
-    // rebuilding is what is wrong, and saying so is better than printing it as if it were
-    // the request.
+    
     if micro_types::content_hash(&body) != turn.request_hash {
         anyhow::bail!(
             "request reconstruction failed verification for session {id} turn {} (expected {})",
@@ -467,19 +438,12 @@ pub async fn latest_session(workspace: &std::path::Path) -> Result<String> {
 }
 
 /// Where a user install of an extension package goes: micro's data directory.
-///
-/// A package is fetched rather than written by hand, and can be fetched again, so it goes
-/// with the sessions rather than with the settings — what the settings keep is the source
-/// it was fetched from.
 fn install_root() -> Result<PathBuf> {
     micro_dirs::data_dir()
         .ok_or_else(|| anyhow::anyhow!("no home directory; set {}", micro_dirs::MICRO_DIR_ENV))
 }
 
-/// `micro install <source>` — fetch a package and remember it.
-///
-/// The source is written into the settings, so the next run loads it without being told
-/// again. A package that will not fetch leaves the settings alone.
+
 pub async fn install(source: &str, local: bool, workspace: &Path) -> Result<()> {
     let parsed = micro_extensions::Source::parse(source).map_err(anyhow::Error::msg)?;
     let home = install_root()?;
@@ -496,10 +460,7 @@ pub async fn install(source: &str, local: bool, workspace: &Path) -> Result<()> 
         installed.path.display()
     );
 
-    // What it registered is worth seeing now rather than at the next start. A package is a
-    // directory rather than a file, and what it loads is whatever its own manifest names —
-    // the same reading the next start will do, rather than handing the directory itself to
-    // a loader that only takes files.
+    
     let workspace = std::env::current_dir().unwrap_or_default();
     let entries = match installed.path.is_dir() {
         true => micro_extensions::entries_of(&installed.path)
@@ -538,11 +499,7 @@ pub async fn install(source: &str, local: bool, workspace: &Path) -> Result<()> 
     Ok(())
 }
 
-/// `micro remove <source>` — take a package away and forget it.
-///
-/// Its own `deactivate` runs first, while its files are still there to run: an extension
-/// that started something, wrote something, or registered something outside micro is given
-/// the chance to put it back, which is the only chance it will get.
+
 pub async fn remove(source: &str, local: bool, workspace: &Path) -> Result<()> {
     let parsed = micro_extensions::Source::parse(source).map_err(anyhow::Error::msg)?;
     let home = install_root()?;
@@ -559,11 +516,6 @@ pub async fn remove(source: &str, local: bool, workspace: &Path) -> Result<()> {
 }
 
 /// Let a package's extensions go before its files do.
-///
-/// Nothing here is fatal, and nothing here is required to succeed: an extension that will
-/// not load cannot be deactivated either, and one that throws on the way out is still being
-/// removed. What this buys is the one moment an extension has to undo what it did outside
-/// micro, which no amount of deleting files afterwards can give it.
 async fn deactivate(path: &Path, home: &Path, workspace: &Path) {
     if !path.exists() {
         return;
@@ -589,7 +541,7 @@ async fn deactivate(path: &Path, home: &Path, workspace: &Path) {
     host.shutdown("quit").await;
 }
 
-/// `micro list` — what is installed, and whether it is still there.
+
 pub async fn list_packages() -> Result<()> {
     let path = micro_config::default_path()?;
     let config = micro_config::Config::load_from(&path)?;
@@ -603,9 +555,7 @@ pub async fn list_packages() -> Result<()> {
     let home = install_root()?;
     let workspace = std::env::current_dir().unwrap_or_default();
 
-    // What each package's own extensions may do. Worked out for the whole listing at once,
-    // in one host: a capability set an extension declared is read from its manifest, but a
-    // legacy one's has to be derived from what it registers, and that means loading it.
+    
     let installed: Vec<(String, PathBuf)> = sources
         .iter()
         .map(|source| {
@@ -630,12 +580,7 @@ pub async fn list_packages() -> Result<()> {
     Ok(())
 }
 
-/// What each installed package's extensions may do, by the source they were installed from.
-///
-/// One host for the whole listing rather than one per package: a legacy extension's set is
-/// derived from what it registers, so it has to be loaded to be described, and loading them
-/// separately would pay for a Bun process apiece. Without a runtime to load them there is
-/// nothing to derive from, and the listing simply says less rather than failing.
+
 async fn capabilities_of(
     home: &Path,
     workspace: &Path,
@@ -693,7 +638,7 @@ async fn capabilities_of(
     described
 }
 
-/// Add a source to the settings, or take it out. Says whether anything changed.
+/// Add a source to the settings, or take it out.
 fn remember(source: &str, keep: bool) -> Result<bool> {
     let path = micro_config::default_path()?;
     let mut config = micro_config::Config::load_from(&path)?;

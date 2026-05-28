@@ -1,16 +1,8 @@
-// pi-tui's own Loader wrapped with an escape-to-cancel keybinding, vendored unchanged.
+
 import { getKeybindings } from "../keybindings.ts";
 import { Loader } from "./loader.ts";
 
-/**
- * Loader that can be cancelled with Escape.
- * Extends Loader with an AbortSignal for cancelling async operations.
- *
- * @example
- * const loader = new CancellableLoader(tui, cyan, dim, "Working...");
- * loader.onAbort = () => done(null);
- * doWork(loader.signal).then(done);
- */
+/** Loader that can be cancelled with Escape. */
 export class CancellableLoader extends Loader {
 	private abortController = new AbortController();
 

@@ -1,13 +1,4 @@
-// The extension host.
-//
-// micro runs this under Bun and talks to it over stdio, one JSON object per line. The host
-// loads each extension, hands it the API it expects, and turns everything it registers
-// into something micro can act on: a tool the model may call, a command a user may type, a
-// handler that runs when something happens.
-//
-// Nothing here reaches the model or the workspace directly. An extension asks, this
-// forwards the ask to micro, and micro decides — which is what keeps a third-party file
-// inside the same policy as everything else.
+
 
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
@@ -52,9 +43,7 @@ interface RegisteredCommand {
 
 interface Registration {
 	path: string;
-	/** What the extension itself said it may do, when it exported a `capabilities` list.
-	 *  Undefined for one that declared nothing, which micro treats differently from one
-	 *  that declared an empty list. */
+	/** What the extension itself said it may do, when it exported a `capabilities` list. */
 	capabilities?: string[];
 	/** What to call when this extension is let go, when it exported one. */
 	deactivate?: () => unknown | Promise<unknown>;
@@ -68,13 +57,7 @@ interface Registration {
 	markdownTransformers: Array<(markdown: string, context: Json) => string>;
 }
 
-/**
- * Messages passed between extensions, and between an extension and itself.
- *
- * Separate from the lifecycle events micro announces: nothing here is micro's, it is a
- * place for extensions to talk. A handler that throws is reported and the rest still run,
- * so one extension cannot silence another.
- */
+/** Messages passed between extensions, and between an extension and itself. */
 const bus = new Map<string, Array<(data: unknown) => void>>();
 
 const events = {
@@ -100,22 +83,12 @@ const events = {
 	},
 };
 
-/**
- * Where this host is running, for the context handed to every handler.
- *
- * An extension is written against a workspace and against whether there is anyone to ask,
- * and both are the host's to say. Filled in when the extensions are loaded, which is
- * before anything can be called.
- */
+/** Where this host is running, for the context handed to every handler. */
 const loaded: Registration[] = [];
 const failures: Array<{ path: string; error: string }> = [];
 const flagValues = new Map<string, boolean | string>();
 
-/** The API an extension is handed. Every entry either records something or asks micro.
- *
- * The wire pair taken here carries this registration's own path on everything it sends, so
- * micro can hold an ask to what this extension declared. It shadows the module's own `send`
- * for the whole function, which is why nothing below has to name the extension itself. */
+/** The API an extension is handed. */
 function apiFor(registration: Registration) {
 	const { ask, send } = wireFor(registration.path);
 	return {
@@ -161,7 +134,7 @@ function apiFor(registration: Registration) {
 			registration.renderers.set(customType, renderer);
 		},
 
-		/** Draw a custom entry of this type yourself. Entries are not sent to the model. */
+		/** Draw a custom entry of this type yourself. */
 		registerEntryRenderer(
 			customType: string,
 			renderer: (data: unknown, options: { width: number }) => unknown,
@@ -169,10 +142,7 @@ function apiFor(registration: Registration) {
 			registration.renderers.set(customType, renderer);
 		},
 
-		/** Rewrite user and assistant markdown before it is drawn. Registered here so an
-		 * extension written for pi loads without editing, and answered when asked for —
-		 * nothing on this side of the wire draws the interactive transcript itself, so
-		 * there is nowhere here to apply one at the moment text is about to be shown. */
+		/** Rewrite user and assistant markdown before it is drawn. */
 		registerMarkdownTransformer(transformer: (markdown: string, context: Json) => string): void {
 			registration.markdownTransformers.push(transformer);
 		},
@@ -186,7 +156,7 @@ function apiFor(registration: Registration) {
 			registration.providers.delete(name);
 		},
 
-		// Actions. Each one is micro's to carry out.
+		
 		sendUserMessage(content: string, options?: Json): void {
 			send({ type: "action", action: "send_user_message", content, options: options ?? {} });
 		},
@@ -195,7 +165,7 @@ function apiFor(registration: Registration) {
 			send({ type: "action", action: "send_message", message, options: options ?? {} });
 		},
 
-		/** Name the session. Fire-and-forget, as pi's own is. */
+		/** Name the session. */
 		setSessionName(name: string): void {
 			send({ type: "action", action: "set_session_name", name });
 		},
@@ -204,23 +174,18 @@ function apiFor(registration: Registration) {
 			return ask({ type: "request", request: "exec", command, args, options: options ?? {} });
 		},
 
-		/** The tools the model is being offered. Answered from the snapshot every event and
-		 * command already takes, because pi's own is a plain array rather than a promise —
-		 * an extension calling it without `await` gets what it expects. */
+		/** The tools the model is being offered. */
 		getActiveTools(): string[] {
 			return activeTools();
 		},
 
-		/** Choose which tools are offered from here on. Fire-and-forget, the same as
-		 * setModel and setThinkingLevel: the interface picks it up on its own time rather
-		 * than on this call's stack, so there is nothing here to await. */
+		/** Choose which tools are offered from here on. */
 		setActiveTools(toolNames: string[]): void {
 			noteActiveTools(toolNames);
 			send({ type: "action", action: "set_active_tools", toolNames });
 		},
 
-		/** Keep something in the session that the model never sees. Fire-and-forget: the
-		 * session is the interface's to write, and pi's own answers nothing either. */
+		/** Keep something in the session that the model never sees. */
 		appendEntry(customType: string, data?: unknown): void {
 			send({ type: "action", action: "append_entry", customType, data });
 		},
@@ -236,9 +201,7 @@ function apiFor(registration: Registration) {
 			send({ type: "action", action: "set_label", entryId, label });
 		},
 
-		/** Every tool that exists, described rather than merely named — parameters,
-		 * guidelines and where it came from. Answered from the snapshot, since pi's own is
-		 * a plain array an extension reads without awaiting. */
+		
 		getAllTools(): Json[] {
 			return allTools();
 		},
@@ -248,9 +211,7 @@ function apiFor(registration: Registration) {
 			return commands();
 		},
 
-		/** What the session is called, if anything. Answered from the snapshot every event
-		 * and command already takes, because pi's own is a plain value rather than a
-		 * promise — an extension calling it without `await` gets a string it can read. */
+		/** What the session is called, if anything. */
 		getSessionName(): string | undefined {
 			return sessionName();
 		},
@@ -260,15 +221,16 @@ function apiFor(registration: Registration) {
 			return answer.model as Json | undefined;
 		},
 
-		/** Change the model, answering whether it could be. False when there is no
-		 * credential for the service the chosen model is served by. */
+		/** Change the model, answering whether it could be. */
 		async setModel(model: Json | string): Promise<boolean> {
 			const answer = await ask({ type: "request", request: "set_model", model });
 			return answer.ok === true;
 		},
 
-		/** The thinking level in force, answered from the same snapshot and for the same
-		 * reason as `getSessionName`. */
+		/**
+ * The thinking level in force, answered from the same snapshot and for the same reason as
+ * `getSessionName`.
+ */
 		getThinkingLevel(): string {
 			return thinkingLevel();
 		},
@@ -321,9 +283,7 @@ async function load(path: string): Promise<void> {
 			failures.push({ path, error: "the file has no default export to call" });
 			return;
 		}
-		// Read before the factory runs, because both are declarations about the file rather
-		// than things it does: what it may ask micro for, and what to call when it is let
-		// go. An extension that exports neither is one written before either existed.
+		
 		if (Array.isArray(module.capabilities)) {
 			registration.capabilities = module.capabilities.map((capability: unknown) => String(capability));
 		}
@@ -338,15 +298,7 @@ async function load(path: string): Promise<void> {
 	}
 }
 
-/**
- * A bare `Cannot find package 'X'` says an import did not resolve, but not why, or what to
- * do about it — indistinguishable from a resolution bug in this layer itself. When the
- * extension's own `package.json`, sitting beside it, already names `X` as a dependency, the
- * reason is ordinary and the fix is one command: point at both. Anything else — an
- * unexpected specifier, no adjacent manifest, or a failure that is not this kind of
- * resolution error at all — is left exactly as reported, since guessing at a cause this does
- * not recognize would risk saying something that is not true.
- */
+/** Add installation guidance to missing-package errors. */
 function describeLoadFailure(path: string, message: string): string {
 	const missing = /Cannot find package '([^']+)' from/.exec(message)?.[1];
 	if (!missing) {
@@ -382,9 +334,7 @@ function describe(): Json {
 		type: "loaded",
 		extensions: loaded.map((registration) => ({
 			path: registration.path,
-			// Null rather than an empty list for an extension that declared nothing: micro
-			// tells "this extension says it needs nothing" apart from "this extension has
-			// never heard of capabilities", and only the second is asked about.
+			// null means undeclared; [] means explicitly empty.
 			capabilities: registration.capabilities ?? null,
 			tools: [...registration.tools.values()].map((tool) => ({
 				name: tool.name,
@@ -419,9 +369,7 @@ function describe(): Json {
 	};
 }
 
-/** Find a tool by name across every extension that loaded, in load order, along with the
- *  extension that registered it — what a tool call is attributed to when it asks micro for
- *  something while it runs. */
+/** Find a registered tool and its owning extension. */
 function findRegistered(name: string): { registration: Registration; tool: ToolDefinition } | undefined {
 	for (const registration of loaded) {
 		const tool = registration.tools.get(name);
@@ -437,25 +385,10 @@ function findTool(name: string): ToolDefinition | undefined {
 	return findRegistered(name)?.tool;
 }
 
-/** How wide a tool's own renderCall/renderResult are told the screen is when nothing asked
- * for a specific width — drawing itself for the first time, or pushing a change of its own
- * accord. micro wraps or clips whatever comes back to the room it actually has, the same as
- * it already does for a widget's plain lines. */
+/** Default width before TUI layout. */
 const RENDER_WIDTH = 80;
 
-/**
- * Ask a tool's renderCall/renderResult to draw themselves for a lifecycle moment micro
- * already reported, and tell micro what they drew. Not conditional on any extension having
- * registered a `micro.on()` handler for the same event — a tool's own renderer runs whether
- * or not anything else is listening, the same way execute() does.
- *
- * Rust already knows exactly when to ask for this: args arriving, a partial result, the
- * final one — so this is driven entirely from here, on the same events every extension is
- * already told about, rather than from a request Rust would otherwise have to send once per
- * state change. The one thing that does need to reach micro on its own schedule — a
- * renderer's own `ctx.invalidate()` — sends `component_changed` directly instead (see
- * `renderToolCall`/`renderToolResult` in tools.ts), independently of this function.
- */
+/** Render extension tool events without another host round trip. */
 function autoRenderTool(event: string, payload: Json): void {
 	const name = payload.toolName as string | undefined;
 	const tool = name ? findTool(name) : undefined;
@@ -533,10 +466,7 @@ async function runCommand(id: string, name: string, args: string): Promise<void>
 			continue;
 		}
 		try {
-			// Only a command handler gets `newSession`, `fork` and the rest of what moves
-			// the conversation somewhere else — the same restriction pi places on
-			// `ExtensionCommandContext` versus the plain `ExtensionContext` a tool or an
-			// event handler is given.
+			
 			const output = await command.handler(
 				args,
 				await contextFor(uiFor(registration.path), registration.path, true),
@@ -557,18 +487,11 @@ async function runCommand(id: string, name: string, args: string): Promise<void>
 /** Hand an event to every extension listening for it, and report what they changed. */
 async function dispatchEvent(id: string | undefined, event: string, payload: Json): Promise<void> {
 	const results: unknown[] = [];
-	// Which extension gave each answer, in the same order: an answer is how an extension
-	// changes what micro does, and micro decides whether it may by looking at who gave it.
+	
 	const sources: string[] = [];
-	// `isIdle`/`signal`/`waitForIdle`, and a `newSession`/`fork`/`switchSession` waiting
-	// on this session's own `session_start`, are answered from this, not from a round
-	// trip, so it has to run before anything asks for a context built off it — including
-	// this event's own handlers, if it is `agent_start` or `agent_settled` itself.
+	
 	noted(event, payload);
-	// One snapshot for every handler this event reaches, not one per handler: they are
-	// watching the same moment, and asking micro for it again for each one would answer
-	// a question already answered. The context built from it is still per extension, since
-	// what an extension asks through it has to name the extension that asked.
+	
 	const now = await snapshot(false);
 	for (const registration of loaded) {
 		const handlers = registration.handlers.get(event) ?? [];
@@ -633,8 +556,7 @@ async function handle(line: string): Promise<void> {
 			abortTool(message.id as string);
 			return;
 		case "component": {
-			// render/input answer what they were asked; invalidate/dispose carry no id at
-			// all — nobody is waiting on either, the same way `set_flag` answers nobody.
+			
 			const componentId = message.componentId as string;
 			switch (message.method) {
 				case "render":
@@ -645,9 +567,7 @@ async function handle(line: string): Promise<void> {
 					});
 					return;
 				case "input": {
-					// Only `setEditorComponent`'s replacement is asked about a key that
-					// carries the built-in editor's text alongside it — see `noteEditorText`
-					// for why this is the one place that reads it rather than `components.ts`.
+					
 					if (typeof message.text === "string") {
 						noteEditorText(message.text);
 					}
@@ -704,9 +624,7 @@ async function handle(line: string): Promise<void> {
 			await runCommand(message.id as string, message.name as string, (message.args as string) ?? "");
 			return;
 		case "event": {
-			// Not dispatched like an ordinary event: a listener here was registered
-			// through `ctx.ui.onTerminalInput`, not through `micro.on`, so it lives in
-			// `host-ui.ts`'s own set rather than in any extension's `registration`.
+			
 			if (message.event === "terminal_input") {
 				const data = (message.payload as Json)?.data as string;
 				const verdict = await dispatchTerminalInput(data);
@@ -715,9 +633,7 @@ async function handle(line: string): Promise<void> {
 				}
 				return;
 			}
-			// Same story as `terminal_input`: a listener registered through
-			// `ctx.ui.addAutocompleteProvider` lives in `host-ui.ts`'s own chain, not in
-			// any extension's `registration`.
+			
 			if (message.event === "get_suggestions") {
 				const payload = (message.payload as Json) ?? {};
 				const suggestions = await dispatchSuggestions(
@@ -731,8 +647,7 @@ async function handle(line: string): Promise<void> {
 				}
 				return;
 			}
-			// What committing an extension's own completion item writes, through whichever
-			// `applyCompletion` the provider chain settled on.
+			
 			if (message.event === "apply_completion") {
 				const payload = (message.payload as Json) ?? {};
 				const edit = await dispatchApplyCompletion(
@@ -752,9 +667,7 @@ async function handle(line: string): Promise<void> {
 				message.event === "tool_execution_update" ||
 				message.event === "tool_execution_end"
 			) {
-				// Ahead of the ordinary dispatch below, not instead of it: a tool's own
-				// renderer is not a `micro.on()` handler, and running it here does not use
-				// up the one chance an extension listening for the same event still has.
+				
 				autoRenderTool(message.event, (message.payload as Json) ?? {});
 			}
 			if (message.event === "shortcut") {
@@ -808,8 +721,7 @@ async function handle(line: string): Promise<void> {
 			return;
 		}
 		case "transform_markdown": {
-			// Applied in registration order, each transformer's output feeding the next —
-			// the same fold pi runs its own transformer list through before drawing.
+			
 			let markdown = message.markdown as string;
 			const context = (message.context as Json) ?? {};
 			try {
@@ -829,11 +741,7 @@ async function handle(line: string): Promise<void> {
 			return;
 		}
 		case "deactivate": {
-			// The extension's own `deactivate` runs first, so it can put back whatever it
-			// changed out here — a file it watched, a process it started — and then its
-			// registrations go, so nothing it added can be reached again. A `deactivate`
-			// that throws is reported and the dropping still happens: an extension refusing
-			// to leave is not a reason to keep offering what it registered.
+			
 			const id = message.id as string;
 			const path = message.path as string;
 			const registration = loaded.find((held) => held.path === path);
@@ -853,7 +761,7 @@ async function handle(line: string): Promise<void> {
 			return;
 		}
 		case "answer":
-			// micro answering something the host asked for.
+			
 			answered(message.id as string, message);
 			return;
 		case "set_flag":
@@ -868,8 +776,7 @@ async function handle(line: string): Promise<void> {
 	}
 }
 
-// Strict JSON-lines framing, split on \n and nothing else: U+2028 and U+2029 are legal
-// inside a JSON string, and a reader that treats them as breaks cuts records in half.
+
 let buffer = "";
 const decoder = new TextDecoder();
 
@@ -883,9 +790,7 @@ for await (const chunk of Bun.stdin.stream()) {
 		const line = buffer.slice(0, newline).replace(/\r$/, "");
 		buffer = buffer.slice(newline + 1);
 		if (line.trim().length > 0) {
-			// Not awaited: a command may ask micro something and wait for the answer, and
-			// the answer arrives on this same stream. Waiting here would mean nothing
-			// could ever be read while anything was waiting.
+			
 			void handle(line);
 		}
 	}

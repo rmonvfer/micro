@@ -1,6 +1,4 @@
-// pi-tui's own LaTeX-to-Unicode renderer, vendored unchanged: a self-contained parser and
-// layout engine over plain strings, with no external binary and no dependency beyond this
-// compat layer's own `visibleWidth`.
+
 import { visibleWidth } from "./utils.ts";
 
 const SYMBOLS: Readonly<Record<string, string>> = {
@@ -1358,10 +1356,7 @@ export interface RenderLatexOptions {
 	display?: boolean;
 }
 
-/**
- * Render a basic LaTeX math expression as terminal-friendly Unicode text.
- * Returns undefined when the expression contains unsupported or malformed syntax.
- */
+/** Render a basic LaTeX math expression as terminal-friendly Unicode text. */
 export function renderLatex(source: string, options: RenderLatexOptions = {}): string | undefined {
 	const layoutNodes: LayoutNode[] = [];
 	const rendered = new LatexParser(source, layoutNodes, options.display === true).render();

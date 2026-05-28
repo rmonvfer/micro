@@ -1,9 +1,4 @@
 //! What goes into the model's context and what comes back out of it when it fills up.
-//!
-//! [`InstructionLoader`] assembles the project instructions a system prompt carries, and
-//! [`Compactor`] replaces the older half of a conversation with a summary once it
-//! approaches the context window. Summarization itself is a caller-supplied
-//! [`Summarizer`], so nothing here depends on a provider or on the agent loop.
 
 mod compaction;
 mod error;

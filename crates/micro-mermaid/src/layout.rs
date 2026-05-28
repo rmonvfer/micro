@@ -1,13 +1,4 @@
 //! Graph layout: rank, order, place, route, draw.
-//!
-//! Follows the Sugiyama outline — assign ranks along the flow axis, reorder
-//! within ranks to cut crossings, then relax positions on the cross axis so
-//! chains stay straight. Edges between adjacent ranks share horizontal "bus"
-//! rows; everything else is routed around the diagram through vertical
-//! "lanes".
-//!
-//! `BT` and `RL` reuse the `TD`/`LR` layouts and flip the finished canvas, so
-//! text never ends up mirrored.
 
 use std::collections::HashMap;
 
@@ -27,8 +18,7 @@ const GAP_Y: usize = 2;
 /// Refuse to allocate a canvas larger than this many cells.
 const MAX_CANVAS_CELLS: usize = 1 << 21;
 
-/// Saturating subtraction, so a layout invariant that turns out wrong reads as
-/// a shifted diagram rather than a panic.
+
 fn sat(a: usize, b: usize) -> usize {
     a.saturating_sub(b)
 }
@@ -51,7 +41,7 @@ pub struct Placed {
     pub rank: usize,
 }
 
-/// Per-node dimensions. `lay_*` include room for self-edge loops and labels.
+/// Per-node dimensions.
 struct NodeSizes {
     box_w: Vec<usize>,
     box_h: Vec<usize>,
@@ -81,12 +71,9 @@ struct RoutePlan {
     edge_lane: Vec<usize>,
 }
 
-// ------------------------------------------------------------------ ranking
+
 
 /// Longest-path ranking over the graph's DAG.
-///
-/// Back edges (those closing a cycle) are excluded by a DFS colouring pass, so
-/// `A --> B --> C --> A` still ranks 0, 1, 2 rather than diverging.
 pub fn compute_ranks(graph: &Graph) -> Vec<usize> {
     let n = graph.nodes.len();
     let mut children: Vec<Vec<usize>> = vec![Vec::new(); n];
@@ -102,7 +89,7 @@ pub fn compute_ranks(graph: &Graph) -> Vec<usize> {
     let mut dag: Vec<Vec<usize>> = vec![Vec::new(); n];
     let mut order: Vec<usize> = Vec::new();
 
-    // Roots first so ranks grow from natural entry points, then any leftovers.
+    
     let roots: Vec<usize> = (0..n).filter(|&i| indeg[i] == 0).collect();
     for start in roots.into_iter().chain(0..n) {
         if color[start] == 0 {
@@ -134,7 +121,7 @@ fn dfs_dag(
             let v = children[u][i];
             stack.last_mut().unwrap().1 += 1;
             if color[v] == 1 {
-                continue; // grey: a back edge, ignore it
+                continue; 
             }
             dag[u].push(v);
             if color[v] == 0 {
@@ -149,9 +136,7 @@ fn dfs_dag(
     }
 }
 
-/// Reorder nodes within each rank to minimise edge crossings (barycenter
-/// sweeps): alternate down/up passes sort each rank by the mean position of
-/// its neighbours, keeping whichever ordering crossed least.
+
 pub fn order_ranks(by_rank: &mut [Vec<usize>], edges: &[Edge], ranks: &[usize]) {
     let n = ranks.len();
     if by_rank.len() < 2 || n < 3 {
@@ -184,7 +169,7 @@ pub fn order_ranks(by_rank: &mut [Vec<usize>], edges: &[Edge], ranks: &[usize]) 
     }
 
     for it in 0..8 {
-        // Alternate sweeping down (sort by parents) and up (sort by children).
+        
         let row_indices: Vec<usize> = if it % 2 == 0 {
             (1..by_rank.len()).collect()
         } else {
@@ -246,9 +231,7 @@ pub fn count_crossings(edges: &[Edge], ranks: &[usize], pos: &[usize]) -> usize 
     crossings
 }
 
-/// Assign a cross-axis centre to every node so nodes line up under their
-/// neighbours: each node drifts toward the average of its neighbours while
-/// ranks keep their order and boxes keep `sep` between them.
+
 fn assign_positions(
     by_rank: &[Vec<usize>],
     size: &[usize],
@@ -320,8 +303,7 @@ fn relax_rank(nodes: &[usize], neigh: &[Vec<usize>], pos: &mut [f64], size: &[us
         .collect();
     let half_of = |i: usize| size[nodes[i]] as f64 / 2.0;
 
-    // Sweep right then left, then take the midpoint: this centres a node between
-    // the tightest packing that respects order from either side.
+    
     let mut left = vec![0.0f64; n];
     for i in 0..n {
         left[i] = if i == 0 {
@@ -349,7 +331,7 @@ fn relax_rank(nodes: &[usize], neigh: &[Vec<usize>], pos: &mut [f64], size: &[us
     }
 }
 
-// ------------------------------------------------------------------- tracks
+
 
 /// A span competing for a track: `(start, end, from, to, edge_index)`.
 type Span5 = (usize, usize, usize, usize, usize);
@@ -360,10 +342,6 @@ struct TrackAssignment {
 }
 
 /// Pack spans into as few parallel tracks as possible.
-///
-/// Two spans share a track when they are two cells apart, or when they share
-/// an endpoint — edges fanning out of one node deliberately reuse a single row
-/// so a merge draws one arrowhead rather than a stack of them.
 fn assign_tracks(spans: &[Span5]) -> TrackAssignment {
     let mut sorted: Vec<Span5> = spans.to_vec();
     sorted.sort();
@@ -439,7 +417,7 @@ fn lane_spans(graph: &Graph, ranks: &[usize], placed: &[Placed], vertical: bool)
     out
 }
 
-// ----------------------------------------------------------------- placement
+
 
 fn place_td(
     ranks: &[usize],
@@ -565,8 +543,7 @@ fn place_lr(
         })
         .collect();
 
-    // Left-to-right edge labels sit in the gap between columns, so the gap has
-    // to be wide enough for the widest of them.
+    
     let label_widths: Vec<usize> = graph
         .edges
         .iter()
@@ -650,7 +627,7 @@ fn place_lr(
     }
 }
 
-// -------------------------------------------------------------------- canvas
+
 
 /// Rank, place, draw and route a graph onto a fresh canvas.
 pub fn layout_canvas(graph: &Graph, extras: &[NodeExtra]) -> CanvasResult {
@@ -713,7 +690,7 @@ pub fn layout_canvas(graph: &Graph, extras: &[NodeExtra]) -> CanvasResult {
         })
         .collect();
 
-    // A self-edge needs two rows below its box, and room beside it for a label.
+    
     let mut extra_h = vec![0usize; n];
     let mut self_label_w = vec![0usize; n];
     for e in &graph.edges {
@@ -853,7 +830,7 @@ pub fn layout_class(graph: &Graph, infos: &[ClassInfo]) -> CanvasResult {
     layout_canvas(graph, &extras).map(|canvas| orient(canvas, graph))
 }
 
-// -------------------------------------------------------------------- groups
+
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 enum ItemKey {
@@ -867,12 +844,8 @@ struct Endpoint {
 }
 
 /// Lay out a flowchart that uses `subgraph`.
-///
-/// Each subgraph becomes a framed box holding its own independently laid-out
-/// canvas. An edge is drawn in the innermost scope containing both endpoints;
-/// one crossing a subgraph boundary attaches to the frame instead of the node.
 pub fn layout_grouped(graph: &Graph) -> CanvasResult {
-    // A node whose id matches a subgraph id stands in for that subgraph.
+    
     let mut proxy: HashMap<usize, usize> = HashMap::new();
     for (gi, g) in graph.groups.iter().enumerate() {
         if let Some(&ni) = graph.index.get(&g.id) {
@@ -902,7 +875,7 @@ pub fn layout_grouped(graph: &Graph) -> CanvasResult {
         }
     };
 
-    // Edges bucketed by the scope that draws them; `None` is the top level.
+    
     let mut scope_edges: HashMap<Option<usize>, Vec<(ItemKey, ItemKey, usize)>> = HashMap::new();
     let mut referenced = vec![false; graph.groups.len()];
     for (ei, e) in graph.edges.iter().enumerate() {
@@ -942,7 +915,7 @@ pub fn layout_grouped(graph: &Graph) -> CanvasResult {
         direct_nodes.entry(g).or_default().push(ni);
     }
 
-    // Drop empty subgraphs, but keep any that an edge attaches to.
+    
     let mut keep = vec![false; graph.groups.len()];
     for gi in (0..graph.groups.len()).rev() {
         let has_nodes = direct_nodes.get(&Some(gi)).is_some_and(|v| !v.is_empty());
@@ -1022,14 +995,14 @@ fn build_scope(
         }
     }
 
-    // Layout only reads nodes/edges/dir, so a bare Graph carrying those is enough.
+    
     let mut synth = Graph::new(graph.dir);
     synth.nodes = nodes;
     synth.edges = edges;
     layout_canvas(&synth, &extras)
 }
 
-// ------------------------------------------------------------------- drawing
+
 
 pub fn draw_box(canvas: &mut Canvas, p: &Placed, lines: &[String], shape: Shape) {
     let Placed { x, y, w, h, .. } = *p;
@@ -1042,8 +1015,7 @@ pub fn draw_box(canvas: &mut Canvas, p: &Placed, lines: &[String], shape: Shape)
     canvas.set(x, bottom, if rounded { "╰" } else { "└" }, Cls::Border);
     canvas.set(right, bottom, if rounded { "╯" } else { "┘" }, Cls::Border);
 
-    // The perimeter is drawn as bits so edges can tee into it, but it is the box
-    // outline, so it claims `border` rather than `edge`.
+    
     for cx in x + 1..right {
         canvas.add_bits(cx, y, L | R, Cls::Border);
         canvas.add_bits(cx, bottom, L | R, Cls::Border);
@@ -1112,7 +1084,7 @@ fn draw_frame(canvas: &mut Canvas, p: &Placed, title: &str, sub: &Canvas) {
     );
 }
 
-// ------------------------------------------------------------------- routing
+
 
 fn head_glyph(head: Head, arrow: &str) -> String {
     match head {
@@ -1135,7 +1107,7 @@ fn head_glyph(head: Head, arrow: &str) -> String {
 /// Adjacent ranks, top-down: drop, jog along the bus row, drop into the head.
 fn route_forward(canvas: &mut Canvas, from: &Placed, to: &Placed, edge: &Edge, bus: usize) {
     let tx = to.cx;
-    // A jog of one column reads as a kink; snap straight instead.
+    
     let bx = if from.cx.abs_diff(tx) <= 1 {
         tx
     } else {

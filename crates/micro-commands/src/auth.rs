@@ -34,8 +34,7 @@ pub(crate) async fn login(argument: Option<&str>, context: &CommandContext<'_>) 
         return CommandOutcome::error(unknown_provider(name));
     };
 
-    // An OAuth provider reserves a device code here, which is the one step of a login
-    // that has to happen before the user is shown anything.
+    
     match context.auth.begin_login(provider).await {
         Ok(LoginFlow::ApiKey {
             provider,
@@ -284,18 +283,18 @@ mod tests {
     fn only_providers_micro_knows_are_accepted() {
         assert_eq!(known("copilot"), Some("github-copilot"));
         assert_eq!(known("GEMINI"), Some("google"));
-        // Azure hosts a protocol micro speaks, so it is offered a login like any other.
+        
         assert_eq!(
             known("azure-openai-responses"),
             Some("azure-openai-responses")
         );
-        // Mistral serves the completions shape under its own name, so it is offered too.
+        
         assert_eq!(known("mistral"), Some("mistral"));
-        // Bedrock is signed rather than keyed, and is offered like any other.
+        
         assert_eq!(known("amazon-bedrock"), Some("amazon-bedrock"));
-        // Vertex is the Gemini shape under a project, and is offered like any other.
+        
         assert_eq!(known("google-vertex"), Some("google-vertex"));
-        // A name that is nobody's is still nobody's.
+        
         assert_eq!(known("not-a-service"), None);
     }
 }

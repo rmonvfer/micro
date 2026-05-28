@@ -1,18 +1,8 @@
 //! Telling a sandbox denial apart from an ordinary command failure.
-//!
-//! Derived from openai/codex codex-rs/sandboxing/src/denial.rs at commit 486df09a00;
-//! modified.
 
 use std::process::ExitStatus;
 
-/// Whether a finished command looks like it was stopped by the sandbox rather than by
-/// its own logic.
-///
-/// There is no reliable signal for this. A command that fails inside the user's shell
-/// profile looks much like one the kernel refused, so this reads the exit status for the
-/// signal seccomp raises and otherwise falls back to the wording the platforms use when
-/// they turn a command down. Callers use it to decide how to phrase a failure, never to
-/// decide whether something was allowed.
+
 pub fn is_likely_denied(status: &ExitStatus, output: &str) -> bool {
     if status.success() {
         return false;
@@ -22,8 +12,7 @@ pub fn is_likely_denied(status: &ExitStatus, output: &str) -> bool {
     {
         use std::os::unix::process::ExitStatusExt;
 
-        // Seccomp kills the process with SIGSYS. A shell in between reports that as
-        // 128 + the signal number instead of passing the signal on.
+        
         const SIGNALLED_EXIT_BASE: i32 = 128;
         if status.signal() == Some(libc::SIGSYS)
             || status.code() == Some(SIGNALLED_EXIT_BASE + libc::SIGSYS)

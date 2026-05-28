@@ -1,25 +1,14 @@
-//! Treemaps, drawn as an indented tree rather than nested rectangles.
-//!
-//! A treemap's whole idea is area: a rectangle subdivided so each part's
-//! size on the page is its share of the whole. That does not survive a
-//! terminal — a cell is a cell whichever node it belongs to, so a
-//! subdivided rectangle drawn in them is just a smaller rectangle with the
-//! same problem inside it, and at the sizes a terminal actually offers it
-//! stops being legible a level or two in. What a treemap is actually for —
-//! seeing how a whole splits into parts and how those split further — reads
-//! perfectly well as an indented tree with each node's value and its share
-//! of its parent written beside it, which is what this draws instead.
+
 
 use crate::canvas::{draw_text, Canvas};
 use crate::labels::{clean_label, strip_controls};
 use crate::types::Cls;
 use crate::width::string_width;
 
-/// Nodes past this and the tree is refused, the same reasoning as
-/// `graph::MAX_NODES`.
+/// Nodes past this and the tree is refused, the same reasoning as `graph::MAX_NODES`.
 const MAX_NODES: usize = 128;
-/// Levels of nesting past this and the tree is refused: a treemap this deep
-/// is a filesystem, not a diagram.
+/// Levels of nesting past this and the tree is refused: a treemap this deep is a filesystem, not a
+/// diagram.
 const MAX_DEPTH: usize = 32;
 
 struct Node {
@@ -50,9 +39,7 @@ fn parse_treemap(src: &str) -> Option<(Option<String>, Vec<Node>, Vec<usize>)> {
     let mut title = None;
     let mut arena: Vec<Node> = Vec::new();
     let mut roots: Vec<usize> = Vec::new();
-    // The indent and arena index of every ancestor still open at the
-    // current line; popped back to whichever is the actual parent each
-    // time the indentation comes back out.
+    
     let mut stack: Vec<(usize, usize)> = Vec::new();
 
     for line in lines {
@@ -93,9 +80,7 @@ fn parse_treemap(src: &str) -> Option<(Option<String>, Vec<Node>, Vec<usize>)> {
     Some((title, arena, roots))
 }
 
-/// `"Label"` on its own, or `"Label": value` when it carries one. A value
-/// is only read off the text after the last colon, so a label that happens
-/// to contain one but no trailing number is still read as plain text.
+/// `"Label"` on its own, or `"Label": value` when it carries one.
 fn read_entry(line: &str) -> Option<(String, Option<f64>)> {
     if let Some((label_part, value_part)) = line.rsplit_once(':') {
         if let Ok(value) = value_part.trim().parse::<f64>() {
@@ -113,9 +98,7 @@ fn read_entry(line: &str) -> Option<(String, Option<f64>)> {
     }
 }
 
-/// A node's value: what it declared itself, or the sum of its children when
-/// it did not — a leaf with nothing declared is worth nothing, which is as
-/// real an answer as any other.
+/// A node's value: what it declared itself, or the sum of its children when it did not.
 fn resolved(idx: usize, arena: &[Node], cache: &mut [Option<f64>]) -> f64 {
     if let Some(value) = cache[idx] {
         return value;
@@ -169,10 +152,7 @@ fn draw(title: Option<&str>, arena: &[Node], roots: &[usize]) -> Canvas {
     canvas
 }
 
-/// Walk `indices` depth first, appending one row per node: the usual tree
-/// connectors (`├─`/`└─`, with `│` carried down for an ancestor that still
-/// has more siblings below) followed by the node's label and its value and
-/// share of `parent_value`.
+
 fn collect_rows(
     arena: &[Node],
     indices: &[usize],
@@ -206,8 +186,7 @@ fn collect_rows(
     }
 }
 
-/// A value written the way it was meant: whole numbers without a decimal
-/// point.
+/// A value written the way it was meant: whole numbers without a decimal point.
 fn trim_number(value: f64) -> String {
     if value.fract() == 0.0 && value.abs() < 1e15 {
         format!("{}", value as i64)
@@ -256,8 +235,7 @@ mod tests {
         );
     }
 
-    /// The tree connectors close the way any other tree in this crate does:
-    /// a branch that still has more below it, and a last branch that closes.
+    
     #[test]
     fn tree_connectors_mark_the_last_branch() {
         let rows = drawn("treemap-beta\n\"A\": 1\n\"B\": 2");
@@ -269,8 +247,7 @@ mod tests {
     #[test]
     fn a_grandchilds_share_is_of_its_own_parent() {
         let rows = drawn("treemap-beta\n\"A\"\n  \"B\"\n    \"C\": 5\n    \"D\": 5\n\"E\": 10");
-        // B is worth 10 (the sum of C and D), which is half of the grand
-        // total of 20, but C is half of B, not a quarter of the total.
+        
         assert!(
             rows.iter()
                 .any(|r| r.contains('C') && r.contains("(5, 50%)")),
@@ -278,8 +255,7 @@ mod tests {
         );
     }
 
-    /// Anything that is not a treemap, or is one but malformed, is refused
-    /// rather than guessed at.
+    
     #[test]
     fn what_is_not_a_treemap_is_left_alone() {
         assert!(render_treemap("graph TD\n A --> B").is_none());

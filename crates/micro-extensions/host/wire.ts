@@ -1,8 +1,4 @@
-// Talking to micro.
-//
-// The host and micro pass one JSON object per line over stdio. Everything an extension asks
-// for that micro has to answer goes through here, so the rest of the host never touches the
-// wire directly and a request looks the same wherever it was made from.
+
 
 export type Json = Record<string, unknown>;
 
@@ -23,15 +19,7 @@ export function ask(request: Json): Promise<Json> {
 	});
 }
 
-/**
- * The same two calls, tagging everything they send with the extension that made it.
- *
- * micro decides what an ask is allowed to do by looking at who asked, so an ask that
- * arrives anonymously cannot be held to anything. The tag is attached here, at the one
- * place every message crosses, rather than at each of the several dozen call sites that
- * send one — a caller takes its own pair once and uses them exactly as it used the
- * untagged ones.
- */
+/** The same two calls, tagging everything they send with the extension that made it. */
 export function wireFor(extension: string): { ask: typeof ask; send: typeof send } {
 	return {
 		ask: (request: Json) => ask({ ...request, extension }),
@@ -50,14 +38,7 @@ export function answered(id: string, value: Json): boolean {
 	return true;
 }
 
-// A compat shim (`crates/micro-extensions/src/compat.rs`) lives in its own
-// `node_modules` tree, reached through `NODE_PATH` rather than a relative import from this
-// file — that is what lets it resolve for an extension wherever the extension itself lives,
-// but it also means the shim cannot `import` this module the ordinary way: nothing on its
-// own resolution path leads back here. `globalThis` is the one thing both sides already
-// share, being the same process, so `ask` and `send` are published on it here, once, before
-// anything dynamically imports an extension — a facade like a `SessionManager` stand-in
-// asks micro for something the same way every other part of the host already does.
+
 declare global {
 	// eslint-disable-next-line no-var
 	var __MICRO_WIRE__: { ask: typeof ask; send: typeof send } | undefined;

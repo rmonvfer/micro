@@ -16,8 +16,7 @@ fn diagram_kind_recognises_a_sankey_header() {
     );
 }
 
-/// Flows are grouped under the node they leave, and each node carries the total leaving
-/// it — what comes into a stage against what leaves it is what a sankey is read for.
+/// Flows are grouped under the node they leave, and each node carries the total leaving it.
 #[test]
 fn two_flows_from_one_source_are_grouped_under_it() {
     let rows = plain("sankey-beta\nSalary,Housing,20\nSalary,Food,10");
@@ -39,8 +38,8 @@ fn a_chain_reads_stage_by_stage() {
     assert!(rows[3].contains("→ C"), "{rows:?}");
 }
 
-/// The largest flow fills the bar and the rest are drawn against it, so which path carries
-/// the volume is the first thing seen.
+/// The largest flow fills the bar and the rest are drawn against it, so which path carries the
+/// volume is the first thing seen.
 #[test]
 fn bars_are_drawn_in_proportion() {
     let rows = plain("sankey-beta\nA,Big,100\nA,Small,25");

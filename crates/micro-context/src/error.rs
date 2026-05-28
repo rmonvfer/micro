@@ -13,13 +13,12 @@ pub enum ContextError {
     #[error("invalid compaction config: {0}")]
     InvalidConfig(String),
 
-    /// The history cannot be split: everything in it has to be kept verbatim, so there is
-    /// nothing left for a summary to replace.
+    /// The history cannot be split: everything in it has to be kept verbatim, so there is nothing
+    /// left for a summary to replace.
     #[error("nothing to compact; the whole history fits in the recent window")]
     NothingToCompact,
 
-    /// Raised by a caller's [`crate::Summarizer`], whose own error type this crate does
-    /// not know.
+    /// Raised by a caller's [`crate::Summarizer`], whose own error type this crate does not know.
     #[error("summarization failed: {0}")]
     Summarizer(String),
 
@@ -39,8 +38,7 @@ impl ContextError {
         }
     }
 
-    /// Wraps a summarizer's own failure. Implementations of [`crate::Summarizer`] use this
-    /// to report anything their provider returned.
+    /// Wraps a summarizer's own failure.
     pub fn summarizer(message: impl std::fmt::Display) -> Self {
         ContextError::Summarizer(message.to_string())
     }

@@ -1,9 +1,4 @@
 //! The YAML-ish header at the top of a Markdown file.
-//!
-//! Only the shape skills actually use is understood: a block fenced by `---`, holding flat
-//! `key: value` pairs. That is deliberate rather than lazy — a full YAML parser is a large
-//! dependency for a header that never nests, and a file whose header this cannot read is
-//! reported rather than half-understood.
 
 /// A parsed header and the body that followed it.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -30,7 +25,7 @@ impl Frontmatter {
     }
 }
 
-/// Read the header off a document. A document without one parses as all body.
+/// Read the header off a document.
 pub fn parse_frontmatter(text: &str) -> Frontmatter {
     let text = text.strip_prefix('\u{feff}').unwrap_or(text);
     let Some(rest) = strip_fence(text) else {
@@ -59,7 +54,7 @@ pub fn parse_frontmatter(text: &str) -> Frontmatter {
         body.push_str(line);
     }
 
-    // A header that was opened and never closed is not a header; the whole file is body.
+    
     match in_header {
         true => Frontmatter {
             fields: Vec::new(),

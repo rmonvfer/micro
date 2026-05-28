@@ -1,13 +1,4 @@
 //! The extension host process, and the protocol micro speaks to it.
-//!
-//! Extensions are TypeScript, so they run where TypeScript runs: a Bun process, started
-//! once, holding every extension for the life of the session. micro and the host exchange
-//! JSON lines over its stdin and stdout — the same framing the RPC mode uses, for the same
-//! reason.
-//!
-//! Running them in another process is the point rather than a compromise. An extension is
-//! someone else's code: out here it cannot reach micro's memory, it can be waited on with
-//! a timeout, and it can be killed.
 
 use serde::Deserialize;
 use serde::Serialize;
@@ -26,10 +17,6 @@ use tokio::sync::oneshot;
 use tokio::sync::Mutex;
 
 /// The host, shipped inside the binary so there is nothing to install.
-///
-/// One entry per file rather than one string, because the host is written in parts: what an
-/// extension is handed is a wide surface, and keeping the context, the interface and the
-/// tools apart is what stops any one of them becoming the file nobody wants to open.
 const HOST_SOURCE: &[(&str, &str)] = &[
     ("extension-host.ts", include_str!("../host/host.ts")),
     ("host-context.ts", include_str!("../host/context.ts")),
@@ -46,12 +33,6 @@ const HOST_FILE: &str = "extension-host.ts";
 const TOOL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
 
 /// How long a live component may take to answer before it is treated as unreachable.
-///
-/// Far shorter than [`TOOL_TIMEOUT`]: a tool call is expected to take real time, a
-/// component answering what its own lines are is not — an interface asking a registered
-/// component to draw itself and waiting two minutes for an answer is exactly the frame
-/// stall this protocol exists to prevent. A component that misses this is not retried by
-/// anything in this crate; whatever asked is left to decide whether to ask again.
 const COMPONENT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// What an extension registered, as the host describes it.
@@ -73,10 +54,8 @@ pub struct Registered {
     /// The custom types this extension draws itself.
     #[serde(default)]
     pub renderers: Vec<String>,
-    /// What the extension itself says it may do, when it says anything: a `capabilities`
-    /// export beside its default one. Absent — rather than empty — for an extension that
-    /// declares nothing, which is what tells a manifest naming no capabilities apart from
-    /// no manifest at all.
+    /// What the extension itself says it may do, when it says anything: a `capabilities` export
+    /// beside its default one.
     #[serde(default)]
     pub capabilities: Option<Vec<String>>,
 }
@@ -96,34 +75,22 @@ pub struct RegisteredTool {
     pub description: String,
     #[serde(default)]
     pub parameters: Value,
-    /// A human-readable name for a UI to show instead of `name`. Carried through so it is
-    /// never thrown away at this boundary, but nothing reads it yet: micro's transcript
-    /// draws a tool call from a Rust renderer keyed on `name`, not from a per-tool label.
+    /// A human-readable name for a UI to show instead of `name`.
     #[serde(default)]
     pub label: Option<String>,
-    /// A one-line summary for the "Available tools" section of a system prompt, and the
-    /// guideline bullets that go with it. Same story as `label` — read and kept, not acted
-    /// on: micro's system prompt is a fixed template plus a skills section, with no
-    /// per-tool "Available tools" listing to fill in.
+    /// A one-line summary for the "Available tools" section of a system prompt, and the guideline
+    /// bullets that go with it.
     #[serde(default)]
     pub prompt_snippet: Option<String>,
     #[serde(default)]
     pub prompt_guidelines: Vec<String>,
-    /// A provider-side sampling directive for this tool's arguments. Kept as opaque JSON
-    /// rather than dropped, but there is nowhere to spend it: building the JSON schema a
-    /// provider is sent is `micro_types::ToolDefinition`'s job, and it carries no such
-    /// field, so a value here would need a change to that shared type and to every
-    /// provider crate that reads it to have any effect.
+    /// A provider-side sampling directive for this tool's arguments.
     #[serde(default)]
     pub constrained_sampling: Option<Value>,
-    /// `"default"` or `"self"`, describing whether a tool wants pi's own renderer to frame
-    /// its call and result or wants to draw the whole row itself. micro's renderer has no
-    /// such switch — every tool call is drawn the same shell regardless of what the tool
-    /// asked for — so this rides along unread.
+    
     #[serde(default)]
     pub render_shell: Option<String>,
-    /// `"sequential"` or `"parallel"`. micro's agent loop always runs a turn's tool calls
-    /// together, so a per-tool override has nothing to change.
+    /// `"sequential"` or `"parallel"`.
     #[serde(default)]
     pub execution_mode: Option<String>,
 }
@@ -167,14 +134,9 @@ pub struct LoadFailure {
 }
 
 /// Something the host wants micro to do, or to answer.
-///
-/// The three an extension originates carry `extension`: the file whose registration made
-/// the ask, as the host knows it. Without it every ask would arrive anonymously and there
-/// would be nothing to hold to a manifest — see [`crate::Grants`]. It is optional because
-/// a message can also come from the host itself rather than from any one extension.
 #[derive(Debug, Clone, PartialEq)]
 pub enum FromHost {
-    /// An extension asked micro to do something. Nothing comes back.
+    /// An extension asked micro to do something.
     Action {
         action: String,
         extension: Option<String>,
@@ -193,9 +155,7 @@ pub enum FromHost {
         extension: Option<String>,
         payload: Value,
     },
-    /// A registered component says its lines are stale, on its own schedule rather than in
-    /// answer to a `render` this side sent. Nothing is waited for — the interface asking
-    /// for fresh lines, on its own time, is the point of this arriving unprompted at all.
+    
     ComponentChanged { component_id: String },
     /// An extension's handler threw.
     Failed {
@@ -205,10 +165,7 @@ pub enum FromHost {
     },
 }
 
-/// What renderCall/renderResult are told about the tool call beyond their own first
-/// argument — pi's `ToolRenderContext`, the members a caller on this side of the wire can
-/// actually supply. `args`/`result` travel as the request's own top-level fields rather
-/// than living here, since only one of the two ever applies to a given call.
+/// What renderCall/renderResult are told about the tool call beyond their own first argument.
 #[derive(Debug, Clone, Default)]
 pub struct ToolRenderFields {
     pub tool_call_id: String,
@@ -232,21 +189,14 @@ pub struct RenderedTool {
 /// A running host.
 pub struct Host {
     child: Mutex<Child>,
-    /// Behind its own lock, held only while a line is written. Nothing waits for an answer
-    /// while holding it, so a call can never block the answer it is waiting for. Shared with
-    /// the task that pumps cancel notices, which is why it is behind an `Arc` rather than
-    /// owned outright.
+    /// Behind its own lock, held only while a line is written.
     stdin: Arc<Mutex<ChildStdin>>,
     /// Answers waiting to be matched to the request that asked for them.
     pending: Arc<Mutex<HashMap<String, oneshot::Sender<Value>>>>,
-    /// Where a running tool call's progress goes, keyed the same way `pending` is. A call
-    /// that nobody is watching is not in here at all, so a `tool_update` for it is simply
-    /// unmatched rather than costing a lookup that could never find anything.
+    
     updates: Arc<Mutex<HashMap<String, micro_tools::Progress>>>,
-    /// Tells a call still in flight to stop: a turn that was abandoned, or one that ran
-    /// past `TOOL_TIMEOUT`. A plain channel rather than a request through `stdin` directly,
-    /// because the one place this is sent from — a cancelled call's `Drop` — cannot await
-    /// the lock `stdin` needs; sending here never blocks, so it is safe there.
+    /// Tells a call still in flight to stop: a turn that was abandoned, or one that ran past
+    /// `TOOL_TIMEOUT`.
     cancel: tokio::sync::mpsc::UnboundedSender<String>,
     /// What the host said that micro has to act on, until somebody takes it.
     incoming: Mutex<Option<tokio::sync::mpsc::UnboundedReceiver<FromHost>>>,
@@ -256,10 +206,6 @@ pub struct Host {
 
 impl Host {
     /// Start the host and load these extensions.
-    ///
-    /// `bun` is looked for on the path. Without it there are no extensions and the run
-    /// carries on: an extension is an addition, and a missing runtime is not a reason to
-    /// refuse to start.
     pub async fn start(
         home: &Path,
         paths: &[PathBuf],
@@ -277,11 +223,7 @@ impl Host {
         })?;
 
         let script = install_host(home)?;
-        // A real pi extension imports pi's own runtime modules
-        // (`@earendil-works/pi-coding-agent` and the like) — without something to
-        // resolve those to, the import fails and the extension never loads at all. See
-        // `compat`'s own module doc for what is answered for real and why this is a
-        // `NODE_PATH` directory rather than a loader hook.
+        
         let compat_node_modules = crate::compat::install(home)?;
         let node_path = crate::compat::node_path(home, &compat_node_modules)?;
         let readable_roots = extension_read_roots(home, paths, workspace);
@@ -297,11 +239,7 @@ impl Host {
             &runtime_name,
             [
                 "run".to_string(),
-                // Without this, an import nothing here provides does not simply fail: Bun's
-                // default is to fetch whatever is missing, from its own global cache or from
-                // the network, so what an extension actually gets can depend on what happens
-                // to be lying around on the machine it runs on. A missing module should say so
-                // once, the same way everywhere, rather than resolve to something nobody chose.
+                
                 "--no-install".to_string(),
                 script.display().to_string(),
             ],
@@ -316,8 +254,7 @@ impl Host {
         command
             .args(&wrapped.args)
             .current_dir(&wrapped.cwd)
-            // Do not leak provider keys, tokens, socket paths, or other parent-process
-            // authority through `process.env`.
+            
             .env_clear();
         for (name, value) in &wrapped.env {
             command.env(name, value);
@@ -350,9 +287,7 @@ impl Host {
             loaded_sender,
         ));
 
-        // A call that gives up on a run tells the host over this, not over `stdin`
-        // directly — the giving-up happens in a `Drop`, which cannot await the lock
-        // `stdin` needs. Pumped from a channel instead, on a task that can.
+        
         let (cancel, mut cancelled) = tokio::sync::mpsc::unbounded_channel::<String>();
         {
             let stdin = Arc::clone(&stdin);
@@ -384,8 +319,7 @@ impl Host {
         )
         .await?;
 
-        // Loading runs someone else's code, so it is given a bound rather than waited on
-        // for as long as it likes.
+        
         let loaded = tokio::time::timeout(TOOL_TIMEOUT, loaded_receiver)
             .await
             .map_err(|_| "the extension host did not finish loading".to_string())?
@@ -408,16 +342,6 @@ impl Host {
     }
 
     /// Drop every registration an extension was not granted, and say what was refused.
-    ///
-    /// Registering is itself an ask — for a tool the model may call, a command a reader may
-    /// type — so it is held to the manifest like any other, and refused here rather than at
-    /// the moment the tool is called. That way an extension without the capability never
-    /// contributes a name to the model's tool list, instead of contributing one that
-    /// refuses when reached for.
-    ///
-    /// Done while the host is still the caller's own, before anything else can have read
-    /// what it registered: this is the only thing that changes the load report, and
-    /// everything downstream reads it through an `Arc` afterwards.
     pub fn retain_granted(&mut self, grants: &crate::Grants) -> Vec<String> {
         let mut refused = Vec::new();
         for extension in &mut self.loaded.extensions {
@@ -514,9 +438,6 @@ impl Host {
     }
 
     /// Ask whoever registered it to draw one, at this width.
-    ///
-    /// What comes back is lines of text: the extension decides what it says, micro decides
-    /// where it goes.
     pub async fn render(
         &self,
         custom_type: &str,
@@ -578,7 +499,7 @@ impl Host {
             .collect()
     }
 
-    /// Tell the extensions something happened. Nothing is waited for.
+    /// Tell the extensions something happened.
     pub async fn notify(&self, event: &str, payload: Value) -> Result<(), String> {
         write_line(
             &mut *self.stdin.lock().await,
@@ -588,10 +509,6 @@ impl Host {
     }
 
     /// Tell the extensions something happened and wait for what they say about it.
-    ///
-    /// Unlike [`Host::notify`], this is a question: an extension handling the event may
-    /// answer, and what every handler answered comes back. Used where an extension is
-    /// allowed to change what happens rather than only to watch it.
     pub async fn ask_event(&self, event: &str, payload: Value) -> Result<Vec<Value>, String> {
         Ok(self
             .ask_event_attributed(event, payload)
@@ -602,11 +519,6 @@ impl Host {
     }
 
     /// The same question, with each answer paired to the extension that gave it.
-    ///
-    /// An event reaches every handler that registered for it, and one of them answering is
-    /// the extension changing what micro does — replacing the conversation on its way to a
-    /// request, say. Which one answered is what makes that change attributable, and what
-    /// makes it something a manifest can be held against.
     pub async fn ask_event_attributed(
         &self,
         event: &str,
@@ -637,10 +549,7 @@ impl Host {
             .and_then(Value::as_array)
             .cloned()
             .unwrap_or_default();
-        // Sent alongside the answers rather than folded into them, so an answer is exactly
-        // the object the handler returned. An older host, or one answering an event nothing
-        // extension-owned handled, sends no sources at all, and every answer is then simply
-        // unattributed.
+        
         let sources = answer
             .get("sources")
             .and_then(Value::as_array)
@@ -661,12 +570,6 @@ impl Host {
     }
 
     /// Tell one extension it is being let go, and wait for it to say it is done.
-    ///
-    /// The extension's own `deactivate` export runs first, so it can put back whatever it
-    /// changed outside micro; then the host drops its registrations, so nothing it added
-    /// can be reached again. What micro itself granted — the tools it offered the model,
-    /// the commands it dispatched, what it drew — is taken back by the caller regardless of
-    /// how this answered: an extension that throws on the way out still stops being loaded.
     pub async fn deactivate(&self, path: &str) -> Result<(), String> {
         let id = self.claim_id();
         let (sender, receiver) = oneshot::channel();
@@ -689,12 +592,8 @@ impl Host {
         }
     }
 
-    /// Run one of their tools, forwarding what it reports while it works, and wait for what
-    /// it returns.
-    ///
-    /// A call left running when this returns `Err` — because the wait timed out, or because
-    /// this future itself was dropped, which is what an abandoned turn does to it — is told
-    /// to stop rather than left running unwatched: see [`CancelOnDrop`].
+    /// Run one of their tools, forwarding what it reports while it works, and wait for what it
+    /// returns.
     pub async fn call_tool(
         &self,
         name: &str,
@@ -722,9 +621,7 @@ impl Host {
 
         let guard = CancelOnDrop::new(id.clone(), self.cancel.clone());
         let outcome = tokio::time::timeout(TOOL_TIMEOUT, receiver).await;
-        // Whatever comes next, this call reached it under its own power rather than being
-        // torn down mid-flight — a timeout is handled explicitly below, and does not need
-        // the drop-time fallback the guard exists for.
+        
         guard.disarm();
         self.updates.lock().await.remove(&id);
 
@@ -732,8 +629,7 @@ impl Host {
             Ok(Ok(answer)) => answer,
             Ok(Err(_)) => return Err(format!("the extension host stopped while running {name}")),
             Err(_) => {
-                // Nothing is coming; say so, and tell the host to give up on it too rather
-                // than let it keep running unwatched.
+                
                 let _ = self.cancel.send(id.clone());
                 self.pending.lock().await.remove(&id);
                 return Err(format!("{name} did not answer in time"));
@@ -746,13 +642,7 @@ impl Host {
         }
     }
 
-    /// Ask a registered markdown transformer to rewrite this text, and hand back what it
-    /// produced. `context` is pi's `MarkdownTransformContext`, carried through unread by
-    /// this crate — whichever transformer runs is free to look at it.
-    ///
-    /// A markdown transformer changes what the interactive transcript draws, and nothing in
-    /// this crate draws it; this exists so that layer has something to call once it does,
-    /// the same way [`Host::render`] exists for a custom message's own renderer.
+    /// Ask a registered markdown transformer to rewrite this text, and hand back what it produced.
     pub async fn transform_markdown(&self, markdown: &str, context: &Value) -> Result<String, String> {
         let id = self.claim_id();
         let (sender, receiver) = oneshot::channel();
@@ -785,11 +675,6 @@ impl Host {
     }
 
     /// Ask a registered component for its lines at this width.
-    ///
-    /// Meant to be called from a background task, never from a paint pass: the answer
-    /// crosses a pipe to another process, and nothing in this crate bounds how long that
-    /// takes except [`COMPONENT_TIMEOUT`]. Whatever draws the interface should read a
-    /// cache this fills rather than await this directly — see `crates/micro-tui/src/ui.rs`.
     pub async fn render_component(&self, component_id: &str, width: usize) -> Result<Vec<String>, String> {
         let id = self.claim_id();
         let (sender, receiver) = oneshot::channel();
@@ -829,12 +714,6 @@ impl Host {
     }
 
     /// Offer a registered component a key, and say whether it consumed it.
-    /// `text` is the built-in editor's current buffer, for the one component that shares a
-    /// buffer with it — `setEditorComponent`'s replacement. pi's own version inherits the
-    /// base editor directly, so a key it does not consume falls through to the same object
-    /// and its `getText()` already reflects it; there is no such inheritance across a pipe,
-    /// so the text rides along instead. `None` for every other component, which has no
-    /// buffer of the built-in editor's to fall through to in the first place.
     pub async fn send_component_input(
         &self,
         component_id: &str,
@@ -866,10 +745,7 @@ impl Host {
         Ok(answer.get("consume").and_then(Value::as_bool).unwrap_or(false))
     }
 
-    /// Tell a registered component to drop any cached rendering state of its own — a theme
-    /// change, or the interface otherwise deciding it should recompute from scratch rather
-    /// than reuse what it drew last. Fire and forget, the same as [`Host::notify`]: nothing
-    /// answers `Component.invalidate()` on pi's own side either.
+    /// Tell a registered component to drop any cached rendering state of its own.
     pub async fn invalidate_component(&self, component_id: &str) -> Result<(), String> {
         write_line(
             &mut *self.stdin.lock().await,
@@ -878,8 +754,7 @@ impl Host {
         .await
     }
 
-    /// Tell the host a registered component is no longer needed. Fire and forget, the same
-    /// as [`Host::invalidate_component`].
+    /// Tell the host a registered component is no longer needed.
     pub async fn dispose_component(&self, component_id: &str) -> Result<(), String> {
         write_line(
             &mut *self.stdin.lock().await,
@@ -888,14 +763,8 @@ impl Host {
         .await
     }
 
-    /// Ask the host to run this tool's renderCall with these arguments and context, and
-    /// register whatever Component it returns — the id that comes back is one
-    /// [`Host::render_component`] and friends can be driven with, same as any other.
-    ///
-    /// `supported: false` with no error means the tool declared no renderCall at all — the
-    /// caller falls back to its own drawing, the way [`Host::render`] leaves a custom
-    /// message undrawn when nobody registered for its type. `supported: false` with an
-    /// error means it has one and that one threw.
+    /// Ask the host to run this tool's renderCall with these arguments and context, and register
+    /// whatever Component it returns.
     pub async fn render_tool_call(
         &self,
         name: &str,
@@ -905,8 +774,7 @@ impl Host {
         self.render_tool(name, "call", args, None, fields).await
     }
 
-    /// The renderResult counterpart to [`Host::render_tool_call`], called instead once a
-    /// result — partial or final — has arrived to draw.
+    
     pub async fn render_tool_result(
         &self,
         name: &str,
@@ -992,7 +860,7 @@ impl Host {
         }
     }
 
-    /// Answer something the host asked for.
+    
     pub async fn answer(&self, id: &str, payload: Value) -> Result<(), String> {
         let mut message = serde_json::json!({ "type": "answer", "id": id });
         if let (Some(object), Some(extra)) = (message.as_object_mut(), payload.as_object()) {
@@ -1004,28 +872,18 @@ impl Host {
     }
 
     /// Take the stream of things the host wants micro to do.
-    ///
-    /// Handed over rather than read through the host, because waiting for the next one
-    /// would otherwise hold the host's lock for as long as nothing was asked — and
-    /// nothing could be answered while it was held.
     pub async fn take_asks(&self) -> Option<tokio::sync::mpsc::UnboundedReceiver<FromHost>> {
         self.incoming.lock().await.take()
     }
 
     /// Tell the extensions the session is over, and let the process go.
-    ///
-    /// `reason` is pi's `session_shutdown` reason: `"quit"` for the run ending outright.
-    /// micro has no other moment to spend it on — switching, starting over, and forking all
-    /// replace the session in place, inside the same host and the same process, so none of
-    /// them ever tear this down.
     pub async fn shutdown(&self, reason: &str) {
         let _ = write_line(
             &mut *self.stdin.lock().await,
             &serde_json::json!({ "type": "shutdown", "reason": reason }),
         )
         .await;
-        // A host that will not leave on its own is stopped: it is someone else's code, and
-        // a session should not be held open by it.
+        
         let mut child = self.child.lock().await;
         let _ = tokio::time::timeout(std::time::Duration::from_secs(2), child.wait()).await;
         let _ = child.kill().await;
@@ -1039,8 +897,8 @@ impl Host {
     }
 }
 
-/// Read everything the host says: answers go to whoever is waiting, anything else goes to
-/// the caller to act on.
+/// Read everything the host says: answers go to whoever is waiting, anything else goes to the
+/// caller to act on.
 async fn read_host(
     stdout: tokio::process::ChildStdout,
     pending: Arc<Mutex<HashMap<String, oneshot::Sender<Value>>>>,
@@ -1077,8 +935,7 @@ async fn read_host(
                     let _ = sender.send(message);
                 }
             }
-            // A component saying its lines are stale on its own schedule, not in answer to
-            // anything this side asked — see `FromHost::ComponentChanged`.
+            
             "component_changed" => {
                 let Some(component_id) = message.get("componentId").and_then(Value::as_str) else {
                     continue;
@@ -1087,8 +944,7 @@ async fn read_host(
                     component_id: component_id.to_string(),
                 });
             }
-            // A tool saying what it has done so far, not what it finished with — the call
-            // this belongs to is still open in `pending`, and stays that way.
+            
             "tool_update" => {
                 let Some(id) = message.get("id").and_then(Value::as_str) else {
                     continue;
@@ -1156,10 +1012,6 @@ async fn read_host(
 }
 
 /// Which extension made this ask, when the host said.
-///
-/// An empty name is read as no name rather than as an extension called nothing: the host
-/// tags an ask with the registration that made it, and anything it sends on its own behalf
-/// carries no tag at all.
 fn asker(message: &Value) -> Option<String> {
     message
         .get("extension")
@@ -1176,11 +1028,8 @@ fn text(value: &Value, name: &str) -> String {
         .to_string()
 }
 
-/// The `content` array a `tool_result` or `tool_update` message carries, read as the
-/// content blocks the rest of micro works with. A block this cannot make sense of —
-/// missing its `type`, or an image missing its data — is read as empty text rather than
-/// dropped from the array outright, so a result with three blocks is never quietly told to
-/// the model as two.
+/// The `content` array a `tool_result` or `tool_update` message carries, read as the content blocks
+/// the rest of micro works with.
 fn content_blocks(message: &Value) -> Vec<micro_types::ContentBlock> {
     let Some(blocks) = message.get("content").and_then(Value::as_array) else {
         return Vec::new();
@@ -1198,13 +1047,6 @@ fn content_blocks(message: &Value) -> Vec<micro_types::ContentBlock> {
 }
 
 /// Tells the host to stop a call this side gave up on before the call itself finished.
-///
-/// The only moment that needs this is a future dropped mid-poll — a turn abandoned while
-/// [`Host::call_tool`] was still awaiting its answer — because nothing else runs when a
-/// future is dropped: there is no `await` point left to explicitly notify anyone from.
-/// [`CancelOnDrop::disarm`] is called the instant `call_tool` reaches a point where it
-/// controls its own return again, whether that is a successful answer or its own timeout
-/// handling, so this only ever fires for the drop it exists to catch.
 struct CancelOnDrop {
     id: String,
     cancel: tokio::sync::mpsc::UnboundedSender<String>,
@@ -1228,8 +1070,7 @@ impl CancelOnDrop {
 impl Drop for CancelOnDrop {
     fn drop(&mut self) {
         if self.armed {
-            // A plain send rather than a write to `stdin`: `Drop` runs no async code, and
-            // this channel is exactly the part of `Host` built to be reachable from here.
+            
             let _ = self.cancel.send(std::mem::take(&mut self.id));
         }
     }
@@ -1248,9 +1089,6 @@ async fn write_line(stdin: &mut ChildStdin, value: &impl Serialize) -> Result<()
 }
 
 /// Put the host script where Bun can run it, and say where that is.
-///
-/// Rewritten every start rather than only when missing, so an upgraded micro never runs
-/// the host an older one left behind.
 pub fn install_host(home: &Path) -> Result<PathBuf, String> {
     std::fs::create_dir_all(home)
         .map_err(|error| format!("cannot use {}: {error}", home.display()))?;
@@ -1304,7 +1142,7 @@ mod tests {
         let path = install_host(&home).unwrap();
 
         assert!(path.ends_with(HOST_FILE));
-        // Every part of the host is written beside the entry, or an import finds nothing.
+        
         for (name, source) in HOST_SOURCE {
             let written = std::fs::read_to_string(home.join(name)).unwrap();
             assert_eq!(&written, source, "{name} was not written whole");
@@ -1365,12 +1203,6 @@ mod tests {
     }
 
     /// Answer every `get_context` the host asks for, for as long as the test runs.
-    ///
-    /// A tool call now builds an `ExtensionContext` before it runs the tool, which means
-    /// asking micro once for what changes turn to turn — the model, the thinking level,
-    /// the system prompt. A bare protocol test has no `micro-cli` behind it to answer
-    /// that, so without this a tool call here would wait the full [`TOOL_TIMEOUT`] for an
-    /// answer nobody was going to send.
     fn answer_context_requests(host: Arc<Host>) {
         tokio::spawn(async move {
             let Some(mut asks) = host.take_asks().await else {
@@ -1399,8 +1231,7 @@ mod tests {
         path
     }
 
-    /// An extension is loaded, its tool is called, and what it returned comes back — all
-    /// of it through a real Bun process.
+    
     #[tokio::test]
     async fn an_extension_registers_a_tool_and_the_tool_runs() {
         if which_bun().is_none() {
@@ -1465,10 +1296,7 @@ export default (micro) => {
         let _ = std::fs::remove_dir_all(&root);
     }
 
-    /// What an extension exports beside its default function is read and reported: the
-    /// capabilities it says it needs, and the fact that it has something to run when it is
-    /// let go. An extension exporting neither says nothing about either, which is what
-    /// tells a manifest declaring nothing apart from no manifest at all.
+    
     #[tokio::test]
     async fn what_an_extension_declares_about_itself_reaches_micro() {
         if which_bun().is_none() {
@@ -1516,9 +1344,7 @@ export default (micro) => {
         let _ = std::fs::remove_dir_all(&root);
     }
 
-    /// Letting an extension go runs its own `deactivate` — its one chance to put back
-    /// whatever it changed outside micro — and then drops what it registered, so a command
-    /// it added is no longer there to be called.
+    /// Letting an extension go runs its own `deactivate`.
     #[tokio::test]
     async fn deactivating_an_extension_runs_its_own_teardown_and_drops_its_registrations() {
         if which_bun().is_none() {
@@ -1574,7 +1400,7 @@ export default (micro) => {{
         let _ = std::fs::remove_dir_all(&root);
     }
 
-    /// A tool that throws reports the failure rather than taking the host down with it.
+    
     #[tokio::test]
     async fn a_tool_that_throws_is_reported_and_the_host_lives() {
         if which_bun().is_none() {
@@ -1618,7 +1444,7 @@ export default (micro) => {
             .expect_err("it throws");
         assert!(error.contains("it went wrong"), "{error}");
 
-        // The host is still there to answer the next call.
+        
         let answer = host
             .call_tool(
                 "fine",
@@ -1661,10 +1487,7 @@ export default (micro) => {
         let _ = std::fs::remove_dir_all(&root);
     }
 
-    /// An extension whose own `package.json` already names the dependency it cannot find is
-    /// told to run `bun install` where that manifest lives, not just that something could
-    /// not be found — the fix is one command, and this is the difference between a reader
-    /// running it and a reader filing a bug against micro's own module resolution.
+    
     #[tokio::test]
     async fn a_missing_declared_dependency_says_how_to_fix_it() {
         if which_bun().is_none() {
@@ -1699,8 +1522,7 @@ export default (micro) => { micro.registerTool({ name: "uses_it", execute: async
         let _ = std::fs::remove_dir_all(&root);
     }
 
-    /// An extension missing a dependency nobody declared is left with the plain resolution
-    /// error — there is nothing to point at, so nothing is invented.
+    /// An extension missing a dependency nobody declared is left with the plain resolution error.
     #[tokio::test]
     async fn a_missing_undeclared_dependency_is_left_as_reported() {
         if which_bun().is_none() {
@@ -1756,9 +1578,8 @@ export default (micro) => { micro.registerTool({ name: "uses_it", execute: async
         let _ = std::fs::remove_dir_all(&root);
     }
 
-    /// What a tool reports through `onUpdate` while it runs arrives as progress before its
-    /// final answer does — the same channel a built-in tool like `bash` streams output
-    /// through, so a caller does not have to know a call came from an extension to watch it.
+    /// What a tool reports through `onUpdate` while it runs arrives as progress before its final
+    /// answer does.
     #[tokio::test]
     async fn onupdate_is_forwarded_as_progress_while_the_call_is_in_flight() {
         if which_bun().is_none() {
@@ -1810,10 +1631,7 @@ export default (micro) => {
         let _ = std::fs::remove_dir_all(&root);
     }
 
-    /// A call this side has given up on is told to stop, not left running with nobody
-    /// listening. Dropping the future is what an abandoned turn does — there is no `await`
-    /// point left afterwards to notify the host from, which is exactly why `call_tool`
-    /// arms a guard around its wait rather than notifying only from its own error paths.
+    /// A call this side has given up on is told to stop, not left running with nobody listening.
     #[tokio::test]
     async fn dropping_a_call_in_flight_tells_the_host_to_stop_it() {
         if which_bun().is_none() {
@@ -1866,8 +1684,7 @@ export default (micro) => {{
                     .await;
             })
         };
-        // Give the call a moment to actually reach the host and start running before it is
-        // torn down — cancelling before it started would prove nothing about cancellation.
+        
         tokio::time::sleep(std::time::Duration::from_millis(200)).await;
         running.abort();
 
@@ -1881,8 +1698,8 @@ export default (micro) => {{
         let _ = std::fs::remove_dir_all(&root);
     }
 
-    /// A registered markdown transformer is round-tripped: asked with text and context,
-    /// answering with what it rewrote it to.
+    /// A registered markdown transformer is round-tripped: asked with text and context, answering
+    /// with what it rewrote it to.
     #[tokio::test]
     async fn a_registered_markdown_transformer_rewrites_what_it_is_asked_to() {
         if which_bun().is_none() {
@@ -1922,9 +1739,7 @@ export default (micro) => {
         let _ = std::fs::remove_dir_all(&root);
     }
 
-    /// A tool's renderCall can hand back a live component, and micro can drive it by id —
-    /// asked for its lines, offered input, told to invalidate, and disposed — the same
-    /// protocol any future header or widget would be driven through.
+    /// A tool's renderCall can hand back a live component, and micro can drive it by id.
     #[tokio::test]
     async fn a_tools_rendercall_registers_a_component_micro_can_drive() {
         if which_bun().is_none() {
@@ -1999,8 +1814,7 @@ export default (micro) => {
         let _ = std::fs::remove_dir_all(&root);
     }
 
-    /// A tool declaring no renderCall answers plainly rather than being asked to invent
-    /// one — the caller reads `supported: false` and falls back to its own drawing.
+    
     #[tokio::test]
     async fn a_tool_with_no_rendercall_says_so_rather_than_erroring() {
         if which_bun().is_none() {
@@ -2034,9 +1848,7 @@ export default (micro) => {
         let _ = std::fs::remove_dir_all(&root);
     }
 
-    /// A renderer's own `ctx.invalidate()` pushes `component_changed` unprompted — the
-    /// half of the protocol that lets a component change on its own schedule, not only
-    /// when asked to render again.
+    /// A renderer's own `ctx.invalidate()` pushes `component_changed` unprompted.
     #[tokio::test]
     async fn a_tool_renderer_can_push_a_change_on_its_own_schedule() {
         if which_bun().is_none() {
@@ -2057,8 +1869,6 @@ export default (micro) => {
                     return ["tick"];
                 },
                 handleInput() {
-                    // Reports the change on its own initiative, independent of whatever
-                    // asked for this key — the same call a timer callback would make.
                     ctx.invalidate();
                     return { consume: true };
                 },
@@ -2100,9 +1910,7 @@ export default (micro) => {
     }
 
     /// A tool's renderCall draws itself the moment micro reports the lifecycle event every
-    /// extension already gets — `tool_execution_start` — with no request from micro needed
-    /// to trigger it, and tells micro what it drew. This is the full chain end to end:
-    /// `Host::notify` in, a `FromHost::Ui` asking to show `tool_call_rendered` out.
+    /// extension already gets.
     #[tokio::test]
     async fn a_tools_rendercall_draws_itself_when_the_call_starts() {
         if which_bun().is_none() {
@@ -2159,9 +1967,7 @@ export default (micro) => {
         let _ = std::fs::remove_dir_all(&root);
     }
 
-    /// The renderResult counterpart: drawn when `tool_execution_end` arrives, reading the
-    /// result out of the same payload every extension's own `tool_result` handler would
-    /// see.
+    
     #[tokio::test]
     async fn a_tools_renderresult_draws_itself_when_the_result_arrives() {
         if which_bun().is_none() {
@@ -2218,11 +2024,7 @@ export default (micro) => {
         let _ = std::fs::remove_dir_all(&root);
     }
 
-    /// `ctx.fork(entryId, { withSession })` does not resolve on being queued alone: it
-    /// waits for the `session_start` that says the fork actually happened, then runs
-    /// `withSession` against a context already bound to the new session, and only then
-    /// resolves. Answering `fork` without ever sending that event would leave this
-    /// hanging, which is exactly what proves the wait is real.
+    
     #[tokio::test]
     async fn fork_waits_for_session_start_before_running_with_session() {
         if which_bun().is_none() {
@@ -2266,9 +2068,7 @@ export default (micro) => {
                             .await;
                     }
                     FromHost::Request { id, request, .. } if request == "fork" => {
-                        // Answered as "queued", the same shape `extensions::serve` gives
-                        // back once the interface has accepted the line — not yet the
-                        // real completion, which arrives as its own event below.
+                        
                         let _ = watching.answer(&id, serde_json::json!({ "cancelled": false })).await;
                     }
                     FromHost::Action { action, payload, .. } if action == "send_user_message" => {
@@ -2283,13 +2083,11 @@ export default (micro) => {
             None
         });
 
-        // Started, not awaited: it is the command itself that waits on `session_start`,
-        // and it must actually be running before there is anything to prove is waiting.
+        
         let calling = Arc::clone(&host);
         let command = tokio::spawn(async move { calling.call_command("probe", "").await });
 
-        // Given time to prove the promise really is waiting: with nothing telling it the
-        // fork happened, `withSession` has not run and the command has not finished.
+        
         tokio::time::sleep(std::time::Duration::from_millis(200)).await;
         assert!(
             !seen_send_user_message.is_finished(),
