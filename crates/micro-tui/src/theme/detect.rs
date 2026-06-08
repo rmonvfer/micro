@@ -46,7 +46,6 @@ pub fn from_colorfgbg(colorfgbg: Option<&str>) -> Detection {
     }
 }
 
-
 pub fn theme_for_rgb((r, g, b): (u8, u8, u8)) -> TerminalTheme {
     if relative_luminance(r, g, b) >= 0.5 {
         TerminalTheme::Light
@@ -107,7 +106,6 @@ mod tests {
 
     #[test]
     fn a_dark_background_index_reads_as_dark() {
-        
         let detection = from_colorfgbg(Some("15;0"));
         assert_eq!(detection.theme, TerminalTheme::Dark);
         assert_eq!(detection.confidence, Confidence::High);
@@ -122,7 +120,6 @@ mod tests {
 
     #[test]
     fn the_bold_field_does_not_displace_the_background() {
-        
         assert_eq!(
             from_colorfgbg(Some("0;default;15")).theme,
             TerminalTheme::Light
@@ -146,9 +143,9 @@ mod tests {
     fn a_reported_background_decides_by_luminance() {
         assert_eq!(theme_for_rgb((0xff, 0xff, 0xff)), TerminalTheme::Light);
         assert_eq!(theme_for_rgb((0x00, 0x00, 0x00)), TerminalTheme::Dark);
-        
+
         assert_eq!(theme_for_rgb((0x18, 0x18, 0x1e)), TerminalTheme::Dark);
-        
+
         assert_eq!(theme_for_rgb((0xf8, 0xf8, 0xf8)), TerminalTheme::Light);
     }
 
@@ -156,10 +153,10 @@ mod tests {
     fn a_palette_index_converts_to_its_rgb() {
         assert_eq!(ansi256_to_rgb(0), (0x00, 0x00, 0x00));
         assert_eq!(ansi256_to_rgb(15), (0xff, 0xff, 0xff));
-        
+
         assert_eq!(ansi256_to_rgb(16), (0, 0, 0));
         assert_eq!(ansi256_to_rgb(231), (0xff, 0xff, 0xff));
-        
+
         assert_eq!(ansi256_to_rgb(232), (8, 8, 8));
         assert_eq!(ansi256_to_rgb(255), (238, 238, 238));
     }

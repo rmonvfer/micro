@@ -162,7 +162,7 @@ fn detect(provider: &str, base_url: &str, model_id: &str) -> Compat {
     let is_grok = provider == "xai" || base_url.contains("api.x.ai");
     let is_deepseek = provider == "deepseek" || base_url.contains("deepseek.com");
     let is_mistral = provider == "mistral" || base_url.contains("api.mistral.ai");
-    
+
     let is_anthropic_native = provider == "anthropic";
 
     let is_nonstandard = is_nvidia
@@ -187,7 +187,6 @@ fn detect(provider: &str, base_url: &str, model_id: &str) -> Compat {
         || is_nvidia
         || is_ant_ling;
 
-    
     let openrouter_developer_role =
         is_openrouter && (model_id.starts_with("anthropic/") || model_id.starts_with("openai/"));
 
@@ -223,7 +222,7 @@ fn detect(provider: &str, base_url: &str, model_id: &str) -> Compat {
         zai_tool_stream: false,
         supports_strict_mode: !is_moonshot && !is_together && !is_cloudflare_gateway && !is_nvidia,
         supports_strict_tools: is_anthropic_native,
-        
+
         bedrock_supports_strict_tools: false,
         cache_control_format: match provider == "openrouter" && model_id.starts_with("anthropic/") {
             true => Some(CacheControlFormat::Anthropic),
@@ -246,7 +245,7 @@ fn detect(provider: &str, base_url: &str, model_id: &str) -> Compat {
         supports_eager_tool_input_streaming: true,
         supports_cache_control_on_tools: true,
         force_adaptive_thinking: decides_its_own_thinking(model_id),
-        
+
         tool_call_id_length: is_mistral.then_some(MISTRAL_TOOL_CALL_ID_LENGTH),
         thinking: BTreeMap::new(),
     }
@@ -308,7 +307,6 @@ mod tests {
         assert!(!openrouter.supports_strict_tools);
     }
 
-    
     #[test]
     fn nothing_infers_bedrock_strict_tool_support() {
         let bedrock = detect(
@@ -382,7 +380,7 @@ mod tests {
 
         assert!(compat.supports_store);
         assert_eq!(compat.thinking_format, ThinkingFormat::StringThinking);
-        
+
         assert!(!compat.supports_developer_role);
     }
 
@@ -405,7 +403,7 @@ mod tests {
             compat.level(micro_types::ThinkingLevel::Low),
             Some("high".to_string())
         );
-        
+
         assert_eq!(
             compat.level(micro_types::ThinkingLevel::High),
             Some("high".to_string())
@@ -522,7 +520,6 @@ mod catalog_probe {
 mod mistral {
     use super::*;
 
-    
     #[test]
     fn mistral_is_spoken_to_the_way_it_expects() {
         let catalog = crate::Catalog::bundled();

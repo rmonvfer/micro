@@ -1,5 +1,3 @@
-
-
 use tokio::sync::mpsc::UnboundedReceiver;
 use tokio::sync::mpsc::UnboundedSender;
 
@@ -25,7 +23,6 @@ pub enum ToPhone {
 
 /// Both halves of the seam.
 pub struct Remote {
-    
     pub incoming: UnboundedReceiver<FromPhone>,
     /// What the interface has to say back.
     pub outgoing: UnboundedSender<ToPhone>,

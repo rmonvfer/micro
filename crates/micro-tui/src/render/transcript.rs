@@ -71,47 +71,31 @@ pub fn append(
     rendered: &mut Rendered,
     starts: &mut Vec<usize>,
 ) {
-    let mut out = &mut rendered.lines;
-    let mut links = &mut rendered.links;
-    let mut pictures = &mut rendered.pictures;
+    let out = &mut rendered.lines;
+    let links = &mut rendered.links;
+    let pictures = &mut rendered.pictures;
     let entries = transcript.entries();
     let from = display.from.min(entries.len());
 
     for (index, entry) in entries.iter().enumerate().skip(from) {
         starts.push(out.len());
         let before = out.len();
-        
+
         let thinking_leads_into_tool = assistant_leads_into_tool(entries, index);
-        let assistant_precedes_tool = assistant_precedes_tool(entries, index);
         if (!out.is_empty() || index > 0) && !thinking_leads_into_tool {
             out.push(Line::default());
         }
         let start = out.len();
 
         match entry {
-            Entry::User(text) => push_user(&mut out, text, theme, display),
-            Entry::Bash { command, shared } => {
-                push_bash(&mut out, command, *shared, theme, display)
-            }
+            Entry::User(text) => push_user(out, text, theme, display),
+            Entry::Bash { command, shared } => push_bash(out, command, *shared, theme, display),
             Entry::Assistant(assistant) => {
-                push_thinking(
-                    &mut out,
-                    &assistant.thinking,
-                    theme,
-                    display,
-                    !assistant_precedes_tool,
-                );
-                
-                push_markdown(
-                    &mut out,
-                    &assistant.text,
-                    theme,
-                    display,
-                    &mut links,
-                    &mut pictures,
-                );
+                push_thinking(out, &assistant.thinking, theme, display);
+
+                push_markdown(out, &assistant.text, theme, display, links, pictures);
                 if let Some(error) = &assistant.error {
-                    push_notice(&mut out, error, NoticeLevel::Error, theme, display);
+                    push_notice(out, error, NoticeLevel::Error, theme, display);
                 }
             }
             Entry::Tool(entry) => out.extend(tool::lines(
@@ -121,16 +105,15 @@ pub fn append(
                 display.width,
             )),
             Entry::Compaction { summary, expanded } => {
-                push_compaction(&mut out, summary, *expanded, theme, display)
+                push_compaction(out, summary, *expanded, theme, display)
             }
-            Entry::Custom { label, lines } => push_custom(&mut out, label, lines, theme, display),
+            Entry::Custom { label, lines } => push_custom(out, label, lines, theme, display),
             Entry::Image { data, mime_type } => {
-                push_image(&mut out, data, mime_type, theme, display, &mut pictures)
+                push_image(out, data, mime_type, theme, display, pictures)
             }
-            Entry::Notice { text, level } => push_notice(&mut out, text, *level, theme, display),
+            Entry::Notice { text, level } => push_notice(out, text, *level, theme, display),
         }
 
-        
         for line in out.iter_mut().skip(start) {
             let banded = line
                 .spans
@@ -141,14 +124,13 @@ pub fn append(
             }
         }
 
-        
         if out.len() == start {
             out.truncate(before);
         }
     }
 }
 
-/// A thinking-only assistant entry ends directly above the top row of the following tool's band.
+/// A thinking-only assistant entry keeps the tool's surrounding spacing intact.
 fn assistant_precedes_tool(entries: &[Entry], index: usize) -> bool {
     matches!(entries.get(index + 1), Some(Entry::Tool(_)))
         && matches!(
@@ -161,7 +143,6 @@ fn assistant_precedes_tool(entries: &[Entry], index: usize) -> bool {
 fn assistant_leads_into_tool(entries: &[Entry], index: usize) -> bool {
     assistant_precedes_tool(entries, index.saturating_sub(1))
 }
-
 
 pub(super) fn band(
     rows: Vec<Line<'static>>,
@@ -176,8 +157,7 @@ pub(super) fn band(
 }
 
 /// Columns of ground either side of a message's text, inside its own band.
-pub(super) const PADDING: usize = 1;
-
+pub(crate) const PADDING: usize = 1;
 
 fn indented(line: Line<'static>) -> Line<'static> {
     match line.spans.is_empty() {
@@ -235,18 +215,11 @@ fn push_bash(
     }
 }
 
-
-fn push_thinking(
-    out: &mut Vec<Line<'static>>,
-    thinking: &str,
-    theme: &Theme,
-    display: &Display,
-    trailing_padding: bool,
-) {
+fn push_thinking(out: &mut Vec<Line<'static>>, thinking: &str, theme: &Theme, display: &Display) {
     if thinking.trim().is_empty() {
         return;
     }
-    
+
     let style = theme.thinking();
 
     if display.show_thinking {
@@ -254,20 +227,15 @@ fn push_thinking(
             let spans = vec![Span::styled(line.to_string(), style)];
             out.extend(wrap_spans(&spans, display.width, 0));
         }
-        if trailing_padding {
-            out.push(Line::default());
-        }
+        out.push(Line::default());
         return;
     }
 
-    
     out.push(Line::from(vec![Span::styled(
         display.hidden_thinking_label.clone().into_owned(),
         style,
     )]));
-    if trailing_padding {
-        out.push(Line::default());
-    }
+    out.push(Line::default());
 }
 
 /// An image, given the rows it needs and drawn into them by the terminal.
@@ -279,7 +247,7 @@ fn push_image(
     display: &Display,
     pictures: &mut crate::render::pictures::Pictures,
 ) {
-    let Some(reserved) = pictures.reserve(data, display.width) else {
+    let Some(reserved) = pictures.reserve(data, display.width, out.len()) else {
         let bytes = data.len() / 4 * 3;
         out.push(Line::from(vec![Span::styled(
             format!("[{mime_type}, {}]", crate::app::human_size(bytes)),
@@ -346,15 +314,17 @@ fn push_markdown(
     links: &mut crate::render::links::Links,
     pictures: &mut crate::render::pictures::Pictures,
 ) {
-    
     let text = text.trim_end_matches('\n');
     if text.is_empty() {
         return;
     }
-    
+
     for block in markdown::render_linked(text, theme, display.width, links, display.mermaid) {
         if let Some(image) = block.image {
-            if let Some(rows) = pictures.reserve(&image, display.width) {
+            let wanted = (image.columns, image.rows);
+            if let Some(rows) =
+                pictures.reserve_sized(&image.data, wanted, display.width, out.len())
+            {
                 out.extend(std::iter::repeat_with(Line::default).take(rows));
             } else {
                 out.extend(wrap_spans(&block.spans, display.width, block.indent));
@@ -372,7 +342,6 @@ fn push_notice(
     theme: &Theme,
     display: &Display,
 ) {
-    
     let (color, prefix) = match level {
         NoticeLevel::Info => (theme.dim, ""),
         NoticeLevel::Warning => (theme.warning, "Warning: "),
@@ -382,7 +351,7 @@ fn push_notice(
         true => text.to_string(),
         false => format!("{prefix}{text}"),
     };
-    
+
     for line in body.split('\n') {
         match line.is_empty() {
             true => out.push(Line::default()),
@@ -454,8 +423,6 @@ mod tests {
                     .iter()
                     .map(|span| span.content.as_ref())
                     .collect::<String>()
-                    
-                    
                     .strip_prefix(' ')
                     .unwrap_or_default()
                     .trim_end()
@@ -551,7 +518,7 @@ mod tests {
                 arguments: json!({ "path": "." }),
             });
         }
-        
+
         assert_eq!(rendered(&transcript, &display(40)).len(), 7);
     }
 
@@ -567,7 +534,7 @@ mod tests {
         });
 
         let out = lines(&transcript, &Theme::dark(), &display(40));
-        
+
         assert_eq!(out.lines.len(), 11);
     }
 
@@ -628,7 +595,29 @@ mod tests {
     }
 
     #[test]
-    fn thinking_followed_by_a_tool_uses_the_tools_top_padding() {
+    fn thinking_is_separated_from_assistant_text() {
+        let mut transcript = Transcript::new();
+        transcript.apply(&AgentEvent::MessageDelta {
+            event: StreamEvent::ThinkingDelta {
+                index: 0,
+                delta: "considering".into(),
+            },
+        });
+        transcript.apply(&AgentEvent::MessageDelta {
+            event: StreamEvent::TextDelta {
+                index: 0,
+                delta: "answer".into(),
+            },
+        });
+
+        assert_eq!(
+            rendered(&transcript, &display(60)),
+            ["Thinking...", "", "answer"]
+        );
+    }
+
+    #[test]
+    fn thinking_followed_by_a_tool_keeps_spacing_above_the_tool() {
         let mut transcript = Transcript::new();
         transcript.apply(&AgentEvent::MessageDelta {
             event: StreamEvent::ThinkingDelta {
@@ -644,7 +633,7 @@ mod tests {
 
         assert_eq!(
             rendered(&transcript, &display(60)),
-            ["Thinking...", "", "read a.rs …", ""]
+            ["Thinking...", "", "", "read a.rs …", ""]
         );
     }
 
@@ -699,7 +688,7 @@ mod tests {
         for width in 4..60 {
             for line in lines(&transcript, &Theme::dark(), &display(width)).lines {
                 let drawn: usize = line.spans.iter().map(|s| text_width(&s.content)).sum();
-                
+
                 let frame = width + PADDING * 2;
                 assert!(drawn <= frame, "row of {drawn} exceeds {frame}");
             }

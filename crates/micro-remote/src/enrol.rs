@@ -9,7 +9,6 @@ use sha2::Sha256;
 use x25519_dalek::PublicKey;
 use x25519_dalek::StaticSecret;
 
-
 pub const CODE_LIFETIME_SECONDS: u64 = 300;
 
 /// How many characters a code carries.
@@ -132,7 +131,7 @@ pub async fn begin(relay_url: &str) -> Result<Enrolment, String> {
         .send()
         .await
         .map_err(|error| format!("could not reach the relay: {error}"))?;
-    
+
     if response.status() == reqwest::StatusCode::NOT_FOUND {
         return Err(format!(
             "the relay at {relay_url} does not know how to pair by code — it is running \
@@ -155,8 +154,8 @@ pub async fn begin(relay_url: &str) -> Result<Enrolment, String> {
 impl Enrolment {
     /// Waits for the code to be spent, then works out the secret both ends now share.
     pub async fn complete(&self) -> Result<Vec<u8>, String> {
-        let deadline = std::time::Instant::now()
-            + std::time::Duration::from_secs(CODE_LIFETIME_SECONDS);
+        let deadline =
+            std::time::Instant::now() + std::time::Duration::from_secs(CODE_LIFETIME_SECONDS);
 
         while std::time::Instant::now() < deadline {
             let response = self
@@ -170,7 +169,9 @@ impl Enrolment {
             if response.status() == reqwest::StatusCode::NOT_FOUND {
                 return Err("the code has expired".into());
             }
-            if response.status().is_success() && response.status() != reqwest::StatusCode::NO_CONTENT {
+            if response.status().is_success()
+                && response.status() != reqwest::StatusCode::NO_CONTENT
+            {
                 let body: serde_json::Value = response
                     .json()
                     .await
@@ -227,7 +228,10 @@ mod tests {
     fn a_public_half_that_is_not_one_derives_nothing() {
         let machine = Half::generate();
         assert_eq!(machine.shared_secret("not base64!", "p1"), None);
-        assert_eq!(machine.shared_secret(&STANDARD.encode([0u8; 8]), "p1"), None);
+        assert_eq!(
+            machine.shared_secret(&STANDARD.encode([0u8; 8]), "p1"),
+            None
+        );
     }
 
     #[test]
@@ -236,26 +240,26 @@ mod tests {
         assert_eq!(code.as_str().len(), CODE_LENGTH);
         assert_eq!(code.written().len(), CODE_LENGTH + 1);
 
-        
         assert_eq!(Code::parse(&code.written()), Some(code.clone()));
-        assert_eq!(Code::parse(&code.written().to_lowercase()), Some(code.clone()));
+        assert_eq!(
+            Code::parse(&code.written().to_lowercase()),
+            Some(code.clone())
+        );
         assert_eq!(Code::parse(&format!(" {} ", code.as_str())), Some(code));
     }
 
-    
     #[test]
     fn a_code_that_could_not_have_been_issued_is_refused() {
         assert_eq!(Code::parse("SHORT"), None);
         assert_eq!(Code::parse("TOOLONGCODE"), None);
-        
+
         assert_eq!(Code::parse("O0IL1UAB"), None);
         assert_eq!(Code::parse(""), None);
     }
 
-    
     #[test]
     fn the_alphabet_holds_nothing_that_gets_misread() {
-        for confusable in [b'O', b'0', b'I', b'L', b'1', b'U'] {
+        for confusable in *b"O0IL1U" {
             assert!(
                 !ALPHABET.contains(&confusable),
                 "{} is easily misread",
@@ -268,8 +272,9 @@ mod tests {
     /// guess.
     #[test]
     fn codes_do_not_repeat_themselves() {
-        let codes: std::collections::HashSet<String> =
-            (0..500).map(|_| Code::generate().as_str().to_string()).collect();
+        let codes: std::collections::HashSet<String> = (0..500)
+            .map(|_| Code::generate().as_str().to_string())
+            .collect();
         assert_eq!(codes.len(), 500);
     }
 }

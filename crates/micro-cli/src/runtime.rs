@@ -20,12 +20,16 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
-const BASE_PROMPT: &str = "You are micro, a coding agent working in a terminal. Use the \
-provided tools to inspect and change the workspace. Read a file before editing it. Prefer \
-the search tools over shell commands for finding code. Be concise: report what you did and \
-what the user should do next. For display mathematics, use a Typst math block delimited by \
-`$$` on its own lines. Use Typst math syntax, such as `frac(a, b)`, `sqrt(x)`, and \
-`sum_(i=1)^n i`, not LaTeX.";
+const BASE_PROMPT: &str = "You are micro, an agent working in a terminal. Use the \
+provided tools to inspect and change the workspace in order to complete tasks. \
+Read a file before editing it. Prefer the search tools over shell commands for finding code. \
+Be concise: report what you did and what the user should do next. \
+For questions about micro itself (its configuration, tools, sandbox, extensions, architecture, \
+or usage—use the micro_docs tool to consult its built-in documentation. \
+For display mathematics, use a Typst math block delimited by `$$` on its own lines. \
+Use Typst math syntax, such as `frac(a, b)`, `sqrt(x)`, and `sum_(i=1)^n i`, not LaTeX and not inside backticks. \
+Graphical terminals draw pictures: reading an image file puts it on the user's screen as well as \
+in front of you, so read one to show it to them";
 
 /// How the user asked for a model and provider before anything was resolved.
 pub struct Selection {
@@ -68,7 +72,7 @@ struct Resolved {
 /// Everything a run needs, resolved and ready.
 pub struct Runtime {
     pub agent: Agent,
-    
+
     pub notice: Option<String>,
     /// Things that went wrong but did not stop the run, such as a configured MCP server that would
     /// not start.
@@ -78,9 +82,11 @@ pub struct Runtime {
     pub session: Arc<Mutex<Session>>,
     pub history: Vec<Message>,
     pub model: ModelDef,
-    
+
     pub subscription: bool,
     pub recorder: tokio::sync::mpsc::UnboundedReceiver<micro_agent::Record>,
+    /// Delivers agent lifecycle events to extensions and remote observers.
+    pub forwarder: tokio::task::JoinHandle<()>,
     /// How the interface runs slash commands.
     pub commands: CliCommands,
     /// The extension host, when there was anything to load and a runtime to load it.
@@ -90,29 +96,28 @@ pub struct Runtime {
     pub broker: Option<crate::extensions::Broker>,
     /// Every tool the model may call, by name, for whoever asks what is available.
     pub tool_names: Vec<String>,
-    
+
     pub tool_definitions: Vec<micro_types::ToolDefinition>,
     /// Which tools the model is told about, when an extension has narrowed them.
     pub offered_tools: Arc<std::sync::RwLock<Option<Vec<String>>>>,
-    
+
     pub self_framed_tools: HashSet<String>,
     /// The half of the phone seam the interface keeps, so a session handed to a phone can be
     /// reached from one.
     pub remote: micro_tui::remote::Remote,
     /// What was loaded before the session started, for the first screen to name.
     pub resources: micro_tui::Resources,
-    
+
     pub system_prompt: String,
-    
+
     pub custom_prompt: Option<String>,
-    
+
     pub appended_prompt: Option<String>,
-    
+
     pub context_files: Vec<(PathBuf, String)>,
-    
+
     pub skills: Vec<micro_skills::Skill>,
 }
-
 
 pub fn pick_model(catalog: &Catalog, selection: &Selection) -> Result<ModelDef> {
     let query = match &selection.model {
@@ -144,6 +149,57 @@ pub fn pick_model(catalog: &Catalog, selection: &Selection) -> Result<ModelDef> 
     ))
 }
 
+/// Fold what the providers themselves are serving today into `catalog`.
+///
+/// A model released since this build shipped is in nobody's bundled catalog, so a session asked for
+/// one by name would be turned away for a model the provider is perfectly willing to serve. Asking
+/// costs a request, so it is only done once the catalog on hand has already come up short.
+pub async fn merge_live_listings(catalog: &mut Catalog, store: &AuthStore) {
+    let client = reqwest::Client::new();
+    let copilot = match store.resolve(micro_auth::GITHUB_COPILOT).await {
+        Ok(credential) => Some(credential),
+        Err(error) => {
+            // Someone who never signed in to Copilot is not missing anything. Someone whose
+            // credential is there and will not come good is, and the reason is theirs to see:
+            // otherwise a Copilot model that cannot be asked about looks like one that is not real.
+            if store.get(micro_auth::GITHUB_COPILOT).is_some() {
+                eprintln!("note: cannot ask GitHub Copilot what it serves: {error}");
+            }
+            None
+        }
+    };
+    let copilot_base = copilot
+        .as_ref()
+        .and_then(|credential| micro_auth::copilot::base_url_from_token(credential.token()));
+    let credentials = copilot
+        .as_ref()
+        .map(|credential| micro_models::CopilotCredentials {
+            token: credential.token(),
+            base_url: copilot_base
+                .as_deref()
+                .unwrap_or(micro_models::COPILOT_BASE_URL),
+        });
+
+    for failure in catalog.merge_live_listings(&client, credentials).await {
+        eprintln!("note: {failure}");
+    }
+}
+
+/// The model a run asked for, taken at its word, for when nothing that could be consulted has heard
+/// of it.
+///
+/// A name that says which provider it belongs to — itself, or through the provider the run chose —
+/// is one this build can put a request to. Whether that provider serves it is the provider's answer
+/// to give, and it gives it when the request is made.
+fn assumed_model(catalog: &Catalog, selection: &Selection) -> Option<ModelDef> {
+    let query = selection.model.as_deref()?.trim();
+    let (provider, id) = match query.split_once('/') {
+        Some((provider, id)) => (provider, id),
+        None => (selection.provider.as_deref()?, query),
+    };
+    catalog.assume(micro_auth::canonical_provider(provider), id)
+}
+
 /// The first model of the requested provider, or of any provider that has a credential.
 fn default_model(catalog: &Catalog, provider: Option<&str>) -> Result<ModelDef> {
     let wanted = provider.map(micro_auth::canonical_provider);
@@ -169,14 +225,14 @@ pub async fn build(
     has_ui: bool,
     mode: &str,
     sandbox: micro_sandbox::Sandbox,
+    access_approver: Option<Arc<dyn micro_tools::AccessApprover>>,
+    sandbox_overridden: bool,
 ) -> Result<Runtime> {
-    
     micro_provider::set_idle_timeout(settings.http_idle_timeout);
-    
+
     let store = Arc::new(AuthStore::open().context("cannot open the credential store")?);
     let mut catalog = Catalog::load().unwrap_or_else(|_| Catalog::bundled());
 
-    
     let mut extension_roots: Vec<(PathBuf, String)> = Vec::new();
     let (extensions, grants, capability_notices) = load_extensions(
         root,
@@ -190,39 +246,68 @@ pub async fn build(
     .await;
     let grants = Arc::new(grants);
     let declared = apply_declared_providers(&mut catalog, extensions.as_deref(), settings);
-    
-    let model = pick_model(&catalog, selection)?;
+
+    // A model is looked up so that what it costs and how much it holds are known, not for permission
+    // to use it. When neither the catalog on hand nor the provider's own listing has heard of the
+    // name, the name is still taken at its word rather than kept from starting.
+    let mut taken_at_its_word = None;
+    let model = match pick_model(&catalog, selection) {
+        Ok(model) => model,
+
+        Err(unknown) => {
+            merge_live_listings(&mut catalog, &store).await;
+            match pick_model(&catalog, selection) {
+                Ok(model) => model,
+                Err(_) => match assumed_model(&catalog, selection) {
+                    Some(model) => {
+                        taken_at_its_word = Some(format!(
+                            "nothing here lists `{}`, so it is taken at its word: what it costs and \
+                             how much it holds are unknown until {} can be asked.",
+                            model.qualified_id(),
+                            model.provider
+                        ));
+                        model
+                    }
+                    None => return Err(unknown),
+                },
+            }
+        }
+    };
 
     let provider_name = selection
         .provider
         .clone()
         .unwrap_or_else(|| model.provider.clone());
-    
+
     let mut resolved = match micro_provider::resolve(&store, &model).await {
         Ok(resolved) => Resolved {
             client: resolved.client,
             api_key: resolved.api_key,
             base_url: resolved.base_url,
         },
+        // A provider that would not resolve now may resolve later: a token service having a bad
+        // minute is not a session's problem unless it lasts. The credential stays tied to the store
+        // so every request asks it again, rather than being frozen as the nothing it is at present.
         Err(_) => Resolved {
             client: micro_provider::client_for_model(&model),
-            api_key: declared
-                .get(&provider_name)
-                .cloned()
-                .unwrap_or_default()
-                .into(),
+            api_key: match declared.get(&provider_name) {
+                Some(key) => key.clone().into(),
+                None => micro_provider::ApiKey::Stored {
+                    store: Arc::clone(&store),
+                    provider: provider_name.clone(),
+                    resolved: String::new(),
+                },
+            },
             base_url: None,
         },
     };
 
-    
     if resolved.api_key.is_blank() {
         if let Some(key) = declared.get(&provider_name) {
             resolved.api_key = key.clone().into();
         }
     }
 
-    
     let notice = match (
         resolved.api_key.is_blank(),
         store.get(&provider_name).is_some(),
@@ -238,7 +323,6 @@ pub async fn build(
         )),
     };
 
-    
     if micro_auth::canonical_provider(&provider_name) == "openai-codex" {
         let transport = micro_provider::Transport::named(&settings.transport).unwrap_or_default();
         resolved.client =
@@ -263,15 +347,20 @@ pub async fn build(
         ),
     };
 
-    
     let (decisions, refusals) = tokio::sync::mpsc::unbounded_channel();
-    
+
     let crossings = decisions.downgrade();
     let guard = micro_tools::Guard::new(sandbox.clone()).recording(decisions);
-    let mut tools = micro_tools::builtin_tools(root.to_path_buf(), guard);
-    
+    let mut tools = micro_tools::builtin_tools(root.to_path_buf(), guard.clone());
+    if let Some(approver) = access_approver {
+        tools.push(Arc::new(micro_tools::RequestSandboxAccess::new(
+            guard.clone(),
+            approver,
+        )));
+    }
+
     let builtin: Vec<String> = tools.iter().map(|tool| tool.definition().name).collect();
-    
+
     let mut self_framed_tools = HashSet::new();
     if let Some(host) = extensions.as_ref() {
         let registered = host.tools();
@@ -289,7 +378,7 @@ pub async fn build(
             )));
         }
     }
-    
+
     let mut mcp_notices = Vec::new();
     if !settings.mcp_servers.is_empty() {
         let configured = mcp_servers(settings, &mut mcp_notices);
@@ -298,12 +387,11 @@ pub async fn build(
         mcp_notices.extend(problems.iter().map(|problem| problem.to_string()));
     }
 
-    
     let tools = offered(tools, &selection.tools, &selection.exclude_tools);
     let tools = searchable_beyond(tools, &builtin, settings.tool_search_threshold);
-    
+
     let tool_names: Vec<String> = tools.iter().map(|tool| tool.definition().name).collect();
-    
+
     let tool_definitions: Vec<micro_types::ToolDefinition> =
         tools.iter().map(|tool| tool.definition()).collect();
 
@@ -323,16 +411,13 @@ pub async fn build(
         }
     }
 
-    
     let mut prompts = match selection.resources.no_prompt_templates {
         true => Vec::new(),
-        false => micro_prompts::discover(
-            root,
-            &micro_dirs::config_dir().unwrap_or_default(),
-            trusted,
-        ),
+        false => {
+            micro_prompts::discover(root, &micro_dirs::config_dir().unwrap_or_default(), trusted)
+        }
     };
-    
+
     for path in &selection.resources.prompt_templates {
         for found in micro_prompts::load_from_path(path) {
             if !prompts.iter().any(|kept| kept.name == found.name) {
@@ -340,7 +425,7 @@ pub async fn build(
             }
         }
     }
-    
+
     for path in &context.extra_prompt_paths {
         for found in micro_prompts::load_from_path(path) {
             if !prompts.iter().any(|kept| kept.name == found.name) {
@@ -352,13 +437,14 @@ pub async fn build(
 
     let (recorder, receiver) = tokio::sync::mpsc::unbounded_channel();
     tokio::spawn(record_decisions(refusals, recorder.clone()));
-    
+
     let broker = crate::extensions::Broker {
         grants: Arc::clone(&grants),
         crossings: Some(crossings),
     };
     let mut warnings = mcp_notices;
     warnings.extend(capability_notices);
+    warnings.extend(taken_at_its_word);
     if sandbox.policy().allows_all_writes() {
         let _ = recorder.send(micro_agent::Record::Event {
             event: micro_types::LedgerEvent::SandboxDecision {
@@ -377,16 +463,16 @@ pub async fn build(
             root.display()
         ));
     }
-    
+
     let (watching, watched) = tokio::sync::mpsc::unbounded_channel();
-    
+
     let system_prompt = context.system_prompt.clone();
-    
+
     let custom_prompt = context.custom_prompt.clone();
     let appended_prompt = context.appended_prompt.clone();
     let context_files = context.context_files.clone();
     let skills = context.skills.clone();
-    
+
     let offered_tools: Arc<std::sync::RwLock<Option<Vec<String>>>> = Arc::default();
     let agent = Agent::new(
         Arc::clone(&resolved.client),
@@ -404,11 +490,10 @@ pub async fn build(
     .with_context_window(model.context_window as usize)
     .with_recorder(recorder)
     .with_observer(watching)
-    
     .with_cache_key(session.id());
-    
+
     let prefix = agent.prefix_control();
-    
+
     let agent = match extensions.as_ref() {
         Some(host) => agent.with_hooks(Arc::new(crate::extensions::ExtensionHooks::new(
             Arc::clone(host),
@@ -418,20 +503,19 @@ pub async fn build(
         ))),
         None => agent,
     };
-    
+
     let agent = match settings.auto_compact {
         true => agent,
         false => agent.without_compaction(),
     };
-    
+
     let agent = match spending_limit(settings, &sessions, &catalog, session.id(), &model).await {
         Some(budget) => agent.with_budget(budget),
         None => agent,
     };
 
-    
     let mirror: crate::remote::Mirror = Arc::default();
-    tokio::spawn(forward_events(
+    let forwarder = tokio::spawn(forward_events(
         watched,
         extensions.as_ref().map(Arc::clone),
         Arc::clone(&mirror),
@@ -439,7 +523,7 @@ pub async fn build(
 
     let session_id = session.id().to_string();
     let session = Arc::new(Mutex::new(session));
-    
+
     let (seam, remote) = crate::remote::Seam::build();
     let snapshot = Arc::new(Mutex::new(crate::remote::Snapshot {
         model: model.qualified_id(),
@@ -469,7 +553,11 @@ pub async fn build(
         extensions: extensions.clone(),
         anthropic_extra_usage: settings.anthropic_extra_usage,
         prompts,
+        skills: skills.clone(),
         tool_names: tool_names.clone(),
+        sandbox: guard.clone(),
+        project_trusted: trusted,
+        sandbox_overridden,
         seam,
         mirror,
         snapshot,
@@ -487,12 +575,13 @@ pub async fn build(
         self_framed_tools,
         session,
         history,
-        
+
         subscription: resolved.api_key.as_str().starts_with("sk-ant-oat"),
         resources,
         remote,
         model,
         recorder: receiver,
+        forwarder,
         commands,
         system_prompt,
         custom_prompt,
@@ -520,41 +609,73 @@ async fn record_decisions(
 
 /// Drain what the run produced into the session log as it happens, so a crash leaves everything
 /// that was already said on disk.
+pub struct Persistence {
+    task: tokio::task::JoinHandle<()>,
+    stop: tokio::sync::oneshot::Sender<()>,
+}
+
+impl Persistence {
+    /// Finish writing the records already accepted for this run without waiting for every
+    /// background holder of a recorder sender to be dropped.
+    pub async fn finish(self) {
+        let _ = self.stop.send(());
+        let _ = self.task.await;
+    }
+}
+
 pub fn persist(
     session: Arc<Mutex<Session>>,
     mut recorder: tokio::sync::mpsc::UnboundedReceiver<micro_agent::Record>,
-) -> tokio::task::JoinHandle<()> {
-    tokio::spawn(async move {
-        while let Some(record) = recorder.recv().await {
-            let written = match &record {
-                micro_agent::Record::Message(message) => session.lock().await.append(message).await,
-                
-                micro_agent::Record::Compacted {
-                    summary,
-                    kept,
-                    cost,
-                } => {
-                    session
-                        .lock()
-                        .await
-                        .compacted(summary, *kept, cost.clone())
-                        .await
-                }
-                
-                micro_agent::Record::Event { event, blobs } => {
-                    let mut held = session.lock().await;
-                    let mut written = Ok(());
-                    for (_, content) in blobs {
-                        written = written.and(held.store_blob(content).await.map(|_| ()));
+) -> Persistence {
+    let (stop, mut stopping) = tokio::sync::oneshot::channel();
+    let task = tokio::spawn(async move {
+        loop {
+            let record = tokio::select! {
+                record = recorder.recv() => record,
+                _ = &mut stopping => {
+                    while let Ok(record) = recorder.try_recv() {
+                        write_record(&session, record).await;
                     }
-                    written.and(held.append_event(event.clone()).await.map(|_| ()))
+                    return;
                 }
             };
-            if let Err(error) = written {
-                eprintln!("warning: cannot write to the session log: {error}");
-            }
+            let Some(record) = record else {
+                return;
+            };
+            write_record(&session, record).await;
         }
-    })
+    });
+    Persistence { task, stop }
+}
+
+async fn write_record(session: &Arc<Mutex<Session>>, record: micro_agent::Record) {
+    let written = match &record {
+        micro_agent::Record::Message(message) => session.lock().await.append(message).await,
+
+        micro_agent::Record::Compacted {
+            summary,
+            kept,
+            cost,
+        } => {
+            session
+                .lock()
+                .await
+                .compacted(summary, *kept, cost.clone())
+                .await
+        }
+
+        micro_agent::Record::Event { event, blobs } => {
+            let mut held = session.lock().await;
+            let mut written = Ok(());
+            for (_, content) in blobs {
+                written = written.and(held.store_blob(content).await.map(|_| ()));
+            }
+            written.and(held.append_event(event.clone()).await.map(|_| ()))
+        }
+    };
+    if let Err(error) = written {
+        eprintln!("warning: cannot write to the session log: {error}");
+    }
 }
 
 /// The workspace the agent operates on.
@@ -563,7 +684,6 @@ pub fn workspace(requested: &Path) -> Result<PathBuf> {
         .canonicalize()
         .with_context(|| format!("workspace not found: {}", requested.display()))
 }
-
 
 pub struct LoadedContext {
     pub system_prompt: String,
@@ -574,13 +694,13 @@ pub struct LoadedContext {
     /// Every skill that loaded, for naming them on the first screen and counting them in the
     /// startup line.
     pub skills: Vec<micro_skills::Skill>,
-    
+
     pub diagnostics: Vec<String>,
     /// Prompt template paths an extension added by answering `resources_discover`.
     pub extra_prompt_paths: Vec<PathBuf>,
-    
+
     pub custom_prompt: Option<String>,
-    
+
     pub appended_prompt: Option<String>,
     /// Every instruction file's own content, apart from the merged text they were folded into as
     /// `instructions.text`.
@@ -684,7 +804,7 @@ async fn spending_limit(
     if settings.budget <= 0.0 {
         return None;
     }
-    
+
     let spent = micro_commands::bill(sessions, catalog, session_id)
         .await
         .map(|billed| billed.total)
@@ -736,7 +856,6 @@ pub async fn load_context(
     active_tools: &[String],
     reason: &str,
 ) -> LoadedContext {
-    
     let instructions = match resources.no_context_files {
         true => Default::default(),
         false => match InstructionLoader::from_env() {
@@ -745,7 +864,6 @@ pub async fn load_context(
         },
     };
 
-    
     let discovered = match extensions {
         Some(host) => host
             .ask_event(
@@ -770,12 +888,12 @@ pub async fn load_context(
     let extra_prompt_paths = extra_paths("promptPaths");
 
     let home = micro_dirs::config_dir().unwrap_or_default();
-    
+
     let mut skills = match skills_enabled && !resources.no_skills {
         true => micro_skills::discover(root, &home, micro_skills::user_agents_dir(), trusted).await,
         false => Default::default(),
     };
-    
+
     if !resources.no_skills {
         for path in resources.skills.iter().chain(&extra_skill_paths) {
             let found = micro_skills::load_from_path(path, "path").await;
@@ -791,13 +909,12 @@ pub async fn load_context(
             .sort_by(|left, right| left.name.cmp(&right.name));
     }
 
-    
     let replaces_base = read_prompt_file(root, &home, "SYSTEM.md", trusted).await;
     let mut system_prompt = match &replaces_base {
         Some(replacement) => replacement.clone(),
         None => BASE_PROMPT.to_string(),
     };
-    
+
     let mut prefix_spans = Vec::new();
     let mut spanned = 0;
     prefix_spans.push(span(
@@ -805,13 +922,13 @@ pub async fn load_context(
         &mut spanned,
         micro_types::EventSource::SystemPrompt,
     ));
-    
+
     if replaces_base.is_none() {
         if let Some(host) = extensions {
             if let Some(section) = micro_extensions::prompt_section(&host.tools(), active_tools) {
                 system_prompt.push_str("\n\n");
                 system_prompt.push_str(&section);
-                
+
                 prefix_spans.push(span(
                     &system_prompt,
                     &mut spanned,
@@ -849,7 +966,6 @@ pub async fn load_context(
         ));
     }
 
-    
     let mut context_files = Vec::new();
     for path in &instructions.sources {
         if let Ok(content) = tokio::fs::read_to_string(path).await {
@@ -890,7 +1006,7 @@ fn searchable_beyond(
         .iter()
         .filter(|tool| !builtin.contains(&tool.definition().name))
         .count();
-    
+
     if threshold == 0 || extra <= threshold {
         return tools;
     }
@@ -954,7 +1070,7 @@ async fn load_extensions(
     has_ui: bool,
     mode: &str,
     resources: &Resources,
-    
+
     roots: &mut Vec<(PathBuf, String)>,
 ) -> (
     Option<Arc<micro_extensions::Host>>,
@@ -965,9 +1081,9 @@ async fn load_extensions(
         return (None, micro_extensions::Grants::default(), Vec::new());
     }
     let named = &resources.extensions;
-    
+
     let home = micro_dirs::data_dir().unwrap_or_default();
-    
+
     let configured: Vec<String> = settings
         .extensions
         .iter()
@@ -979,14 +1095,14 @@ async fn load_extensions(
             Err(_) => source.clone(),
         })
         .collect();
-    
+
     roots.extend(configured.iter().filter_map(|source| {
         let directory = PathBuf::from(source);
         let named = micro_extensions::package_name(&directory)?;
         Some((directory, named))
     }));
     let mut paths = micro_extensions::discover(root, &home, &configured, trusted);
-    
+
     paths.extend(named.iter().map(std::path::PathBuf::from));
     if paths.is_empty() {
         return (None, micro_extensions::Grants::default(), Vec::new());
@@ -999,7 +1115,7 @@ async fn load_extensions(
                     eprintln!("note: {} was not loaded: {}", failure.path, failure.error);
                 }
             }
-            
+
             let resolved =
                 crate::capabilities::resolve(host.loaded(), roots, trusted, has_ui).await;
             let mut notices = resolved.notices;
@@ -1015,13 +1131,11 @@ async fn load_extensions(
     }
 }
 
-
 async fn forward_events(
     mut watched: tokio::sync::mpsc::UnboundedReceiver<micro_types::AgentEvent>,
     host: Option<Arc<micro_extensions::Host>>,
     mirror: crate::remote::Mirror,
 ) {
-    
     let mut translator = micro_extensions::Translator::new();
     while let Some(event) = watched.recv().await {
         let Some(name) = micro_extensions::name_of(&event) else {
@@ -1031,7 +1145,7 @@ async fn forward_events(
 
         if let Some(sender) = mirror.lock().await.as_ref() {
             let mut named = payload.clone();
-            
+
             if let Some(object) = named.as_object_mut() {
                 object.insert("type".into(), serde_json::Value::String(name.to_string()));
             }
@@ -1040,7 +1154,6 @@ async fn forward_events(
 
         if let Some(host) = host.as_ref() {
             if host.notify(name, payload).await.is_err() {
-                
                 return;
             }
         }
@@ -1081,6 +1194,62 @@ fn apply_declared_providers(
         }
     }
     keys
+}
+
+#[cfg(test)]
+mod chosen_model {
+    use super::*;
+
+    fn selection(model: &str, provider: Option<&str>) -> Selection {
+        Selection {
+            model: Some(model.to_string()),
+            provider: provider.map(str::to_string),
+            thinking: micro_types::ThinkingLevel::Off,
+            tools: Vec::new(),
+            exclude_tools: Vec::new(),
+            resources: Resources::default(),
+        }
+    }
+
+    /// The settings may name a model released after this build, or one rolled out to an account
+    /// before it reaches any listing. Naming its provider is enough to be taken at its word.
+    #[test]
+    fn a_model_no_catalog_lists_is_still_the_model_asked_for() {
+        let catalog = Catalog::bundled();
+        let selection = selection("github-copilot/gemini-3.7-flash", Some("github-copilot"));
+
+        assert!(pick_model(&catalog, &selection).is_err());
+        let assumed = assumed_model(&catalog, &selection).expect("the provider is known");
+        assert_eq!(assumed.qualified_id(), "github-copilot/gemini-3.7-flash");
+    }
+
+    /// A name that carries no provider, on a run that chose none, belongs to nobody in particular.
+    #[test]
+    fn a_name_belonging_to_no_provider_is_not_assumed() {
+        let catalog = Catalog::bundled();
+        assert_eq!(
+            assumed_model(&catalog, &selection("mystery-model", None)),
+            None
+        );
+
+        let chosen = selection("mystery-model", Some("github-copilot"));
+        assert_eq!(
+            assumed_model(&catalog, &chosen).map(|model| model.qualified_id()),
+            Some("github-copilot/mystery-model".to_string())
+        );
+    }
+
+    /// An OpenRouter model wears its vendor in its id, and only the first name is the provider.
+    #[test]
+    fn only_the_first_name_of_a_qualified_model_is_the_provider() {
+        let catalog = Catalog::bundled();
+        let selection = selection("openrouter/moonshotai/kimi-k3-turbo", None);
+
+        assert_eq!(
+            assumed_model(&catalog, &selection).map(|model| model.qualified_id()),
+            Some("openrouter/moonshotai/kimi-k3-turbo".to_string())
+        );
+    }
 }
 
 #[cfg(test)]

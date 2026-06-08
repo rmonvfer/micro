@@ -21,7 +21,6 @@ pub struct CapabilityDecision {
     pub decided_at: i64,
 }
 
-
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CapabilityStore {
     #[serde(default)]
@@ -141,7 +140,6 @@ mod tests {
         assert_eq!(store.decision("/somewhere/thing.ts"), None);
     }
 
-    
     #[test]
     fn granting_nothing_is_not_the_same_as_never_having_been_asked() {
         let mut store = CapabilityStore::default();

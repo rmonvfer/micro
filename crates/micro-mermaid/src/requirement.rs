@@ -1,5 +1,3 @@
-
-
 use crate::canvas::Canvas;
 use crate::graph::{ClassInfo, Edge, Graph, Head, LineKind, Shape, MAX_MEMBERS};
 use crate::labels::{ascii_lower, clean_label, strip_controls};
@@ -33,7 +31,7 @@ fn parse_requirement(src: &str) -> Option<(Graph, Vec<ClassInfo>)> {
 
     let mut graph = Graph::default();
     let mut infos: Vec<ClassInfo> = Vec::new();
-    
+
     let mut cur_block: Option<usize> = None;
 
     for st in &statements[1..] {
@@ -62,7 +60,7 @@ fn parse_requirement(src: &str) -> Option<(Graph, Vec<ClassInfo>)> {
                 return None;
             }
             let idx = declare(&mut graph, &mut infos, name)?;
-            
+
             infos[idx].annotation = Some(word.to_string());
             cur_block = Some(idx);
             continue;
@@ -84,13 +82,11 @@ fn parse_requirement(src: &str) -> Option<(Graph, Vec<ClassInfo>)> {
         }
     }
 
-    
     if cur_block.is_some() || graph.nodes.is_empty() {
         return None;
     }
     Some((graph, infos))
 }
-
 
 fn declare(graph: &mut Graph, infos: &mut Vec<ClassInfo>, name: &str) -> Option<usize> {
     let idx = graph.node_index(name, Some(name), Shape::Rect)?;
@@ -99,7 +95,6 @@ fn declare(graph: &mut Graph, infos: &mut Vec<ClassInfo>, name: &str) -> Option<
     }
     Some(idx)
 }
-
 
 fn push_field(info: &mut ClassInfo, key: &str, value: &str) {
     if info.attrs.len() < MAX_MEMBERS {
@@ -165,7 +160,6 @@ mod tests {
         );
     }
 
-    
     #[test]
     fn a_typed_requirement_keeps_its_type_as_the_stereotype() {
         let rows = drawn(
@@ -181,7 +175,6 @@ mod tests {
         );
     }
 
-    
     #[test]
     fn a_minimal_requirement_draws_a_bordered_box() {
         let rows = drawn("requirementDiagram\nrequirement test_req {\nid: 1\n}");
@@ -198,7 +191,6 @@ mod tests {
         );
     }
 
-    
     #[test]
     fn an_element_is_drawn_with_its_type_field() {
         let rows = drawn(
@@ -220,7 +212,6 @@ mod tests {
         );
     }
 
-    
     #[test]
     fn a_relation_is_drawn_between_two_boxes_with_its_verb_labelled() {
         let rows = drawn(
@@ -237,7 +228,7 @@ mod tests {
              test_entity - satisfies -> test_req",
         );
         assert!(rows.iter().any(|r| r.contains("«satisfies»")), "{rows:?}");
-        
+
         assert!(
             rows.iter().any(|r| r.contains('│') || r.contains('─')),
             "{rows:?}"
@@ -252,7 +243,6 @@ mod tests {
         assert!(rows.iter().any(|r| r.contains('b')), "{rows:?}");
     }
 
-    
     #[test]
     fn what_is_not_a_requirement_diagram_is_left_alone() {
         assert!(render_requirement("graph TD\n A --> B").is_none());
@@ -274,7 +264,6 @@ mod tests {
         );
     }
 
-    
     #[test]
     fn too_many_requirements_are_refused() {
         let mut source = String::from("requirementDiagram\n");

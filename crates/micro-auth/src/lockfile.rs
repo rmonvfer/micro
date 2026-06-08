@@ -38,7 +38,6 @@ impl FileLock {
             {
                 Ok(_) => return Ok(FileLock { path }),
                 Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
-                    
                     if broke_stale_lock(&path) {
                         continue;
                     }
@@ -68,7 +67,6 @@ impl Drop for FileLock {
 /// Remove a lock old enough that whoever made it is gone.
 fn broke_stale_lock(path: &Path) -> bool {
     let Ok(metadata) = fs::metadata(path) else {
-        
         return true;
     };
     let held_for = metadata
@@ -116,7 +114,6 @@ mod tests {
         let target = scratch("contended");
         let held = FileLock::acquire(&target).expect("first take");
 
-        
         let releasing = std::thread::spawn(move || {
             sleep(Duration::from_millis(120));
             drop(held);
@@ -136,7 +133,6 @@ mod tests {
         fs::create_dir_all(path.parent().unwrap()).unwrap();
         fs::write(&path, "").unwrap();
 
-        
         let old = SystemTime::now() - STALE_AFTER - Duration::from_secs(5);
         fs::File::open(&path)
             .unwrap()

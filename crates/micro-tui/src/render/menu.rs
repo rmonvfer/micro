@@ -40,7 +40,6 @@ pub fn lines(menu: &Menu, theme: &Theme, width: usize, rows: usize) -> Vec<Line<
         })
         .collect();
 
-    
     if window.len() < menu.items().len() {
         out.push(super::clip(
             Line::from(vec![Span::styled(
@@ -65,7 +64,7 @@ fn row(
         true => "→ ",
         false => "  ",
     };
-    
+
     let name = match selected {
         true => Style::new().fg(theme.accent),
         false => Style::new().fg(theme.text),

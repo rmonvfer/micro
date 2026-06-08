@@ -33,7 +33,6 @@ fn each_axis_is_a_row_with_a_legend_naming_the_glyphs() {
     assert!(legend.contains('○') && legend.contains("Bob"), "{legend:?}");
 }
 
-
 #[test]
 fn an_unparseable_radar_chart_renders_nothing() {
     let src = "radar-beta\n  axis a[\"A\"]";

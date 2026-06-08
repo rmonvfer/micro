@@ -37,7 +37,6 @@ impl Catalog {
             return Resolution::NotFound;
         }
 
-        
         if let Some(model) = self.match_qualified(query) {
             return Resolution::Match(model);
         }
@@ -58,7 +57,6 @@ impl Catalog {
             }
         }
 
-        
         match self.match_fuzzy(query).as_slice() {
             [] => Resolution::NotFound,
             [single] => Resolution::Match(single),
@@ -72,7 +70,6 @@ impl Catalog {
             .models()
             .iter()
             .filter_map(|model| {
-                
                 let qualified = model.qualified_id();
                 [
                     crate::fuzzy::match_score(query, &model.id),
@@ -87,7 +84,6 @@ impl Catalog {
             })
             .collect();
 
-        
         scored.sort_by(|left, right| {
             left.0
                 .partial_cmp(&right.0)
@@ -180,7 +176,6 @@ mod tests {
 
     #[test]
     fn a_qualified_id_wins_over_a_nested_id_that_looks_the_same() {
-        
         let catalog = catalog();
         let model = catalog
             .resolve("anthropic/claude-sonnet-5")
@@ -206,7 +201,6 @@ mod tests {
         assert_eq!(model.qualified_id(), "openrouter/anthropic/claude-opus-5");
     }
 
-    
     #[test]
     fn the_bundled_catalog_resolves_what_it_lists() {
         let bundled = Catalog::bundled();
@@ -296,7 +290,7 @@ mod tests {
     #[test]
     fn a_substring_of_a_display_name_falls_back_to_matching() {
         let catalog = catalog();
-        
+
         let model = catalog.resolve("deepseek v4").model().unwrap();
         assert_eq!(model.id, "deepseek/deepseek-v4-pro");
     }
@@ -393,7 +387,6 @@ mod forgiving {
         assert_eq!(model.provider, "anthropic");
     }
 
-    
     #[test]
     fn nonsense_finds_nothing() {
         let held = catalog();

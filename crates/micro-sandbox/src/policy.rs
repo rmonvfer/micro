@@ -44,7 +44,6 @@ impl Default for SandboxPolicy {
 }
 
 impl SandboxPolicy {
-    
     pub fn workspace_write() -> Self {
         SandboxPolicy::WorkspaceWrite {
             writable_roots: Vec::new(),
@@ -81,6 +80,25 @@ impl SandboxPolicy {
             SandboxPolicy::WorkspaceWrite { writable_roots, .. } => writable_roots,
             SandboxPolicy::ReadOnly | SandboxPolicy::Full => &[],
         }
+    }
+
+    /// Add network access to a workspace-write policy.
+    pub fn with_network(mut self) -> Self {
+        if let SandboxPolicy::WorkspaceWrite { allow_network, .. } = &mut self {
+            *allow_network = true;
+        }
+        self
+    }
+
+    /// Add one writable root to a workspace-write policy.
+    pub fn with_writable_root(mut self, root: impl Into<PathBuf>) -> Self {
+        if let SandboxPolicy::WorkspaceWrite { writable_roots, .. } = &mut self {
+            let root = root.into();
+            if !writable_roots.contains(&root) {
+                writable_roots.push(root);
+            }
+        }
+        self
     }
 }
 

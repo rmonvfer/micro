@@ -18,7 +18,6 @@ const GAP_Y: usize = 2;
 /// Refuse to allocate a canvas larger than this many cells.
 const MAX_CANVAS_CELLS: usize = 1 << 21;
 
-
 fn sat(a: usize, b: usize) -> usize {
     a.saturating_sub(b)
 }
@@ -71,8 +70,6 @@ struct RoutePlan {
     edge_lane: Vec<usize>,
 }
 
-
-
 /// Longest-path ranking over the graph's DAG.
 pub fn compute_ranks(graph: &Graph) -> Vec<usize> {
     let n = graph.nodes.len();
@@ -89,7 +86,6 @@ pub fn compute_ranks(graph: &Graph) -> Vec<usize> {
     let mut dag: Vec<Vec<usize>> = vec![Vec::new(); n];
     let mut order: Vec<usize> = Vec::new();
 
-    
     let roots: Vec<usize> = (0..n).filter(|&i| indeg[i] == 0).collect();
     for start in roots.into_iter().chain(0..n) {
         if color[start] == 0 {
@@ -121,7 +117,7 @@ fn dfs_dag(
             let v = children[u][i];
             stack.last_mut().unwrap().1 += 1;
             if color[v] == 1 {
-                continue; 
+                continue;
             }
             dag[u].push(v);
             if color[v] == 0 {
@@ -135,7 +131,6 @@ fn dfs_dag(
         }
     }
 }
-
 
 pub fn order_ranks(by_rank: &mut [Vec<usize>], edges: &[Edge], ranks: &[usize]) {
     let n = ranks.len();
@@ -169,7 +164,6 @@ pub fn order_ranks(by_rank: &mut [Vec<usize>], edges: &[Edge], ranks: &[usize]) 
     }
 
     for it in 0..8 {
-        
         let row_indices: Vec<usize> = if it % 2 == 0 {
             (1..by_rank.len()).collect()
         } else {
@@ -230,7 +224,6 @@ pub fn count_crossings(edges: &[Edge], ranks: &[usize], pos: &[usize]) -> usize 
     }
     crossings
 }
-
 
 fn assign_positions(
     by_rank: &[Vec<usize>],
@@ -303,7 +296,6 @@ fn relax_rank(nodes: &[usize], neigh: &[Vec<usize>], pos: &mut [f64], size: &[us
         .collect();
     let half_of = |i: usize| size[nodes[i]] as f64 / 2.0;
 
-    
     let mut left = vec![0.0f64; n];
     for i in 0..n {
         left[i] = if i == 0 {
@@ -330,8 +322,6 @@ fn relax_rank(nodes: &[usize], neigh: &[Vec<usize>], pos: &mut [f64], size: &[us
         }
     }
 }
-
-
 
 /// A span competing for a track: `(start, end, from, to, edge_index)`.
 type Span5 = (usize, usize, usize, usize, usize);
@@ -416,8 +406,6 @@ fn lane_spans(graph: &Graph, ranks: &[usize], placed: &[Placed], vertical: bool)
     }
     out
 }
-
-
 
 fn place_td(
     ranks: &[usize],
@@ -543,7 +531,6 @@ fn place_lr(
         })
         .collect();
 
-    
     let label_widths: Vec<usize> = graph
         .edges
         .iter()
@@ -627,8 +614,6 @@ fn place_lr(
     }
 }
 
-
-
 /// Rank, place, draw and route a graph onto a fresh canvas.
 pub fn layout_canvas(graph: &Graph, extras: &[NodeExtra]) -> CanvasResult {
     let n = graph.nodes.len();
@@ -690,7 +675,6 @@ pub fn layout_canvas(graph: &Graph, extras: &[NodeExtra]) -> CanvasResult {
         })
         .collect();
 
-    
     let mut extra_h = vec![0usize; n];
     let mut self_label_w = vec![0usize; n];
     for e in &graph.edges {
@@ -830,8 +814,6 @@ pub fn layout_class(graph: &Graph, infos: &[ClassInfo]) -> CanvasResult {
     layout_canvas(graph, &extras).map(|canvas| orient(canvas, graph))
 }
 
-
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 enum ItemKey {
     Node(usize),
@@ -845,7 +827,6 @@ struct Endpoint {
 
 /// Lay out a flowchart that uses `subgraph`.
 pub fn layout_grouped(graph: &Graph) -> CanvasResult {
-    
     let mut proxy: HashMap<usize, usize> = HashMap::new();
     for (gi, g) in graph.groups.iter().enumerate() {
         if let Some(&ni) = graph.index.get(&g.id) {
@@ -875,7 +856,6 @@ pub fn layout_grouped(graph: &Graph) -> CanvasResult {
         }
     };
 
-    
     let mut scope_edges: HashMap<Option<usize>, Vec<(ItemKey, ItemKey, usize)>> = HashMap::new();
     let mut referenced = vec![false; graph.groups.len()];
     for (ei, e) in graph.edges.iter().enumerate() {
@@ -915,7 +895,6 @@ pub fn layout_grouped(graph: &Graph) -> CanvasResult {
         direct_nodes.entry(g).or_default().push(ni);
     }
 
-    
     let mut keep = vec![false; graph.groups.len()];
     for gi in (0..graph.groups.len()).rev() {
         let has_nodes = direct_nodes.get(&Some(gi)).is_some_and(|v| !v.is_empty());
@@ -995,14 +974,11 @@ fn build_scope(
         }
     }
 
-    
     let mut synth = Graph::new(graph.dir);
     synth.nodes = nodes;
     synth.edges = edges;
     layout_canvas(&synth, &extras)
 }
-
-
 
 pub fn draw_box(canvas: &mut Canvas, p: &Placed, lines: &[String], shape: Shape) {
     let Placed { x, y, w, h, .. } = *p;
@@ -1015,7 +991,6 @@ pub fn draw_box(canvas: &mut Canvas, p: &Placed, lines: &[String], shape: Shape)
     canvas.set(x, bottom, if rounded { "╰" } else { "└" }, Cls::Border);
     canvas.set(right, bottom, if rounded { "╯" } else { "┘" }, Cls::Border);
 
-    
     for cx in x + 1..right {
         canvas.add_bits(cx, y, L | R, Cls::Border);
         canvas.add_bits(cx, bottom, L | R, Cls::Border);
@@ -1084,8 +1059,6 @@ fn draw_frame(canvas: &mut Canvas, p: &Placed, title: &str, sub: &Canvas) {
     );
 }
 
-
-
 fn head_glyph(head: Head, arrow: &str) -> String {
     match head {
         Head::Circle => "o".to_string(),
@@ -1107,7 +1080,7 @@ fn head_glyph(head: Head, arrow: &str) -> String {
 /// Adjacent ranks, top-down: drop, jog along the bus row, drop into the head.
 fn route_forward(canvas: &mut Canvas, from: &Placed, to: &Placed, edge: &Edge, bus: usize) {
     let tx = to.cx;
-    
+
     let bx = if from.cx.abs_diff(tx) <= 1 {
         tx
     } else {

@@ -9,6 +9,17 @@ pub enum ImageProtocol {
     ITerm2,
 }
 
+impl ImageProtocol {
+    /// Whether part of a picture can be drawn on its own, which is what lets an image half scrolled
+    /// past the edge of the transcript show the half that fits instead of disappearing.
+    pub fn crops(self) -> bool {
+        match self {
+            ImageProtocol::Kitty => true,
+            ImageProtocol::ITerm2 => false,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Capabilities {
     pub images: Option<ImageProtocol>,
@@ -17,7 +28,6 @@ pub struct Capabilities {
 }
 
 impl Capabilities {
-    
     const fn plain(true_color: bool) -> Self {
         Capabilities {
             images: None,
@@ -94,11 +104,10 @@ pub fn detect_from(environment: &Environment) -> Capabilities {
     let true_color_hint =
         environment.color_term == "truecolor" || environment.color_term == "24bit";
 
-    
     if environment.tmux {
         return Capabilities::text_only(true_color_hint, environment.tmux_forwards_hyperlinks);
     }
-    
+
     if environment.term.starts_with("screen") {
         return Capabilities::plain(true_color_hint);
     }
@@ -122,7 +131,6 @@ pub fn detect_from(environment: &Environment) -> Capabilities {
         return Capabilities::graphical(ImageProtocol::ITerm2);
     }
 
-    
     if environment.windows_terminal
         || environment.term_program == "vscode"
         || environment.term_program == "alacritty"
@@ -133,7 +141,6 @@ pub fn detect_from(environment: &Environment) -> Capabilities {
         return Capabilities::text_only(true, false);
     }
 
-    
     Capabilities::plain(true_color_hint)
 }
 

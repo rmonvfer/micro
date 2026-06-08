@@ -10,9 +10,11 @@ pub enum SessionError {
     #[error("no session with id {0}")]
     NotFound(String),
 
-    
     #[error("invalid session id: {0}")]
     InvalidId(String),
+
+    #[error("{path}: invalid session graph: {reason}")]
+    InvalidGraph { path: PathBuf, reason: String },
 
     #[error("message index {index} is out of range; the session holds {len} messages")]
     IndexOutOfRange { index: usize, len: usize },

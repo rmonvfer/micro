@@ -176,11 +176,10 @@ mod tests {
             text.contains("«database»"),
             "the icon reads as a stereotype: {text}"
         );
-        
+
         assert_eq!(text.matches('┌').count(), 2, "{text}");
     }
 
-    
     #[test]
     fn a_connection_draws_a_line_between_two_services() {
         let rows = drawn(
@@ -205,7 +204,6 @@ mod tests {
         assert!(rows.iter().any(|r| r.contains("Solo")), "{rows:?}");
     }
 
-    
     #[test]
     fn what_is_not_an_architecture_diagram_is_left_alone() {
         assert!(render_architecture("graph TD\n A --> B").is_none());

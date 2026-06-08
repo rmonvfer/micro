@@ -98,7 +98,6 @@ fn project_candidates(workspace: &Path) -> Vec<PathBuf> {
         cursor = directory.parent();
     }
 
-    
     per_directory.into_iter().rev().flatten().collect()
 }
 
@@ -126,7 +125,6 @@ impl Assembly {
             return Ok(());
         };
 
-        
         let position = self.sources.len();
         let expanded = self.expand(&canonical, &contents, 0).await?;
         let trimmed = expanded.trim();
@@ -144,7 +142,6 @@ impl Assembly {
         Ok(())
     }
 
-    
     async fn take(&mut self, path: &Path) -> Result<Option<(PathBuf, String)>> {
         let canonical = match tokio::fs::canonicalize(path).await {
             Ok(canonical) => canonical,
@@ -157,7 +154,7 @@ impl Assembly {
 
         match tokio::fs::read_to_string(&canonical).await {
             Ok(contents) => Ok(Some((canonical, contents))),
-            
+
             Err(_) => Ok(None),
         }
     }
@@ -211,7 +208,7 @@ impl Assembly {
 fn import_directive(line: &str) -> Option<&str> {
     let trimmed = line.trim();
     let target = trimmed.strip_prefix('@')?.trim();
-    
+
     if target.is_empty() || target.contains(char::is_whitespace) {
         return None;
     }
@@ -398,7 +395,7 @@ mod tests {
 
         let loaded = loader(&root).load(root.join("project")).await.unwrap();
         assert!(loaded.text.contains("rule"));
-        
+
         assert!(loaded.text.contains("@AGENTS.md"));
         assert_eq!(loaded.sources, vec![root.join("project/AGENTS.md")]);
     }

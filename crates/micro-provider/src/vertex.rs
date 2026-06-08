@@ -59,7 +59,6 @@ fn account_in(base_url: &str) -> Option<Account> {
     })
 }
 
-
 pub fn endpoint(account: &Account, model_id: &str) -> String {
     let id = model_id.trim_start_matches("models/");
     format!(
@@ -72,7 +71,6 @@ pub fn endpoint(account: &Account, model_id: &str) -> String {
 pub async fn access_token(client: &reqwest::Client, credential: &str) -> Result<String, String> {
     let credential = credential.trim();
 
-    
     if let Some(refresh) = application_default_credentials() {
         return exchange(client, &refresh).await;
     }
@@ -175,7 +173,6 @@ async fn exchange(
 mod tests {
     use super::*;
 
-    
     #[test]
     fn a_model_is_addressed_under_its_project() {
         let account = Account {
@@ -186,11 +183,10 @@ mod tests {
             endpoint(&account, "gemini-3-pro"),
             "https://europe-west4-aiplatform.googleapis.com/v1/projects/my-project/locations/europe-west4/publishers/google/models/gemini-3-pro:streamGenerateContent?alt=sse"
         );
-        
+
         assert!(endpoint(&account, "models/gemini-3-pro").contains("/models/gemini-3-pro:"));
     }
 
-    
     #[test]
     fn the_address_can_name_the_account() {
         let found = account_in(

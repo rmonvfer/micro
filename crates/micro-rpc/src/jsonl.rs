@@ -8,7 +8,7 @@ use tokio::io::BufReader;
 pub fn line(value: &impl serde::Serialize) -> String {
     match serde_json::to_string(value) {
         Ok(encoded) => format!("{encoded}\n"),
-        
+
         Err(error) => format!("{{\"type\":\"error\",\"error\":\"{error}\"}}\n"),
     }
 }

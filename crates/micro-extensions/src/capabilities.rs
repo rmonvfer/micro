@@ -1,5 +1,3 @@
-
-
 use serde::Deserialize;
 use serde::Serialize;
 use std::collections::BTreeSet;
@@ -106,11 +104,10 @@ impl std::fmt::Display for Capability {
 /// What one extension may do, and how that was settled.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Grant {
-    
     pub path: String,
     /// What a reader calls it: the package name where there is one, the file otherwise.
     pub name: String,
-    
+
     pub declared: bool,
     pub allowed: BTreeSet<Capability>,
 }
@@ -120,7 +117,6 @@ impl Grant {
         self.allowed.contains(&capability)
     }
 
-    
     pub fn listed(&self) -> Vec<&'static str> {
         Capability::ALL
             .iter()
@@ -129,7 +125,6 @@ impl Grant {
             .collect()
     }
 }
-
 
 #[derive(Debug, Clone, Default)]
 pub struct Grants {
@@ -230,15 +225,15 @@ pub fn declared(entry: &Path) -> Option<Vec<String>> {
     None
 }
 
-
 const MANIFEST_SEARCH_DEPTH: usize = 3;
-
 
 fn in_manifest(path: &Path) -> Option<Vec<String>> {
     let raw = std::fs::read_to_string(path).ok()?;
     let manifest: serde_json::Value = serde_json::from_str(&raw).ok()?;
     for section in ["micro", "pi"] {
-        let Some(declared) = manifest.get(section).and_then(|section| section.get("capabilities"))
+        let Some(declared) = manifest
+            .get(section)
+            .and_then(|section| section.get("capabilities"))
         else {
             continue;
         };
@@ -322,7 +317,6 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
-    
     #[test]
     fn a_legacy_set_covers_what_was_registered_and_what_cannot_be_seen() {
         let registered = crate::Registered {
@@ -335,7 +329,10 @@ mod tests {
         };
         let allowed = derived(&registered);
         assert!(allowed.contains(&Capability::Tools));
-        assert!(!allowed.contains(&Capability::Commands), "nothing registered a command");
+        assert!(
+            !allowed.contains(&Capability::Commands),
+            "nothing registered a command"
+        );
         assert!(allowed.contains(&Capability::Exec));
         assert!(allowed.contains(&Capability::SessionControl));
     }

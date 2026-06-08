@@ -8,7 +8,6 @@ use crate::PickerLayout;
 use micro_models::ModelDef;
 use micro_models::Resolution;
 
-
 fn step_direction(query: &str) -> Option<bool> {
     match query.trim().to_ascii_lowercase().as_str() {
         "next" => Some(true),
@@ -62,8 +61,7 @@ pub(crate) fn model(argument: Option<&str>, context: &CommandContext<'_>) -> Com
             .iter()
             .map(|model| item(model, context.model))
             .collect();
-        
-        
+
         let shortlist: Vec<_> = ordered(
             &on_shortlist(&offered, context.scoped_models),
             context.model,
@@ -82,7 +80,6 @@ pub(crate) fn model(argument: Option<&str>, context: &CommandContext<'_>) -> Com
         );
     };
 
-    
     if let Some(forward) = step_direction(query) {
         return match neighbour(context, forward) {
             Some(model) => CommandOutcome::SetModel {
@@ -96,7 +93,7 @@ pub(crate) fn model(argument: Option<&str>, context: &CommandContext<'_>) -> Com
         Resolution::Match(model) => CommandOutcome::SetModel {
             model: Box::new(model.clone()),
         },
-        
+
         Resolution::Ambiguous(candidates) => CommandOutcome::Choose(
             Picker::new(
                 format!("{} models match \"{query}\"", candidates.len()),
@@ -151,15 +148,12 @@ fn item(model: &ModelDef, current: Option<&ModelDef>) -> PickerItem {
     let qualified = model.qualified_id();
     let is_current = current.is_some_and(|model| model.qualified_id() == qualified);
 
-    
     let item = PickerItem::new(
         &model.id,
         format!("[{}]", model.provider),
         format!("/model {qualified}"),
     )
     .current(is_current)
-    
-    
     .found_by(search_text(model));
 
     match model.name.is_empty() {

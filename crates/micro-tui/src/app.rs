@@ -12,6 +12,7 @@ use crate::menu::Menu;
 use crate::picker::Picker;
 use crate::render::links::Links;
 use crate::render::pictures::Pictures;
+use crate::render::pictures::Placement;
 use crate::render::status::shorten_home;
 use crate::render::transcript::Display;
 use crate::render::transcript::Rendered;
@@ -26,6 +27,8 @@ use micro_types::Message;
 use micro_types::ThinkingLevel;
 use ratatui::style::Color;
 use ratatui::text::Line;
+use ratatui::text::Span;
+use std::collections::BTreeSet;
 use std::collections::HashSet;
 use std::collections::VecDeque;
 use std::path::PathBuf;
@@ -90,7 +93,7 @@ pub struct TuiOptions {
     pub notice: Option<String>,
     /// The provider serving the model, named in the footer when the model does not say.
     pub provider: String,
-    
+
     pub subscription: bool,
     /// Whether the conversation summarizes itself once it fills the window.
     pub auto_compact: bool,
@@ -107,13 +110,13 @@ pub struct TuiOptions {
     pub tui_mode: crate::TuiMode,
     /// What was loaded before the session started, named on the first screen.
     pub resources: Resources,
-    
+
     pub terminal_input: Option<crate::ui::TerminalInputAsker>,
     /// Where the interface asks the host something off the render path.
     pub host_asker: Option<crate::ui::HostAsker>,
     /// Names of tools whose `render_shell` asked for `"self"`.
     pub self_framed_tools: HashSet<String>,
-    /// The commands loaded extensions registered, offered in the menu beside the built-in ones.
+    /// Commands supplied by extensions and skills, offered beside the built-in ones.
     pub extension_commands: Vec<crate::menu::MenuItem>,
     /// Where a phone reaches this session, once one has been handed it.
     pub remote: Option<crate::remote::Remote>,
@@ -211,6 +214,20 @@ impl KeyPrompt {
     }
 }
 
+/// A prompt held until the current work can accept it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct QueuedMessage {
+    pub text: String,
+    pub kind: QueueKind,
+}
+
+/// Why a prompt is waiting.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum QueueKind {
+    Steering,
+    FollowUp,
+}
+
 /// The turn in flight.
 struct Turn {
     /// What to call what is happening, in the activity line.
@@ -223,7 +240,6 @@ struct Turn {
 /// The wrapped transcript, kept between frames.
 #[derive(Default)]
 struct Cache {
-    
     shape: Option<Shape>,
     rendered: Rendered,
     /// Where each entry's rows begin, so a conversation can be redrawn from the middle.
@@ -257,7 +273,7 @@ pub struct App {
     pub workspace: PathBuf,
     /// Advanced by the event loop, so the spinner turns while a turn runs.
     pub tick: usize,
-    
+
     worked: bool,
     /// Whether the previous action was escape, so two escapes can clear the prompt.
     escape_pending: bool,
@@ -267,8 +283,10 @@ pub struct App {
 
     model: String,
     turn: Option<Turn>,
+    /// Whether the active operation is compacting the conversation.
+    compacting: bool,
     /// Prompts waiting to be sent, in the order they were written.
-    pending: VecDeque<String>,
+    pending: VecDeque<QueuedMessage>,
     /// Lines the interface asked for itself, which go out before anything the user typed.
     injected: VecDeque<String>,
     menu: Option<Menu>,
@@ -280,9 +298,9 @@ pub struct App {
     pub extension_status: std::collections::BTreeMap<String, String>,
     /// The workspace's files, for completing a name after `@`.
     file_index: Option<Vec<String>>,
-    
+
     handed_over: usize,
-    
+
     pub subscription: bool,
     /// Whether the conversation summarizes itself once it fills the window.
     pub auto_compact: bool,
@@ -298,7 +316,7 @@ pub struct App {
     focus: Option<usize>,
     /// How far back from the end of the conversation the reader has scrolled.
     scroll: usize,
-    
+
     viewport: usize,
     /// The columns content wraps to, and the rows the whole frame has.
     width: usize,
@@ -310,6 +328,9 @@ pub struct App {
     answers: usize,
     hyperlinks: bool,
     images: Option<ImageProtocol>,
+    /// Where the images go on the frame just laid out, for the terminal to draw once the rows they
+    /// sit on have landed.
+    placements: Vec<Placement>,
     /// What the user settled in `/settings`, honoured wherever it applies.
     settings: Preferences,
     /// What was loaded before the session started.
@@ -319,7 +340,7 @@ pub struct App {
     tui_mode: crate::TuiMode,
     /// The branch the workspace is on, for the footer.
     branch: Option<String>,
-    
+
     startup_expanded: bool,
     /// What an extension asked the activity line to call what is happening, in place of the turn's
     /// own word for it.
@@ -351,19 +372,19 @@ pub struct App {
     /// The component `setEditorComponent` replaced the built-in editor with, and what it last
     /// looked like.
     editor_component: Option<ComponentOverlay>,
-    
+
     drawn: Drawn,
     /// Tools a deactivated extension provided, waiting to be taken off the agent.
     retired_tools: Vec<String>,
     /// Names of tools whose `render_shell` asked for `"self"`, kept so a conversation rebuilt mid-
     /// run.
     self_framed_tools: HashSet<String>,
-    
+
     extension_commands: Vec<crate::menu::MenuItem>,
     /// A multi-line editor shown for an extension's `editor()`, holding the keyboard until it
     /// submits or is cancelled.
     extension_editor: Option<ExtensionEditorOverlay>,
-    
+
     autocomplete_triggers: Vec<char>,
     /// A `getSuggestions` question `sync_menu` owes an extension, taken once by the event loop.
     pending_suggestion_request: Option<SuggestionRequest>,
@@ -371,7 +392,6 @@ pub struct App {
     /// by the event loop.
     pending_completion_request: Option<CompletionRequest>,
 }
-
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct SuggestionRequest {
@@ -397,6 +417,7 @@ pub struct CompletionRequest {
 struct ComponentOverlay {
     component_id: String,
     lines: Vec<String>,
+    cursor: Option<(usize, usize)>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -407,7 +428,22 @@ struct InspectionOverlay {
     selected: usize,
     detail_open: bool,
     scroll: usize,
+    /// The selected detail or standalone text, wrapped once for the current frame width.
+    body: Vec<Line<'static>>,
+    body_width: usize,
+    body_detail: Option<usize>,
 }
+
+/// The data needed to render an open inspection overlay.
+pub type Inspection<'a> = (
+    &'a str,
+    &'a str,
+    &'a [InspectionItem],
+    &'a [Line<'static>],
+    usize,
+    bool,
+    usize,
+);
 
 /// A real [`Editor`] shown for an extension's `editor()`, unlike [`ComponentOverlay`].
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -415,7 +451,6 @@ struct ExtensionEditorOverlay {
     title: String,
     editor: Editor,
 }
-
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum ComponentSlot {
@@ -449,10 +484,7 @@ impl Drawn {
     }
 
     /// Every key this extension is behind, so what it drew can be taken back by key.
-    fn keys_of(
-        map: &std::collections::BTreeMap<String, String>,
-        extension: &str,
-    ) -> Vec<String> {
+    fn keys_of(map: &std::collections::BTreeMap<String, String>, extension: &str) -> Vec<String> {
         map.iter()
             .filter(|(_, owner)| owner.as_str() == extension)
             .map(|(key, _)| key.clone())
@@ -475,7 +507,6 @@ fn component_slot_named(name: Option<&str>) -> Option<ComponentSlot> {
 /// A spinner's animation, asked for in place of the built-in one.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WorkingIndicator {
-    
     pub frames: Vec<String>,
     /// How long each frame is shown before the next.
     pub interval_ms: u64,
@@ -494,7 +525,6 @@ struct Widget {
     lines: Vec<String>,
     placement: WidgetPlacement,
 }
-
 
 const MAX_WIDGET_LINES: usize = 10;
 
@@ -526,7 +556,7 @@ fn git_branch(workspace: &std::path::Path) -> Option<String> {
         return None;
     }
     let branch = String::from_utf8_lossy(&asked.stdout).trim().to_string();
-    
+
     (!branch.is_empty() && branch != "HEAD").then_some(branch)
 }
 
@@ -557,6 +587,7 @@ impl App {
             should_quit: false,
             model: options.model,
             turn: None,
+            compacting: false,
             pending: VecDeque::new(),
             injected: VecDeque::new(),
             menu: None,
@@ -582,11 +613,12 @@ impl App {
             jump: None,
             answers: 0,
             hyperlinks: capabilities.hyperlinks,
-            
+
             images: match options.settings.show_images {
                 true => capabilities.images,
                 false => None,
             },
+            placements: Vec::new(),
             settings: options.settings,
             resources: options.resources,
             tui_mode: options.tui_mode,
@@ -614,7 +646,6 @@ impl App {
             pending_completion_request: None,
         };
 
-        
         if let Some(notice) = notice {
             app.notice(notice, MessageKind::Info);
         }
@@ -629,9 +660,8 @@ impl App {
     /// Whether the two rows the spinner draws in are held open.
     pub fn reserves_activity_rows(&self) -> bool {
         match self.tui_mode {
-            
             crate::TuiMode::Inline => self.worked,
-            
+
             crate::TuiMode::Fullscreen => self.is_running(),
         }
     }
@@ -657,6 +687,7 @@ impl App {
     pub fn set_theme(&mut self, theme: Theme) {
         self.theme = theme;
         self.cache.shape = None;
+        self.refresh_inspection_body();
     }
 
     pub fn set_thinking(&mut self, level: ThinkingLevel) {
@@ -685,6 +716,7 @@ impl App {
     pub fn set_frame(&mut self, width: usize, rows: u16) {
         self.width = width.max(1);
         self.rows = rows;
+        self.refresh_inspection_body();
     }
 
     /// How many rows the transcript has to draw in.
@@ -719,7 +751,6 @@ impl App {
         taken
     }
 
-    
     pub fn forget_scrolled_out(&mut self) {
         self.handed_over = 0;
     }
@@ -730,6 +761,16 @@ impl App {
 
     pub fn pictures(&self) -> &Pictures {
         &self.cache.rendered.pictures
+    }
+
+    /// Say where the images go on the frame that has just been laid out.
+    pub fn set_placements(&mut self, placements: Vec<Placement>) {
+        self.placements = placements;
+    }
+
+    /// Where the images go on the frame that has just been laid out.
+    pub fn placements(&self) -> &[Placement] {
+        &self.placements
     }
 
     pub fn menu(&self) -> Option<&Menu> {
@@ -796,7 +837,6 @@ impl App {
         self.working_visible
     }
 
-    
     pub fn indicator_frame(&self) -> &str {
         match &self.working_indicator {
             Some(indicator) if indicator.frames.is_empty() => "",
@@ -854,17 +894,14 @@ impl App {
         self.title_change.take()
     }
 
-    
     pub fn header_override(&self) -> Option<&[String]> {
         self.header_override.as_deref()
     }
 
-    
     pub fn footer_override(&self) -> Option<&[String]> {
         self.footer_override.as_deref()
     }
 
-    
     pub fn component_overlay_id(&self) -> Option<&str> {
         self.component_overlay
             .as_ref()
@@ -878,12 +915,20 @@ impl App {
             .map(|overlay| overlay.lines.as_slice())
     }
 
-    pub fn inspection(&self) -> Option<(&str, &str, &[InspectionItem], usize, bool, usize)> {
+    /// The hardware cursor requested by the open component, measured in its rendered lines.
+    pub fn component_overlay_cursor(&self) -> Option<(usize, usize)> {
+        self.component_overlay
+            .as_ref()
+            .and_then(|overlay| overlay.cursor)
+    }
+
+    pub fn inspection(&self) -> Option<Inspection<'_>> {
         self.inspection.as_ref().map(|overlay| {
             (
                 overlay.title.as_str(),
                 overlay.text.as_str(),
                 overlay.items.as_slice(),
+                overlay.body.as_slice(),
                 overlay.selected,
                 overlay.detail_open,
                 overlay.scroll,
@@ -899,14 +944,48 @@ impl App {
             selected: 0,
             detail_open: false,
             scroll: 0,
+            body: Vec::new(),
+            body_width: 0,
+            body_detail: None,
         });
+        self.refresh_inspection_body();
+    }
+
+    /// Wrap the open inspection's scrollable text once, rather than once per frame.
+    fn refresh_inspection_body(&mut self) {
+        let Some(overlay) = self.inspection.as_mut() else {
+            return;
+        };
+        let detail = overlay.detail_open.then_some(overlay.selected);
+        if overlay.body_width == self.width && overlay.body_detail == detail {
+            return;
+        }
+        let text = match detail {
+            Some(selected) => overlay
+                .items
+                .get(selected)
+                .map(|item| item.detail.as_str())
+                .unwrap_or_default(),
+            None => overlay.text.as_str(),
+        };
+        let style = self.theme.body();
+        overlay.body.clear();
+        for source in text.lines() {
+            overlay.body.extend(crate::wrap::wrap_spans(
+                &[Span::styled(source.to_string(), style)],
+                self.width,
+                2,
+            ));
+        }
+        overlay.body_width = self.width;
+        overlay.body_detail = detail;
     }
 
     /// Redraw the open `custom()` overlay with what its component looked like after handling a key.
     pub fn set_component_overlay_lines(&mut self, component_id: &str, lines: Vec<String>) {
         if let Some(overlay) = self.component_overlay.as_mut() {
             if overlay.component_id == component_id {
-                overlay.lines = strip_cursor_marker(lines).0;
+                (overlay.lines, overlay.cursor) = strip_cursor_marker(lines);
             }
         }
     }
@@ -926,11 +1005,18 @@ impl App {
             .unwrap_or_default()
     }
 
+    /// The hardware cursor requested by the editor replacement, measured in its rendered lines.
+    pub fn editor_component_cursor(&self) -> Option<(usize, usize)> {
+        self.editor_component
+            .as_ref()
+            .and_then(|component| component.cursor)
+    }
+
     /// Redraw the editor's replacement with what it looked like after handling a key.
     pub fn set_editor_component_lines(&mut self, component_id: &str, lines: Vec<String>) {
         if let Some(component) = self.editor_component.as_mut() {
             if component.component_id == component_id {
-                component.lines = strip_cursor_marker(lines).0;
+                (component.lines, component.cursor) = strip_cursor_marker(lines);
             }
         }
     }
@@ -949,7 +1035,28 @@ impl App {
             .map(|overlay| &overlay.editor)
     }
 
-    /// How many prompts are waiting behind the one in flight.
+    /// Prompts waiting to be sent, with the state that made each wait.
+    pub fn queued_messages(&self) -> Vec<QueuedMessage> {
+        self.pending.iter().cloned().collect()
+    }
+
+    pub fn is_compacting(&self) -> bool {
+        self.compacting
+    }
+
+    /// Start showing compaction progress while keeping the editor available for queued messages.
+    pub fn begin_compaction(&mut self) {
+        self.compacting = true;
+        self.busy("compacting context");
+    }
+
+    /// Stop showing compaction progress.
+    pub fn finish_compaction(&mut self) {
+        self.compacting = false;
+        self.idle();
+    }
+
+    /// The count of prompts waiting to be sent.
     pub fn queued(&self) -> usize {
         self.pending.len()
     }
@@ -978,7 +1085,6 @@ impl App {
 
     /// Put a line of the interface's own into the conversation.
     pub fn notice(&mut self, text: impl Into<String>, kind: MessageKind) {
-        
         if matches!(kind, MessageKind::Warning) && !self.settings.warnings {
             return;
         }
@@ -990,12 +1096,10 @@ impl App {
         self.transcript.push_notice(text, level);
     }
 
-    
     pub fn warn(&mut self, text: impl Into<String>) {
         self.notice(text, MessageKind::Warning);
     }
 
-    
     pub fn open_picker(&mut self, choices: micro_commands::Picker) {
         self.picker = Some(Picker::new(choices));
     }
@@ -1081,14 +1185,13 @@ impl App {
     /// Show a question an extension asked, in whatever suits it.
     pub fn ask_question(&mut self, request: crate::ui::UiRequest) {
         match request.method.as_str() {
-            
             "send_user_message" => {
                 let mut request = request;
                 self.queue_line(request.title.clone());
                 request.answer(serde_json::json!({ "queued": true }));
                 return;
             }
-            
+
             "custom_message" => {
                 let mut request = request;
                 self.transcript
@@ -1102,7 +1205,7 @@ impl App {
                 request.answer(serde_json::json!({}));
                 return;
             }
-            
+
             "tool_call_rendered" => {
                 let mut request = request;
                 self.transcript.set_tool_call_render(
@@ -1123,7 +1226,7 @@ impl App {
                 request.answer(serde_json::json!({}));
                 return;
             }
-            
+
             "component_changed" => {
                 let mut request = request;
                 let handled = self
@@ -1148,7 +1251,7 @@ impl App {
                 request.answer(serde_json::json!({}));
                 return;
             }
-            
+
             "deactivate_extension" => {
                 let mut request = request;
                 self.drop_drawings_of(&request.title);
@@ -1156,7 +1259,7 @@ impl App {
                 request.answer(serde_json::json!({ "ok": true }));
                 return;
             }
-            
+
             "set_status" => {
                 let mut request = request;
                 match request.detail.clone() {
@@ -1176,7 +1279,7 @@ impl App {
                 request.answer(serde_json::json!({ "ok": true }));
                 return;
             }
-            "select" => {
+            "select" | "sandbox_access" => {
                 let items = request
                     .options
                     .iter()
@@ -1202,7 +1305,7 @@ impl App {
                     micro_commands::Picker::new(request.title.clone(), items).titled(),
                 );
             }
-            
+
             "editor" => {
                 let mut editor = Editor::new();
                 if let Some(prefill) = request.detail.clone() {
@@ -1213,14 +1316,16 @@ impl App {
                     editor,
                 });
             }
-            
+
             "custom" => {
+                let (lines, cursor) = strip_cursor_marker(request.options.clone());
                 self.component_overlay = Some(ComponentOverlay {
                     component_id: request.title.clone(),
-                    lines: strip_cursor_marker(request.options.clone()).0,
+                    lines,
+                    cursor,
                 });
             }
-            
+
             "custom_done" => {
                 let mut request = request;
                 self.component_overlay = None;
@@ -1235,7 +1340,7 @@ impl App {
                 request.answer(serde_json::json!({}));
                 return;
             }
-            
+
             "set_title" => {
                 let mut request = request;
                 self.title_change = Some(request.title.clone());
@@ -1254,7 +1359,7 @@ impl App {
                 request.answer(serde_json::json!({}));
                 return;
             }
-            
+
             "set_working_indicator" => {
                 let mut request = request;
                 self.working_indicator = match request.title.as_str() {
@@ -1277,7 +1382,7 @@ impl App {
                 request.answer(serde_json::json!({}));
                 return;
             }
-            
+
             "set_widget" => {
                 let mut request = request;
                 match request.options.is_empty() {
@@ -1307,7 +1412,7 @@ impl App {
                 request.answer(serde_json::json!({}));
                 return;
             }
-            
+
             "set_header" => {
                 let mut request = request;
                 self.header_override =
@@ -1332,11 +1437,10 @@ impl App {
                 request.answer(serde_json::json!({}));
                 return;
             }
-            
+
             "register_component_slot" => {
                 let mut request = request;
                 if let Some(slot) = component_slot_named(request.detail.as_deref()) {
-                    
                     self.component_slots.retain(|_, existing| *existing != slot);
                     self.component_slots.insert(request.title.clone(), slot);
                 }
@@ -1350,7 +1454,7 @@ impl App {
                 request.answer(serde_json::json!({}));
                 return;
             }
-            
+
             "paste_to_editor" => {
                 let mut request = request;
                 self.editor
@@ -1358,12 +1462,14 @@ impl App {
                 request.answer(serde_json::json!({}));
                 return;
             }
-            
+
             "set_editor_component" => {
                 let mut request = request;
+                let (lines, cursor) = strip_cursor_marker(request.options.clone());
                 self.editor_component = (!request.title.is_empty()).then(|| ComponentOverlay {
                     component_id: request.title.clone(),
-                    lines: strip_cursor_marker(request.options.clone()).0,
+                    lines,
+                    cursor,
                 });
                 self.drawn.editor = self
                     .editor_component
@@ -1373,7 +1479,7 @@ impl App {
                 request.answer(serde_json::json!({}));
                 return;
             }
-            
+
             "set_theme" => {
                 let mut request = request;
                 let colors = request
@@ -1408,14 +1514,14 @@ impl App {
                 request.answer(serde_json::json!({}));
                 return;
             }
-            
+
             "abort" => {
                 let mut request = request;
                 let interrupted = matches!(self.interrupt(), Outcome::Interrupt);
                 request.answer(serde_json::json!({ "interrupted": interrupted }));
                 return;
             }
-            
+
             "watch_terminal_input" => {
                 let mut request = request;
                 self.wants_terminal_input = true;
@@ -1428,7 +1534,7 @@ impl App {
                 request.answer(serde_json::json!({}));
                 return;
             }
-            
+
             "watch_autocomplete" => {
                 let mut request = request;
                 self.autocomplete_triggers = request
@@ -1439,7 +1545,7 @@ impl App {
                 request.answer(serde_json::json!({}));
                 return;
             }
-            
+
             _ => self.open_input(request.title.clone(), request.detail.clone()),
         }
         self.question = Some(request);
@@ -1488,15 +1594,31 @@ impl App {
             return Some(line);
         }
         if !self.settings.steer_all_at_once || self.pending.len() < 2 {
-            return self.pending.pop_front();
+            return self.pending.pop_front().map(|message| message.text);
         }
-        let all: Vec<String> = self.pending.drain(..).collect();
+        let all: Vec<String> = self.pending.drain(..).map(|message| message.text).collect();
         Some(all.join("\n\n"))
     }
 
     /// Send a line as though the user had typed it.
     pub fn queue_line(&mut self, line: impl Into<String>) {
         self.injected.push_back(line.into());
+    }
+
+    /// Queue a line after the active turn, as though it was entered with the follow-up shortcut.
+    pub fn queue_follow_up_line(&mut self, line: impl Into<String>) -> Outcome {
+        let line = line.into();
+        if line.trim().is_empty() {
+            return Outcome::Handled;
+        }
+        self.pending.push_back(QueuedMessage {
+            text: line,
+            kind: QueueKind::FollowUp,
+        });
+        match self.settings.follow_up_interrupts && self.is_running() && !self.compacting {
+            true => self.interrupt(),
+            false => Outcome::Handled,
+        }
     }
 
     /// Record a command the user ran themselves.
@@ -1562,18 +1684,18 @@ impl App {
     /// Take in what the host did with a command.
     pub fn apply_result(&mut self, applied: Applied) {
         match applied {
+            Applied::RunGrantedCommand { command } => self.queue_line(format!("!{command}")),
             Applied::Nothing => {}
-            
+
             Applied::Model { .. } | Applied::SystemPrompt { .. } => {}
             Applied::Note { text, kind } => self.notice(text, kind),
             Applied::Conversation { messages, note } => {
-                
                 self.transcript = Transcript::from_messages(&messages);
                 self.transcript
                     .set_self_framed_tools(self.self_framed_tools.clone());
                 self.cache.shape = None;
                 self.focus = None;
-                
+
                 self.scroll = 0;
                 if let Some(note) = note {
                     self.notice(note, MessageKind::Info);
@@ -1651,7 +1773,7 @@ impl App {
             show_thinking: self.show_thinking,
             focus: self.focus,
         };
-        
+
         let from = match self.cache.shape == Some(shape) {
             true => self.transcript.dirty_from().min(self.cache.starts.len()),
             false => 0,
@@ -1661,9 +1783,8 @@ impl App {
             return;
         }
 
-        
         let was = self.cache.rendered.lines.len();
-        
+
         let kept_rows = self
             .cache
             .starts
@@ -1689,10 +1810,12 @@ impl App {
                     true => Links::new(),
                     false => Links::disabled(),
                 },
-                pictures: Pictures::new(self.images).sized(
-                    self.settings.image_width_cells as usize,
-                    self.settings.auto_resize_images,
-                ),
+                pictures: Pictures::new(self.images)
+                    .sized(
+                        self.settings.image_width_cells as usize,
+                        self.settings.auto_resize_images,
+                    )
+                    .indented(crate::render::transcript::PADDING),
             },
             _ => {
                 let mut kept = std::mem::take(&mut self.cache.rendered);
@@ -1726,13 +1849,12 @@ impl App {
             &mut rendered,
             &mut self.cache.starts,
         );
-        
+
         while self.cache.links_from.len() < self.cache.starts.len() {
             self.cache.links_from.push(rendered.links.len());
             self.cache.pictures_from.push(rendered.pictures.len());
         }
 
-        
         let grew = rendered.lines.len().saturating_sub(was);
         self.cache.shape = Some(shape);
         self.cache.rendered = rendered;
@@ -1748,11 +1870,11 @@ impl App {
         if !matches!(action, Action::Cancel) {
             self.escape_pending = false;
         }
-        
+
         if !matches!(action, Action::Interrupt | Action::Resize | Action::Ignored) {
             self.quitting = false;
         }
-        
+
         if self.key_prompt.is_some() {
             return self.handle_key_prompt(action);
         }
@@ -1769,7 +1891,6 @@ impl App {
             return self.handle_extension_editor(action);
         }
 
-        
         if let Some(forward) = self.jump {
             if let Action::Insert(text) = &action {
                 self.jump = None;
@@ -1800,8 +1921,8 @@ impl App {
             Action::Submit => self.submit(),
             Action::QueueFollowUp => self.queue_follow_up(),
             Action::Dequeue => {
-                if let Some(line) = self.pending.pop_back() {
-                    self.editor.set_text(&line);
+                if let Some(message) = self.pending.pop_back() {
+                    self.editor.set_text(&message.text);
                     self.sync_menu();
                 }
                 Outcome::Handled
@@ -1912,6 +2033,9 @@ impl App {
 
     /// Ctrl+C.
     fn interrupt(&mut self) -> Outcome {
+        if self.compacting {
+            return Outcome::Interrupt;
+        }
         if let Some(turn) = self.turn.as_mut() {
             turn.interrupting = true;
             return Outcome::Interrupt;
@@ -1931,15 +2055,14 @@ impl App {
 
     /// Enter.
     fn submit(&mut self) -> Outcome {
-        
         if self.queue_extension_completion() {
             return Outcome::Handled;
         }
-        
+
         if self.completion_would_change_the_line() && self.commit_completion() {
             return Outcome::Handled;
         }
-        
+
         if self.editor.escapes_submit() {
             self.editor.escape_newline();
             return Outcome::Handled;
@@ -1950,21 +2073,26 @@ impl App {
         if line.trim().is_empty() {
             return Outcome::Handled;
         }
-        self.pending.push_back(line);
+        self.pending.push_back(QueuedMessage {
+            text: line,
+            kind: QueueKind::Steering,
+        });
         self.scroll = 0;
         Outcome::Handled
     }
 
-    
     fn queue_follow_up(&mut self) -> Outcome {
         let line = self.editor.take();
         self.menu = None;
         if line.trim().is_empty() {
             return Outcome::Handled;
         }
-        self.pending.push_back(line);
-        
-        match self.settings.follow_up_interrupts && self.is_running() {
+        self.pending.push_back(QueuedMessage {
+            text: line,
+            kind: QueueKind::FollowUp,
+        });
+
+        match self.settings.follow_up_interrupts && self.is_running() && !self.compacting {
             true => self.interrupt(),
             false => Outcome::Handled,
         }
@@ -2008,7 +2136,6 @@ impl App {
         true
     }
 
-    
     fn move_up(&mut self) -> Outcome {
         if let Some(menu) = self.menu.as_mut() {
             menu.select_previous();
@@ -2017,7 +2144,7 @@ impl App {
         if self.editor.move_up(self.width) {
             return Outcome::Handled;
         }
-        
+
         if self.editor.is_empty() && !self.editor.is_browsing_history() && self.scroll_by(1) {
             return Outcome::Handled;
         }
@@ -2045,6 +2172,9 @@ impl App {
         if self.menu.take().is_some() {
             self.escape_pending = false;
             return Outcome::Handled;
+        }
+        if self.compacting {
+            return Outcome::Interrupt;
         }
         if self.is_running() {
             self.escape_pending = false;
@@ -2081,19 +2211,19 @@ impl App {
     fn sync_menu(&mut self) {
         let (row, column) = self.editor.cursor();
         let line = self.editor.lines().get(row).cloned().unwrap_or_default();
-        
+
         if row == 0 {
             if let Some(menu) = Menu::open_for(&line, column, &self.extension_commands) {
                 self.menu = Some(menu);
                 return;
             }
         }
-        
+
         if wants_file_menu(&line, column) {
             self.menu = Menu::files_for(&line, column, self.workspace_files());
             return;
         }
-        
+
         self.menu = Menu::extension_for(&line, column, &self.autocomplete_triggers);
         if let Some(menu) = &self.menu {
             self.pending_suggestion_request = Some(SuggestionRequest {
@@ -2153,7 +2283,6 @@ impl App {
         self.pending_completion_request.take()
     }
 
-    
     pub fn apply_extension_completion(
         &mut self,
         lines: Vec<String>,
@@ -2171,10 +2300,9 @@ impl App {
         self.sync_menu();
     }
 
-    
     fn workspace_files(&mut self) -> &[String] {
         if self.file_index.is_none() {
-            self.file_index = Some(walk_workspace(std::path::Path::new(&self.cwd)));
+            self.file_index = Some(walk_workspace(&self.workspace));
         }
         self.file_index.as_deref().unwrap_or_default()
     }
@@ -2198,7 +2326,7 @@ impl App {
             Action::Submit => {
                 prompt.done = true;
                 let said = prompt.text().to_string();
-                
+
                 if let Some(mut question) = self.question.take() {
                     self.key_prompt = None;
                     question.answer(serde_json::json!({ "value": said }));
@@ -2210,7 +2338,7 @@ impl App {
                     question.cancel();
                 }
             }
-            
+
             Action::QuitOrDelete => return Outcome::Quit,
             _ => {}
         }
@@ -2224,7 +2352,7 @@ impl App {
         match action {
             Action::MoveUp => picker.select_previous(),
             Action::MoveDown => picker.select_next(),
-            
+
             Action::Tab => picker.toggle_scope(),
             Action::Insert(text) => picker.push(&text),
             Action::Backspace => picker.backspace(),
@@ -2232,11 +2360,13 @@ impl App {
                 let chosen = picker.commit();
                 self.picker = None;
                 match self.question.take() {
-                    
                     Some(mut question) => {
                         let answer = match (question.method.as_str(), chosen.as_deref()) {
                             ("confirm", Some(said)) => {
                                 serde_json::json!({ "confirmed": said == "yes" })
+                            }
+                            ("sandbox_access", Some(said)) => {
+                                serde_json::json!({ "value": said })
                             }
                             (_, Some(said)) => serde_json::json!({ "value": said }),
                             (_, None) => serde_json::json!({ "cancelled": true }),
@@ -2256,7 +2386,7 @@ impl App {
                     question.cancel();
                 }
             }
-            
+
             Action::QuitOrDelete => return Outcome::Quit,
             _ => {}
         }
@@ -2273,7 +2403,7 @@ impl App {
                 }
                 Outcome::Handled
             }
-            
+
             Action::QuitOrDelete => Outcome::Quit,
             _ => Outcome::Handled,
         }
@@ -2293,6 +2423,7 @@ impl App {
             } else {
                 self.inspection = None;
             }
+            self.refresh_inspection_body();
             return Outcome::Handled;
         }
         if matches!(action, Action::QuitOrDelete) {
@@ -2303,6 +2434,7 @@ impl App {
             return Outcome::Handled;
         };
         if !overlay.items.is_empty() && !overlay.detail_open {
+            let mut body_changed = false;
             match action {
                 Action::MoveUp | Action::ScrollUp => {
                     overlay.selected = overlay.selected.saturating_sub(1)
@@ -2319,8 +2451,12 @@ impl App {
                 Action::Submit => {
                     overlay.detail_open = true;
                     overlay.scroll = 0;
+                    body_changed = true;
                 }
                 _ => {}
+            }
+            if body_changed {
+                self.refresh_inspection_body();
             }
             return Outcome::Handled;
         }
@@ -2384,14 +2520,13 @@ impl App {
                     question.cancel();
                 }
             }
-            
+
             Action::QuitOrDelete => return Outcome::Quit,
             _ => {}
         }
         Outcome::Handled
     }
 
-    
     fn move_focus(&mut self, forward: bool) -> Outcome {
         let positions = self.transcript.tool_positions();
         if positions.is_empty() {
@@ -2425,7 +2560,6 @@ impl App {
                 self.transcript.toggle_expanded(index);
             }
             None => {
-                
                 let opening = self.transcript.any_collapsed() || !self.startup_expanded;
                 self.transcript.set_all_expanded(opening);
                 self.startup_expanded = opening;
@@ -2541,6 +2675,87 @@ pub(crate) fn human_size(bytes: usize) -> String {
     }
 }
 
+/// Whether the word under the cursor is asking for a file.
+fn wants_file_menu(line: &str, cursor: usize) -> bool {
+    let Some(typed) = line.get(..cursor) else {
+        return false;
+    };
+    let start = typed
+        .rfind(char::is_whitespace)
+        .map(|index| index + 1)
+        .unwrap_or(0);
+    typed.get(start..).is_some_and(|word| word.starts_with('@'))
+}
+
+/// A byte offset into `line`, in characters instead.
+fn char_offset(line: &str, byte_col: usize) -> usize {
+    line.get(..byte_col)
+        .map(|typed| typed.chars().count())
+        .unwrap_or_else(|| line.chars().count())
+}
+
+/// The byte offset in `line` that is `char_col` characters in.
+fn byte_offset(line: &str, char_col: usize) -> usize {
+    line.char_indices()
+        .nth(char_col)
+        .map(|(index, _)| index)
+        .unwrap_or(line.len())
+}
+
+/// How many files are worth offering to complete against.
+const MAX_INDEXED_FILES: usize = 20_000;
+
+/// Every file in the workspace, as paths relative to it.
+fn walk_workspace(root: &std::path::Path) -> Vec<String> {
+    let mut paths = BTreeSet::new();
+    collect_workspace_paths(root, true, false, &mut paths);
+    // A document is useful conversational context even when its repository ignores it. Keeping
+    // this pass document-only avoids turning an ignored build tree into completion candidates.
+    collect_workspace_paths(root, false, true, &mut paths);
+
+    paths.into_iter().take(MAX_INDEXED_FILES).collect()
+}
+
+fn collect_workspace_paths(
+    root: &std::path::Path,
+    use_git_ignores: bool,
+    documents_only: bool,
+    paths: &mut BTreeSet<String>,
+) {
+    let mut builder = ignore::WalkBuilder::new(root);
+    builder
+        .hidden(false)
+        .git_ignore(use_git_ignores)
+        .git_exclude(use_git_ignores)
+        .git_global(false)
+        .require_git(false);
+
+    for entry in builder.build().flatten() {
+        if !entry.file_type().is_some_and(|kind| kind.is_file()) {
+            continue;
+        }
+        if documents_only && !is_document(entry.path()) {
+            continue;
+        }
+        let Ok(relative) = entry.path().strip_prefix(root) else {
+            continue;
+        };
+        if let Some(path) = relative.to_str() {
+            paths.insert(path.to_string());
+        }
+        if paths.len() >= MAX_INDEXED_FILES {
+            break;
+        }
+    }
+}
+
+fn is_document(path: &std::path::Path) -> bool {
+    matches!(
+        path.extension().and_then(|extension| extension.to_str()),
+        Some("md" | "mdx" | "txt" | "rst" | "pdf" | "doc" | "docx" | "odt")
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2577,17 +2792,36 @@ mod tests {
 
         app.handle(Action::MoveDown);
         app.handle(Action::Submit);
-        let (_, _, _, selected, detail_open, _) = app.inspection().unwrap();
+        let (_, _, _, _, selected, detail_open, _) = app.inspection().unwrap();
         assert_eq!(selected, 1);
         assert!(detail_open);
 
         app.handle(Action::Cancel);
-        assert!(!app.inspection().unwrap().4);
+        assert!(!app.inspection().unwrap().5);
         app.handle(Action::Cancel);
         assert!(app.inspection().is_none());
     }
 
-    /// Press up until the conversation has no more to show and the key reaches the history.
+    #[test]
+    fn inspection_navigation_stops_at_the_last_item() {
+        let mut app = app();
+        let items = (0..40)
+            .map(|index| InspectionItem {
+                label: format!("turn {index}"),
+                detail: format!("detail {index}"),
+            })
+            .collect();
+        app.open_inspection("Session bill".to_string(), "summary".to_string(), items);
+
+        for _ in 0..100 {
+            app.handle(Action::MoveDown);
+        }
+
+        let (_, _, items, _, selected, detail_open, _) = app.inspection().expect("still open");
+        assert_eq!(selected, items.len() - 1);
+        assert!(!detail_open);
+    }
+
     fn press_up_until_history(app: &mut App) {
         for _ in 0..500 {
             app.handle(Action::MoveUp);
@@ -2649,6 +2883,27 @@ mod tests {
             names,
             vec!["clone", "changelog", "copy", "compact", "clear", "cwd"]
         );
+    }
+
+    #[test]
+    fn a_loaded_skill_is_offered_by_the_slash_menu() {
+        let mut app = App::new(
+            &[],
+            TuiOptions {
+                extension_commands: vec![crate::menu::MenuItem {
+                    value: "review-changes".to_string(),
+                    description: "skill — Review the current changes.".to_string(),
+                    raw: None,
+                }],
+                ..Default::default()
+            },
+        );
+
+        type_text(&mut app, "/review");
+
+        let item = app.menu().unwrap().items().first().unwrap();
+        assert_eq!(item.value, "review-changes");
+        assert!(item.description.starts_with("skill —"));
     }
 
     #[test]
@@ -3000,7 +3255,6 @@ mod tests {
         app.set_viewport(10);
         app.refresh_lines();
 
-        
         app.handle(Action::MoveUp);
         assert!(app.scroll() > 0);
         assert_eq!(app.editor.text(), "");
@@ -3009,7 +3263,6 @@ mod tests {
         assert_eq!(app.editor.text(), "the first thing asked");
     }
 
-    
     #[test]
     fn interrupting_an_empty_prompt_twice_leaves() {
         let mut app = app();
@@ -3042,7 +3295,6 @@ mod tests {
         assert_eq!(app.handle(Action::Interrupt), Outcome::Handled);
         assert!(app.editor.is_empty());
 
-        
         assert_eq!(app.handle(Action::Interrupt), Outcome::Handled);
         assert_eq!(app.handle(Action::Interrupt), Outcome::Quit);
     }
@@ -3142,19 +3394,16 @@ mod tests {
         app.set_viewport(10);
         app.refresh_lines();
 
-        
         app.handle(Action::ScrollUp);
         assert_eq!(app.scroll(), 3);
         app.handle(Action::ScrollUp);
         assert_eq!(app.scroll(), 6);
 
-        
         app.handle(Action::MoveUp);
         assert_eq!(app.scroll(), 7);
         app.handle(Action::MoveUp);
         assert_eq!(app.scroll(), 8);
 
-        
         app.handle(Action::MoveDown);
         assert_eq!(app.scroll(), 7);
         app.handle(Action::ScrollDown);
@@ -3267,7 +3516,6 @@ mod tests {
         assert_eq!(app.transcript.last_answer().as_deref(), Some("the answer"));
     }
 
-    
     #[test]
     fn a_long_conversation_redraws_only_what_changed() {
         let conversation = |count: usize| {
@@ -3302,7 +3550,6 @@ mod tests {
             "the long conversation really is longer"
         );
 
-        
         let update = |app: &mut App, count: usize| {
             app.apply_event(AgentEvent::ToolUpdate {
                 id: format!("c{}", count - 1),
@@ -3314,7 +3561,6 @@ mod tests {
             started.elapsed()
         };
 
-        
         let _ = update(&mut short, 5);
         let _ = update(&mut long, 80);
         let brief: std::time::Duration = (0..20).map(|_| update(&mut short, 5)).sum();
@@ -3334,7 +3580,6 @@ mod tests {
         assert!(transcript_text(&mut app).contains("! ls -la"));
     }
 
-    
     #[test]
     fn a_command_kept_back_is_marked_as_one() {
         let mut app = app();
@@ -3342,7 +3587,6 @@ mod tests {
         assert!(transcript_text(&mut app).contains("!! cat ~/.ssh/config"));
     }
 
-    
     #[test]
     fn the_arrow_keys_stop_at_the_edge_of_the_prompt() {
         let mut app = app();
@@ -3410,7 +3654,6 @@ mod tests {
         assert_eq!(app.scroll(), 0, "then where the reader had scrolled to");
     }
 
-    
     #[test]
     fn jump_to_char_moves_the_cursor_instead_of_typing() {
         let mut app = app();
@@ -3501,7 +3744,6 @@ mod tests {
         )
     }
 
-    
     #[test]
     fn hiding_thinking_starts_it_folded_away() {
         assert!(
@@ -3735,7 +3977,6 @@ mod tests {
         app.set_viewport(10);
         app.refresh_lines();
 
-        
         press_up_until_history(&mut app);
         assert_eq!(app.editor.text(), "second thing");
         app.handle(Action::MoveUp);
@@ -3802,7 +4043,6 @@ mod tests {
         assert!(!app.is_running());
     }
 
-    
     #[test]
     fn sending_a_prompt_returns_to_the_end_of_the_conversation() {
         let mut app = app();
@@ -3894,12 +4134,54 @@ mod tests {
     #[test]
     fn deactivating_an_extension_takes_back_only_what_it_drew() {
         let mut app = app();
-        ask_from(&mut app, "/x/leaving.ts", "set_widget", "mine", None, vec!["a line"]);
-        ask_from(&mut app, "/x/leaving.ts", "set_status", "mine", Some("busy"), Vec::new());
-        ask_from(&mut app, "/x/leaving.ts", "set_header", "", None, vec!["a header"]);
-        ask_from(&mut app, "/x/leaving.ts", "set_footer", "", None, vec!["a footer"]);
-        ask_from(&mut app, "/x/staying.ts", "set_widget", "theirs", None, vec!["still here"]);
-        ask_from(&mut app, "/x/staying.ts", "set_status", "theirs", Some("fine"), Vec::new());
+        ask_from(
+            &mut app,
+            "/x/leaving.ts",
+            "set_widget",
+            "mine",
+            None,
+            vec!["a line"],
+        );
+        ask_from(
+            &mut app,
+            "/x/leaving.ts",
+            "set_status",
+            "mine",
+            Some("busy"),
+            Vec::new(),
+        );
+        ask_from(
+            &mut app,
+            "/x/leaving.ts",
+            "set_header",
+            "",
+            None,
+            vec!["a header"],
+        );
+        ask_from(
+            &mut app,
+            "/x/leaving.ts",
+            "set_footer",
+            "",
+            None,
+            vec!["a footer"],
+        );
+        ask_from(
+            &mut app,
+            "/x/staying.ts",
+            "set_widget",
+            "theirs",
+            None,
+            vec!["still here"],
+        );
+        ask_from(
+            &mut app,
+            "/x/staying.ts",
+            "set_status",
+            "theirs",
+            Some("fine"),
+            Vec::new(),
+        );
 
         assert_eq!(app.widgets.len(), 2);
         assert_eq!(app.extension_status.len(), 2);
@@ -3916,9 +4198,15 @@ mod tests {
         );
 
         assert!(!app.widgets.contains_key("mine"));
-        assert!(app.widgets.contains_key("theirs"), "another extension's widget stays");
+        assert!(
+            app.widgets.contains_key("theirs"),
+            "another extension's widget stays"
+        );
         assert!(!app.extension_status.contains_key("mine"));
-        assert_eq!(app.extension_status.get("theirs").map(String::as_str), Some("fine"));
+        assert_eq!(
+            app.extension_status.get("theirs").map(String::as_str),
+            Some("fine")
+        );
         assert!(app.header_override().is_none());
         assert!(app.footer_override().is_none());
         assert_eq!(app.take_retired_tools(), vec!["gone-tool".to_string()]);
@@ -3928,7 +4216,6 @@ mod tests {
         );
     }
 
-    
     #[test]
     fn an_abort_question_interrupts_a_running_turn_and_says_so() {
         let mut app = app();
@@ -4030,7 +4317,6 @@ mod tests {
             Some(["fresh footer".to_string()].as_slice())
         );
 
-        
         ask(
             &mut app,
             "set_widget",
@@ -4054,7 +4340,6 @@ mod tests {
         );
         assert_eq!(app.widgets_above(), vec![vec!["second".to_string()]]);
 
-        
         let answer = ask(
             &mut app,
             "component_changed",
@@ -4116,7 +4401,7 @@ mod tests {
             Vec::new(),
         );
         assert_eq!(app.activity(), "cooking up an answer");
-        
+
         ask(&mut app, "set_working_message", "", None, Vec::new());
         assert_eq!(app.activity(), "thinking");
     }
@@ -4134,7 +4419,7 @@ mod tests {
     #[test]
     fn a_working_indicator_can_be_set_hidden_and_reset() {
         let mut app = app();
-        
+
         assert_eq!(
             app.indicator_frame(),
             crate::render::status::spinner_frame(0)
@@ -4149,7 +4434,6 @@ mod tests {
         );
         assert_eq!(app.indicator_frame(), "*");
 
-        
         ask(&mut app, "set_working_indicator", "set", None, Vec::new());
         assert_eq!(app.indicator_frame(), "");
 
@@ -4194,7 +4478,6 @@ mod tests {
         );
         assert!(app.widgets_below().is_empty());
 
-        
         ask(
             &mut app,
             "set_widget",
@@ -4219,7 +4502,6 @@ mod tests {
         assert_eq!(app.widgets_below(), vec![vec!["hello".to_string()]]);
     }
 
-    
     #[test]
     fn a_long_widget_is_cut_off_with_a_note() {
         let mut app = app();
@@ -4262,7 +4544,6 @@ mod tests {
         assert!(tool.has_custom_render());
     }
 
-    
     #[test]
     fn a_tools_renderresult_answer_joins_its_rendercall_answer() {
         let mut app = app();
@@ -4325,7 +4606,6 @@ mod tests {
         ask(&mut app, "set_editor_text", "", Some("hello"), Vec::new());
         assert_eq!(app.editor.text(), "hello");
 
-        
         let large = "x".repeat(5000);
         ask(&mut app, "paste_to_editor", "", Some(&large), Vec::new());
         assert!(app.editor.text().contains("hello"));
@@ -4403,7 +4683,6 @@ mod tests {
         assert!(app.component_overlay_id().is_none());
         assert!(!app.overlay_is_open());
 
-        
         let (request, _answered) = crate::ui::UiRequest::for_test(
             "custom",
             "component-1",
@@ -4417,6 +4696,70 @@ mod tests {
             Some(["hello from the component".to_string()].as_slice())
         );
         assert!(app.overlay_is_open());
+    }
+
+    #[test]
+    fn a_component_cursor_marker_is_kept_for_rendering_but_not_shown() {
+        let mut app = app();
+        let (request, _answered) = crate::ui::UiRequest::for_test(
+            "custom",
+            "component-1",
+            None,
+            vec![format!("hello{CURSOR_MARKER} world")],
+        );
+        app.ask_question(request);
+
+        assert_eq!(
+            app.component_overlay_lines(),
+            Some(["hello world".to_string()].as_slice())
+        );
+        assert_eq!(app.component_overlay_cursor(), Some((0, 5)));
+    }
+
+    #[test]
+    fn file_completion_walks_the_workspace_not_its_display_label() {
+        let workspace = std::env::temp_dir().join(format!(
+            "micro-tui-completion-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos()
+        ));
+        std::fs::create_dir(&workspace).expect("workspace");
+        std::fs::write(workspace.join("note.md"), "note").expect("workspace file");
+
+        let options = TuiOptions {
+            cwd: workspace.clone(),
+            ..Default::default()
+        };
+        let mut app = App::new(&[], options);
+        app.cwd = "~".to_string();
+        assert!(app.workspace_files().iter().any(|path| path == "note.md"));
+
+        std::fs::remove_dir_all(workspace).expect("remove workspace");
+    }
+
+    #[test]
+    fn file_completion_keeps_ignored_documents_available_for_citation() {
+        let workspace = std::env::temp_dir().join(format!(
+            "micro-tui-document-completion-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos()
+        ));
+        let private = workspace.join("private");
+        std::fs::create_dir_all(&private).expect("workspace");
+        std::fs::write(workspace.join(".gitignore"), "private/\n").expect("ignore rule");
+        std::fs::write(private.join("brief.md"), "brief").expect("document");
+
+        assert!(walk_workspace(&workspace)
+            .iter()
+            .any(|path| path == "private/brief.md"));
+
+        std::fs::remove_dir_all(workspace).expect("remove workspace");
     }
 
     /// Escape backs out of the overlay itself, the same as it does for a picker.
@@ -4467,7 +4810,6 @@ mod tests {
             Some(["v1".to_string()].as_slice())
         );
 
-        
         app.set_component_overlay_lines("some-other-component", vec!["stale".to_string()]);
         assert_eq!(
             app.component_overlay_lines(),
@@ -4511,63 +4853,4 @@ mod tests {
         app.set_editor_component_lines("some-other-component", vec!["stale".to_string()]);
         assert_eq!(app.editor_component_lines(), ["v1".to_string()]);
     }
-}
-
-/// Whether the word under the cursor is asking for a file.
-fn wants_file_menu(line: &str, cursor: usize) -> bool {
-    let Some(typed) = line.get(..cursor) else {
-        return false;
-    };
-    let start = typed
-        .rfind(char::is_whitespace)
-        .map(|index| index + 1)
-        .unwrap_or(0);
-    typed.get(start..).is_some_and(|word| word.starts_with('@'))
-}
-
-/// A byte offset into `line`, in characters instead.
-fn char_offset(line: &str, byte_col: usize) -> usize {
-    line.get(..byte_col)
-        .map(|typed| typed.chars().count())
-        .unwrap_or_else(|| line.chars().count())
-}
-
-/// The byte offset in `line` that is `char_col` characters in.
-fn byte_offset(line: &str, char_col: usize) -> usize {
-    line.char_indices()
-        .nth(char_col)
-        .map(|(index, _)| index)
-        .unwrap_or(line.len())
-}
-
-/// How many files are worth offering to complete against.
-const MAX_INDEXED_FILES: usize = 20_000;
-
-/// Every file in the workspace, as paths relative to it.
-fn walk_workspace(root: &std::path::Path) -> Vec<String> {
-    let mut builder = ignore::WalkBuilder::new(root);
-    builder
-        .hidden(false)
-        .git_ignore(true)
-        .git_exclude(true)
-        .git_global(false)
-        .require_git(false);
-
-    let mut paths = Vec::new();
-    for entry in builder.build().flatten() {
-        if !entry.file_type().is_some_and(|kind| kind.is_file()) {
-            continue;
-        }
-        let Ok(relative) = entry.path().strip_prefix(root) else {
-            continue;
-        };
-        if let Some(path) = relative.to_str() {
-            paths.push(path.to_string());
-        }
-        if paths.len() >= MAX_INDEXED_FILES {
-            break;
-        }
-    }
-    paths.sort();
-    paths
 }

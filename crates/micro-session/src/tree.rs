@@ -53,7 +53,6 @@ pub struct Compaction {
     pub timestamp: i64,
 }
 
-
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Label {
     /// The entry being named.
@@ -87,7 +86,6 @@ pub enum Line {
     Bare(Message),
 }
 
-
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Tree {
     entries: Vec<Entry>,
@@ -119,7 +117,12 @@ impl Tree {
     /// Fold one line of a log in, in the order it was written.
     pub(crate) fn apply(&mut self, line: Line) {
         match line {
-            Line::Ledger(recorded) => self.ledger.push(recorded),
+            Line::Ledger(recorded) => {
+                if let LedgerEvent::HeadMoved { entry_id } = &recorded.event {
+                    self.branch_from(entry_id);
+                }
+                self.ledger.push(recorded);
+            }
             Line::Entry(entry) => {
                 self.head = Some(entry.id.clone());
                 self.entries.push(entry);
@@ -201,6 +204,56 @@ impl Tree {
         self.head.as_deref()
     }
 
+    /// Verify that every conversation entry has one unique id, a known parent, and an acyclic
+    /// route to a root entry.
+    pub(crate) fn validate(&self) -> std::result::Result<(), String> {
+        use std::collections::HashMap;
+
+        let entries: HashMap<&str, &Entry> = self
+            .entries
+            .iter()
+            .map(|entry| (entry.id.as_str(), entry))
+            .collect();
+        if entries.len() != self.entries.len() {
+            return Err("duplicate entry id".into());
+        }
+
+        for entry in &self.entries {
+            if let Some(parent_id) = entry.parent_id.as_deref() {
+                if !entries.contains_key(parent_id) {
+                    return Err(format!(
+                        "entry {} references missing parent {parent_id}",
+                        entry.id
+                    ));
+                }
+            }
+        }
+
+        let mut states = HashMap::new();
+        for entry in &self.entries {
+            let mut cursor = Some(entry.id.as_str());
+            let mut walked = Vec::new();
+            while let Some(id) = cursor {
+                match states.get(id).copied() {
+                    Some(1) => return Err(format!("cycle involving entry {id}")),
+                    Some(2) => break,
+                    _ => {
+                        states.insert(id, 1);
+                        walked.push(id);
+                        cursor = entries
+                            .get(id)
+                            .and_then(|current| current.parent_id.as_deref());
+                    }
+                }
+            }
+            for id in walked {
+                states.insert(id, 2);
+            }
+        }
+
+        Ok(())
+    }
+
     /// Add a message after the current head, and make it the head.
     pub fn push(&mut self, message: Message) -> Entry {
         let id = format!("{}", self.entries.len() + 1);
@@ -223,7 +276,6 @@ impl Tree {
     pub fn push_compaction(&mut self, summary: impl Into<String>, kept: usize) -> Compaction {
         let ids = self.path_ids();
         let first_kept = match kept >= ids.len() {
-            
             true => ids.first().cloned(),
             false => ids.get(ids.len() - kept).cloned(),
         };
@@ -249,11 +301,16 @@ impl Tree {
             })
     }
 
-    
     pub fn path(&self) -> Vec<Message> {
+        use std::collections::HashSet;
+
         let mut path = Vec::new();
         let mut cursor = self.head.clone();
+        let mut visited = HashSet::new();
         while let Some(id) = cursor {
+            if !visited.insert(id.clone()) {
+                break;
+            }
             let Some(entry) = self.entries.iter().find(|entry| entry.id == id) else {
                 break;
             };
@@ -266,7 +323,6 @@ impl Tree {
             return path.into_iter().map(|(_, message)| message).collect();
         };
 
-        
         let from = compaction
             .first_kept
             .as_ref()
@@ -304,7 +360,6 @@ impl Tree {
             .collect()
     }
 
-    
     pub fn is_fork(&self, id: &str) -> bool {
         self.children(Some(id)).len() > 1
     }
@@ -320,9 +375,15 @@ impl Tree {
 
     /// The ids along the path from the root to the head, oldest first.
     fn path_ids(&self) -> Vec<String> {
+        use std::collections::HashSet;
+
         let mut ids = Vec::new();
         let mut cursor = self.head.clone();
+        let mut visited = HashSet::new();
         while let Some(id) = cursor {
+            if !visited.insert(id.clone()) {
+                break;
+            }
             let Some(entry) = self.entries.iter().find(|entry| entry.id == id) else {
                 break;
             };
@@ -363,7 +424,7 @@ pub struct Row<'a> {
     pub depth: usize,
     /// Whether the conversation currently runs through this entry.
     pub on_path: bool,
-    
+
     pub is_head: bool,
 }
 
@@ -390,7 +451,6 @@ mod tests {
         assert_eq!(path, vec!["one", "two", "three"]);
     }
 
-    
     #[test]
     fn branching_keeps_both_continuations() {
         let mut tree = Tree::new();
@@ -536,6 +596,50 @@ mod tests {
     }
 
     #[test]
+    fn a_head_move_replays_at_the_point_it_was_written() {
+        let tree = Tree::from_lines(vec![
+            Line::Entry(Entry::new("1", None, user("question"))),
+            Line::Entry(Entry::new("2", Some("1".into()), user("first answer"))),
+            Line::Ledger(LedgerLine {
+                v: micro_types::SCHEMA_VERSION,
+                seq: 1,
+                ts: 0,
+                event: LedgerEvent::HeadMoved {
+                    entry_id: "1".into(),
+                },
+            }),
+        ]);
+
+        assert_eq!(tree.head(), Some("1"));
+        assert_eq!(tree.path(), vec![user("question")]);
+    }
+
+    #[test]
+    fn graph_validation_rejects_duplicate_ids_missing_parents_and_cycles() {
+        let duplicate = Tree::from_lines(vec![
+            Line::Entry(Entry::new("1", None, user("first"))),
+            Line::Entry(Entry::new("1", None, user("second"))),
+        ]);
+        assert!(duplicate.validate().unwrap_err().contains("duplicate"));
+
+        let missing_parent = Tree::from_lines(vec![Line::Entry(Entry::new(
+            "1",
+            Some("missing".into()),
+            user("orphan"),
+        ))]);
+        assert!(missing_parent
+            .validate()
+            .unwrap_err()
+            .contains("missing parent"));
+
+        let cycle = Tree::from_lines(vec![
+            Line::Entry(Entry::new("1", Some("2".into()), user("first"))),
+            Line::Entry(Entry::new("2", Some("1".into()), user("second"))),
+        ]);
+        assert!(cycle.validate().unwrap_err().contains("cycle"));
+    }
+
+    #[test]
     fn a_mixed_log_joins_up() {
         let tree = Tree::from_lines(vec![
             Line::Bare(user("old")),
@@ -588,7 +692,6 @@ mod compaction {
         assert_eq!(tree.entries().len(), 6);
     }
 
-    
     #[test]
     fn the_conversation_continues_after_a_compaction() {
         let mut tree = conversation();
@@ -623,7 +726,7 @@ mod compaction {
     fn a_compaction_on_another_branch_is_ignored() {
         let mut tree = conversation();
         tree.push_compaction("on the abandoned branch", 2);
-        
+
         assert!(tree.branch_from("2"));
 
         let path = tree.path();

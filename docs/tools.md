@@ -4,18 +4,20 @@ micro gives the model a small built-in tool set. Extensions and MCP servers may 
 
 ## Built-in tools
 
-| Tool | Purpose |
-| --- | --- |
-| `read` | Read a file or range of lines. |
-| `write` | Create or replace a file. |
-| `edit` | Replace one exact text region. |
+| Tool         | Purpose                          |
+| ------------ | -------------------------------- |
+| `read`       | Read a file or range of lines.   |
+| `write`      | Create or replace a file.        |
+| `edit`       | Replace one exact text region.   |
 | `multi_edit` | Apply several edits to one file. |
-| `ls` | List a directory. |
-| `grep` | Search file contents. |
-| `find` | Find paths by name or pattern. |
-| `bash` | Run a shell command. |
+| `ls`         | List a directory.                |
+| `grep`       | Search file contents.            |
+| `find`       | Find paths by name or pattern.   |
+| `bash`       | Run a shell command.             |
 
 The file tools resolve paths against the workspace selected by `-C` or the current directory. Absolute paths and `..` traversal cannot escape that workspace, including for reads.
+
+Reading a PNG, JPEG, GIF, WebP, or BMP hands the picture to the model rather than the bytes, and draws it in the transcript on the terminals that can show one. That is how the agent puts an image in front of you: it reads it.
 
 `bash` runs under the selected [command sandbox](sandbox.md). Under the default policy, commands may read outside the workspace but may only write inside it. `.git`, `.micro`, and micro's own data remain read-only.
 

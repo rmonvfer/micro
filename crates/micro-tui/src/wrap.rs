@@ -51,7 +51,7 @@ pub fn wrap_ranges(text: &str, width: usize) -> Vec<Range<usize>> {
     let mut rows: Vec<Range<usize>> = Vec::new();
     let mut start = 0usize;
     let mut column = 0usize;
-    
+
     let mut break_at: Option<usize> = None;
     let mut previous_was_space = false;
 
@@ -90,7 +90,6 @@ pub fn wrap_spans(spans: &[Span<'static>], width: usize, indent: usize) -> Vec<L
         let token_width = text_width(&token.text);
 
         if token.is_space {
-            
             if current.is_empty() && !lines.is_empty() {
                 continue;
             }
@@ -116,7 +115,6 @@ pub fn wrap_spans(spans: &[Span<'static>], width: usize, indent: usize) -> Vec<L
             continue;
         }
 
-        
         for chunk in split_to_width(
             &token.text,
             width.saturating_sub(column),

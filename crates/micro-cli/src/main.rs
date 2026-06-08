@@ -1,7 +1,9 @@
 //! Entry point.
 
+mod access;
 mod capabilities;
 mod commands;
+mod extension_broker;
 mod extensions;
 mod headless;
 mod remote;
@@ -9,6 +11,7 @@ mod runtime;
 mod sandbox;
 mod share;
 mod subcommands;
+mod update;
 
 use anyhow::Result;
 use clap::Parser;
@@ -152,16 +155,15 @@ enum Command {
     Install {
         /// npm:name, a repository URL, or a path.
         source: String,
-        
+
         #[arg(short, long)]
         local: bool,
     },
     /// Remove an installed extension package.
     #[command(alias = "uninstall")]
     Remove {
-        
         source: String,
-        
+
         #[arg(short, long)]
         local: bool,
     },
@@ -192,6 +194,8 @@ enum Command {
         #[command(subcommand)]
         action: SandboxAction,
     },
+    /// Check the latest release and update this managed installation.
+    Update,
 }
 
 #[derive(Subcommand)]
@@ -228,7 +232,7 @@ enum SessionAction {
     /// Show what a session recorded, turn by turn.
     Show {
         id: String,
-        
+
         #[arg(long)]
         turn: Option<u64>,
         /// Print the request as it went to the provider, rebuilt from what was recorded.
@@ -248,7 +252,6 @@ async fn project_trusted(
     has_ui: bool,
     told: Option<bool>,
 ) -> bool {
-    
     if let Some(told) = told {
         return told;
     }
@@ -363,7 +366,7 @@ fn own_flags() -> (Vec<String>, Vec<String>) {
     }
 
     walk(&Cli::command(), &mut switches, &mut valued);
-    
+
     switches.push("help".to_string());
     switches.push("version".to_string());
     (switches, valued)
@@ -380,7 +383,6 @@ fn settled(cli: &Cli) -> micro_config::Settings {
             })
         })
         .unwrap_or_else(|error| {
-            
             if matches!(error, micro_config::ConfigError::Override { .. }) {
                 eprintln!("micro: {error}");
                 std::process::exit(2);
@@ -388,7 +390,7 @@ fn settled(cli: &Cli) -> micro_config::Settings {
             eprintln!("note: {error}; using defaults");
             micro_config::Settings::default()
         });
-    
+
     if let Some(budget) = cli.budget {
         settings.budget = budget.max(0.0);
     }
@@ -397,7 +399,6 @@ fn settled(cli: &Cli) -> micro_config::Settings {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    
     #[cfg(target_os = "linux")]
     {
         let mut arguments = std::env::args();
@@ -407,7 +408,6 @@ async fn main() -> Result<()> {
         }
     }
 
-    
     let (switches, valued) = own_flags();
     let (mine, given) = micro_extensions::split_unknown(
         std::env::args(),
@@ -437,7 +437,6 @@ async fn main() -> Result<()> {
         }
         Some(Command::List) => return subcommands::list_packages().await,
         Some(Command::Sessions { action }) => {
-            
             let root = runtime::workspace(&cli.cwd)?;
             return match action {
                 Some(SessionAction::List { all }) => subcommands::sessions_list(&root, *all).await,
@@ -464,13 +463,42 @@ async fn main() -> Result<()> {
                 }
             };
         }
+        Some(Command::Update) => {
+            return match update::update_now().await? {
+                update::Outcome::Current { version } => {
+                    println!("micro {version} is already the latest version.");
+                    Ok(())
+                }
+                update::Outcome::Installed {
+                    previous_version,
+                    version,
+                    ..
+                } => {
+                    println!("Updated micro {previous_version} to {version}.");
+                    Ok(())
+                }
+                update::Outcome::Skipped { reason } => {
+                    anyhow::bail!("Cannot update micro: {reason}")
+                }
+            };
+        }
         None => {}
     }
 
     let root = runtime::workspace(&cli.cwd)?;
     let settings = settled(&cli);
 
-    
+    let arguments: Vec<std::ffi::OsString> = std::env::args_os().collect();
+    if let Some(launcher) = update::automatic(
+        &arguments,
+        settings.auto_update,
+        settings.update_check_interval_hours,
+    )
+    .await
+    {
+        std::process::exit(update::restart(&launcher, &arguments[1..])?);
+    }
+
     let (asker, questions) = match cli.print || cli.rpc {
         true => (None, None),
         false => {
@@ -478,7 +506,7 @@ async fn main() -> Result<()> {
             (Some(asker), Some(requests))
         }
     };
-    
+
     let (terminal_input_asker, terminal_input_asks) = match cli.print || cli.rpc {
         true => (None, None),
         false => {
@@ -486,7 +514,7 @@ async fn main() -> Result<()> {
             (Some(asker), Some(asks))
         }
     };
-    
+
     let (host_asker, host_asks) = match cli.print || cli.rpc {
         true => (None, None),
         false => {
@@ -522,9 +550,8 @@ async fn main() -> Result<()> {
         (None, false) => None,
     };
 
-    
     let has_ui = !cli.print && !cli.rpc;
-    
+
     let mode = match (cli.rpc, cli.print) {
         (true, _) => "rpc",
         (_, true) => "print",
@@ -536,7 +563,7 @@ async fn main() -> Result<()> {
         _ => None,
     };
     let trusted = project_trusted(&root, &settings, has_ui, told).await;
-    
+
     let confined = sandbox::around(
         sandbox::policy(cli.sandbox.as_deref(), &root, trusted, &settings)?,
         &root,
@@ -550,20 +577,24 @@ async fn main() -> Result<()> {
         has_ui,
         mode,
         confined.clone(),
+        asker.as_ref().map(|asker| {
+            std::sync::Arc::new(access::TerminalAccessApprover::new(asker.clone()))
+                as std::sync::Arc<dyn micro_tools::AccessApprover>
+        }),
+        cli.sandbox.is_some(),
     )
     .await?;
-    
+
     let extensions = built.extensions.clone();
     if let Some(host) = extensions.as_ref() {
         let started = serde_json::json!({
-            
+
             "reason": if resume.is_some() { "resume" } else { "startup" },
         });
         let _ = host.notify("session_start", started).await;
     }
 
     if let Some(host) = extensions.as_ref() {
-        
         let declared = host.flags();
         for flag in &given {
             match declared.iter().find(|known| known.name == flag.name) {
@@ -583,11 +614,9 @@ async fn main() -> Result<()> {
             }
         }
 
-        
         let (tool_snippets, prompt_guidelines) =
             extensions::tool_prompt_options(&host.tools(), &built.tool_names);
 
-        
         let state = std::sync::Arc::new(tokio::sync::RwLock::new(extensions::State {
             thinking: format!("{thinking:?}").to_lowercase(),
             model: built.model.id.clone(),
@@ -598,7 +627,7 @@ async fn main() -> Result<()> {
             reasoning: built.model.reasoning,
             tools: built.tool_names.clone(),
             offered_tools: std::sync::Arc::clone(&built.offered_tools),
-            
+
             all_tools: extensions::all_tools(
                 &host.loaded().extensions,
                 &built.tool_definitions,
@@ -627,7 +656,7 @@ async fn main() -> Result<()> {
             state,
             std::sync::Arc::clone(&built.session),
         ));
-        
+
         if let Some(asks) = terminal_input_asks {
             tokio::spawn(extensions::serve_terminal_input(
                 std::sync::Arc::clone(host),
@@ -645,6 +674,7 @@ async fn main() -> Result<()> {
     let session = std::sync::Arc::clone(&built.session);
     let session_id = session.lock().await.id().to_string();
     let writer = runtime::persist(built.session, built.recorder);
+    let forwarder = built.forwarder;
     let prompt = cli.prompt.join(" ");
 
     if cli.rpc {
@@ -658,46 +688,47 @@ async fn main() -> Result<()> {
             .run(tokio::io::stdin(), tokio::io::stdout())
             .await
             .map_err(anyhow::Error::from);
-        
+
         drop(rpc);
-        let _ = writer.await;
+        finish_forwarder(forwarder).await;
+        writer.finish().await;
         shut_down_extensions(extensions).await;
         return outcome;
     }
 
     let result = if cli.print {
-        
         for warning in &built.warnings {
             eprintln!("note: {warning}");
         }
         if prompt.trim().is_empty() {
             anyhow::bail!("--print needs a prompt");
         }
-        
+
         if let Some(notice) = &built.notice {
             drop(built.agent);
-            let _ = writer.await;
+            finish_forwarder(forwarder).await;
+            writer.finish().await;
             shut_down_extensions(extensions).await;
             anyhow::bail!("{notice}");
         }
-        
+
         let prompt = match built.commands.submitted(prompt).await {
             Some(prompt) => prompt,
             None => {
                 drop(built.agent);
-                let _ = writer.await;
+                finish_forwarder(forwarder).await;
+                writer.finish().await;
                 shut_down_extensions(extensions).await;
                 return Ok(());
             }
         };
 
-        
         match run_command_headlessly(&mut built.commands, &prompt).await {
             Some(said) => {
-                
                 drop(built.agent);
                 if said.failed {
-                    let _ = writer.await;
+                    writer.finish().await;
+                    finish_forwarder(forwarder).await;
                     shut_down_extensions(extensions).await;
                     anyhow::bail!("{}", said.text);
                 }
@@ -709,6 +740,34 @@ async fn main() -> Result<()> {
     } else {
         let initial_observability =
             micro_tui::Commands::session_observability(&mut built.commands).await;
+        let mut command_menu = built
+            .extensions
+            .as_ref()
+            .map(|host| {
+                host.loaded()
+                    .extensions
+                    .iter()
+                    .flat_map(|extension| extension.commands.iter())
+                    .map(|command| micro_tui::MenuItem {
+                        value: command.name.clone(),
+                        description: command.description.clone(),
+                        raw: None,
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        for skill in &built.skills {
+            if micro_commands::find(&skill.name).is_none()
+                && !command_menu.iter().any(|item| item.value == skill.name)
+            {
+                command_menu.push(micro_tui::MenuItem {
+                    value: skill.name.clone(),
+                    description: format!("skill — {}", skill.description),
+                    raw: None,
+                });
+            }
+        }
+
         let options = micro_tui::TuiOptions {
             cwd: root.clone(),
             model: built.model.qualified_id(),
@@ -719,28 +778,13 @@ async fn main() -> Result<()> {
             terminal_input: terminal_input_asker,
             host_asker,
             self_framed_tools: built.self_framed_tools.clone(),
-            
-            extension_commands: built
-                .extensions
-                .as_ref()
-                .map(|host| {
-                    host.loaded()
-                        .extensions
-                        .iter()
-                        .flat_map(|extension| extension.commands.iter())
-                        .map(|command| micro_tui::MenuItem {
-                            value: command.name.clone(),
-                            description: command.description.clone(),
-                            raw: None,
-                        })
-                        .collect()
-                })
-                .unwrap_or_default(),
-            
+
+            extension_commands: command_menu,
+
             remote: Some(built.remote),
-            
+
             commands: Some(Box::new(built.commands)),
-            
+
             notice: match (built.notice, built.warnings.join("\n")) {
                 (notice, said) if said.is_empty() => notice,
                 (None, said) => Some(said),
@@ -753,29 +797,28 @@ async fn main() -> Result<()> {
             session_cost: initial_observability.and_then(|observed| observed.0),
             session_usage: initial_observability.map(|observed| (observed.1, observed.2)),
             experimental: micro_config::experimental_enabled(),
-            
+
             theme: cli.theme.as_deref().and_then(micro_tui::Theme::named),
             resources: built.resources,
-            
+
             tui_mode: match cli.tui_mode.unwrap_or(settings.tui_mode) {
                 micro_config::TuiMode::Regular => micro_tui::TuiMode::Inline,
                 micro_config::TuiMode::Fullscreen => micro_tui::TuiMode::Fullscreen,
             },
-            ..micro_tui::TuiOptions::default()
         };
-        
+
         let ran = micro_tui::run_with(built.agent, built.history, options)
             .await
             .map(|_| ());
-        
+
         if ran.is_ok() {
             say_how_to_resume(&session_id);
         }
         ran
     };
 
-    
-    let _ = writer.await;
+    finish_forwarder(forwarder).await;
+    writer.finish().await;
     shut_down_extensions(extensions).await;
     result
 }
@@ -789,13 +832,24 @@ fn say_how_to_resume(session_id: &str) {
     println!("To resume this session: micro --resume {session_id}");
 }
 
-
 async fn shut_down_extensions(extensions: Option<std::sync::Arc<micro_extensions::Host>>) {
     let Some(host) = extensions else {
         return;
     };
-    
+
     host.shutdown("quit").await;
+}
+
+/// Let lifecycle notifications already sent by the agent reach observers without allowing a
+/// stopped observer to hold process shutdown open indefinitely.
+async fn finish_forwarder(mut forwarder: tokio::task::JoinHandle<()>) {
+    if tokio::time::timeout(std::time::Duration::from_secs(2), &mut forwarder)
+        .await
+        .is_err()
+    {
+        forwarder.abort();
+        let _ = forwarder.await;
+    }
 }
 
 /// Run a slash command with nobody watching, and say what it printed.
@@ -809,7 +863,10 @@ struct HeadlessCommand {
     failed: bool,
 }
 
-async fn run_command_headlessly(commands: &mut commands::CliCommands, line: &str) -> Option<HeadlessCommand> {
+async fn run_command_headlessly(
+    commands: &mut commands::CliCommands,
+    line: &str,
+) -> Option<HeadlessCommand> {
     let line = line.trim();
     if !line.starts_with('/') {
         return None;
@@ -827,22 +884,26 @@ async fn run_command_headlessly(commands: &mut commands::CliCommands, line: &str
         });
     }
 
-    
     let note = match commands.apply(outcome).await {
         micro_tui::Applied::Note { text, .. } => Some(text),
         micro_tui::Applied::Conversation { note, .. } => note,
         micro_tui::Applied::SystemPrompt { note, .. } => note,
         micro_tui::Applied::Model { note, .. } => note,
+        micro_tui::Applied::RunGrantedCommand { command } => {
+            Some(format!("Approved command: {command}"))
+        }
         micro_tui::Applied::Nothing => None,
     };
-    note.map(|text| HeadlessCommand { text, failed: false })
+    note.map(|text| HeadlessCommand {
+        text,
+        failed: false,
+    })
 }
 
 #[cfg(test)]
 mod flag_tests {
     use super::*;
 
-    
     #[test]
     fn every_flag_micro_declares_is_known_to_be_its_own() {
         let (switches, valued) = own_flags();
@@ -879,7 +940,6 @@ mod flag_tests {
             assert!(known(flag), "`--{flag}` is not recognised as micro's own");
         }
 
-        
         for flag in [
             "model",
             "cwd",
@@ -901,9 +961,14 @@ mod flag_tests {
             );
         }
 
-        
-        assert!(known("local") && known("live") && known("overwrite"));
-        assert!(known("raw") && valued.iter().any(|known| known == "turn"));
-        assert!(valued.iter().any(|known| known == "diff"));
+        for flag in ["local", "live", "raw"] {
+            assert!(known(flag), "`--{flag}` is declared on a subcommand");
+        }
+        for flag in ["turn", "diff"] {
+            assert!(
+                valued.iter().any(|known| known == flag),
+                "`--{flag}` takes a value on a subcommand"
+            );
+        }
     }
 }

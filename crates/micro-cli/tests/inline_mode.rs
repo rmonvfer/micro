@@ -14,7 +14,6 @@ fn drive_script() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/pty/drive.py")
 }
 
-
 fn pty_command(fixture: &Fixture, micro_args: &[&str]) -> Command {
     let base = fixture.micro();
     let mut command = Command::new("python3");
@@ -37,7 +36,6 @@ fn pty_command(fixture: &Fixture, micro_args: &[&str]) -> Command {
     command.args(micro_args);
     command
 }
-
 
 struct Grid {
     rows: usize,
@@ -99,7 +97,6 @@ impl Grid {
     }
 }
 
-
 fn screen(raw: &[u8], rows: usize, cols: usize) -> Vec<String> {
     let mut grid = Grid::new(rows, cols);
     let mut i = 0;
@@ -131,7 +128,6 @@ fn screen(raw: &[u8], rows: usize, cols: usize) -> Vec<String> {
                 i = (j + 1).min(raw.len());
             }
             0x1b if raw.get(i + 1) == Some(&b']') => {
-                
                 let mut j = i + 2;
                 while j < raw.len()
                     && raw[j] != 0x07

@@ -3,7 +3,6 @@
 
 use crate::width::{measured, string_width};
 
-
 pub const WRAP_WIDTH: usize = 24;
 
 pub const MAX_LINES: usize = 4;
@@ -48,7 +47,6 @@ fn is_control_to_strip(c: char) -> bool {
 pub fn strip_controls(src: &str) -> String {
     src.chars().filter(|&c| !is_control_to_strip(c)).collect()
 }
-
 
 pub fn src_lines(src: &str) -> Vec<String> {
     let mut out: Vec<String> = src
@@ -100,11 +98,11 @@ fn decode_entity_body(body: &str) -> Option<String> {
         return None;
     }
     let code = u32::from_str_radix(digits, if hex { 16 } else { 10 }).ok()?;
-    
+
     if code > 0x10ffff || (0xd800..=0xdfff).contains(&code) {
         return None;
     }
-    
+
     if code < 0x20 || (0x7f..=0x9f).contains(&code) {
         return None;
     }
@@ -125,7 +123,7 @@ pub fn decode_html_entities(s: &str) -> String {
             i += 1;
             continue;
         }
-        
+
         let hi = (i + 1 + ENTITY_LOOKAHEAD).min(chars.len());
         let semi = chars[i + 1..hi]
             .iter()
@@ -141,7 +139,6 @@ pub fn decode_html_entities(s: &str) -> String {
                 i += 1;
             }
             Some(d) => {
-                
                 out.push_str(&d);
                 i = semi.unwrap() + 1;
             }
@@ -158,7 +155,7 @@ pub fn strip_markdown(s: &str) -> String {
     let mut out = String::new();
     for i in 0..chars.len() {
         let c = chars[i];
-        
+
         let in_word = i > 0
             && chars[i - 1].is_alphanumeric()
             && i + 1 < chars.len()

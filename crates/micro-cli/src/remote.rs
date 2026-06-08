@@ -46,7 +46,6 @@ pub struct Snapshot {
     pub cwd: String,
 }
 
-
 pub struct Seam {
     /// What to tell the interface to do.
     pub to_interface: UnboundedSender<FromPhone>,
@@ -61,7 +60,6 @@ impl Seam {
         let (outgoing, from_interface) = tokio::sync::mpsc::unbounded_channel();
         let running = Arc::new(AtomicBool::new(false));
 
-        
         tokio::spawn(watch_running(from_interface, Arc::clone(&running)));
 
         (
@@ -94,7 +92,6 @@ pub async fn pair(micro_dir: &std::path::Path, qr: bool) -> Result<Vec<String>, 
     let path = micro_remote::path_in(micro_dir);
     let relay_for_task = relay.clone();
     tokio::spawn(async move {
-        
         if let Ok(secret) = enrolment.complete().await {
             let _ = micro_remote::write_pairing(
                 &path,
@@ -105,6 +102,11 @@ pub async fn pair(micro_dir: &std::path::Path, qr: bool) -> Result<Vec<String>, 
         }
     });
 
+    Ok(pairing_instructions(&code, qr))
+}
+
+/// The instructions shown while a phone completes code-based pairing.
+fn pairing_instructions(code: &micro_remote::Code, qr: bool) -> Vec<String> {
     let mut lines = vec![
         format!("Pairing code:  {code}"),
         String::new(),
@@ -114,13 +116,12 @@ pub async fn pair(micro_dir: &std::path::Path, qr: bool) -> Result<Vec<String>, 
         ),
     ];
     if qr {
-        
         lines.push(String::new());
         lines.extend(micro_remote::qr_lines(code.as_str()));
     }
     lines.push(String::new());
     lines.push("Once it is paired, /remote puts a session on it — no code, no link.".into());
-    Ok(lines)
+    lines
 }
 
 /// Everything the bridge is allowed to ask about the session.
@@ -201,7 +202,6 @@ impl RemoteSessionAccess for PhoneView {
             .collect()
     }
 
-    
     fn set_model(&mut self, model_id: &str) -> Result<(), String> {
         self.submit(
             &format!("/model {model_id}"),
@@ -210,7 +210,10 @@ impl RemoteSessionAccess for PhoneView {
     }
 
     fn set_thinking_level(&mut self, level: &str) -> Result<(), String> {
-        self.submit(&format!("/thinking {level}"), micro_remote::Delivery::Prompt)
+        self.submit(
+            &format!("/thinking {level}"),
+            micro_remote::Delivery::Prompt,
+        )
     }
 }
 
@@ -225,8 +228,8 @@ pub async fn start(
     micro_dir: &std::path::Path,
 ) -> Result<(), String> {
     let path = micro_remote::path_in(micro_dir);
-    let pairing: Pairing = micro_remote::load_pairing(&path)
-        .ok_or("no phone is paired with this machine")?;
+    let pairing: Pairing =
+        micro_remote::load_pairing(&path).ok_or("no phone is paired with this machine")?;
     let secret = pairing
         .secret()
         .ok_or_else(|| format!("the pairing at {} is unreadable", path.display()))?;
@@ -237,18 +240,13 @@ pub async fn start(
         secret: secret.clone(),
         session_id: session_id.clone(),
     };
-    let push_key = micro_remote::derive_key(
-        &secret,
-        &pairing.pairing_id,
-        micro_remote::Direction::Push,
-    );
+    let push_key =
+        micro_remote::derive_key(&secret, &pairing.pairing_id, micro_remote::Direction::Push);
 
-    
     micro_remote::register(&config).await?;
     let (events, incoming) = tokio::sync::mpsc::unbounded_channel();
     let client = Arc::new(RelayClient::start(config, events));
 
-    
     let (mirrored, mirrored_rx) = tokio::sync::mpsc::unbounded_channel();
     *mirror.lock().await = Some(mirrored);
 
@@ -295,9 +293,11 @@ async fn serve(
         machine_name: pairing.machine_name.clone(),
     };
 
-    
-    let mut announce = || {
-        let snapshot = snapshot.try_lock().map(|held| held.clone()).unwrap_or_default();
+    let announce = || {
+        let snapshot = snapshot
+            .try_lock()
+            .map(|held| held.clone())
+            .unwrap_or_default();
         let name = match snapshot.session_name.is_empty() {
             true => session_id.clone(),
             false => snapshot.session_name.clone(),
@@ -328,7 +328,7 @@ async fn serve(
                 let settled = event.get("type").and_then(Value::as_str) == Some("agent_settled");
                 client.send(bridge.mirror(event));
 
-                
+
                 if settled {
                     let snapshot = snapshot.lock().await.clone();
                     let payload = PushPayload {
@@ -340,7 +340,7 @@ async fn serve(
                         },
                         machine_name: pairing.machine_name.clone(),
                     };
-                    
+
                     let _ = client.push_trigger(&push_key, &payload, Some(&session_id)).await;
                 }
             }
@@ -351,9 +351,12 @@ async fn serve(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Duration;
+    use tokio::time::timeout;
 
     fn scratch(name: &str) -> std::path::PathBuf {
-        let dir = std::env::temp_dir().join(format!("micro-remote-cli-{name}-{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("micro-remote-cli-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir
@@ -365,42 +368,52 @@ mod tests {
         assert!(!is_paired(&scratch("unpaired")));
     }
 
-    /// Pairing is the one-off, and it is what makes publishing possible afterwards.
     #[tokio::test]
-    async fn pairing_bonds_a_phone_and_shows_it_a_link() {
-        let dir = scratch("pair");
-        let lines = pair(&dir, false).await.expect("a phone can be paired");
+    async fn the_seam_delivers_phone_actions_and_tracks_when_a_turn_stops() {
+        let (seam, mut remote) = Seam::build();
+        seam.to_interface
+            .send(FromPhone::Submit("hello".to_string()))
+            .expect("the interface is listening");
+        assert_eq!(
+            timeout(Duration::from_secs(1), remote.incoming.recv())
+                .await
+                .expect("the action arrived"),
+            Some(FromPhone::Submit("hello".to_string()))
+        );
 
-        assert!(is_paired(&dir));
-        assert!(lines.iter().any(|line| line.starts_with("parley://pair?")));
-        
-        assert!(lines.iter().any(|line| line.contains("no link, no code")));
+        remote.report_running(true);
+        timeout(Duration::from_secs(1), async {
+            while !seam.running.load(Ordering::Relaxed) {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("the running state arrived");
+        remote.report_running(false);
+        timeout(Duration::from_secs(1), async {
+            while seam.running.load(Ordering::Relaxed) {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("the stopped state arrived");
     }
 
-    
-    #[tokio::test]
-    async fn pairing_again_keeps_the_phone_already_bonded() {
-        let dir = scratch("pair-twice");
-        let first = pair(&dir, false).await.unwrap();
-        let second = pair(&dir, false).await.unwrap();
+    #[test]
+    fn pairing_instructions_name_the_code_and_explain_how_to_finish() {
+        let code = micro_remote::Code::parse("ABCD-EFGH").expect("valid code");
+        let lines = pairing_instructions(&code, false);
 
-        let link = |lines: &[String]| {
-            lines
-                .iter()
-                .find(|line| line.starts_with("parley://"))
-                .cloned()
-                .unwrap()
-        };
-        assert_eq!(link(&first), link(&second));
+        assert!(lines.iter().any(|line| line == "Pairing code:  ABCD-EFGH"));
+        assert!(lines.iter().any(|line| line.contains("Open Parley")));
+        assert!(lines.iter().any(|line| line.contains("no code, no link")));
     }
 
-    
-    #[tokio::test]
-    async fn a_code_is_drawn_when_one_is_asked_for() {
-        let dir = scratch("pair-qr");
-        let lines = pair(&dir, true).await.unwrap();
+    #[test]
+    fn pairing_instructions_include_a_qr_code_when_requested() {
+        let code = micro_remote::Code::parse("ABCD-EFGH").expect("valid code");
+        let lines = pairing_instructions(&code, true);
 
         assert!(lines.iter().any(|line| line.contains('█')));
-        assert!(lines.iter().any(|line| line.contains("parley://pair?")));
     }
 }

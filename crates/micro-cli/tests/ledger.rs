@@ -21,7 +21,6 @@ fn only_session(fixture: &Fixture) -> String {
         .to_string()
 }
 
-
 #[test]
 fn a_recorded_turn_rebuilds_the_request_that_was_sent() {
     let api = FakeApi::start([
@@ -57,7 +56,6 @@ fn a_recorded_turn_rebuilds_the_request_that_was_sent() {
     );
 }
 
-
 #[test]
 fn a_turn_names_who_supplied_each_stretch_of_the_prompt() {
     let api = FakeApi::start([Reply::text("done")]);
@@ -69,16 +67,28 @@ fn a_turn_names_who_supplied_each_stretch_of_the_prompt() {
         .expect_success("micro --print");
 
     let id = only_session(&fixture);
-    let shown = Output::run(fixture.micro().args(["sessions", "show", &id, "--turn", "1"]));
+    let shown = Output::run(
+        fixture
+            .micro()
+            .args(["sessions", "show", &id, "--turn", "1"]),
+    );
     shown.expect_success("micro sessions show");
 
-    assert!(shown.stdout.contains("system_prompt"), "got {}", shown.stdout);
+    assert!(
+        shown.stdout.contains("system_prompt"),
+        "got {}",
+        shown.stdout
+    );
     assert!(
         shown.stdout.contains("project_instructions"),
         "the workspace's own instructions are a span of their own: {}",
         shown.stdout
     );
-    assert!(shown.stdout.contains("turn 1 of session"), "got {}", shown.stdout);
+    assert!(
+        shown.stdout.contains("turn 1 of session"),
+        "got {}",
+        shown.stdout
+    );
     assert!(
         shown.stdout.contains("read"),
         "the tools the model was offered are named: {}",
@@ -113,7 +123,6 @@ fn a_session_lists_the_turns_it_recorded() {
         shown.stdout
     );
 }
-
 
 #[test]
 fn exporting_a_session_yields_its_whole_ledger() {
@@ -154,7 +163,6 @@ fn exporting_a_session_yields_its_whole_ledger() {
     }
 }
 
-
 #[test]
 fn a_session_recorded_before_the_ledger_says_it_has_no_turns() {
     let api = FakeApi::start([Reply::text("done")]);
@@ -164,7 +172,7 @@ fn a_session_recorded_before_the_ledger_says_it_has_no_turns() {
         .expect_success("micro --print");
 
     let id = only_session(&fixture);
-    
+
     let log = fixture.home().join("sessions").join(format!("{id}.jsonl"));
     let kept: Vec<String> = std::fs::read_to_string(&log)
         .expect("the log")
@@ -177,7 +185,7 @@ fn a_session_recorded_before_the_ledger_says_it_has_no_turns() {
     let shown = Output::run(fixture.micro().args(["sessions", "show", &id]));
     shown.expect_success("micro sessions show");
     assert!(
-        shown.stdout.contains("No turns recorded"),
+        shown.stdout.contains("No recorded turns"),
         "got {}",
         shown.stdout
     );

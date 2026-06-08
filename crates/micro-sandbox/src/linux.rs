@@ -1,5 +1,3 @@
-
-
 use crate::helper::SandboxRules;
 use landlock::path_beneath_rules;
 use landlock::Access;
@@ -28,7 +26,6 @@ use std::path::Path;
 
 /// Confine the current thread to `rules`.
 pub(crate) fn apply(rules: &SandboxRules) -> Result<(), String> {
-    
     set_no_new_privs()?;
 
     if !rules.allow_network {
@@ -62,7 +59,6 @@ pub(crate) fn exec(command: &[String]) -> ! {
         libc::execvp(program.as_ptr(), pointers.as_ptr());
     }
 
-    
     let error = std::io::Error::last_os_error();
     crate::helper::fail(&format!("could not run {}: {error}", command[0]))
 }
@@ -123,7 +119,6 @@ fn restrict_current_thread(
         .set_compatibility(CompatLevel::BestEffort)
         .handle_access(access_rw)?
         .create()?
-        
         .add_rules(path_beneath_rules(["/dev/null"], access_rw))?
         .no_new_privs(true);
 
@@ -169,7 +164,6 @@ fn install_network_seccomp_filter() -> Result<(), String> {
     deny(libc::SYS_getsockopt);
     deny(libc::SYS_setsockopt);
 
-    
     deny(libc::SYS_ptrace);
     deny(libc::SYS_process_vm_readv);
     deny(libc::SYS_process_vm_writev);
@@ -177,7 +171,6 @@ fn install_network_seccomp_filter() -> Result<(), String> {
     deny(libc::SYS_io_uring_enter);
     deny(libc::SYS_io_uring_register);
 
-    
     let domain_is_not_unix = SeccompCondition::new(
         0,
         SeccompCmpArgLen::Dword,

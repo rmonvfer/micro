@@ -15,7 +15,7 @@ use std::path::PathBuf;
 pub async fn auth_status() -> Result<()> {
     let store = AuthStore::open()?;
     let listed = store.status();
-    
+
     let width = listed
         .iter()
         .map(|status| status.provider.chars().count())
@@ -23,7 +23,6 @@ pub async fn auth_status() -> Result<()> {
         .unwrap_or(0);
 
     for status in listed {
-        
         let blank = store
             .get(&status.provider)
             .is_some_and(|credential| credential.token().trim().is_empty());
@@ -89,23 +88,7 @@ pub async fn models(query: Option<&str>, live: bool) -> Result<()> {
     let mut catalog = Catalog::load().unwrap_or_else(|_| Catalog::bundled());
     if live {
         let store = AuthStore::open()?;
-        let client = reqwest::Client::new();
-        let copilot = store.resolve(micro_auth::GITHUB_COPILOT).await.ok();
-        
-        let copilot_base = copilot
-            .as_ref()
-            .and_then(|credential| micro_auth::copilot::base_url_from_token(credential.token()));
-        let credentials = copilot
-            .as_ref()
-            .map(|credential| micro_models::CopilotCredentials {
-                token: credential.token(),
-                base_url: copilot_base
-                    .as_deref()
-                    .unwrap_or(micro_models::COPILOT_BASE_URL),
-            });
-        for failure in catalog.merge_live_listings(&client, credentials).await {
-            eprintln!("note: {failure}");
-        }
+        crate::runtime::merge_live_listings(&mut catalog, &store).await;
     }
 
     let models = match query {
@@ -147,7 +130,6 @@ pub async fn sessions_list(workspace: &std::path::Path, all: bool) -> Result<()>
     }
     Ok(())
 }
-
 
 pub async fn sessions_show(id: &str, turn: Option<u64>, raw: bool) -> Result<()> {
     let store = SessionStore::from_env()?;
@@ -203,7 +185,6 @@ struct RecordedTurn {
     usage: micro_types::Usage,
 }
 
-
 pub async fn sessions_export(id: &str) -> Result<()> {
     let raw = SessionStore::from_env()?
         .raw_log(id)
@@ -226,7 +207,6 @@ pub async fn sessions_export(id: &str) -> Result<()> {
     Ok(())
 }
 
-
 pub async fn bill(id: &str, diff: Option<u64>) -> Result<()> {
     let store = SessionStore::from_env()?;
     let catalog = Catalog::load().unwrap_or_else(|_| Catalog::bundled());
@@ -243,7 +223,6 @@ pub async fn bill(id: &str, diff: Option<u64>) -> Result<()> {
     println!("{report}");
     Ok(())
 }
-
 
 pub async fn why_miss(id: &str, turn: u64) -> Result<()> {
     let store = SessionStore::from_env()?;
@@ -316,7 +295,6 @@ fn print_turn(id: &str, turn: &micro_session::ReconstructedTurn) {
 
     println!("\nmessages ({})", turn.messages.len());
     for (index, message) in turn.messages.iter().enumerate() {
-        
         let named = match turn.message_entry_ids.len() == turn.messages.len() {
             true => turn.message_entry_ids[index].clone(),
             false => "-".to_string(),
@@ -373,13 +351,12 @@ fn print_request(id: &str, turn: &micro_session::ReconstructedTurn) -> Result<()
         messages: turn.messages.clone(),
         tools: turn.tools.clone(),
         headers: Vec::new(),
-        
+
         cache_key: Some(id.to_string()),
     };
     let payload = micro_provider::client_for_model(model).payload(&turn.model, &context);
     let body = serde_json::to_vec(&payload)?;
 
-    
     if micro_types::content_hash(&body) != turn.request_hash {
         anyhow::bail!(
             "request reconstruction failed verification for session {id} turn {} (expected {})",
@@ -443,7 +420,6 @@ fn install_root() -> Result<PathBuf> {
         .ok_or_else(|| anyhow::anyhow!("no home directory; set {}", micro_dirs::MICRO_DIR_ENV))
 }
 
-
 pub async fn install(source: &str, local: bool, workspace: &Path) -> Result<()> {
     let parsed = micro_extensions::Source::parse(source).map_err(anyhow::Error::msg)?;
     let home = install_root()?;
@@ -460,23 +436,13 @@ pub async fn install(source: &str, local: bool, workspace: &Path) -> Result<()> 
         installed.path.display()
     );
 
-    
     let workspace = std::env::current_dir().unwrap_or_default();
     let entries = match installed.path.is_dir() {
         true => micro_extensions::entries_of(&installed.path)
             .unwrap_or_else(|| micro_extensions::in_directory(&installed.path)),
         false => vec![installed.path.clone()],
     };
-    match micro_extensions::Host::start(
-        &home,
-        &entries,
-        &workspace,
-        false,
-        false,
-        "print",
-    )
-    .await
-    {
+    match micro_extensions::Host::start(&home, &entries, &workspace, false, false, "print").await {
         Ok(host) => {
             for extension in &host.loaded().extensions {
                 for tool in &extension.tools {
@@ -499,12 +465,16 @@ pub async fn install(source: &str, local: bool, workspace: &Path) -> Result<()> 
     Ok(())
 }
 
-
 pub async fn remove(source: &str, local: bool, workspace: &Path) -> Result<()> {
     let parsed = micro_extensions::Source::parse(source).map_err(anyhow::Error::msg)?;
     let home = install_root()?;
 
-    deactivate(&parsed.install_path(&home, workspace, local), &home, workspace).await;
+    deactivate(
+        &parsed.install_path(&home, workspace, local),
+        &home,
+        workspace,
+    )
+    .await;
     micro_extensions::remove(&parsed, &home, workspace, local).map_err(anyhow::Error::msg)?;
     let forgotten = remember(&parsed.canonical(), false)?;
 
@@ -528,19 +498,21 @@ async fn deactivate(path: &Path, home: &Path, workspace: &Path) {
     if entries.is_empty() {
         return;
     }
-    let Ok(host) = micro_extensions::Host::start(home, &entries, workspace, false, false, "print")
-        .await
+    let Ok(host) =
+        micro_extensions::Host::start(home, &entries, workspace, false, false, "print").await
     else {
         return;
     };
     for extension in &host.loaded().extensions {
         if let Err(error) = host.deactivate(&extension.path).await {
-            println!("  note     {} did not deactivate cleanly: {error}", extension.path);
+            println!(
+                "  note     {} did not deactivate cleanly: {error}",
+                extension.path
+            );
         }
     }
     host.shutdown("quit").await;
 }
-
 
 pub async fn list_packages() -> Result<()> {
     let path = micro_config::default_path()?;
@@ -555,12 +527,14 @@ pub async fn list_packages() -> Result<()> {
     let home = install_root()?;
     let workspace = std::env::current_dir().unwrap_or_default();
 
-    
     let installed: Vec<(String, PathBuf)> = sources
         .iter()
         .map(|source| {
             let parsed = micro_extensions::Source::parse(source).map_err(anyhow::Error::msg)?;
-            Ok((source.clone(), parsed.install_path(&home, &workspace, false)))
+            Ok((
+                source.clone(),
+                parsed.install_path(&home, &workspace, false),
+            ))
         })
         .collect::<Result<_>>()?;
     let capabilities = capabilities_of(&home, &workspace, &installed).await;
@@ -579,7 +553,6 @@ pub async fn list_packages() -> Result<()> {
     }
     Ok(())
 }
-
 
 async fn capabilities_of(
     home: &Path,
@@ -603,16 +576,16 @@ async fn capabilities_of(
         return Default::default();
     }
 
-    let loaded = match micro_extensions::Host::start(home, &entries, workspace, false, false, "print")
-        .await
-    {
-        Ok(host) => {
-            let loaded = host.loaded().clone();
-            host.shutdown("quit").await;
-            loaded
-        }
-        Err(_) => return Default::default(),
-    };
+    let loaded =
+        match micro_extensions::Host::start(home, &entries, workspace, false, false, "print").await
+        {
+            Ok(host) => {
+                let loaded = host.loaded().clone();
+                host.shutdown("quit").await;
+                loaded
+            }
+            Err(_) => return Default::default(),
+        };
 
     let roots: Vec<(PathBuf, String)> = installed
         .iter()
@@ -630,10 +603,11 @@ async fn capabilities_of(
         else {
             continue;
         };
-        described
-            .entry(source.clone())
-            .or_default()
-            .push(format!("{}  {}", grant.name, crate::capabilities::describe(grant)));
+        described.entry(source.clone()).or_default().push(format!(
+            "{}  {}",
+            grant.name,
+            crate::capabilities::describe(grant)
+        ));
     }
     described
 }

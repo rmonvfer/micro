@@ -79,7 +79,7 @@ pub fn substitute(content: &str, arguments: &[String]) -> String {
                 out.push_str(&resolve(&replacement, arguments, &all));
                 index += length;
             }
-            
+
             None => {
                 out.push('$');
                 index += 1;
@@ -88,7 +88,6 @@ pub fn substitute(content: &str, arguments: &[String]) -> String {
     }
     out
 }
-
 
 enum Placeholder {
     /// `$1`, `$2`, …
@@ -115,7 +114,6 @@ fn placeholder_at(characters: &[char], start: usize) -> Option<(Placeholder, usi
         return Some((placeholder, close - start + 1));
     }
 
-    
     if characters[after] == '@' {
         return Some((Placeholder::All, 2));
     }
@@ -161,7 +159,7 @@ fn braced(inside: &str) -> Option<Placeholder> {
 fn resolve(placeholder: &Placeholder, arguments: &[String], all: &str) -> String {
     match placeholder {
         Placeholder::All => all.to_string(),
-        
+
         Placeholder::Positional(position) => position
             .checked_sub(1)
             .and_then(|index| arguments.get(index))
@@ -175,7 +173,6 @@ fn resolve(placeholder: &Placeholder, arguments: &[String], all: &str) -> String
             }
         }
         Placeholder::Slice { start, length } => {
-            
             let from = start.saturating_sub(1).min(arguments.len());
             let taken = match length {
                 Some(length) => arguments[from..].iter().take(*length),
@@ -197,7 +194,6 @@ pub fn load(path: &Path) -> Option<PromptTemplate> {
         return None;
     }
 
-    
     let description = match parsed.field("description") {
         Some(description) if !description.trim().is_empty() => description.trim().to_string(),
         _ => derive_description(&body),
@@ -307,7 +303,7 @@ mod tests {
             substitute("fix $1 please", &args("auth")),
             "fix auth please"
         );
-        
+
         assert_eq!(substitute("fix $2", &args("auth")), "fix ");
     }
 
@@ -331,7 +327,7 @@ mod tests {
     fn a_run_of_arguments_can_be_taken() {
         assert_eq!(substitute("${@:2}", &args("a b c d")), "b c d");
         assert_eq!(substitute("${@:2:2}", &args("a b c d")), "b c");
-        
+
         assert_eq!(substitute("${@:0}", &args("a b")), "a b");
         assert_eq!(substitute("${@:9}", &args("a b")), "");
     }

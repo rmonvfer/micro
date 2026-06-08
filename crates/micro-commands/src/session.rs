@@ -1,5 +1,3 @@
-
-
 use crate::CommandContext;
 use crate::CommandOutcome;
 use crate::Picker;
@@ -29,7 +27,6 @@ pub(crate) async fn resume(argument: Option<&str>, context: &CommandContext<'_>)
         return CommandOutcome::Choose(session_picker(sessions, context));
     };
 
-    
     let matches: Vec<SessionMeta> = sessions
         .into_iter()
         .filter(|meta| meta.id == query || meta.id.starts_with(query))
@@ -60,7 +57,6 @@ pub(crate) fn fork(argument: Option<&str>, context: &CommandContext<'_>) -> Comm
         return CommandOutcome::error("nothing to fork: the conversation is empty");
     }
 
-    
     let last = context.message_count - 1;
     let through_index = match argument {
         None => last,
@@ -152,7 +148,6 @@ pub(crate) async fn tree(argument: Option<&str>, context: &CommandContext<'_>) -
         return CommandOutcome::info("No entries in session");
     }
 
-    
     let shown: Vec<&micro_session::Row<'_>> = outline
         .iter()
         .filter(|row| keeps(context.tree_filter, row))
@@ -166,7 +161,6 @@ pub(crate) async fn tree(argument: Option<&str>, context: &CommandContext<'_>) -
     let items = shown
         .iter()
         .map(|row| {
-            
             let label = format!("{}{}", "  ".repeat(row.depth), summary(&row.entry.message));
             PickerItem::new(label, where_it_sits(row), format!("/tree {}", row.entry.id))
                 .current(row.is_head)
@@ -184,13 +178,12 @@ fn keeps(filter: micro_config::TreeFilter, row: &micro_session::Row<'_>) -> bool
 
     match filter {
         TreeFilter::All => true,
-        
+
         TreeFilter::Default | TreeFilter::NoTools => !is_tool,
         TreeFilter::UserOnly => is_user,
         TreeFilter::LabeledOnly => row.label.is_some(),
     }
 }
-
 
 fn where_it_sits(row: &micro_session::Row<'_>) -> &'static str {
     match (row.is_head, row.on_path) {
@@ -243,7 +236,6 @@ pub(crate) async fn name(argument: Option<&str>, context: &CommandContext<'_>) -
         };
     };
 
-    
     let title = requested
         .split(['\r', '\n'])
         .map(str::trim)
@@ -312,7 +304,6 @@ pub(crate) async fn info(context: &CommandContext<'_>) -> CommandOutcome {
         thousands(usage.total_tokens() as u64)
     ));
 
-    
     if let Some(model) = context.model {
         let spent = model
             .price(

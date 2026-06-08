@@ -87,7 +87,7 @@ impl Links {
                     open(buffer, x, y, url);
                     close(buffer, end, y);
                 }
-                
+
                 for column in x..=end {
                     clear(buffer, column, y);
                 }
@@ -251,11 +251,11 @@ mod tests {
             .collect();
         assert!(row.contains("\x1b]8;;https://example.com\x07"), "{row:?}");
         assert!(row.contains("\x1b]8;;\x07"), "and it is closed again");
-        
+
         let visible: String = row
             .replace("\x1b]8;;https://example.com\x07", "")
             .replace("\x1b]8;;\x07", "");
-        
+
         assert!(visible.starts_with("see the docs now"), "{visible:?}");
     }
 

@@ -1,159 +1,29 @@
-
-
+use crate::extension_broker::action_needs;
+use crate::extension_broker::request_needs;
+pub use crate::extension_broker::Broker;
 use micro_agent::Hooks;
 use micro_agent::ToolDecision;
 use micro_extensions::message_from_json;
 use micro_extensions::message_json;
 use micro_extensions::Capability;
 use micro_extensions::FromHost;
-use micro_extensions::Grants;
 use micro_extensions::Host;
 use micro_extensions::Translator;
 use serde_json::json;
 use serde_json::Value;
 use std::collections::HashMap;
+use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::Mutex;
-
-/// Where a fact about what an extension asked for goes.
-pub type Crossings = tokio::sync::mpsc::WeakUnboundedSender<micro_types::LedgerEvent>;
-
-/// Everything an ask is decided against: who may do what, and where the fact that it was asked for
-/// is written down.
-#[derive(Clone)]
-pub struct Broker {
-    pub grants: Arc<Grants>,
-    pub crossings: Option<Crossings>,
-}
-
-impl Broker {
-    /// A broker that permits everything and records nothing, for a caller with no extensions
-    /// loaded.
-    pub fn open() -> Broker {
-        Broker {
-            grants: Arc::new(Grants::default()),
-            crossings: None,
-        }
-    }
-
-    
-    fn allows(&self, extension: Option<&str>, needs: Capability, name: &str) -> bool {
-        let allowed = self.grants.allows(extension, needs);
-        
-        if allowed && matches!(needs, Capability::Ui) {
-            return true;
-        }
-        self.record(extension, needs.as_str(), name, allowed, None);
-        allowed
-    }
-
-    
-    fn record(
-        &self,
-        extension: Option<&str>,
-        kind: &str,
-        name: &str,
-        allowed: bool,
-        detail: Option<Value>,
-    ) {
-        
-        let Some(crossings) = self.crossings.as_ref().and_then(|crossings| crossings.upgrade())
-        else {
-            return;
-        };
-        
-        let Some(extension) = extension else {
-            return;
-        };
-        let _ = crossings.send(micro_types::LedgerEvent::ExtensionCrossing {
-            extension: self.grants.name_of(Some(extension)),
-            kind: kind.to_string(),
-            name: name.to_string(),
-            allowed,
-            detail,
-        });
-    }
-
-    /// What an extension is told when it asked for something it may not do.
-    fn refusal(&self, extension: Option<&str>, needs: Capability) -> String {
-        format!(
-            "capability '{}' not granted to {}",
-            needs,
-            self.grants.name_of(extension)
-        )
-    }
-
-    /// Which of an event's answers may change what micro does.
-    fn heeded(&self, answers: Vec<(Option<String>, Value)>, needs: Capability, name: &str) -> Vec<Value> {
-        self.heeded_from(answers, needs, name)
-            .into_iter()
-            .map(|(_, answer)| answer)
-            .collect()
-    }
-
-    
-    fn heeded_from(
-        &self,
-        answers: Vec<(Option<String>, Value)>,
-        needs: Capability,
-        name: &str,
-    ) -> Vec<(Option<String>, Value)> {
-        answers
-            .into_iter()
-            .filter(|(source, _)| {
-                let allowed = self.grants.allows(source.as_deref(), needs);
-                if !allowed {
-                    self.record(source.as_deref(), needs.as_str(), name, false, None);
-                }
-                allowed
-            })
-            .collect()
-    }
-}
-
-/// The capability a request needs, or nothing when it only reads.
-fn request_needs(request: &str) -> Option<Capability> {
-    match request {
-        "exec" => Some(Capability::Exec),
-        "run_builtin_tool" => Some(Capability::BuiltinTools),
-        "provider_stream" => Some(Capability::ProviderStream),
-        "append_entry" | "set_label" | "set_session_name" => Some(Capability::SessionWrite),
-        
-        "set_model" => Some(Capability::SessionControl),
-        "reload" | "new_session" | "switch_session" | "navigate_tree" | "fork" => {
-            Some(Capability::SessionControl)
-        }
-        _ => None,
-    }
-}
-
-/// The capability an action needs, or nothing when micro does not know the action at all.
-fn action_needs(action: &str) -> Option<Capability> {
-    match action {
-        "send_user_message" => Some(Capability::SendUserMessage),
-        "send_message" => Some(Capability::SendMessage),
-        
-        "set_active_tools" => Some(Capability::Context),
-        
-        "append_entry" | "set_label" | "set_session_name" => Some(Capability::SessionWrite),
-        "set_thinking_level" | "set_model" | "shutdown" | "compact" | "abort" => {
-            Some(Capability::SessionControl)
-        }
-        "watch_terminal_input" | "unwatch_terminal_input" | "watch_autocomplete" => {
-            Some(Capability::Ui)
-        }
-        _ => None,
-    }
-}
 
 /// Answer whatever the extensions ask for, for as long as the host is running.
 pub async fn serve(
     host: Arc<Host>,
     workspace: PathBuf,
-    
+
     sandbox: micro_sandbox::Sandbox,
-    
+
     broker: Broker,
     asker: Option<micro_tui::UiAsker>,
     state: Arc<tokio::sync::RwLock<State>>,
@@ -187,7 +57,7 @@ pub async fn serve(
                     break;
                 }
             }
-            
+
             FromHost::Action {
                 action,
                 extension,
@@ -205,28 +75,44 @@ pub async fn serve(
                 )
                 .await
             }
-            
+
             FromHost::Ui {
                 id,
                 extension,
                 payload,
             } => {
-                let method = payload.get("method").and_then(Value::as_str).unwrap_or_default();
-                let waits_on_a_reader = matches!(method, "select" | "confirm" | "input" | "custom" | "editor");
+                let method = payload
+                    .get("method")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                let waits_on_a_reader =
+                    matches!(method, "select" | "confirm" | "input" | "custom" | "editor");
                 if waits_on_a_reader {
                     let asker = asker.clone();
                     let host = Arc::clone(&host);
                     let broker = broker.clone();
                     tokio::spawn(async move {
-                        let answer =
-                            show(&payload, extension.as_deref(), &broker, asker.as_ref(), Some(&host)).await;
+                        let answer = show(
+                            &payload,
+                            extension.as_deref(),
+                            &broker,
+                            asker.as_ref(),
+                            Some(&host),
+                        )
+                        .await;
                         if let Some(id) = id {
                             let _ = host.answer(&id, answer).await;
                         }
                     });
                 } else {
-                    let answer =
-                        show(&payload, extension.as_deref(), &broker, asker.as_ref(), Some(&host)).await;
+                    let answer = show(
+                        &payload,
+                        extension.as_deref(),
+                        &broker,
+                        asker.as_ref(),
+                        Some(&host),
+                    )
+                    .await;
                     if let Some(id) = id {
                         if host.answer(&id, answer).await.is_err() {
                             break;
@@ -234,7 +120,7 @@ pub async fn serve(
                     }
                 }
             }
-            
+
             FromHost::ComponentChanged { component_id } => {
                 if let Some(asker) = asker.as_ref() {
                     let lines = host
@@ -252,7 +138,6 @@ pub async fn serve(
         }
     }
 
-    
     reclaim(&host, &broker, asker.as_ref()).await;
 }
 
@@ -298,7 +183,6 @@ pub async fn serve_terminal_input(host: Arc<Host>, mut asks: micro_tui::Terminal
     }
 }
 
-
 pub async fn serve_host_asks(host: Arc<Host>, mut asks: micro_tui::HostAsks) {
     while let Some(mut ask) = asks.recv().await {
         let answer = match ask.event.as_str() {
@@ -308,8 +192,12 @@ pub async fn serve_host_asks(host: Arc<Host>, mut asks: micro_tui::HostAsks) {
                     .get("componentId")
                     .and_then(Value::as_str)
                     .unwrap_or_default();
-                let data = ask.payload.get("data").and_then(Value::as_str).unwrap_or_default();
-                
+                let data = ask
+                    .payload
+                    .get("data")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+
                 let text = ask.payload.get("text").and_then(Value::as_str);
                 let consumed = host
                     .send_component_input(component_id, data, text)
@@ -318,14 +206,14 @@ pub async fn serve_host_asks(host: Arc<Host>, mut asks: micro_tui::HostAsks) {
                 let lines = component_lines(Some(&host), component_id).await;
                 json!({ "consume": consumed, "lines": lines })
             }
-            
+
             "get_suggestions" => host
                 .ask_event("get_suggestions", ask.payload.clone())
                 .await
                 .ok()
                 .and_then(|results| results.into_iter().next())
                 .unwrap_or_else(|| json!({})),
-            
+
             "apply_completion" => host
                 .ask_event("apply_completion", ask.payload.clone())
                 .await
@@ -344,7 +232,7 @@ async fn answer(
     request: &str,
     payload: &Value,
     extension: Option<&str>,
-    workspace: &PathBuf,
+    workspace: &Path,
     sandbox: &micro_sandbox::Sandbox,
     broker: &Broker,
     state: &Arc<tokio::sync::RwLock<State>>,
@@ -352,10 +240,15 @@ async fn answer(
     asker: Option<&micro_tui::UiAsker>,
 ) -> Value {
     if let Some(needs) = request_needs(request) {
-        
         let named = match request {
-            "exec" => payload.get("command").and_then(Value::as_str).unwrap_or(request),
-            "run_builtin_tool" => payload.get("tool").and_then(Value::as_str).unwrap_or(request),
+            "exec" => payload
+                .get("command")
+                .and_then(Value::as_str)
+                .unwrap_or(request),
+            "run_builtin_tool" => payload
+                .get("tool")
+                .and_then(Value::as_str)
+                .unwrap_or(request),
             other => other,
         };
         if !broker.allows(extension, needs, named) {
@@ -366,7 +259,7 @@ async fn answer(
     match request {
         "exec" => exec(payload, workspace, sandbox).await,
         "run_builtin_tool" => run_builtin_tool(payload, workspace, sandbox).await,
-        
+
         "provider_stream" => provider_stream(payload).await,
         "model_catalog" => model_catalog(payload),
         "get_thinking_level" => json!({ "level": state.read().await.thinking }),
@@ -386,11 +279,11 @@ async fn answer(
             })
         }
         "get_system_prompt" => json!({ "systemPrompt": state.read().await.system_prompt }),
-        
+
         "get_context" => {
             let state = state.read().await;
             let scoped_models = resolve_scoped_models(&state.scoped_models);
-            
+
             let session_name = {
                 let title = session.lock().await.meta().title.clone();
                 match title.is_empty() {
@@ -410,15 +303,19 @@ async fn answer(
                 "thinkingLevel": state.thinking,
                 "systemPrompt": state.system_prompt,
                 "scopedModels": scoped_models,
-                
+
                 "activeTools": state.tools,
                 "allTools": state.all_tools,
                 "commands": state.all_commands,
                 "sessionName": session_name,
                 "session": session_snapshot(&*session.lock().await),
             });
-            
-            if payload.get("commandContext").and_then(Value::as_bool).unwrap_or(false) {
+
+            if payload
+                .get("commandContext")
+                .and_then(Value::as_bool)
+                .unwrap_or(false)
+            {
                 response["systemPromptOptions"] = system_prompt_options(&state);
             }
             response
@@ -478,7 +375,7 @@ async fn answer(
                 Err(error) => json!({ "error": error.to_string() }),
             }
         }
-        
+
         "set_model" => {
             let named = payload
                 .get("model")
@@ -500,7 +397,7 @@ async fn answer(
                 .await;
             json!({ "ok": true })
         }
-        
+
         "reload" => queued(asker, "/reload").await,
         "new_session" => queued(asker, "/new").await,
         "switch_session" => match payload.get("sessionPath").and_then(Value::as_str) {
@@ -521,10 +418,13 @@ async fn answer(
                     "error": format!("{entry_id} is not on the current conversation"),
                 });
             };
-            
+
             let before = payload.get("position").and_then(Value::as_str) == Some("before");
-            let Some(through) = (if before { position.checked_sub(1) } else { Some(position) })
-            else {
+            let Some(through) = (if before {
+                position.checked_sub(1)
+            } else {
+                Some(position)
+            }) else {
                 return json!({ "cancelled": true, "error": "nothing comes before the first entry" });
             };
             queued(asker, &format!("/fork {through}")).await
@@ -532,7 +432,6 @@ async fn answer(
         other => json!({ "error": format!("micro cannot answer `{other}`") }),
     }
 }
-
 
 async fn queued(asker: Option<&micro_tui::UiAsker>, line: &str) -> Value {
     match asker {
@@ -542,11 +441,10 @@ async fn queued(asker: Option<&micro_tui::UiAsker>, line: &str) -> Value {
                 .await;
             json!({ "cancelled": false })
         }
-        
+
         None => json!({ "cancelled": true }),
     }
 }
-
 
 fn resolve_scoped_models(patterns: &[String]) -> Value {
     if patterns.is_empty() {
@@ -573,7 +471,7 @@ fn resolve_scoped_models(patterns: &[String]) -> Value {
                     "maxOutputTokens": model.max_output_tokens,
                     "reasoning": model.reasoning,
                 },
-                
+
                 "thinkingLevel": Value::Null,
             })
         })
@@ -590,15 +488,16 @@ pub fn all_tools(
     let described: Vec<Value> = names
         .iter()
         .map(|name| {
-            
             let own = builtin.iter().find(|tool| &tool.name == name);
-            
+
             let owner = registered
                 .iter()
                 .find(|extension| extension.tools.iter().any(|tool| &tool.name == name));
-            let found = owner
-                .and_then(|extension| extension.tools.iter().find(|tool| &tool.name == name));
-            let source = owner.map(|extension| extension.path.clone()).unwrap_or_default();
+            let found =
+                owner.and_then(|extension| extension.tools.iter().find(|tool| &tool.name == name));
+            let source = owner
+                .map(|extension| extension.path.clone())
+                .unwrap_or_default();
             json!({
                 "name": name,
                 "description": found
@@ -635,7 +534,7 @@ pub fn all_commands(registered: &[micro_extensions::Registered]) -> Value {
             json!({
                 "name": command.name,
                 "description": command.description,
-                
+
                 "source": "builtin",
                 "sourceInfo": {
                     "path": "",
@@ -664,12 +563,18 @@ pub fn all_commands(registered: &[micro_extensions::Registered]) -> Value {
     Value::Array(described)
 }
 
-pub fn tool_prompt_options(tools: &[micro_extensions::RegisteredTool], active: &[String]) -> (Value, Vec<String>) {
+pub fn tool_prompt_options(
+    tools: &[micro_extensions::RegisteredTool],
+    active: &[String],
+) -> (Value, Vec<String>) {
     let active: std::collections::HashSet<&str> = active.iter().map(String::as_str).collect();
     let mut snippets = serde_json::Map::new();
     let mut guidelines = Vec::new();
     let mut seen = std::collections::HashSet::new();
-    for tool in tools.iter().filter(|tool| active.contains(tool.name.as_str())) {
+    for tool in tools
+        .iter()
+        .filter(|tool| active.contains(tool.name.as_str()))
+    {
         if let Some(snippet) = tool
             .prompt_snippet
             .as_deref()
@@ -688,7 +593,6 @@ pub fn tool_prompt_options(tools: &[micro_extensions::RegisteredTool], active: &
     (Value::Object(snippets), guidelines)
 }
 
-
 fn system_prompt_options(state: &State) -> Value {
     json!({
         "customPrompt": state.custom_prompt,
@@ -703,7 +607,7 @@ fn system_prompt_options(state: &State) -> Value {
         "skills": state.skills.iter().map(|skill| {
             let base_dir = skill.base_dir.display().to_string();
             let path = skill.path.display().to_string();
-            
+
             let scope = match skill.source.as_str() {
                 "project" => "project",
                 "user" => "user",
@@ -727,7 +631,6 @@ fn system_prompt_options(state: &State) -> Value {
     })
 }
 
-
 fn session_snapshot(session: &micro_session::Session) -> Value {
     let tree = session.tree();
     let meta = session.meta();
@@ -741,7 +644,7 @@ fn session_snapshot(session: &micro_session::Session) -> Value {
                 "id": entry.id,
                 "parentId": entry.parent_id,
                 "timestamp": entry.timestamp,
-                
+
                 "message": message_json(&entry.message),
             })
         })
@@ -756,7 +659,7 @@ fn session_snapshot(session: &micro_session::Session) -> Value {
             "data": custom.data,
         })
     }));
-    
+
     entries.extend(tree.compactions().iter().map(|compaction| {
         json!({
             "type": "compaction",
@@ -768,7 +671,6 @@ fn session_snapshot(session: &micro_session::Session) -> Value {
         })
     }));
 
-    
     let labelled: Vec<&String> = tree
         .entries()
         .iter()
@@ -789,7 +691,7 @@ fn session_snapshot(session: &micro_session::Session) -> Value {
         "leafId": tree.head(),
         "header": {
             "id": meta.id,
-            
+
             "timestamp": meta.created_at,
             "cwd": meta.workspace.display().to_string(),
             "parentSession": meta.parent,
@@ -800,7 +702,7 @@ fn session_snapshot(session: &micro_session::Session) -> Value {
 }
 
 /// Run a program on the extension's behalf.
-async fn exec(payload: &Value, workspace: &PathBuf, sandbox: &micro_sandbox::Sandbox) -> Value {
+async fn exec(payload: &Value, workspace: &Path, sandbox: &micro_sandbox::Sandbox) -> Value {
     let Some(command) = payload.get("command").and_then(Value::as_str) else {
         return json!({ "error": "exec needs a command" });
     };
@@ -831,7 +733,7 @@ async fn exec(payload: &Value, workspace: &PathBuf, sandbox: &micro_sandbox::San
                 "stderr": stderr.clone(),
                 "code": result.status.code().unwrap_or(-1),
             });
-            
+
             if confined && micro_sandbox::is_likely_denied(&result.status, &stderr) {
                 answer["denied"] = json!(true);
                 answer["policy"] = json!(sandbox.policy().name());
@@ -845,7 +747,7 @@ async fn exec(payload: &Value, workspace: &PathBuf, sandbox: &micro_sandbox::San
 /// Run one of micro's own built-in tools on an extension's behalf.
 async fn run_builtin_tool(
     payload: &Value,
-    workspace: &PathBuf,
+    workspace: &Path,
     sandbox: &micro_sandbox::Sandbox,
 ) -> Value {
     use micro_tools::Tool;
@@ -853,19 +755,46 @@ async fn run_builtin_tool(
     let Some(tool_name) = payload.get("tool").and_then(Value::as_str) else {
         return json!({ "error": "run_builtin_tool needs a tool name" });
     };
-    let arguments = payload.get("arguments").cloned().unwrap_or_else(|| json!({}));
-    let root = workspace.clone();
-    
+    let arguments = payload
+        .get("arguments")
+        .cloned()
+        .unwrap_or_else(|| json!({}));
+    let root = workspace.to_path_buf();
+
     let guard = micro_tools::Guard::new(sandbox.clone());
 
     let result: Result<String, String> = match tool_name {
-        "read" => micro_tools::Read::new(root, guard).execute(&arguments).await,
-        "write" => micro_tools::Write::new(root, guard).execute(&arguments).await,
-        "edit" => micro_tools::Edit::new(root, guard).execute(&arguments).await,
+        "read" => {
+            micro_tools::Read::new(root, guard)
+                .execute(&arguments)
+                .await
+        }
+        "write" => {
+            micro_tools::Write::new(root, guard)
+                .execute(&arguments)
+                .await
+        }
+        "edit" => {
+            micro_tools::Edit::new(root, guard)
+                .execute(&arguments)
+                .await
+        }
         "ls" => micro_tools::Ls::new(root, guard).execute(&arguments).await,
-        "find" => micro_tools::Find::new(root, guard).execute(&arguments).await,
-        "grep" => micro_tools::Grep::new(root, guard).execute(&arguments).await,
-        "bash" => micro_tools::Bash::new(root, guard).execute(&arguments).await,
+        "find" => {
+            micro_tools::Find::new(root, guard)
+                .execute(&arguments)
+                .await
+        }
+        "grep" => {
+            micro_tools::Grep::new(root, guard)
+                .execute(&arguments)
+                .await
+        }
+        "bash" => {
+            micro_tools::Bash::new(root, guard)
+                .execute(&arguments)
+                .await
+        }
         other => Err(format!("unknown builtin tool: {other}")),
     };
 
@@ -896,15 +825,24 @@ fn headers_from_json(value: Option<&Value>) -> std::collections::BTreeMap<String
         .and_then(Value::as_object)
         .map(|map| {
             map.iter()
-                .filter_map(|(name, value)| value.as_str().map(|value| (name.clone(), value.to_string())))
+                .filter_map(|(name, value)| {
+                    value
+                        .as_str()
+                        .map(|value| (name.clone(), value.to_string()))
+                })
                 .collect()
         })
         .unwrap_or_default()
 }
 
-
 fn model_from_json(value: &Value) -> micro_types::Model {
-    let field_str = |name: &str| value.get(name).and_then(Value::as_str).unwrap_or_default().to_string();
+    let field_str = |name: &str| {
+        value
+            .get(name)
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string()
+    };
     let thinking = match value.get("thinkingLevel").and_then(Value::as_str) {
         Some("minimal") => micro_types::ThinkingLevel::Minimal,
         Some("low") => micro_types::ThinkingLevel::Low,
@@ -919,21 +857,35 @@ fn model_from_json(value: &Value) -> micro_types::Model {
         id: field_str("id"),
         provider: field_str("provider"),
         base_url: field_str("baseUrl"),
-        max_tokens: value.get("maxTokens").and_then(Value::as_u64).unwrap_or(4096) as u32,
+        max_tokens: value
+            .get("maxTokens")
+            .and_then(Value::as_u64)
+            .unwrap_or(4096) as u32,
         thinking,
-        reasoning: value.get("reasoning").and_then(Value::as_bool).unwrap_or(false),
+        reasoning: value
+            .get("reasoning")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
         compat: micro_types::Compat::default(),
         headers: headers_from_json(value.get("headers")),
     }
 }
 
-
 fn tool_from_json(value: &Value) -> Option<micro_types::ToolDefinition> {
     Some(micro_types::ToolDefinition {
         name: value.get("name")?.as_str()?.to_string(),
-        description: value.get("description").and_then(Value::as_str).unwrap_or_default().to_string(),
-        parameters: value.get("parameters").cloned().unwrap_or_else(|| json!({})),
-        constrained_sampling: micro_types::ConstrainedSampling::from_wire(value.get("constrainedSampling").cloned()),
+        description: value
+            .get("description")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string(),
+        parameters: value
+            .get("parameters")
+            .cloned()
+            .unwrap_or_else(|| json!({})),
+        constrained_sampling: micro_types::ConstrainedSampling::from_wire(
+            value.get("constrainedSampling").cloned(),
+        ),
     })
 }
 
@@ -951,11 +903,19 @@ fn context_from_json(value: &Value) -> micro_types::Context {
         .unwrap_or_default();
 
     micro_types::Context {
-        system_prompt: value.get("systemPrompt").and_then(Value::as_str).map(str::to_string),
+        system_prompt: value
+            .get("systemPrompt")
+            .and_then(Value::as_str)
+            .map(str::to_string),
         messages,
         tools,
-        headers: headers_from_json(value.get("headers")).into_iter().collect(),
-        cache_key: value.get("cacheKey").and_then(Value::as_str).map(str::to_string),
+        headers: headers_from_json(value.get("headers"))
+            .into_iter()
+            .collect(),
+        cache_key: value
+            .get("cacheKey")
+            .and_then(Value::as_str)
+            .map(str::to_string),
     }
 }
 
@@ -981,7 +941,6 @@ async fn drain_provider_stream(
     }
     events
 }
-
 
 async fn provider_stream(payload: &Value) -> Value {
     let Some(api) = payload.get("api").and_then(Value::as_str) else {
@@ -1009,7 +968,6 @@ async fn provider_stream(payload: &Value) -> Value {
     json!({ "events": events })
 }
 
-
 fn model_catalog(payload: &Value) -> Value {
     let catalog = micro_models::Catalog::bundled();
     let provider_filter = payload.get("provider").and_then(Value::as_str);
@@ -1017,6 +975,7 @@ fn model_catalog(payload: &Value) -> Value {
 }
 
 /// Something an extension asked to have done.
+#[allow(clippy::too_many_arguments)]
 async fn carry_out(
     action: &str,
     payload: &Value,
@@ -1027,7 +986,6 @@ async fn carry_out(
     state: Option<&Arc<tokio::sync::RwLock<State>>>,
     session: Option<&Arc<Mutex<micro_session::Session>>>,
 ) {
-    
     if let Some(needs) = action_needs(action) {
         if !broker.allows(extension, needs, action) {
             eprintln!("note: {}", broker.refusal(extension, needs));
@@ -1051,11 +1009,11 @@ async fn carry_out(
                         .ask("send_user_message", content, None, Vec::new())
                         .await;
                 }
-                
+
                 None => eprintln!("note: an extension tried to send a message with no session"),
             }
         }
-        
+
         "send_message" => {
             let message = payload.get("message").cloned().unwrap_or(Value::Null);
             let custom_type = message
@@ -1085,7 +1043,7 @@ async fn carry_out(
                 asker.ask("custom_message", custom_type, None, lines).await;
             }
         }
-        
+
         "append_entry" => {
             let Some(session) = session else { return };
             let custom_type = payload
@@ -1119,7 +1077,7 @@ async fn carry_out(
                 eprintln!("note: an extension could not name the session: {error}");
             }
         }
-        
+
         "set_active_tools" => {
             let named: Vec<String> = payload
                 .get("toolNames")
@@ -1141,7 +1099,7 @@ async fn carry_out(
                     .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(named);
             }
         }
-        
+
         "set_thinking_level" => {
             if let (Some(asker), Some(level)) =
                 (asker, payload.get("level").and_then(Value::as_str))
@@ -1172,7 +1130,7 @@ async fn carry_out(
                     .await;
             }
         }
-        
+
         "shutdown" => {
             if let Some(asker) = asker {
                 asker
@@ -1180,7 +1138,7 @@ async fn carry_out(
                     .await;
             }
         }
-        
+
         "compact" => {
             if let Some(asker) = asker {
                 asker
@@ -1188,13 +1146,13 @@ async fn carry_out(
                     .await;
             }
         }
-        
+
         "abort" => {
             if let Some(asker) = asker {
                 asker.ask("abort", String::new(), None, Vec::new()).await;
             }
         }
-        
+
         "watch_terminal_input" => {
             if let Some(asker) = asker {
                 asker
@@ -1209,7 +1167,7 @@ async fn carry_out(
                     .await;
             }
         }
-        
+
         "watch_autocomplete" => {
             if let Some(asker) = asker {
                 let triggers = payload
@@ -1265,7 +1223,7 @@ async fn show(
         .get("method")
         .and_then(Value::as_str)
         .unwrap_or_default();
-    
+
     if !broker.allows(extension, Capability::Ui, method) {
         return json!({
             "cancelled": true,
@@ -1338,13 +1296,18 @@ async fn show(
                 )
                 .await
         }
-        
+
         "editor" => {
             asker
-                .ask("editor", text("title").unwrap_or_default(), text("prefill"), Vec::new())
+                .ask(
+                    "editor",
+                    text("title").unwrap_or_default(),
+                    text("prefill"),
+                    Vec::new(),
+                )
                 .await
         }
-        
+
         "setStatus" => {
             asker
                 .ask_from(
@@ -1356,10 +1319,15 @@ async fn show(
                 )
                 .await
         }
-        
+
         "setTitle" => {
             asker
-                .ask("set_title", text("title").unwrap_or_default(), None, Vec::new())
+                .ask(
+                    "set_title",
+                    text("title").unwrap_or_default(),
+                    None,
+                    Vec::new(),
+                )
                 .await
         }
         "setWorkingMessage" => {
@@ -1368,7 +1336,10 @@ async fn show(
                 .await
         }
         "setWorkingVisible" => {
-            let visible = payload.get("visible").and_then(Value::as_bool).unwrap_or(true);
+            let visible = payload
+                .get("visible")
+                .and_then(Value::as_bool)
+                .unwrap_or(true);
             asker
                 .ask("set_working_visible", visible.to_string(), None, Vec::new())
                 .await
@@ -1393,14 +1364,16 @@ async fn show(
                 .get("intervalMs")
                 .and_then(Value::as_u64)
                 .map(|value| value.to_string());
-            asker.ask("set_working_indicator", title, interval, frames).await
+            asker
+                .ask("set_working_indicator", title, interval, frames)
+                .await
         }
         "setHiddenThinkingLabel" => {
             asker
                 .ask("set_hidden_thinking_label", "", text("label"), Vec::new())
                 .await
         }
-        
+
         "setWidget" => {
             let key = text("key").unwrap_or_default();
             let owner = extension.map(str::to_string);
@@ -1430,7 +1403,7 @@ async fn show(
                 }
             }
         }
-        
+
         "setHeader" => match text("componentId") {
             Some(component_id) => {
                 component_slot(asker, &component_id, "header").await;
@@ -1451,7 +1424,7 @@ async fn show(
             }
             None => asker.ask("set_footer", "", None, Vec::new()).await,
         },
-        
+
         "tool_call_rendered" | "tool_result_rendered" => {
             let lines = payload
                 .get("options")
@@ -1465,7 +1438,12 @@ async fn show(
                 })
                 .unwrap_or_default();
             asker
-                .ask(method, text("title").unwrap_or_default(), text("detail"), lines)
+                .ask(
+                    method,
+                    text("title").unwrap_or_default(),
+                    text("detail"),
+                    lines,
+                )
                 .await
         }
         "setEditorText" => {
@@ -1474,35 +1452,45 @@ async fn show(
                 .await
         }
         "pasteToEditor" => {
-            asker.ask("paste_to_editor", "", text("text"), Vec::new()).await
+            asker
+                .ask("paste_to_editor", "", text("text"), Vec::new())
+                .await
         }
-        
+
         "setTheme" => {
             let colors = payload.get("colors").map(Value::to_string);
             asker
-                .ask("set_theme", text("name").unwrap_or_default(), colors, Vec::new())
+                .ask(
+                    "set_theme",
+                    text("name").unwrap_or_default(),
+                    colors,
+                    Vec::new(),
+                )
                 .await
         }
         "setToolsExpanded" => {
-            let expanded = payload.get("expanded").and_then(Value::as_bool).unwrap_or(false);
+            let expanded = payload
+                .get("expanded")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
             asker
                 .ask("set_tools_expanded", expanded.to_string(), None, Vec::new())
                 .await
         }
-        
+
         "custom" => {
             let component_id = text("componentId").unwrap_or_default();
             let lines = component_lines(host, &component_id).await;
             asker.ask("custom", component_id, None, lines).await
         }
-        
+
         "customDone" => {
             let result = payload.get("result").cloned().unwrap_or(Value::Null);
             asker
                 .ask("custom_done", "", Some(result.to_string()), Vec::new())
                 .await
         }
-        
+
         "setEditorComponent" => match text("componentId") {
             Some(component_id) => {
                 let lines = component_lines(host, &component_id).await;
@@ -1516,9 +1504,13 @@ async fn show(
                     )
                     .await
             }
-            None => asker.ask("set_editor_component", "", None, Vec::new()).await,
+            None => {
+                asker
+                    .ask("set_editor_component", "", None, Vec::new())
+                    .await
+            }
         },
-        
+
         other => json!({ "cancelled": true, "error": format!("micro cannot show `{other}`") }),
     }
 }
@@ -1548,14 +1540,14 @@ pub struct State {
     /// What the model was told before the conversation started, so an extension asking can be
     /// answered without waiting on the agent.
     pub system_prompt: String,
-    
+
     pub scoped_models: Vec<String>,
     /// What went into the system prompt, kept apart from the assembled `system_prompt` above.
     pub custom_prompt: Option<String>,
     pub appended_prompt: Option<String>,
     pub context_files: Vec<(PathBuf, String)>,
     pub skills: Vec<micro_skills::Skill>,
-    
+
     pub tool_snippets: Value,
     pub prompt_guidelines: Vec<String>,
 }
@@ -1615,7 +1607,6 @@ impl ExtensionHooks {
     }
 }
 
-
 #[async_trait::async_trait]
 impl Hooks for ExtensionHooks {
     async fn before_tool(&self, id: &str, name: &str, arguments: &Value) -> ToolDecision {
@@ -1634,10 +1625,9 @@ impl Hooks for ExtensionHooks {
         else {
             return ToolDecision::Proceed;
         };
-        
+
         let answers = self.broker.heeded(answers, Capability::Events, "tool_call");
 
-        
         let refusal =
             answers.iter().find_map(
                 |answer| match answer.get("block").and_then(Value::as_bool) {
@@ -1655,7 +1645,6 @@ impl Hooks for ExtensionHooks {
             return ToolDecision::Refuse(reason);
         }
 
-        
         answers
             .iter()
             .find_map(|answer| answer.get("input").cloned())
@@ -1669,7 +1658,6 @@ impl Hooks for ExtensionHooks {
         output: String,
         is_error: bool,
     ) -> (String, bool) {
-        
         let input = self
             .call_arguments
             .lock()
@@ -1694,9 +1682,10 @@ impl Hooks for ExtensionHooks {
         let Ok(answers) = asked else {
             return (output, is_error);
         };
-        let answers = self.broker.heeded(answers, Capability::Events, "tool_result");
+        let answers = self
+            .broker
+            .heeded(answers, Capability::Events, "tool_result");
 
-        
         let mut output = output;
         let mut is_error = is_error;
         for answer in answers {
@@ -1718,10 +1707,12 @@ impl Hooks for ExtensionHooks {
         &self,
         prompt: &micro_types::Message,
     ) -> Option<micro_types::Message> {
-        
         let (text, images) = match prompt {
             micro_types::Message::User { content, .. } => (
-                content.iter().map(micro_types::ContentBlock::as_text).collect::<String>(),
+                content
+                    .iter()
+                    .map(micro_types::ContentBlock::as_text)
+                    .collect::<String>(),
                 content
                     .iter()
                     .filter(|block| matches!(block, micro_types::ContentBlock::Image { .. }))
@@ -1747,12 +1738,11 @@ impl Hooks for ExtensionHooks {
         else {
             return None;
         };
-        
+
         let answers = self
             .broker
             .heeded_from(answers, Capability::Context, "system_prompt");
 
-        
         for (source, answer) in &answers {
             if let Some(replacement) = answer.get("systemPrompt").and_then(Value::as_str) {
                 self.broker.record(
@@ -1762,7 +1752,7 @@ impl Hooks for ExtensionHooks {
                     true,
                     None,
                 );
-                
+
                 let span = micro_types::PrefixSpan {
                     source: micro_types::EventSource::Extension(
                         self.broker.grants.name_of(source.as_deref()),
@@ -1770,14 +1760,14 @@ impl Hooks for ExtensionHooks {
                     bytes: replacement.len() as u64,
                     hash: micro_types::content_hash(replacement.as_bytes()),
                 };
-                self.prefix.change(replacement, vec![span], "extension");
+                self.prefix
+                    .override_run(replacement, vec![span], "extension");
             }
         }
         None
     }
 
     async fn before_request(&self, context: micro_types::Context) -> micro_types::Context {
-        
         let mut context = context;
 
         let asked = self
@@ -1791,16 +1781,17 @@ impl Hooks for ExtensionHooks {
             .await;
 
         if let Ok(answers) = asked {
-            
-            for (source, answer) in self
-                .broker
-                .heeded_from(answers, Capability::Context, "messages")
+            for (source, answer) in
+                self.broker
+                    .heeded_from(answers, Capability::Context, "messages")
             {
                 let Some(messages) = answer.get("messages").and_then(Value::as_array) else {
                     continue;
                 };
-                let replaced: Vec<micro_types::Message> =
-                    messages.iter().filter_map(micro_extensions::message_from_json).collect();
+                let replaced: Vec<micro_types::Message> = messages
+                    .iter()
+                    .filter_map(micro_extensions::message_from_json)
+                    .collect();
                 if replaced.len() == messages.len() {
                     self.broker.record(
                         source.as_deref(),
@@ -1814,7 +1805,6 @@ impl Hooks for ExtensionHooks {
             }
         }
 
-        
         let _ = self
             .host
             .notify(
@@ -1826,7 +1816,6 @@ impl Hooks for ExtensionHooks {
             )
             .await;
 
-        
         if let Ok(answers) = self
             .host
             .ask_event_attributed("before_provider_headers", json!({ "headers": {} }))
@@ -1983,7 +1972,6 @@ mod tests {
         assert!(bash["result"].as_str().unwrap().contains("hi"));
     }
 
-    
     #[tokio::test]
     async fn run_builtin_tool_refuses_a_tool_it_does_not_have() {
         let answer = run_builtin_tool(
@@ -1995,7 +1983,6 @@ mod tests {
         assert!(answer["error"].as_str().unwrap().contains("teleport"));
     }
 
-    
     #[tokio::test]
     async fn an_extension_reaches_a_builtin_tool_through_answer() {
         let state = Arc::new(tokio::sync::RwLock::new(State::default()));
@@ -2012,7 +1999,10 @@ mod tests {
             None,
         )
         .await;
-        assert!(response["result"].as_str().unwrap().contains("from-answer.txt"));
+        assert!(response["result"]
+            .as_str()
+            .unwrap()
+            .contains("from-answer.txt"));
         assert_eq!(
             std::fs::read_to_string(workspace.join("from-answer.txt")).unwrap(),
             "written"
@@ -2108,7 +2098,18 @@ mod tests {
         .await;
         assert_eq!(tools["tools"][0], "read");
 
-        let model = answer("get_model", &json!({}), None, &workspace, &unconfined(), &Broker::open(), &state, &session, None).await;
+        let model = answer(
+            "get_model",
+            &json!({}),
+            None,
+            &workspace,
+            &unconfined(),
+            &Broker::open(),
+            &state,
+            &session,
+            None,
+        )
+        .await;
         assert_eq!(model["model"]["id"], "gemini-3-pro");
         assert_eq!(model["model"]["name"], "Gemini 3 Pro");
         assert_eq!(model["model"]["provider"], "openrouter");
@@ -2145,7 +2146,6 @@ mod tests {
         assert_eq!(prompt["systemPrompt"], "you are micro");
     }
 
-    
     #[tokio::test]
     async fn get_context_answers_model_thinking_and_prompt_together() {
         let state = Arc::new(tokio::sync::RwLock::new(State {
@@ -2178,7 +2178,7 @@ mod tests {
         assert_eq!(context["model"]["contextWindow"], 200_000);
         assert_eq!(context["thinkingLevel"], "medium");
         assert_eq!(context["systemPrompt"], "you are micro");
-        
+
         assert_eq!(context["scopedModels"], serde_json::json!([]));
     }
 
@@ -2189,7 +2189,6 @@ mod tests {
         let unscoped = resolve_scoped_models(&[]);
         assert_eq!(unscoped, serde_json::json!([]));
 
-        
         let scoped = resolve_scoped_models(&["anthropic/claude-opus-5".to_string()]);
         let matches = scoped.as_array().expect("a list of scoped models");
         assert!(
@@ -2201,7 +2200,6 @@ mod tests {
         );
     }
 
-    
     #[tokio::test]
     async fn get_context_carries_enough_of_the_session_to_answer_sessionmanager() {
         let state = Arc::new(tokio::sync::RwLock::new(State::default()));
@@ -2212,22 +2210,24 @@ mod tests {
                 .append(&micro_types::Message::user("hello"))
                 .await
                 .unwrap();
-            
+
             session
-                .append(&micro_types::Message::Assistant(micro_types::AssistantMessage {
-                    content: vec![micro_types::ContentBlock::ToolCall {
-                        id: "call_1".into(),
-                        name: "read".into(),
-                        arguments: json!({ "path": "a.txt" }),
-                        signature: None,
-                    }],
-                    provider: "test".into(),
-                    model: "test-model".into(),
-                    usage: micro_types::Usage::default(),
-                    stop_reason: micro_types::StopReason::ToolUse,
-                    error: None,
-                    timestamp: 0,
-                }))
+                .append(&micro_types::Message::Assistant(
+                    micro_types::AssistantMessage {
+                        content: vec![micro_types::ContentBlock::ToolCall {
+                            id: "call_1".into(),
+                            name: "read".into(),
+                            arguments: json!({ "path": "a.txt" }),
+                            signature: None,
+                        }],
+                        provider: "test".into(),
+                        model: "test-model".into(),
+                        usage: micro_types::Usage::default(),
+                        stop_reason: micro_types::StopReason::ToolUse,
+                        error: None,
+                        timestamp: 0,
+                    },
+                ))
                 .await
                 .unwrap();
             session
@@ -2239,7 +2239,10 @@ mod tests {
                 ))
                 .await
                 .unwrap();
-            session.append_custom("note", json!({ "kept": true })).await.unwrap();
+            session
+                .append_custom("note", json!({ "kept": true }))
+                .await
+                .unwrap();
             session.rename("a test session").await.unwrap();
         }
         let workspace = std::env::temp_dir();
@@ -2260,7 +2263,7 @@ mod tests {
 
         assert_eq!(carried["id"], session.lock().await.id());
         assert_eq!(carried["name"], "a test session");
-        
+
         assert_eq!(carried["leafId"], "3");
         assert!(carried["file"].as_str().unwrap().ends_with(".jsonl"));
 
@@ -2276,7 +2279,6 @@ mod tests {
         assert_eq!(message("1")["parentId"], serde_json::Value::Null);
         assert_eq!(message("1")["message"]["role"], "user");
 
-        
         let assistant = &message("2")["message"];
         assert_eq!(assistant["role"], "assistant");
         assert_eq!(assistant["stopReason"], "toolUse");
@@ -2288,7 +2290,7 @@ mod tests {
         assert_eq!(tool_result["toolCallId"], "call_1");
         assert_eq!(tool_result["toolName"], "read");
         assert_eq!(tool_result["isError"], false);
-        
+
         for absent in ["tool_call_id", "tool_name", "is_error", "stop_reason"] {
             assert!(
                 assistant.get(absent).is_none() && tool_result.get(absent).is_none(),
@@ -2413,7 +2415,7 @@ mod tests {
         assert_eq!(options["skills"][0]["name"], "deploy");
         assert_eq!(options["skills"][0]["disableModelInvocation"], false);
         assert_eq!(options["skills"][0]["sourceInfo"]["scope"], "project");
-        
+
         assert!(options.get("cwd").is_none(), "{options}");
     }
 
@@ -2467,7 +2469,6 @@ mod tests {
         assert_eq!(named["name"], "the good one");
     }
 
-    
     #[tokio::test]
     async fn an_extension_can_reload_and_start_a_new_session() {
         let (asker, mut requests) = micro_tui::ui_channel();
@@ -2498,7 +2499,6 @@ mod tests {
         assert_eq!(reloading.await.unwrap()["cancelled"], false);
     }
 
-    
     #[tokio::test]
     async fn session_navigation_with_no_interface_comes_back_cancelled() {
         let state = Arc::new(tokio::sync::RwLock::new(State::default()));
@@ -2506,12 +2506,22 @@ mod tests {
         let workspace = std::env::temp_dir();
 
         for request in ["reload", "new_session"] {
-            let answered = answer(request, &json!({}), None, &workspace, &unconfined(), &Broker::open(), &state, &session, None).await;
+            let answered = answer(
+                request,
+                &json!({}),
+                None,
+                &workspace,
+                &unconfined(),
+                &Broker::open(),
+                &state,
+                &session,
+                None,
+            )
+            .await;
             assert_eq!(answered["cancelled"], true, "{request}");
         }
     }
 
-    
     #[tokio::test]
     async fn an_extension_can_switch_and_navigate_by_id() {
         let state = Arc::new(tokio::sync::RwLock::new(State::default()));
@@ -2566,7 +2576,6 @@ mod tests {
         }
     }
 
-    
     #[tokio::test]
     async fn an_extension_can_fork_from_an_entry_by_id() {
         let state = Arc::new(tokio::sync::RwLock::new(State::default()));
@@ -2574,8 +2583,14 @@ mod tests {
         let workspace = std::env::temp_dir();
         {
             let mut session = session.lock().await;
-            session.append(&micro_types::Message::user("one")).await.unwrap();
-            session.append(&micro_types::Message::user("two")).await.unwrap();
+            session
+                .append(&micro_types::Message::user("one"))
+                .await
+                .unwrap();
+            session
+                .append(&micro_types::Message::user("two"))
+                .await
+                .unwrap();
             session
                 .append(&micro_types::Message::user("three"))
                 .await
@@ -2597,7 +2612,7 @@ mod tests {
             )
             .await
         });
-        
+
         let mut request = requests.recv().await.expect("a fork");
         assert_eq!(request.title, "/fork 0");
         request.answer(json!({ "queued": true }));
@@ -2627,12 +2642,21 @@ mod tests {
         assert!(answered["error"].as_str().unwrap().contains("not-real"));
     }
 
-    
     #[tokio::test]
     async fn shutdown_and_compact_are_typed_as_slash_commands() {
         let (asker, mut requests) = micro_tui::ui_channel();
         let quitting = tokio::spawn(async move {
-            carry_out("shutdown", &json!({}), None, &Broker::open(), Some(&asker), None, None, None).await
+            carry_out(
+                "shutdown",
+                &json!({}),
+                None,
+                &Broker::open(),
+                Some(&asker),
+                None,
+                None,
+                None,
+            )
+            .await
         });
         let mut request = requests.recv().await.expect("a quit");
         assert_eq!(request.title, "/quit");
@@ -2641,7 +2665,17 @@ mod tests {
 
         let (asker, mut requests) = micro_tui::ui_channel();
         let compacting = tokio::spawn(async move {
-            carry_out("compact", &json!({}), None, &Broker::open(), Some(&asker), None, None, None).await
+            carry_out(
+                "compact",
+                &json!({}),
+                None,
+                &Broker::open(),
+                Some(&asker),
+                None,
+                None,
+                None,
+            )
+            .await
         });
         let mut request = requests.recv().await.expect("a compact");
         assert_eq!(request.title, "/compact");
@@ -2649,12 +2683,22 @@ mod tests {
         compacting.await.unwrap();
     }
 
-    
     #[tokio::test]
     async fn abort_reaches_the_interface_as_its_own_method() {
         let (asker, mut requests) = micro_tui::ui_channel();
-        let aborting =
-            tokio::spawn(async move { carry_out("abort", &json!({}), None, &Broker::open(), Some(&asker), None, None, None).await });
+        let aborting = tokio::spawn(async move {
+            carry_out(
+                "abort",
+                &json!({}),
+                None,
+                &Broker::open(),
+                Some(&asker),
+                None,
+                None,
+                None,
+            )
+            .await
+        });
         let mut request = requests.recv().await.expect("an abort");
         assert_eq!(request.method, "abort");
         request.answer(json!({ "interrupted": true }));
@@ -2675,7 +2719,8 @@ mod tests {
                 None,
                 None,
                 None,
-            ).await
+            )
+            .await
         });
 
         let mut request = requests.recv().await.expect("a message");
@@ -2697,11 +2742,11 @@ mod tests {
             None,
             None,
             None,
-        ).await;
+        )
+        .await;
         assert!(requests.try_recv().is_none());
     }
 
-    
     #[tokio::test]
     async fn a_question_with_no_interface_comes_back_cancelled() {
         let answer = show(
@@ -2745,7 +2790,14 @@ mod tests {
     async fn set_title_reaches_the_interface_by_its_title() {
         let (asker, mut requests) = micro_tui::ui_channel();
         let showing = tokio::spawn(async move {
-            show(&json!({ "method": "setTitle", "title": "a new title" }), None, &Broker::open(), Some(&asker), None).await
+            show(
+                &json!({ "method": "setTitle", "title": "a new title" }),
+                None,
+                &Broker::open(),
+                Some(&asker),
+                None,
+            )
+            .await
         });
         let mut request = requests.recv().await.expect("a title");
         assert_eq!(request.method, "set_title");
@@ -2754,7 +2806,6 @@ mod tests {
         showing.await.unwrap();
     }
 
-    
     #[tokio::test]
     async fn set_widget_carries_its_key_lines_and_placement() {
         let (asker, mut requests) = micro_tui::ui_channel();
@@ -2782,12 +2833,18 @@ mod tests {
         showing.await.unwrap();
     }
 
-    
     #[tokio::test]
     async fn a_reset_working_indicator_is_told_apart_from_an_empty_one() {
         let (asker, mut requests) = micro_tui::ui_channel();
         let showing = tokio::spawn(async move {
-            show(&json!({ "method": "setWorkingIndicator", "reset": true }), None, &Broker::open(), Some(&asker), None).await
+            show(
+                &json!({ "method": "setWorkingIndicator", "reset": true }),
+                None,
+                &Broker::open(),
+                Some(&asker),
+                None,
+            )
+            .await
         });
         let mut request = requests.recv().await.expect("an indicator");
         assert_eq!(request.title, "reset");
@@ -2837,12 +2894,22 @@ mod tests {
         showing.await.unwrap();
     }
 
-    
     #[tokio::test]
     async fn watching_and_unwatching_terminal_input_reach_the_interface() {
         let (asker, mut requests) = micro_tui::ui_channel();
-        let watching =
-            tokio::spawn(async move { carry_out("watch_terminal_input", &json!({}), None, &Broker::open(), Some(&asker), None, None, None).await });
+        let watching = tokio::spawn(async move {
+            carry_out(
+                "watch_terminal_input",
+                &json!({}),
+                None,
+                &Broker::open(),
+                Some(&asker),
+                None,
+                None,
+                None,
+            )
+            .await
+        });
         let mut request = requests.recv().await.expect("a watch");
         assert_eq!(request.method, "watch_terminal_input");
         request.answer(json!({}));
@@ -2850,7 +2917,17 @@ mod tests {
 
         let (asker, mut requests) = micro_tui::ui_channel();
         let unwatching = tokio::spawn(async move {
-            carry_out("unwatch_terminal_input", &json!({}), None, &Broker::open(), Some(&asker), None, None, None).await
+            carry_out(
+                "unwatch_terminal_input",
+                &json!({}),
+                None,
+                &Broker::open(),
+                Some(&asker),
+                None,
+                None,
+                None,
+            )
+            .await
         });
         let mut request = requests.recv().await.expect("an unwatch");
         assert_eq!(request.method, "unwatch_terminal_input");
@@ -2858,7 +2935,6 @@ mod tests {
         unwatching.await.unwrap();
     }
 
-    
     #[tokio::test]
     async fn a_key_with_nothing_to_ask_is_not_consumed() {
         let (asker, mut asks) = micro_tui::terminal_input_channel();
@@ -2878,7 +2954,6 @@ mod tests {
         path
     }
 
-    
     #[tokio::test]
     async fn a_widget_component_is_fetched_registered_and_kept_current() {
         if micro_extensions::which_bun().is_none() {
@@ -2915,14 +2990,24 @@ export default (micro) => {
                 .expect("the host starts"),
         );
 
-        
         let (asker, mut requests) = micro_tui::ui_channel();
         let state = Arc::new(tokio::sync::RwLock::new(State::default()));
         let session = scratch_session().await;
         tokio::spawn({
             let host = Arc::clone(&host);
             let root = root.clone();
-            async move { serve(host, root, unconfined(), Broker::open(), Some(asker), state, session).await }
+            async move {
+                serve(
+                    host,
+                    root,
+                    unconfined(),
+                    Broker::open(),
+                    Some(asker),
+                    state,
+                    session,
+                )
+                .await
+            }
         });
 
         let running = {
@@ -2948,7 +3033,6 @@ export default (micro) => {
         setting.answer(json!({}));
         assert_eq!(running.await.unwrap().unwrap(), json!("shown"));
 
-        
         host.send_component_input(&component_id, "x", None)
             .await
             .expect("the key reaches the component");
@@ -2968,7 +3052,6 @@ export default (micro) => {
         host.shutdown("quit").await;
     }
 
-    
     #[tokio::test]
     async fn a_custom_overlay_resolves_through_the_components_own_done() {
         if micro_extensions::which_bun().is_none() {
@@ -3010,7 +3093,18 @@ export default (micro) => {
         tokio::spawn({
             let host = Arc::clone(&host);
             let root = root.clone();
-            async move { serve(host, root, unconfined(), Broker::open(), Some(asker), state, session).await }
+            async move {
+                serve(
+                    host,
+                    root,
+                    unconfined(),
+                    Broker::open(),
+                    Some(asker),
+                    state,
+                    session,
+                )
+                .await
+            }
         });
 
         let running = {
@@ -3018,8 +3112,10 @@ export default (micro) => {
             tokio::spawn(async move { host.call_command("probe", "").await })
         };
 
-        
-        let opening = requests.recv().await.expect("the overlay opens");
+        let opening = tokio::time::timeout(std::time::Duration::from_secs(5), requests.recv())
+            .await
+            .expect("the overlay opens in time")
+            .expect("the UI channel stays open");
         assert_eq!(opening.method, "custom");
         assert_eq!(opening.options, vec!["a custom overlay"]);
         let component_id = opening.title.clone();
@@ -3028,23 +3124,22 @@ export default (micro) => {
             .await
             .expect("the key reaches the component");
 
-        let mut done = requests.recv().await.expect("done is told to micro");
+        let mut done = tokio::time::timeout(std::time::Duration::from_secs(5), requests.recv())
+            .await
+            .expect("custom_done arrives in time")
+            .expect("the UI channel stays open");
         assert_eq!(done.method, "custom_done");
         let result: Value = serde_json::from_str(&done.detail.clone().unwrap()).unwrap();
         assert_eq!(result["picked"], true);
         done.answer(json!({}));
-        
+
         drop(opening);
 
-        assert_eq!(
-            running.await.unwrap().unwrap(),
-            json!(r#"{"picked":true}"#)
-        );
+        assert_eq!(running.await.unwrap().unwrap(), json!(r#"{"picked":true}"#));
 
         host.shutdown("quit").await;
     }
 
-    
     #[tokio::test]
     async fn an_editor_component_is_fetched_registered_and_answers_consume() {
         if micro_extensions::which_bun().is_none() {
@@ -3082,7 +3177,18 @@ export default (micro) => {
         tokio::spawn({
             let host = Arc::clone(&host);
             let root = root.clone();
-            async move { serve(host, root, unconfined(), Broker::open(), Some(asker), state, session).await }
+            async move {
+                serve(
+                    host,
+                    root,
+                    unconfined(),
+                    Broker::open(),
+                    Some(asker),
+                    state,
+                    session,
+                )
+                .await
+            }
         });
 
         let running = {
@@ -3097,11 +3203,16 @@ export default (micro) => {
         assert_eq!(running.await.unwrap().unwrap(), json!("shown"));
 
         assert!(
-            host.send_component_input(&component_id, "y", None).await.unwrap(),
+            host.send_component_input(&component_id, "y", None)
+                .await
+                .unwrap(),
             "a key the component handles is consumed"
         );
         assert!(
-            !host.send_component_input(&component_id, "n", None).await.unwrap(),
+            !host
+                .send_component_input(&component_id, "n", None)
+                .await
+                .unwrap(),
             "a key it declines is not"
         );
 
@@ -3145,7 +3256,18 @@ export default (micro) => {
         tokio::spawn({
             let host = Arc::clone(&host);
             let root = root.clone();
-            async move { serve(host, root, unconfined(), Broker::open(), Some(asker), state, session).await }
+            async move {
+                serve(
+                    host,
+                    root,
+                    unconfined(),
+                    Broker::open(),
+                    Some(asker),
+                    state,
+                    session,
+                )
+                .await
+            }
         });
 
         host.call_command("probe", "").await.unwrap();
@@ -3154,13 +3276,11 @@ export default (micro) => {
         assert_eq!(first.method, "set_status");
         assert_eq!(first.detail.as_deref(), Some("A"));
 
-        
         assert!(
             requests.try_recv().is_none(),
             "the second status arrived before the first was answered"
         );
 
-        
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         first.answer(json!({ "ok": true }));
 
@@ -3171,19 +3291,42 @@ export default (micro) => {
         host.shutdown("quit").await;
     }
 
-    
     #[test]
     fn every_supported_api_id_maps_to_its_wire_protocol_and_back() {
         use micro_models::WireApi;
 
-        assert_eq!(wire_api_from_str("anthropic-messages"), Some(WireApi::AnthropicMessages));
-        assert_eq!(wire_api_from_str("openai-completions"), Some(WireApi::OpenaiCompletions));
-        assert_eq!(wire_api_from_str("openai-responses"), Some(WireApi::OpenaiResponses));
-        assert_eq!(wire_api_from_str("azure-openai-responses"), Some(WireApi::OpenaiResponses));
-        assert_eq!(wire_api_from_str("openai-codex-responses"), Some(WireApi::OpenaiResponses));
-        assert_eq!(wire_api_from_str("google-generative-ai"), Some(WireApi::GoogleGenerativeAi));
-        assert_eq!(wire_api_from_str("google-vertex"), Some(WireApi::GoogleVertex));
-        assert_eq!(wire_api_from_str("bedrock-converse-stream"), Some(WireApi::BedrockConverseStream));
+        assert_eq!(
+            wire_api_from_str("anthropic-messages"),
+            Some(WireApi::AnthropicMessages)
+        );
+        assert_eq!(
+            wire_api_from_str("openai-completions"),
+            Some(WireApi::OpenaiCompletions)
+        );
+        assert_eq!(
+            wire_api_from_str("openai-responses"),
+            Some(WireApi::OpenaiResponses)
+        );
+        assert_eq!(
+            wire_api_from_str("azure-openai-responses"),
+            Some(WireApi::OpenaiResponses)
+        );
+        assert_eq!(
+            wire_api_from_str("openai-codex-responses"),
+            Some(WireApi::OpenaiResponses)
+        );
+        assert_eq!(
+            wire_api_from_str("google-generative-ai"),
+            Some(WireApi::GoogleGenerativeAi)
+        );
+        assert_eq!(
+            wire_api_from_str("google-vertex"),
+            Some(WireApi::GoogleVertex)
+        );
+        assert_eq!(
+            wire_api_from_str("bedrock-converse-stream"),
+            Some(WireApi::BedrockConverseStream)
+        );
 
         assert_eq!(wire_api_from_str("mistral-conversations"), None);
         assert_eq!(wire_api_from_str("pi-messages"), None);
@@ -3205,7 +3348,6 @@ export default (micro) => {
         }
     }
 
-    
     #[test]
     fn a_model_is_read_from_what_the_extension_itself_registered() {
         let model = model_from_json(&json!({
@@ -3229,13 +3371,17 @@ export default (micro) => {
             Some("fine-grained-tool-streaming-2025-05-14")
         );
 
-        let bare = model_from_json(&json!({ "id": "m", "provider": "p", "baseUrl": "https://example.test" }));
+        let bare = model_from_json(
+            &json!({ "id": "m", "provider": "p", "baseUrl": "https://example.test" }),
+        );
         assert_eq!(bare.thinking, micro_types::ThinkingLevel::Off);
         assert!(!bare.reasoning);
-        assert_eq!(bare.max_tokens, 4096, "a sane default when the extension left it out");
+        assert_eq!(
+            bare.max_tokens, 4096,
+            "a sane default when the extension left it out"
+        );
     }
 
-    
     #[test]
     fn a_context_carries_its_messages_and_tools_through_intact() {
         let context = context_from_json(&json!({
@@ -3259,8 +3405,14 @@ export default (micro) => {
 
         assert_eq!(context.system_prompt.as_deref(), Some("be brief"));
         assert_eq!(context.messages.len(), 2);
-        assert!(matches!(context.messages[0], micro_types::Message::User { .. }));
-        assert!(matches!(context.messages[1], micro_types::Message::ToolResult { .. }));
+        assert!(matches!(
+            context.messages[0],
+            micro_types::Message::User { .. }
+        ));
+        assert!(matches!(
+            context.messages[1],
+            micro_types::Message::ToolResult { .. }
+        ));
         assert_eq!(context.tools.len(), 1);
         assert_eq!(context.tools[0].name, "read");
         assert_eq!(context.cache_key.as_deref(), Some("conversation-1"));
@@ -3272,12 +3424,20 @@ export default (micro) => {
     async fn provider_events_translate_into_pi_ais_assistant_message_event_shape() {
         let (sender, receiver) = tokio::sync::mpsc::unbounded_channel();
         sender.send(micro_types::StreamEvent::Start).unwrap();
-        sender.send(micro_types::StreamEvent::TextStart { index: 0 }).unwrap();
         sender
-            .send(micro_types::StreamEvent::TextDelta { index: 0, delta: "Hi".into() })
+            .send(micro_types::StreamEvent::TextStart { index: 0 })
             .unwrap();
         sender
-            .send(micro_types::StreamEvent::TextEnd { index: 0, text: "Hi there".into() })
+            .send(micro_types::StreamEvent::TextDelta {
+                index: 0,
+                delta: "Hi".into(),
+            })
+            .unwrap();
+        sender
+            .send(micro_types::StreamEvent::TextEnd {
+                index: 0,
+                text: "Hi there".into(),
+            })
             .unwrap();
         sender
             .send(micro_types::StreamEvent::Done {
@@ -3285,7 +3445,12 @@ export default (micro) => {
                     content: vec![micro_types::ContentBlock::text("Hi there")],
                     provider: "custom-anthropic".into(),
                     model: "claude-sonnet-4-5".into(),
-                    usage: micro_types::Usage { input: 10, output: 4, cache_read: 0, cache_write: 0 },
+                    usage: micro_types::Usage {
+                        input: 10,
+                        output: 4,
+                        cache_read: 0,
+                        cache_write: 0,
+                    },
                     stop_reason: micro_types::StopReason::Stop,
                     error: None,
                     timestamp: 12345,
@@ -3302,7 +3467,10 @@ export default (micro) => {
         assert_eq!(events[1]["contentIndex"], 0);
         assert_eq!(events[2]["type"], "text_delta");
         assert_eq!(events[2]["delta"], "Hi");
-        assert_eq!(events[2]["partial"]["content"][0]["text"], "Hi", "accumulated so far, not just this delta");
+        assert_eq!(
+            events[2]["partial"]["content"][0]["text"], "Hi",
+            "accumulated so far, not just this delta"
+        );
         assert_eq!(events[3]["type"], "text_end");
         assert_eq!(events[3]["content"], "Hi there");
         assert_eq!(events[4]["type"], "done");
@@ -3311,17 +3479,23 @@ export default (micro) => {
         assert_eq!(events[4]["message"]["usage"]["input"], 10);
     }
 
-    
     #[tokio::test]
     async fn a_stream_error_is_translated_with_whatever_arrived_before_it() {
         let (sender, receiver) = tokio::sync::mpsc::unbounded_channel();
         sender.send(micro_types::StreamEvent::Start).unwrap();
-        sender.send(micro_types::StreamEvent::TextStart { index: 0 }).unwrap();
         sender
-            .send(micro_types::StreamEvent::TextDelta { index: 0, delta: "partial".into() })
+            .send(micro_types::StreamEvent::TextStart { index: 0 })
             .unwrap();
         sender
-            .send(micro_types::StreamEvent::Error { message: "connection reset".into() })
+            .send(micro_types::StreamEvent::TextDelta {
+                index: 0,
+                delta: "partial".into(),
+            })
+            .unwrap();
+        sender
+            .send(micro_types::StreamEvent::Error {
+                message: "connection reset".into(),
+            })
             .unwrap();
         drop(sender);
 
@@ -3330,23 +3504,34 @@ export default (micro) => {
         let last = events.last().unwrap();
         assert_eq!(last["type"], "error");
         assert_eq!(last["error"]["errorMessage"], "connection reset");
-        assert_eq!(last["error"]["content"][0]["text"], "partial", "what streamed in before the failure is kept");
+        assert_eq!(
+            last["error"]["content"][0]["text"], "partial",
+            "what streamed in before the failure is kept"
+        );
     }
 
-    
     #[tokio::test]
     async fn provider_stream_names_what_it_is_missing_rather_than_guessing() {
         let no_api = provider_stream(&json!({})).await;
-        assert!(no_api["error"].as_str().unwrap().contains("needs an api id"));
+        assert!(no_api["error"]
+            .as_str()
+            .unwrap()
+            .contains("needs an api id"));
 
         let unknown_api = provider_stream(&json!({ "api": "mistral-conversations" })).await;
         assert!(
-            unknown_api["error"].as_str().unwrap().contains("mistral-conversations"),
+            unknown_api["error"]
+                .as_str()
+                .unwrap()
+                .contains("mistral-conversations"),
             "{unknown_api}"
         );
 
         let no_model = provider_stream(&json!({ "api": "anthropic-messages" })).await;
-        assert!(no_model["error"].as_str().unwrap().contains("needs a model"));
+        assert!(no_model["error"]
+            .as_str()
+            .unwrap()
+            .contains("needs a model"));
 
         let no_api_key = provider_stream(&json!({
             "api": "anthropic-messages",
@@ -3356,11 +3541,15 @@ export default (micro) => {
         assert!(no_api_key["error"].as_str().unwrap().contains("apiKey"));
     }
 
-    
     #[test]
     fn model_catalog_answers_from_the_real_bundled_catalog() {
         let everything = model_catalog(&json!({}));
-        let providers: Vec<&str> = everything["providers"].as_array().unwrap().iter().map(|v| v.as_str().unwrap()).collect();
+        let providers: Vec<&str> = everything["providers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap())
+            .collect();
         assert!(providers.contains(&"anthropic"), "{providers:?}");
         assert!(!everything["models"].as_array().unwrap().is_empty());
 

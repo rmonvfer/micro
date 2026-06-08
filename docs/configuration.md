@@ -63,12 +63,12 @@ The value is parsed as JSON when possible. Unquoted text is stored as a string. 
 
 The main environment overrides are:
 
-| Variable | Setting |
-| --- | --- |
-| `MICRO_MODEL` | `model` |
-| `MICRO_PROVIDER` | `provider` |
-| `MICRO_THINKING` | `thinking` |
-| `MICRO_THEME` | `theme` |
+| Variable            | Setting       |
+| ------------------- | ------------- |
+| `MICRO_MODEL`       | `model`       |
+| `MICRO_PROVIDER`    | `provider`    |
+| `MICRO_THINKING`    | `thinking`    |
+| `MICRO_THEME`       | `theme`       |
 | `MICRO_LIVE_MODELS` | `live_models` |
 
 Command-line options take precedence over environment variables, which take precedence over `config.json`.
@@ -82,6 +82,19 @@ Command-line options take precedence over environment variables, which take prec
 ### thinking
 
 Sets the default reasoning effort. Supported values include `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, and `max`; the selected model may support only part of that range.
+
+### updates
+
+Release-installer installations check GitHub for a newer release before an interactive session. The default is enabled once every 24 hours. Source, package-manager, and manually copied binaries are never replaced automatically.
+
+```json
+{
+  "auto_update": true,
+  "update_check_interval_hours": 24
+}
+```
+
+Set `auto_update` to `false` to disable checks, or use `MICRO_NO_AUTO_UPDATE=1` for one run. `micro update` checks and installs a release immediately.
 
 ### sandbox
 

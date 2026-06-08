@@ -41,7 +41,6 @@ pub(crate) fn render_xychart(src: &str) -> Option<Canvas> {
     if ascii_lower(header.split_whitespace().next()?) != "xychart-beta" {
         return None;
     }
-    
 
     let mut chart = Chart {
         title: None,
@@ -157,7 +156,7 @@ fn data_range(chart: &Chart) -> (f64, f64) {
     if !lo.is_finite() || !hi.is_finite() {
         return (0.0, 1.0);
     }
-    
+
     if (hi - lo).abs() < f64::EPSILON {
         hi = lo + 1.0;
     }
@@ -174,7 +173,7 @@ fn trim_number(value: f64) -> String {
 fn draw(chart: &Chart) -> Option<Canvas> {
     let (lo, hi) = data_range(chart);
     let span = (hi - lo).max(f64::EPSILON);
-    
+
     let row_for = |v: f64| -> usize {
         let t = ((v - lo) / span).clamp(0.0, 1.0);
         (((PLOT_H - 1) as f64) * (1.0 - t)).round() as usize
@@ -248,7 +247,7 @@ fn draw(chart: &Chart) -> Option<Canvas> {
             SeriesKind::Bar => {
                 for (i, &v) in series.values.iter().enumerate() {
                     let vr = row_for(v);
-                    
+
                     if vr == baseline {
                         continue;
                     }
@@ -298,7 +297,6 @@ fn draw(chart: &Chart) -> Option<Canvas> {
     Some(canvas)
 }
 
-
 fn connect(canvas: &mut Canvas, x0: usize, y0: usize, x1: usize, y1: usize) {
     if x1 <= x0 {
         return;
@@ -324,7 +322,6 @@ mod tests {
             .plain
     }
 
-    
     #[test]
     fn bars_grow_from_the_axis_minimum() {
         let rows = drawn("xychart-beta\n  y-axis 0 --> 10\n  bar [10, 5, 0]");
@@ -393,7 +390,6 @@ mod tests {
         assert!(cols[1] > cols[0] + 1, "{cols:?}: {rows:?}");
     }
 
-    
     #[test]
     fn what_is_not_an_xychart_is_left_alone() {
         assert!(render_xychart("graph TD\n A --> B").is_none());

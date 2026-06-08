@@ -1,13 +1,9 @@
-
-
 use crate::canvas::{draw_text, Canvas};
 use crate::labels::{ascii_lower, clean_label, strip_controls};
 use crate::types::Cls;
 use crate::width::string_width;
 
-
 const MAX_AXES: usize = 12;
-
 
 const MAX_CURVES: usize = MARKERS.len();
 
@@ -85,7 +81,7 @@ fn parse_radar(src: &str) -> Option<Chart> {
     if axes.is_empty() || curves.is_empty() {
         return None;
     }
-    
+
     if curves.iter().any(|c| c.values.len() != axes.len()) {
         return None;
     }
@@ -197,7 +193,6 @@ fn draw(chart: &Chart) -> Canvas {
     canvas
 }
 
-
 fn scale_pos(value: f64, min: f64, max: f64) -> usize {
     let frac = ((value.clamp(min, max) - min) / (max - min)).clamp(0.0, 1.0);
     (frac * (SCALE_WIDTH - 1) as f64).round() as usize
@@ -262,7 +257,7 @@ mod tests {
         );
         assert_eq!(rows[0], "Skills");
         let comm_row = rows.iter().find(|r| r.contains("Communication")).unwrap();
-        
+
         assert!(
             comm_row.find('●').unwrap() < comm_row.find('○').unwrap(),
             "{comm_row:?}"
@@ -298,7 +293,6 @@ mod tests {
         assert!(rows.iter().any(|r| r.contains("scale 0–40")), "{rows:?}");
     }
 
-    
     #[test]
     fn what_is_not_a_radar_chart_is_left_alone() {
         assert!(render_radar("graph TD\n A --> B").is_none());
@@ -313,7 +307,6 @@ mod tests {
         );
     }
 
-    
     #[test]
     fn too_many_curves_are_refused() {
         let mut source = String::from("radar-beta\n  axis a[\"A\"]\n");

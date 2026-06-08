@@ -33,7 +33,6 @@ fn adjacent_fields_share_the_border_between_them() {
     );
 }
 
-
 #[test]
 fn an_unparseable_packet_diagram_renders_nothing() {
     let src = "packet-beta\n0-15 no colon at all";

@@ -77,7 +77,7 @@ fn derive_title(content: &[ContentBlock]) -> String {
     }
 
     let clipped: String = single_line.chars().take(MAX_TITLE_CHARS).collect();
-    
+
     let boundary = clipped.rfind(' ').filter(|at| *at >= clipped.len() / 2);
     let kept = match boundary {
         Some(at) => &clipped[..at],

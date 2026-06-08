@@ -190,7 +190,6 @@ impl From<&ModelDef> for micro_types::Model {
     }
 }
 
-
 #[derive(Debug, Clone, Default)]
 pub struct Catalog {
     models: Vec<ModelDef>,
@@ -233,6 +232,50 @@ impl Catalog {
         self.models
             .iter()
             .find(|m| m.provider == provider && m.id == id)
+    }
+
+    /// A model of `provider` that this catalog has never heard of, taken at its word.
+    ///
+    /// A provider serves what it serves, and a catalog compiled some time ago is in no position to
+    /// say otherwise: it goes out of date the moment a model is released, renamed, or rolled out to
+    /// one account before another. What matters is whether this build knows how to reach the
+    /// provider at all — where it is, what wire it speaks, what headers it wants — and that is
+    /// taken from the models of theirs it does know. What the model costs and how much it holds are
+    /// left at the least this provider offers, until its own listing can be read.
+    pub fn assume(&self, provider: &str, id: &str) -> Option<ModelDef> {
+        let id = id.trim();
+        if id.is_empty() {
+            return None;
+        }
+        let known = self.by_provider(provider).next()?;
+
+        Some(ModelDef {
+            id: id.to_string(),
+            name: id.to_string(),
+            provider: provider.to_string(),
+            api: crate::remote::assumed_api(provider, id).unwrap_or(known.api),
+            base_url: known.base_url.clone(),
+            context_window: self.least(provider, |model| model.context_window),
+            max_output_tokens: self.least(provider, |model| model.max_output_tokens),
+            reasoning: false,
+            input: known.input.clone(),
+            headers: known.headers.clone(),
+            aliases: Vec::new(),
+            cost: ModelCost::default(),
+            compat: known.compat.clone(),
+            thinking: BTreeMap::new(),
+        })
+    }
+
+    /// The smallest of something across a provider's models, which is what may be assumed of one
+    /// that is not listed: promising less than the provider gives costs a little, promising more
+    /// than it gives costs the request.
+    fn least(&self, provider: &str, of: impl Fn(&ModelDef) -> u32) -> u32 {
+        self.by_provider(provider)
+            .map(of)
+            .filter(|value| *value > 0)
+            .min()
+            .unwrap_or_default()
     }
 
     /// Provider ids in presentation order.
@@ -307,7 +350,6 @@ impl Catalog {
         self.sort();
     }
 
-    
     pub fn apply_overrides(&mut self, json: &str) -> Result<()> {
         let file: CatalogFile = serde_json::from_str(json)?;
         self.apply(file)
@@ -322,7 +364,6 @@ impl Catalog {
     }
 
     fn apply_provider(&mut self, provider: &str, entry: ProviderEntry) -> Result<()> {
-        
         for model in self.models.iter_mut().filter(|m| m.provider == provider) {
             if let Some(base_url) = &entry.base_url {
                 model.base_url = base_url.clone();
@@ -340,7 +381,6 @@ impl Catalog {
         Ok(())
     }
 
-    
     fn provider_defaults(&self, provider: &str, entry: &ProviderEntry) -> ProviderDefaults {
         let existing = self.models.iter().find(|m| m.provider == provider);
         let mut headers = existing.map(|m| m.headers.clone()).unwrap_or_default();
@@ -601,11 +641,73 @@ mod tests {
                 "openai-codex"
             ]
         );
-        
+
         let rest: Vec<&str> = listed.into_iter().skip(5).collect();
         let mut sorted = rest.clone();
         sorted.sort_unstable();
         assert_eq!(rest, sorted);
+    }
+
+    /// A provider serves what it serves. A model of theirs that no catalog here has heard of is
+    /// still one this build can put a request to, addressed the way that provider's models are.
+    #[test]
+    fn a_model_the_catalog_has_never_heard_of_is_taken_at_its_word() {
+        let catalog = Catalog::bundled();
+        assert!(catalog.get("github-copilot", "gemini-3.7-flash").is_none());
+
+        let assumed = catalog
+            .assume("github-copilot", "gemini-3.7-flash")
+            .expect("the provider is known even when the model is not");
+        let known = catalog.get("github-copilot", "gemini-3.5-flash").unwrap();
+
+        assert_eq!(assumed.qualified_id(), "github-copilot/gemini-3.7-flash");
+        assert_eq!(assumed.base_url, known.base_url);
+        assert_eq!(assumed.headers, known.headers);
+        assert!(assumed.cost.is_free(), "nothing is known of what it costs");
+    }
+
+    /// Copilot says in a model's name what wire it speaks, so an unlisted one is addressed by the
+    /// same rule as a listed one rather than by whatever its neighbour happens to use.
+    #[test]
+    fn an_assumed_model_speaks_the_wire_its_name_calls_for() {
+        let catalog = Catalog::bundled();
+
+        assert_eq!(
+            catalog.assume("github-copilot", "gpt-5.9").unwrap().api,
+            WireApi::OpenaiResponses
+        );
+        assert_eq!(
+            catalog
+                .assume("github-copilot", "gemini-3.7-flash")
+                .unwrap()
+                .api,
+            WireApi::OpenaiCompletions
+        );
+    }
+
+    /// What it holds is the least the provider offers: promising less than a model gives costs a
+    /// compaction, promising more costs the request.
+    #[test]
+    fn an_assumed_model_claims_no_more_room_than_its_provider_gives() {
+        let catalog = Catalog::bundled();
+        let assumed = catalog
+            .assume("github-copilot", "gemini-3.7-flash")
+            .unwrap();
+
+        let smallest = catalog
+            .by_provider("github-copilot")
+            .map(|model| model.context_window)
+            .min()
+            .unwrap();
+        assert_eq!(assumed.context_window, smallest);
+    }
+
+    /// A provider this build has no way of reaching cannot be taken at anyone's word.
+    #[test]
+    fn a_provider_that_is_not_known_is_not_assumed() {
+        let catalog = Catalog::bundled();
+        assert_eq!(catalog.assume("nowhere-at-all", "some-model"), None);
+        assert_eq!(catalog.assume("github-copilot", "  "), None);
     }
 
     #[test]
@@ -732,7 +834,7 @@ mod tests {
         let model = catalog.get("ollama", "qwen3-coder:30b").unwrap();
         assert_eq!(model.name, "Qwen3 Coder 30B");
         assert!(model.cost.is_free());
-        
+
         let listed = catalog.providers();
         let ollama = listed.iter().position(|name| *name == "ollama").unwrap();
         let ranked = listed

@@ -108,7 +108,7 @@ fn markdown(title: &str, conversation: &[Message]) -> String {
                     }
                 }
             }
-            
+
             Message::ToolResult { .. } => {}
         }
     }
@@ -201,7 +201,6 @@ mod tests {
 
         assert_eq!(url, "https://gist.github.com/x/abc123");
 
-        
         let request = server.await.unwrap();
         assert!(request.contains("post /gists"), "{request}");
         assert!(
@@ -209,7 +208,7 @@ mod tests {
             "{request}"
         );
         assert!(request.contains("user-agent: micro"), "{request}");
-        
+
         assert!(request.contains("\"public\":false"), "{request}");
         assert!(request.contains("conversation.md"), "{request}");
         assert!(request.contains("what does this do"), "{request}");

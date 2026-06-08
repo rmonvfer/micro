@@ -8,8 +8,6 @@ fn plain(src: &str) -> Vec<String> {
         .plain
 }
 
-
-
 #[test]
 fn a_simple_chain_flows_left_to_right() {
     let art = render("flowchart LR\n  A[Start] --> B[Done]").unwrap();
@@ -296,8 +294,6 @@ fn subgraphs_nested_past_the_depth_cap_refuse_to_render() {
     assert!(render(&src).is_none());
 }
 
-
-
 #[test]
 fn a_state_diagram_draws_start_and_end_markers() {
     let src = "stateDiagram-v2\n  [*] --> Still\n  Still --> Moving\n  Moving --> Still\n  Moving --> Crash\n  Crash --> [*]";
@@ -358,8 +354,6 @@ fn a_bad_final_line_is_dropped_and_reported() {
         ]
     );
 }
-
-
 
 #[test]
 fn a_class_diagram_divides_its_box_into_compartments() {
@@ -438,11 +432,9 @@ fn a_dependency_relation_draws_a_dotted_line() {
 fn an_unparseable_class_diagram_renders_nothing() {
     let src = "classDiagram\n  this is not valid at all !!!";
     assert!(render(src).is_none());
-    
+
     assert_eq!(diagram_kind(src), Some(DiagramKind::Class));
 }
-
-
 
 #[test]
 fn an_er_diagram_shows_crows_foot_cardinality() {
@@ -466,8 +458,6 @@ fn an_er_diagram_shows_crows_foot_cardinality() {
         ]
     );
 }
-
-
 
 #[test]
 fn a_sequence_diagram_draws_lifelines_and_messages() {
@@ -564,11 +554,8 @@ fn a_sequence_loop_block_draws_dividers() {
     );
 }
 
-
-
 #[test]
 fn diagram_kind_is_none_for_a_grammar_this_renderer_does_not_draw() {
-    
     assert_eq!(diagram_kind("zenuml\n  A->B: hi"), None);
     assert!(render("zenuml\n  A->B: hi").is_none());
     assert_eq!(diagram_kind("C4Context\n  title System"), None);
@@ -615,8 +602,6 @@ fn diagram_kind_recognises_every_supported_grammar() {
         Some(DiagramKind::Sequence)
     );
 }
-
-
 
 #[test]
 fn source_box_frames_an_unsupported_diagram() {

@@ -7,6 +7,9 @@ use tokio::sync::mpsc::UnboundedReceiver;
 use tokio::sync::mpsc::UnboundedSender;
 use tokio::sync::oneshot;
 
+/// An extension host must answer input callbacks promptly so a stalled host cannot freeze the UI.
+const HOST_ASK_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(500);
+
 /// What is being asked for, and where the answer goes.
 #[derive(Debug)]
 pub struct UiRequest {
@@ -19,7 +22,7 @@ pub struct UiRequest {
     pub detail: Option<String>,
     /// What may be chosen, for a selection.
     pub options: Vec<String>,
-    
+
     pub extension: Option<String>,
     answer: Option<oneshot::Sender<Value>>,
 }
@@ -32,12 +35,10 @@ impl UiRequest {
         }
     }
 
-    
     pub fn cancel(&mut self) {
         self.answer(json!({ "cancelled": true }));
     }
 
-    
     #[cfg(test)]
     pub fn for_test(
         method: impl Into<String>,
@@ -73,7 +74,6 @@ impl UiRequest {
 }
 
 impl Drop for UiRequest {
-    
     fn drop(&mut self) {
         self.cancel();
     }
@@ -143,7 +143,6 @@ pub fn ui_channel() -> (UiAsker, UiRequests) {
     (UiAsker(sender), UiRequests(receiver))
 }
 
-
 #[derive(Debug)]
 pub struct TerminalInputAsk {
     /// The key, written the way a terminal would have sent it.
@@ -184,7 +183,11 @@ impl TerminalInputAsker {
         if self.0.send(ask).is_err() {
             return json!({});
         }
-        receiver.await.unwrap_or_else(|_| json!({}))
+        tokio::time::timeout(HOST_ASK_TIMEOUT, receiver)
+            .await
+            .ok()
+            .and_then(Result::ok)
+            .unwrap_or_else(|| json!({}))
     }
 }
 
@@ -203,7 +206,6 @@ pub fn terminal_input_channel() -> (TerminalInputAsker, TerminalInputAsks) {
     let (sender, receiver) = unbounded_channel();
     (TerminalInputAsker(sender), TerminalInputAsks(receiver))
 }
-
 
 #[derive(Debug)]
 pub struct HostAsk {
@@ -229,7 +231,6 @@ impl Drop for HostAsk {
     }
 }
 
-
 #[derive(Debug, Clone)]
 pub struct HostAsker(UnboundedSender<HostAsk>);
 
@@ -245,7 +246,11 @@ impl HostAsker {
         if self.0.send(ask).is_err() {
             return json!({});
         }
-        receiver.await.unwrap_or_else(|_| json!({}))
+        tokio::time::timeout(HOST_ASK_TIMEOUT, receiver)
+            .await
+            .ok()
+            .and_then(Result::ok)
+            .unwrap_or_else(|| json!({}))
     }
 }
 
@@ -295,7 +300,6 @@ mod tests {
         let asking =
             tokio::spawn(async move { asker.ask("confirm", "sure?", None, Vec::new()).await });
 
-        
         drop(requests.recv().await.expect("a question"));
         assert_eq!(asking.await.unwrap()["cancelled"], true);
     }
@@ -364,6 +368,16 @@ mod tests {
         let (asker, mut asks) = host_ask_channel();
         let asking = tokio::spawn(async move { asker.ask("get_suggestions", json!({})).await });
         drop(asks.recv().await.expect("an ask"));
+        assert_eq!(asking.await.unwrap(), json!({}));
+    }
+
+    #[tokio::test]
+    async fn an_unanswered_host_callback_times_out() {
+        let (asker, mut asks) = host_ask_channel();
+        let asking = tokio::spawn(async move { asker.ask("component_input", json!({})).await });
+        let request = asks.recv().await.expect("an ask");
+        std::mem::forget(request);
+
         assert_eq!(asking.await.unwrap(), json!({}));
     }
 }

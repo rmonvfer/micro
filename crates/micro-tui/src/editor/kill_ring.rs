@@ -1,6 +1,5 @@
 //! The kill ring: what the cut commands cut, and what yank puts back.
 
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum LastAction {
     #[default]

@@ -1,5 +1,7 @@
 //! A fake provider served from the test process, and a scratch home to point the binary at.
 
+#![allow(dead_code)]
+
 use std::collections::BTreeMap;
 use std::collections::VecDeque;
 use std::io::BufRead;
@@ -125,14 +127,13 @@ impl FakeApi {
         std::thread::spawn(move || {
             while running.load(Ordering::Relaxed) {
                 match listener.accept() {
-                    
                     Ok((stream, _)) => {
                         let requests = requests.clone();
                         let headers = headers.clone();
                         let replies = replies.clone();
                         std::thread::spawn(move || serve(stream, &requests, &headers, &replies));
                     }
-                    
+
                     Err(_) => std::thread::sleep(Duration::from_millis(5)),
                 }
             }
@@ -154,7 +155,6 @@ impl FakeApi {
         self.requests.lock().expect("requests lock").len()
     }
 
-    
     pub fn request(&self, index: usize) -> Value {
         let deadline = std::time::Instant::now() + REQUEST_TIMEOUT;
         while std::time::Instant::now() < deadline {
@@ -172,7 +172,6 @@ impl FakeApi {
 
     /// The headers of the request at `index`, keyed by lowercased name.
     pub fn headers(&self, index: usize) -> Headers {
-        
         self.request(index);
         self.headers
             .lock()
@@ -196,9 +195,8 @@ fn serve(
     headers: &Mutex<Vec<Headers>>,
     replies: &Mutex<VecDeque<Reply>>,
 ) {
-    
     let _ = stream.set_nonblocking(false);
-    
+
     let _ = stream.set_read_timeout(Some(CONNECTION_TIMEOUT));
     let _ = stream.set_write_timeout(Some(CONNECTION_TIMEOUT));
     let mut reader = BufReader::new(stream.try_clone().expect("clone the connection"));
@@ -225,7 +223,7 @@ fn serve(
     if reader.read_exact(&mut body).is_err() {
         return;
     }
-    
+
     let Ok(value) = serde_json::from_slice::<Value>(&body) else {
         let _ = write!(
             stream,
@@ -261,7 +259,7 @@ fn serve(
                 body.len()
             );
         }
-        
+
         None => {
             let body = "{\"error\":{\"message\":\"the fake provider ran out of replies\"}}";
             let _ = write!(
@@ -274,7 +272,6 @@ fn serve(
     }
     let _ = stream.flush();
 
-    
     let _ = stream.shutdown(std::net::Shutdown::Write);
     let mut discard = [0u8; 1024];
     while let Ok(read) = stream.read(&mut discard) {
@@ -304,14 +301,12 @@ impl Fixture {
         std::fs::create_dir_all(&home).expect("create the scratch home");
         std::fs::create_dir_all(&workspace).expect("create the scratch workspace");
 
-        
         std::fs::write(
             home.join("auth.json"),
             json!({ "openai": { "type": "api_key", "key": "test-key" } }).to_string(),
         )
         .expect("write auth.json");
 
-        
         std::fs::write(
             home.join("models.json"),
             json!({
@@ -333,7 +328,6 @@ impl Fixture {
         )
         .expect("write models.json");
 
-        
         std::fs::write(
             home.join("config.json"),
             json!({ "default_project_trust": "always" }).to_string(),
@@ -341,7 +335,6 @@ impl Fixture {
         .expect("write config.json");
 
         Fixture {
-            
             root: root.canonicalize().unwrap_or(root),
         }
     }
@@ -371,7 +364,6 @@ impl Fixture {
         self.root.join("xdg/data/micro")
     }
 
-    
     pub fn micro_split(&self) -> Command {
         let home = self.xdg_home();
         let config = self.xdg_config();
@@ -420,12 +412,11 @@ impl Fixture {
             .collect()
     }
 
-    
     pub fn micro(&self) -> Command {
         let mut command = Command::new(env!("CARGO_BIN_EXE_micro"));
         command.current_dir(self.workspace());
         command.env("MICRO_DIR", self.home());
-        
+
         command.env("HOME", self.home());
         for leaked in [
             "MICRO_MODEL",
@@ -451,7 +442,7 @@ impl Fixture {
 
         let mut command = self.micro();
         command.arg("--rpc");
-        
+
         command.args(["-m", "test"]);
         command.stdin(Stdio::piped());
         command.stdout(Stdio::piped());
@@ -464,7 +455,7 @@ impl Fixture {
                 writeln!(stdin, "{line}").expect("a command is written");
             }
         }
-        
+
         drop(child.stdin.take());
 
         let finished = child.wait_with_output().expect("micro --rpc finishes");

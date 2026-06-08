@@ -19,18 +19,25 @@ pub enum ApiKey {
 }
 
 impl ApiKey {
-    /// The key to send now.
-    pub async fn current(&self) -> String {
+    /// The key to send now, or why there is none to send.
+    ///
+    /// A store that cannot produce the credential leaves in hand the last one that worked, which the
+    /// provider is welcome to refuse: whether a token is still good is the provider's to say. It is
+    /// only when there is nothing whatever to send that a request is not worth making, and then what
+    /// the store said is the answer — a service that would not renew a token, or an account that was
+    /// never signed in, is not something a provider can explain on our behalf.
+    pub async fn current(&self) -> Result<String, String> {
         match self {
-            ApiKey::Fixed(key) => key.clone(),
+            ApiKey::Fixed(key) => Ok(key.clone()),
             ApiKey::Stored {
                 store,
                 provider,
                 resolved,
             } => match store.resolve(provider).await {
-                Ok(credential) => credential.token().to_string(),
-                
-                Err(_) => resolved.clone(),
+                Ok(credential) => Ok(credential.token().to_string()),
+
+                Err(_) if !resolved.trim().is_empty() => Ok(resolved.clone()),
+                Err(error) => Err(format!("no credential for {provider}: {error}")),
             },
         }
     }
@@ -78,7 +85,7 @@ mod tests {
     async fn a_fixed_key_is_what_it_was_built_from() {
         let key = ApiKey::from("sk-test");
         assert_eq!(key.as_str(), "sk-test");
-        assert_eq!(key.current().await, "sk-test");
+        assert_eq!(key.current().await, Ok("sk-test".to_string()));
         assert!(!key.is_blank());
         assert!(ApiKey::from("  ").is_blank());
     }
@@ -97,14 +104,34 @@ mod tests {
             provider: "anthropic".into(),
             resolved: "first".into(),
         };
-        assert_eq!(key.current().await, "first");
+        assert_eq!(key.current().await, Ok("first".to_string()));
 
         store
             .set("anthropic", Credential::api_key("second"))
             .unwrap();
-        assert_eq!(key.current().await, "second");
-        
+        assert_eq!(key.current().await, Ok("second".to_string()));
+
         assert_eq!(key.as_str(), "first");
+    }
+
+    /// With nothing in hand and nothing in the store, there is no request to make, and what the
+    /// store said is what there is to report: an empty header is the provider's complaint, not the
+    /// reason behind it.
+    #[tokio::test]
+    async fn a_credential_that_is_nowhere_is_reported_rather_than_sent_empty() {
+        let store = Arc::new(AuthStore::open_at(scratch("nowhere").join("auth.json")).unwrap());
+        let key = ApiKey::Stored {
+            store,
+            provider: micro_auth::GITHUB_COPILOT.into(),
+            resolved: String::new(),
+        };
+
+        let error = key.current().await.expect_err("there is nothing to send");
+        assert!(
+            error.starts_with("no credential for github-copilot"),
+            "{error}"
+        );
+        assert!(key.is_blank());
     }
 
     /// A credential the store cannot produce leaves the request carrying the last one that worked.
@@ -116,10 +143,9 @@ mod tests {
             provider: "anthropic".into(),
             resolved: "in-hand".into(),
         };
-        assert_eq!(key.current().await, "in-hand");
+        assert_eq!(key.current().await, Ok("in-hand".to_string()));
     }
 
-    
     #[tokio::test]
     async fn a_lapsed_copilot_token_is_not_sent_as_it_stands() {
         let store = Arc::new(AuthStore::open_at(scratch("lapsed").join("auth.json")).unwrap());
@@ -139,6 +165,6 @@ mod tests {
             provider: micro_auth::GITHUB_COPILOT.into(),
             resolved: "expired".into(),
         };
-        assert_eq!(key.current().await, "expired");
+        assert_eq!(key.current().await, Ok("expired".to_string()));
     }
 }

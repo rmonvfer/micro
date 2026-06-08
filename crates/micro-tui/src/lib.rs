@@ -21,7 +21,6 @@ mod typeset;
 pub mod ui;
 mod wrap;
 
-
 pub mod editor;
 pub mod theme;
 pub mod transcript;
@@ -51,14 +50,15 @@ pub use ui::UiRequests;
 
 use crate::app::App;
 use crate::app::Outcome;
+use crate::render::pictures::Placement;
 use anyhow::Result;
 use crossterm::event::DisableBracketedPaste;
 use crossterm::event::DisableMouseCapture;
 use crossterm::event::EnableBracketedPaste;
+use crossterm::event::EnableMouseCapture;
 use crossterm::event::Event;
 use crossterm::event::EventStream;
 use crossterm::execute;
-use crossterm::style::Print;
 use crossterm::terminal::disable_raw_mode;
 use crossterm::terminal::enable_raw_mode;
 use crossterm::terminal::EnterAlternateScreen;
@@ -74,6 +74,7 @@ use ratatui::backend::CrosstermBackend;
 use ratatui::text::Line;
 use ratatui::Terminal;
 use serde_json::Value;
+use std::collections::HashSet;
 use std::future::Future;
 use std::io::Stdout;
 use std::sync::Once;
@@ -86,6 +87,17 @@ use tokio::time::MissedTickBehavior;
 const FRAME: Duration = Duration::from_millis(33);
 /// How often the spinner advances and a running turn is repainted.
 const TICK: Duration = Duration::from_millis(80);
+
+/// Ensures remote observers see an interrupted turn as settled even if rendering returns an error.
+struct RemoteTurnGuard(Option<tokio::sync::mpsc::UnboundedSender<crate::remote::ToPhone>>);
+
+impl Drop for RemoteTurnGuard {
+    fn drop(&mut self) {
+        if let Some(outgoing) = self.0.as_ref() {
+            let _ = outgoing.send(crate::remote::ToPhone::Running(false));
+        }
+    }
+}
 
 /// Run the interface with default options.
 pub async fn run(agent: Agent, history: Vec<Message>) -> Result<Vec<Message>> {
@@ -100,7 +112,7 @@ pub async fn run_with(
 ) -> Result<Vec<Message>> {
     install_panic_hook();
     let mut screen = Screen::enter(options.tui_mode)?;
-    
+
     background::prime();
     options.theme = Some(options.theme.unwrap_or_else(background::detect_theme));
     let mode = options.tui_mode;
@@ -108,7 +120,7 @@ pub async fn run_with(
     let mut said = Vec::new();
     let result = drive(&mut screen, &mut agent, &history, options, &mut said).await;
     leave();
-    
+
     if mode == TuiMode::Fullscreen && exit_output == commands::ExitOutput::Transcript {
         use std::io::Write as _;
         let mut out = std::io::stdout();
@@ -135,141 +147,124 @@ async fn drive(
     let host_asker = options.host_asker.take();
     let mut remote = options.remote.take();
     let mut app = App::new(history, options);
-    let outcome = run_loop(
+    let mut interface = Interface {
         screen,
         agent,
-        &mut app,
-        &mut questions,
-        &mut commands,
-        &terminal_input,
-        &host_asker,
-        &mut remote,
-        said,
-    )
-    .await;
+        app: &mut app,
+        questions: &mut questions,
+        commands: &mut commands,
+        terminal_input: &terminal_input,
+        host_asker: &host_asker,
+        remote: &mut remote,
+    };
+    let outcome = run_loop(&mut interface).await;
     *said = app.plain_lines();
     outcome
 }
 
-async fn run_loop(
-    screen: &mut Screen,
-    agent: &mut Agent,
-    app: &mut App,
-    questions: &mut Option<crate::ui::UiRequests>,
-    commands: &mut Option<Box<dyn Commands + 'static>>,
-    terminal_input: &Option<crate::ui::TerminalInputAsker>,
-    host_asker: &Option<crate::ui::HostAsker>,
-    remote: &mut Option<crate::remote::Remote>,
-    _said: &mut Vec<String>,
-) -> Result<()> {
+/// The shared state needed to drive the interactive interface.
+struct Interface<'a> {
+    screen: &'a mut Screen,
+    agent: &'a mut Agent,
+    app: &'a mut App,
+    questions: &'a mut Option<crate::ui::UiRequests>,
+    commands: &'a mut Option<Box<dyn Commands + 'static>>,
+    terminal_input: &'a Option<crate::ui::TerminalInputAsker>,
+    host_asker: &'a Option<crate::ui::HostAsker>,
+    remote: &'a mut Option<crate::remote::Remote>,
+}
+
+/// Work that can complete while the interface is waiting for an event.
+#[derive(Default)]
+struct PendingWork {
+    refreshing: Option<tokio::sync::oneshot::Receiver<Listings>>,
+    suggesting: Option<(String, tokio::sync::oneshot::Receiver<Value>)>,
+    completing: Option<tokio::sync::oneshot::Receiver<Value>>,
+}
+
+async fn run_loop(interface: &mut Interface<'_>) -> Result<()> {
     let mut input = EventStream::new();
-    
-    let mut refreshing: Option<tokio::sync::oneshot::Receiver<Listings>> = None;
-    
-    
-    let mut suggesting: Option<(String, tokio::sync::oneshot::Receiver<Value>)> = None;
-    let mut completing: Option<tokio::sync::oneshot::Receiver<Value>> = None;
+    let mut pending = PendingWork::default();
 
     loop {
-        screen.render(app)?;
-        if app.should_quit {
+        interface.screen.render(interface.app)?;
+        if interface.app.should_quit {
             return Ok(());
         }
 
-        
-        let retired = app.take_retired_tools();
+        let retired = interface.app.take_retired_tools();
         if !retired.is_empty() {
-            agent.remove_tools(&retired);
+            interface.agent.remove_tools(&retired);
         }
 
-        
-        if let Some((provider, key)) = app.take_key_prompt() {
-            if let Some(commands) = commands.as_mut() {
-                app.busy("signing in");
+        if let Some((provider, key)) = interface.app.take_key_prompt() {
+            if let Some(commands) = interface.commands.as_mut() {
+                interface.app.busy("signing in");
                 let stored = commands.store_api_key(provider, key);
-                let applied = await_host(screen, app, &mut input, stored).await?;
-                app.idle();
+                let applied =
+                    await_host(interface.screen, interface.app, &mut input, stored).await?;
+                interface.app.idle();
                 if let Some(applied) = applied {
-                    apply_applied(app, agent, applied);
+                    apply_applied(interface.app, interface.agent, applied);
                 }
             }
             continue;
         }
 
-        
-        if let Some(question) = questions
+        if let Some(question) = interface
+            .questions
             .as_mut()
             .and_then(|questions| questions.try_recv())
         {
-            app.ask_question(question);
+            interface.app.ask_question(question);
             continue;
         }
 
-        match app.take_submission() {
-            Some(line) => {
-                submit(
-                    Turn {
-                        screen,
-                        app,
-                        agent,
-                        input: &mut input,
-                        questions: questions,
-                        terminal_input,
-                        host_asker,
-                        remote,
-                    },
-                    commands.as_deref_mut(),
-                    line,
-                )
-                .await?
-            }
-            None => match next_event(
-                &mut input,
-                &mut refreshing,
-                app,
-                commands,
-                host_asker,
-                &mut suggesting,
-                &mut completing,
-            )
-            .await
-            {
-                
+        match interface.app.take_submission() {
+            Some(line) => submit(interface, &mut input, line).await?,
+            None => match next_event(interface, &mut input, &mut pending).await {
                 Next::Redrawn => continue,
+                Next::Remote(action) => {
+                    let _ = handle_remote(interface.app, action);
+                }
                 Next::Event(event) => {
-                    if offer_component_input(host_asker, app, &event).await {
+                    if offer_component_input(interface.host_asker, interface.app, &event).await {
                         continue;
                     }
-                    if offer_terminal_input(terminal_input, app, &event).await {
+                    if offer_terminal_input(interface.terminal_input, interface.app, &event).await {
                         continue;
                     }
-                    if offer_editor_component_input(host_asker, app, &event).await {
+                    if offer_editor_component_input(interface.host_asker, interface.app, &event)
+                        .await
+                    {
                         continue;
                     }
-                    if offer_shortcut(commands, &event).await {
+                    if offer_shortcut(interface.commands, &event).await {
                         continue;
                     }
-                    match handle(app, event) {
+                    match handle(interface.app, event) {
                         Outcome::Quit => return Ok(()),
-                        Outcome::ExternalEditor => external_editor(screen, app)?,
+                        Outcome::ExternalEditor => {
+                            external_editor(interface.screen, interface.app)?
+                        }
                         Outcome::ThinkingChanged(level) => {
-                            agent.set_thinking(level);
-                            if let Some(commands) = commands.as_mut() {
+                            interface.agent.set_thinking(level);
+                            if let Some(commands) = interface.commands.as_mut() {
                                 commands.thinking_changed(level).await;
                             }
                         }
-                        
+
                         Outcome::CycleModel(forward) => {
-                            app.queue_line(match forward {
+                            interface.app.queue_line(match forward {
                                 true => "/model next",
                                 false => "/model previous",
                             });
                         }
-                        Outcome::Suspend => suspend(screen, app)?,
+                        Outcome::Suspend => suspend(interface.screen, interface.app)?,
                         _ => {}
                     }
                 }
-                
+
                 Next::Ended => return Ok(()),
             },
         }
@@ -354,52 +349,59 @@ enum Next {
     Event(Event),
     /// Something finished behind the interface.
     Redrawn,
+    /// An action sent from a paired phone.
+    Remote(crate::remote::FromPhone),
     /// The input ended, so the session is over.
     Ended,
 }
 
 async fn next_event(
+    interface: &mut Interface<'_>,
     input: &mut EventStream,
-    refreshing: &mut Option<tokio::sync::oneshot::Receiver<Listings>>,
-    app: &mut App,
-    commands: &mut Option<Box<dyn Commands + 'static>>,
-    host_asker: &Option<crate::ui::HostAsker>,
-    suggesting: &mut Option<(String, tokio::sync::oneshot::Receiver<Value>)>,
-    completing: &mut Option<tokio::sync::oneshot::Receiver<Value>>,
+    pending: &mut PendingWork,
 ) -> Next {
-    
-    if refreshing.is_none() && app.picker_mut().is_some_and(|open| open.refreshes()) {
-        if let Some(commands) = commands.as_deref_mut() {
-            *refreshing = commands.begin_model_refresh();
+    if pending.refreshing.is_none()
+        && interface
+            .app
+            .picker_mut()
+            .is_some_and(|open| open.refreshes())
+    {
+        if let Some(commands) = interface.commands.as_deref_mut() {
+            pending.refreshing = commands.begin_model_refresh();
         }
     }
-    
-    
-    if suggesting.is_none() {
-        if let (Some(request), Some(asker)) = (app.take_pending_suggestion_request(), host_asker) {
-            *suggesting = Some(ask_for_suggestions(asker.clone(), request));
+
+    if pending.suggesting.is_none() {
+        if let (Some(request), Some(asker)) = (
+            interface.app.take_pending_suggestion_request(),
+            interface.host_asker,
+        ) {
+            pending.suggesting = Some(ask_for_suggestions(asker.clone(), request));
         }
     }
-    
-    if completing.is_none() {
-        if let (Some(request), Some(asker)) = (app.take_pending_completion_request(), host_asker) {
-            *completing = Some(ask_to_apply_completion(asker.clone(), request));
+
+    if pending.completing.is_none() {
+        if let (Some(request), Some(asker)) = (
+            interface.app.take_pending_completion_request(),
+            interface.host_asker,
+        ) {
+            pending.completing = Some(ask_to_apply_completion(asker.clone(), request));
         }
     }
 
     tokio::select! {
         biased;
         event = input.next() => arrived(event),
-        listings = async { refreshing.as_mut().unwrap().await }, if refreshing.is_some() => {
-            *refreshing = None;
+        listings = async { pending.refreshing.as_mut().unwrap().await }, if pending.refreshing.is_some() => {
+            pending.refreshing = None;
             let listings = listings.unwrap_or_default();
             let errors = listings.errors.clone();
-            let rebuilt = match commands.as_deref_mut() {
+            let rebuilt = match interface.commands.as_deref_mut() {
                 Some(commands) => commands.apply_model_refresh(listings).await,
                 None => None,
             };
-            if let Some(open) = app.picker_mut() {
-                
+            if let Some(open) = interface.app.picker_mut() {
+
                 if let Some(rebuilt) = rebuilt {
                     open.replace_items(rebuilt);
                 }
@@ -418,27 +420,36 @@ async fn next_event(
             Next::Redrawn
         }
         answer = async {
-            let (_, receiver) = suggesting.as_mut().unwrap();
+            let (_, receiver) = pending.suggesting.as_mut().unwrap();
             receiver.await
-        }, if suggesting.is_some() => {
-            
-            let (prefix, _) = suggesting.take().expect("guarded by is_some");
+        }, if pending.suggesting.is_some() => {
+
+            let (prefix, _) = pending.suggesting.take().expect("guarded by is_some");
             if let Ok(answer) = answer {
                 let items = answer
                     .get("items")
                     .and_then(Value::as_array)
                     .cloned()
                     .unwrap_or_default();
-                app.apply_extension_suggestions(&prefix, items);
+                interface.app.apply_extension_suggestions(&prefix, items);
             }
             Next::Redrawn
         }
-        answer = async { completing.as_mut().unwrap().await }, if completing.is_some() => {
-            *completing = None;
+        answer = async { pending.completing.as_mut().unwrap().await }, if pending.completing.is_some() => {
+            pending.completing = None;
             if let Ok(answer) = answer {
-                apply_extension_completion_answer(app, &answer);
+                apply_extension_completion_answer(interface.app, &answer);
             }
             Next::Redrawn
+        }
+        action = async { interface.remote.as_mut().unwrap().incoming.recv().await }, if interface.remote.is_some() => {
+            match action {
+                Some(action) => Next::Remote(action),
+                None => {
+                    *interface.remote = None;
+                    Next::Redrawn
+                }
+            }
         }
     }
 }
@@ -522,9 +533,11 @@ fn external_editor(screen: &mut Screen, app: &mut App) -> Result<()> {
         .or_else(|_| std::env::var("EDITOR"))
         .unwrap_or_else(|_| "vi".to_string());
 
-    let path = std::env::temp_dir().join(format!("micro-prompt-{}.md", std::process::id()));
+    let directory = secure_temp_directory()?;
+    let path = directory.join("prompt.md");
     if std::fs::write(&path, app.editor.text()).is_err() {
         app.notice("Could not write the prompt to a file.", MessageKind::Error);
+        let _ = std::fs::remove_dir_all(directory);
         return Ok(());
     }
 
@@ -546,8 +559,42 @@ fn external_editor(screen: &mut Screen, app: &mut App) -> Result<()> {
             MessageKind::Error,
         ),
     }
-    let _ = std::fs::remove_file(&path);
+    let _ = std::fs::remove_dir_all(directory);
     Ok(())
+}
+
+/// Make a private directory for an editor buffer so no other account can replace its path.
+fn secure_temp_directory() -> Result<std::path::PathBuf> {
+    use rand::RngCore as _;
+
+    for _ in 0..16 {
+        let mut nonce = [0_u8; 16];
+        rand::rngs::OsRng.fill_bytes(&mut nonce);
+        let path = std::env::temp_dir().join(format!("micro-prompt-{}", hex(&nonce)));
+        match std::fs::create_dir(&path) {
+            Ok(()) => {
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt as _;
+                    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700))?;
+                }
+                return Ok(path);
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(error.into()),
+        }
+    }
+    anyhow::bail!("could not make a private temporary directory")
+}
+
+fn hex(bytes: &[u8]) -> String {
+    const DIGITS: &[u8; 16] = b"0123456789abcdef";
+    let mut encoded = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        encoded.push(DIGITS[(byte >> 4) as usize] as char);
+        encoded.push(DIGITS[(byte & 0x0f) as usize] as char);
+    }
+    encoded
 }
 
 /// Send one submitted line where it belongs: to the shell, to a command, or to the model.
@@ -557,107 +604,96 @@ struct Turn<'a> {
     agent: &'a mut Agent,
     input: &'a mut EventStream,
     questions: &'a mut Option<crate::ui::UiRequests>,
+    commands: &'a mut Option<Box<dyn Commands + 'static>>,
     terminal_input: &'a Option<crate::ui::TerminalInputAsker>,
     host_asker: &'a Option<crate::ui::HostAsker>,
     remote: &'a mut Option<crate::remote::Remote>,
 }
 
 async fn submit(
-    turn: Turn<'_>,
-    mut commands: Option<&mut (dyn Commands + 'static)>,
+    interface: &mut Interface<'_>,
+    input: &mut EventStream,
     line: String,
 ) -> Result<()> {
-    let Turn {
-        screen,
-        app,
-        agent,
+    let mut turn = Turn {
+        screen: interface.screen,
+        app: interface.app,
+        agent: interface.agent,
         input,
-        questions,
-        terminal_input,
-        host_asker,
-        remote,
-    } = turn;
-    
-    let line = match commands {
-        Some(ref mut commands) => match commands.submitted(line).await {
+        questions: interface.questions,
+        commands: interface.commands,
+        terminal_input: interface.terminal_input,
+        host_asker: interface.host_asker,
+        remote: interface.remote,
+    };
+
+    let line = match turn.commands.as_mut() {
+        Some(commands) => match commands.submitted(line).await {
             Some(line) => line,
             None => return Ok(()),
         },
         None => line,
     };
 
-    
     if let Some(rest) = line.strip_prefix('!') {
         let (command, shared) = match rest.strip_prefix('!') {
             Some(private) => (private, false),
             None => (rest, true),
         };
-        return run_bash(screen, app, agent, commands, command.trim(), shared).await;
-    }
-
-    let Some(commands) = commands else {
-        mark_prompt_submitted();
-        let prompt = app.begin_turn(&line);
-        return run_turn(
-            screen,
-            app,
-            agent,
-            input,
-            questions,
-            terminal_input,
-            host_asker,
-            remote,
-            None,
-            prompt,
+        return run_bash(
+            turn.screen,
+            turn.app,
+            turn.agent,
+            turn.commands.as_deref_mut(),
+            command.trim(),
+            shared,
         )
         .await;
+    }
+
+    if turn.commands.is_none() {
+        mark_prompt_submitted();
+        let prompt = turn.app.begin_turn(&line);
+        return run_turn(&mut turn, prompt).await;
+    }
+
+    let outcome = {
+        let state = turn.app.conversation_state();
+        turn.app.busy("running");
+        let dispatched = turn
+            .commands
+            .as_mut()
+            .expect("checked above")
+            .dispatch(&line, state);
+        let outcome = await_command(turn.screen, turn.app, turn.input, dispatched).await?;
+        turn.app.idle();
+        outcome
     };
 
-    let state = app.conversation_state();
-    app.busy("running");
-    let dispatched = commands.dispatch(&line, state);
-    let outcome = await_command(screen, app, input, dispatched).await?;
-    app.idle();
-
     match outcome {
-        
         None => Ok(()),
         Some(None) => {
             mark_prompt_submitted();
-            let prompt = app.begin_turn(&line);
-            run_turn(
-                screen,
-                app,
-                agent,
-                input,
-                questions,
-                terminal_input,
-                host_asker,
-                remote,
-                Some(commands),
-                prompt,
-            )
-            .await
+            let prompt = turn.app.begin_turn(&line);
+            run_turn(&mut turn, prompt).await
         }
-        
+
         Some(Some(CommandOutcome::Send { prompt })) => {
             mark_prompt_submitted();
-            let prompt = app.begin_turn(&prompt);
-            run_turn(
-                screen,
-                app,
-                agent,
-                input,
-                questions,
-                terminal_input,
-                host_asker,
-                remote,
-                Some(commands),
-                prompt,
+            let prompt = turn.app.begin_turn(&prompt);
+            run_turn(&mut turn, prompt).await
+        }
+        Some(Some(outcome)) => {
+            apply_outcome(
+                turn.screen,
+                turn.app,
+                turn.agent,
+                turn.input,
+                turn.commands.as_deref_mut().expect("checked above"),
+                outcome,
             )
             .await
         }
-        Some(Some(outcome)) => apply_outcome(screen, app, agent, input, commands, outcome).await,
     }
 }
 
@@ -666,7 +702,7 @@ async fn run_bash(
     screen: &mut Screen,
     app: &mut App,
     agent: &mut Agent,
-    mut commands: Option<&mut (dyn Commands + 'static)>,
+    commands: Option<&mut (dyn Commands + 'static)>,
     command: &str,
     shared: bool,
 ) -> Result<()> {
@@ -678,8 +714,7 @@ async fn run_bash(
     app.busy("running");
     screen.render(app)?;
 
-    
-    let overridden = match commands.as_deref_mut() {
+    let overridden = match commands {
         Some(commands) => {
             commands
                 .before_bash(command, !shared, &app.workspace.display().to_string())
@@ -729,8 +764,6 @@ async fn run_bash(
         },
     );
 
-    
-    
     if shared {
         agent.record(Message::user(format!(
             "<bash command=\"{command}\">\n{output}\n</bash>"
@@ -754,7 +787,6 @@ async fn apply_outcome(
         CommandOutcome::Inspect { title, text, items } => app.open_inspection(title, text, items),
         CommandOutcome::Quit => app.should_quit = true,
         CommandOutcome::Choose(picker) => {
-            
             let asks = picker.refreshes;
             app.open_picker(picker);
             if asks {
@@ -768,7 +800,6 @@ async fn apply_outcome(
             env_names,
         } => app.open_key_prompt(provider, env_names),
 
-        
         CommandOutcome::DeviceLogin { pending } => {
             app.notice(
                 format!(
@@ -790,27 +821,23 @@ async fn apply_outcome(
             }
         }
 
-        
         CommandOutcome::SetThinking { level } => {
             agent.set_thinking(level);
             app.set_thinking(level);
             commands.thinking_changed(level).await;
         }
-        
-        
+
         CommandOutcome::CopyLastAnswer => app.copy_last_answer(),
         CommandOutcome::Export { path } => app.export(path.as_deref()),
 
-        
         CommandOutcome::Compact if !commands.compacting().await => {
             app.notice("An extension stopped the compaction", MessageKind::Error);
         }
         CommandOutcome::Compact => {
-            app.busy("compacting");
+            app.begin_compaction();
             let compacted = await_work(screen, app, input, agent.compact_now()).await?;
-            app.idle();
+            app.finish_compaction();
             match compacted {
-                
                 Some(Ok(summary)) => {
                     commands.compacted(&summary_text(&summary)).await;
                     app.apply_result(Applied::Conversation {
@@ -862,21 +889,18 @@ async fn apply_outcome(
 fn apply_applied(app: &mut App, agent: &mut Agent, applied: Applied) {
     match applied {
         Applied::Conversation { messages, note } => {
-            
             app.forget_scrolled_out();
             agent.set_messages(messages.clone());
             app.apply_result(Applied::Conversation { messages, note });
         }
-        
+
         Applied::SystemPrompt { note, .. } => {
-            
             app.forget_workspace_files();
             if let Some(note) = note {
                 app.notice(note, MessageKind::Info);
             }
         }
         Applied::Model { swap, note } => {
-            
             app.set_model_label(swap.model.id.clone());
             app.context_window = swap.context_window as u32;
             app.set_price(swap.cost.clone());
@@ -961,11 +985,11 @@ where
             biased;
             event = input.next() => match event {
                 Some(Ok(event)) => match handle(app, event) {
-                    
+
                     Outcome::ExternalEditor => {}
-                    
+
                     Outcome::ThinkingChanged(_) => {}
-                    
+
                     Outcome::CycleModel(_) | Outcome::Suspend => {}
                     Outcome::Quit => {
                         app.should_quit = true;
@@ -986,69 +1010,56 @@ where
 }
 
 /// Drive one exchange, keeping the interface live while the agent works.
-async fn run_turn(
-    screen: &mut Screen,
-    app: &mut App,
-    agent: &mut Agent,
-    input: &mut EventStream,
-    questions: &mut Option<crate::ui::UiRequests>,
-    terminal_input: &Option<crate::ui::TerminalInputAsker>,
-    host_asker: &Option<crate::ui::HostAsker>,
-    remote: &mut Option<crate::remote::Remote>,
-    mut commands: Option<&mut (dyn Commands + 'static)>,
-    prompt: Message,
-) -> Result<()> {
-    
-    if let Some(remote) = remote.as_ref() {
+async fn run_turn(turn: &mut Turn<'_>, prompt: Message) -> Result<()> {
+    if let Some(remote) = turn.remote.as_ref() {
         remote.report_running(true);
     }
+    let _remote_turn = RemoteTurnGuard(turn.remote.as_ref().map(|remote| remote.outgoing.clone()));
     let (sender, mut receiver) = unbounded_channel::<AgentEvent>();
-    let progress = app.settings().terminal_progress;
+    let progress = turn.app.settings().terminal_progress;
     report_progress(progress, true);
-    let mut turn = Box::pin(agent.run(prompt, &sender));
+    let mut agent_turn = Box::pin(turn.agent.run(prompt, &sender));
     let mut ticker = tokio::time::interval(TICK);
     ticker.set_missed_tick_behavior(MissedTickBehavior::Delay);
 
     let mut painted = Instant::now() - FRAME;
     let mut aborted = false;
-    
-    
+
     let mut suggesting: Option<(String, tokio::sync::oneshot::Receiver<Value>)> = None;
     let mut completing: Option<tokio::sync::oneshot::Receiver<Value>> = None;
 
     loop {
         if painted.elapsed() >= FRAME {
-            screen.render(app)?;
+            turn.screen.render(turn.app)?;
             painted = Instant::now();
         }
         if suggesting.is_none() {
             if let (Some(request), Some(asker)) =
-                (app.take_pending_suggestion_request(), host_asker)
+                (turn.app.take_pending_suggestion_request(), turn.host_asker)
             {
                 suggesting = Some(ask_for_suggestions(asker.clone(), request));
             }
         }
         if completing.is_none() {
             if let (Some(request), Some(asker)) =
-                (app.take_pending_completion_request(), host_asker)
+                (turn.app.take_pending_completion_request(), turn.host_asker)
             {
                 completing = Some(ask_to_apply_completion(asker.clone(), request));
             }
         }
 
-        
         tokio::select! {
             biased;
-            event = input.next() => match event {
-                Some(Ok(event)) if offer_component_input(host_asker, app, &event).await => {}
-                Some(Ok(event)) if offer_terminal_input(terminal_input, app, &event).await => {}
-                Some(Ok(event)) if offer_editor_component_input(host_asker, app, &event).await => {}
-                Some(Ok(event)) => match handle(app, event) {
+            event = turn.input.next() => match event {
+                Some(Ok(event)) if offer_component_input(turn.host_asker, turn.app, &event).await => {}
+                Some(Ok(event)) if offer_terminal_input(turn.terminal_input, turn.app, &event).await => {}
+                Some(Ok(event)) if offer_editor_component_input(turn.host_asker, turn.app, &event).await => {}
+                Some(Ok(event)) => match handle(turn.app, event) {
                     Outcome::ExternalEditor => {}
                     Outcome::ThinkingChanged(_) => {}
                     Outcome::CycleModel(_) | Outcome::Suspend => {}
                     Outcome::Quit => {
-                        app.should_quit = true;
+                        turn.app.should_quit = true;
                         aborted = true;
                         break;
                     }
@@ -1059,23 +1070,40 @@ async fn run_turn(
                     Outcome::Handled => {}
                 },
                 Some(Err(_)) | None => {
-                    app.should_quit = true;
+                    turn.app.should_quit = true;
                     aborted = true;
                     break;
                 }
             },
-            Some(question) = next_question(questions) => {
-                app.ask_question(question);
-                
-                if app.is_interrupting() {
+            Some(question) = next_question(turn.questions) => {
+                turn.app.ask_question(question);
+
+                if turn.app.is_interrupting() {
                     aborted = true;
                     break;
                 }
             }
             Some(event) = receiver.recv() => {
-                app.apply_event(event);
+                turn.app.apply_event(event);
                 while let Ok(next) = receiver.try_recv() {
-                    app.apply_event(next);
+                    turn.app.apply_event(next);
+                }
+            }
+            action = async { turn.remote.as_mut().unwrap().incoming.recv().await }, if turn.remote.is_some() => {
+                match action {
+                    Some(action) => match handle_remote(turn.app, action) {
+                        Outcome::Interrupt => {
+                            aborted = true;
+                            break;
+                        }
+                        Outcome::Quit => {
+                            turn.app.should_quit = true;
+                            aborted = true;
+                            break;
+                        }
+                        _ => {}
+                    },
+                    None => *turn.remote = None,
                 }
             }
             answer = async {
@@ -1089,32 +1117,51 @@ async fn run_turn(
                         .and_then(Value::as_array)
                         .cloned()
                         .unwrap_or_default();
-                    app.apply_extension_suggestions(&prefix, items);
+                    turn.app.apply_extension_suggestions(&prefix, items);
                 }
             }
             answer = async { completing.as_mut().unwrap().await }, if completing.is_some() => {
                 completing = None;
                 if let Ok(answer) = answer {
-                    apply_extension_completion_answer(app, &answer);
+                    apply_extension_completion_answer(turn.app, &answer);
                 }
             }
-            _ = &mut turn => break,
-            _ = ticker.tick() => app.tick = app.tick.wrapping_add(1),
+            _ = &mut agent_turn => break,
+            _ = ticker.tick() => turn.app.tick = turn.app.tick.wrapping_add(1),
         }
     }
 
-    
-    drop(turn);
+    drop(agent_turn);
     while let Ok(event) = receiver.try_recv() {
-        app.apply_event(event);
+        turn.app.apply_event(event);
     }
-    app.finish_turn(aborted);
-    if let Some(commands) = commands.as_mut() {
+    turn.app.finish_turn(aborted);
+    if let Some(commands) = turn.commands.as_mut() {
         let observed = commands.session_observability().await;
-        app.set_session_observability(observed);
+        turn.app.set_session_observability(observed);
     }
     report_progress(progress, false);
     Ok(())
+}
+
+/// Apply a paired phone's request with the same queueing semantics as the local interface.
+fn handle_remote(app: &mut App, action: crate::remote::FromPhone) -> Outcome {
+    match action {
+        crate::remote::FromPhone::Submit(text) => {
+            app.queue_line(text);
+            Outcome::Handled
+        }
+        crate::remote::FromPhone::Steer(text) => {
+            app.queue_line(text);
+            if app.is_running() {
+                app.handle(event::Action::Interrupt)
+            } else {
+                Outcome::Handled
+            }
+        }
+        crate::remote::FromPhone::FollowUp(text) => app.queue_follow_up_line(text),
+        crate::remote::FromPhone::Abort => app.handle(event::Action::Interrupt),
+    }
 }
 
 /// The next question from an extension.
@@ -1229,7 +1276,7 @@ async fn offer_editor_component_input(
         return false;
     };
     let component_id = component_id.to_string();
-    
+
     let text = app.editor_text();
     let answer = host_asker
         .ask(
@@ -1268,9 +1315,9 @@ pub enum TuiMode {
 /// How tall the inline region starts.
 const INLINE_ROWS: u16 = 8;
 
-/// Alternate scroll.
-const ENABLE_ALTERNATE_SCROLL: &str = "\x1b[?1007h";
-const DISABLE_ALTERNATE_SCROLL: &str = "\x1b[?1007l";
+/// Bracket an escape that moves the cursor, so the interface keeps the one it was drawn with.
+const SAVE_CURSOR: &str = "\x1b7";
+const RESTORE_CURSOR: &str = "\x1b8";
 
 /// The terminal, with the one question micro can answer itself answered here.
 struct Anchored<B> {
@@ -1308,7 +1355,7 @@ impl<B: ratatui::backend::Backend> ratatui::backend::Backend for Anchored<B> {
         let Some(row) = self.anchor else {
             return self.inner.get_cursor_position();
         };
-        
+
         let position = ratatui::layout::Position { x: 0, y: row };
         self.inner.set_cursor_position(position)?;
         Ok(position)
@@ -1354,7 +1401,6 @@ impl<B: ratatui::backend::Backend> ratatui::backend::Backend for Anchored<B> {
     }
 }
 
-
 trait Fresh: ratatui::backend::Backend + Sized {
     fn fresh(&self) -> Self;
 }
@@ -1384,6 +1430,10 @@ struct Screen<B: ratatui::backend::Backend = CrosstermBackend<Stdout>> {
     anchor: Option<u16>,
     /// The terminal's size when the region was last built.
     size: ratatui::layout::Size,
+    /// The images the terminal is already holding, so each one is only sent the once.
+    held: HashSet<u32>,
+    /// Where the images were put last time, so they are only moved when they have moved.
+    shown: Vec<Placement>,
 }
 
 /// Build an inline region `rows` tall at the backend's anchor.
@@ -1404,46 +1454,58 @@ where
 }
 
 impl Screen {
-    /// Take the terminal, without asking it to report the mouse.
+    /// Take the terminal and enable the input modes the interface handles.
     fn enter(mode: TuiMode) -> Result<Self> {
         enable_raw_mode()?;
-        
-        let anchor = crossterm::cursor::position().ok().map(|(_, row)| row);
-        match mode {
-            TuiMode::Fullscreen => {
-                execute!(
-                    std::io::stdout(),
-                    EnterAlternateScreen,
-                    EnableBracketedPaste,
-                    Print(ENABLE_ALTERNATE_SCROLL)
-                )?;
-                let mut terminal = Terminal::new(Anchored::new(anchor))?;
-                terminal.clear()?;
-                let size = terminal.size()?;
-                Ok(Screen {
-                    terminal,
-                    mode,
-                    rows: 0,
-                    anchor,
-                    size,
-                })
+        let result = (|| {
+            let anchor = crossterm::cursor::position().ok().map(|(_, row)| row);
+            match mode {
+                TuiMode::Fullscreen => {
+                    execute!(
+                        std::io::stdout(),
+                        EnterAlternateScreen,
+                        EnableBracketedPaste,
+                        EnableMouseCapture
+                    )?;
+                    let mut terminal = Terminal::new(Anchored::new(anchor))?;
+                    terminal.clear()?;
+                    let size = terminal.size()?;
+                    let mut screen = Screen {
+                        terminal,
+                        mode,
+                        rows: 0,
+                        anchor,
+                        size,
+                        held: HashSet::new(),
+                        shown: Vec::new(),
+                    };
+                    screen.measure_cells();
+                    Ok(screen)
+                }
+                TuiMode::Inline => {
+                    execute!(std::io::stdout(), EnableBracketedPaste, EnableMouseCapture)?;
+
+                    let terminal = inline_region(Anchored::new(anchor), INLINE_ROWS)?;
+                    let size = terminal.size()?;
+                    let mut screen = Screen {
+                        terminal,
+                        mode,
+                        rows: 0,
+                        anchor: None,
+                        size,
+                        held: HashSet::new(),
+                        shown: Vec::new(),
+                    };
+                    screen.settle();
+                    screen.measure_cells();
+                    Ok(screen)
+                }
             }
-            TuiMode::Inline => {
-                execute!(std::io::stdout(), EnableBracketedPaste)?;
-                
-                let terminal = inline_region(Anchored::new(anchor), INLINE_ROWS)?;
-                let size = terminal.size()?;
-                let mut screen = Screen {
-                    terminal,
-                    mode,
-                    rows: 0,
-                    anchor: None,
-                    size,
-                };
-                screen.settle();
-                Ok(screen)
-            }
+        })();
+        if result.is_err() {
+            leave();
         }
+        result
     }
 
     /// Switch between the terminal's scrollback and an alternate screen without ending the session.
@@ -1454,13 +1516,12 @@ impl Screen {
 
         match mode {
             TuiMode::Fullscreen => {
-                
                 self.anchor = Some(self.terminal.get_frame().area().y);
                 execute!(
                     std::io::stdout(),
                     EnterAlternateScreen,
                     EnableBracketedPaste,
-                    Print(ENABLE_ALTERNATE_SCROLL)
+                    EnableMouseCapture
                 )?;
                 let mut terminal = Terminal::new(Anchored::new(self.anchor))?;
                 terminal.clear()?;
@@ -1473,9 +1534,9 @@ impl Screen {
                     std::io::stdout(),
                     LeaveAlternateScreen,
                     EnableBracketedPaste,
-                    Print(DISABLE_ALTERNATE_SCROLL)
+                    EnableMouseCapture
                 )?;
-                
+
                 self.size = self.terminal.size()?;
                 self.rebuild(INLINE_ROWS, true)?;
             }
@@ -1493,13 +1554,13 @@ impl Screen {
                     std::io::stdout(),
                     EnterAlternateScreen,
                     EnableBracketedPaste,
-                    Print(ENABLE_ALTERNATE_SCROLL)
+                    EnableMouseCapture
                 )?;
                 self.terminal.clear()?;
             }
             TuiMode::Inline => {
-                execute!(std::io::stdout(), EnableBracketedPaste)?;
-                
+                execute!(std::io::stdout(), EnableBracketedPaste, EnableMouseCapture)?;
+
                 if let Ok((_, row)) = crossterm::cursor::position() {
                     self.anchor = Some(row);
                 }
@@ -1523,8 +1584,28 @@ where
         self.anchor = Some(area.y);
     }
 
+    /// Say that the screen no longer holds the images where they were left, so the next frame
+    /// puts them back rather than trusting what is already there.
+    fn moved(&mut self) {
+        self.shown.clear();
+    }
+
+    /// Take the terminal's word for how large one of its cells is.
+    ///
+    /// This is what a picture's shape is worked out against, so it is asked again whenever the
+    /// window changes: the reader may have changed the font size rather than the window.
+    fn measure_cells(&mut self) {
+        if let Ok(window) = self.terminal.backend_mut().window_size() {
+            images::note_cell_size(
+                (window.pixels.width, window.pixels.height),
+                (window.columns_rows.width, window.columns_rows.height),
+            );
+        }
+    }
+
     /// Replace the region with one `rows` tall at the kept anchor.
     fn rebuild(&mut self, rows: u16, clear_below: bool) -> Result<()> {
+        self.moved();
         if clear_below {
             if let Some(row) = self.anchor {
                 let backend = self.terminal.backend_mut();
@@ -1540,6 +1621,7 @@ where
 
     /// Blank every row the region stands on, leaving the rest of the screen alone.
     fn blank_footprint(&mut self) -> Result<()> {
+        self.moved();
         let area = self.terminal.get_frame().area();
         let backend = self.terminal.backend_mut();
         for row in area.top()..area.bottom() {
@@ -1550,6 +1632,19 @@ where
         Ok(())
     }
 
+    /// Notice a resize that ratatui handles itself, whose redraw still costs the screen its
+    /// pictures and may cost the terminal the images it was holding.
+    fn notice_resize(&mut self) -> Result<()> {
+        let size = self.terminal.size()?;
+        if size != self.size {
+            self.size = size;
+            self.moved();
+            self.held.clear();
+            self.measure_cells();
+        }
+        Ok(())
+    }
+
     /// Follow the terminal through a resize, before ratatui tries to.
     fn fit_screen(&mut self) -> Result<()> {
         let size = self.terminal.size()?;
@@ -1557,11 +1652,15 @@ where
             return Ok(());
         }
         self.size = size;
+        // A terminal may drop the images it holds when its window is resized, so every picture
+        // is sent again rather than trusted to have survived.
+        self.held.clear();
+        self.measure_cells();
         let rows = self.rows.clamp(1, size.height.max(1));
         self.anchor = self
             .anchor
             .map(|row| row.min(size.height.saturating_sub(rows)));
-        
+
         self.rebuild(rows, true)
     }
 
@@ -1570,13 +1669,14 @@ where
         if finished.is_empty() {
             return Ok(());
         }
+        self.moved();
         let rows = finished.len() as u16;
         self.terminal.insert_before(rows, |buffer| {
             for (offset, line) in finished.iter().enumerate() {
                 buffer.set_line(0, offset as u16, line, buffer.area.width);
             }
         })?;
-        
+
         self.anchor = Some(self.terminal.get_frame().area().y);
         self.terminal.backend_mut().anchor = self.anchor;
         Ok(())
@@ -1596,26 +1696,165 @@ where
         }
     }
 
-    
     fn render(&mut self, app: &mut App) -> Result<()> {
         if self.mode == TuiMode::Inline {
             self.fit_screen()?;
-            
+
             let finished = app.take_scrolled_out();
             self.insert(&finished)?;
             let wanted = render::interface_rows(app, &app.theme, self.size.width, self.rows).max(1);
             self.fit_rows(wanted, app.settings().clear_on_shrink)?;
+        } else {
+            self.notice_resize()?;
         }
-        self.terminal.draw(|frame| render::draw(frame, app))?;
+        let vacated = match app.pictures().protocol() {
+            Some(capabilities::ImageProtocol::ITerm2) => {
+                let shown = self.shown.clone();
+                let mut vacated = String::new();
+                self.terminal.draw(|frame| {
+                    render::draw(frame, app);
+                    if app.placements() != shown.as_slice() {
+                        vacated = vacated_blanks(&shown, frame.buffer_mut());
+                    }
+                })?;
+                vacated
+            }
+            _ => {
+                self.terminal.draw(|frame| render::draw(frame, app))?;
+                String::new()
+            }
+        };
+        self.show_pictures(app, &vacated);
         if let Some(title) = app.take_title_change() {
             set_terminal_title(&title);
         }
         Ok(())
     }
+
+    /// Put this frame's images on the screen.
+    ///
+    /// An image is not a cell and cannot travel in the frame's buffer: the escape that draws one
+    /// carries the whole picture and leaves the cursor somewhere the buffer does not expect. So the
+    /// images go on afterwards, over the blank rows the transcript held open for them, and the
+    /// cursor is put back where the frame left it.
+    ///
+    /// Every frame that moves an image first takes the last frame's images off the screen, so a
+    /// picture is never left behind over rows that have since been redrawn. What the terminal holds
+    /// survives that, so each picture is sent once however often it is drawn.
+    fn show_pictures(&mut self, app: &App, vacated: &str) {
+        let Some(protocol) = app.pictures().protocol() else {
+            return;
+        };
+
+        if app.placements() == self.shown {
+            return;
+        }
+        let escapes = picture_escapes(
+            protocol,
+            vacated,
+            &self.shown,
+            app.placements(),
+            app.pictures(),
+            &mut self.held,
+        );
+
+        use std::io::Write as _;
+        let mut stdout = std::io::stdout();
+        if stdout
+            .write_all(escapes.as_bytes())
+            .and_then(|()| stdout.flush())
+            .is_ok()
+        {
+            self.shown = app.placements().to_vec();
+        }
+    }
+}
+
+/// The escapes that take the images in `shown` off the screen and put the ones in `wanted` on,
+/// sending any picture the terminal is not holding yet and adding it to `held`.
+///
+/// A terminal whose images are cell content has nothing to name a picture by once it is drawn, so
+/// the cells its pictures vacated are handed in as `vacated` and painted over instead.
+fn picture_escapes(
+    protocol: capabilities::ImageProtocol,
+    vacated: &str,
+    shown: &[Placement],
+    wanted: &[Placement],
+    pictures: &render::pictures::Pictures,
+    held: &mut HashSet<u32>,
+) -> String {
+    let mut out = String::from(SAVE_CURSOR);
+    out.push_str(vacated);
+
+    let mut taken_off = HashSet::new();
+    for placement in shown {
+        if taken_off.insert(placement.id) {
+            out.push_str(&images::remove(protocol, placement.id));
+        }
+    }
+    for placement in wanted {
+        let Some(data) = pictures.data(placement.id) else {
+            continue;
+        };
+        if held.insert(placement.id) {
+            out.push_str(&images::transmit(protocol, data, placement.id));
+        }
+
+        out.push_str(&format!(
+            "\x1b[{};{}H",
+            placement.row + 1,
+            placement.column + 1
+        ));
+        out.push_str(&images::place(
+            protocol,
+            data,
+            placement.id,
+            placement.columns,
+            placement.rows,
+            placement.band,
+        ));
+    }
+    out.push_str(RESTORE_CURSOR);
+    out
+}
+
+/// The cells iTerm2 images were drawn over, blanked wherever this frame still leaves them blank.
+///
+/// An iTerm2 image is cell content with no handle to take it off the screen by, so a picture that
+/// moved or went away would stay painted: to ratatui the cells it held are spaces, and it repaints
+/// only what changed. A row the transcript has since written words over repaints itself, so only
+/// the rows the frame left blank are painted over here.
+fn vacated_blanks(shown: &[Placement], drawn: &ratatui::buffer::Buffer) -> String {
+    let mut out = String::new();
+    for placement in shown {
+        for row in 0..placement.rows {
+            let y = placement.row as usize + row;
+            let Ok(y16) = u16::try_from(y) else {
+                continue;
+            };
+            let blank = (0..placement.columns).all(|column| {
+                let x = placement.column as usize + column;
+                let Ok(x16) = u16::try_from(x) else {
+                    return true;
+                };
+                drawn
+                    .cell(ratatui::layout::Position { x: x16, y: y16 })
+                    .is_none_or(|cell| cell.symbol() == " ")
+            });
+            if blank {
+                out.push_str(&format!(
+                    "\x1b[{};{}H{}",
+                    y + 1,
+                    placement.column + 1,
+                    " ".repeat(placement.columns)
+                ));
+            }
+        }
+    }
+    out
 }
 
 fn leave() {
-    
     if let Some(protocol) = capabilities::detect().images {
         if let Some(escape) = images::forget_all(protocol) {
             use std::io::Write as _;
@@ -1627,7 +1866,6 @@ fn leave() {
         std::io::stdout(),
         DisableBracketedPaste,
         DisableMouseCapture,
-        Print(DISABLE_ALTERNATE_SCROLL),
         LeaveAlternateScreen
     );
     let _ = disable_raw_mode();
@@ -1648,6 +1886,196 @@ fn install_panic_hook() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    use crate::capabilities::ImageProtocol;
+    use crate::render::pictures::Pictures;
+
+    #[test]
+    fn an_editor_buffer_has_a_private_temporary_directory() {
+        let directory = secure_temp_directory().expect("temporary directory");
+        let metadata = std::fs::metadata(&directory).expect("directory metadata");
+        assert!(metadata.is_dir());
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            assert_eq!(metadata.permissions().mode() & 0o077, 0);
+        }
+        std::fs::remove_dir_all(directory).expect("remove temporary directory");
+    }
+
+    #[test]
+    fn phone_actions_use_the_local_queue_and_interrupt_rules() {
+        let mut app = App::new(&[], TuiOptions::default());
+        assert_eq!(
+            handle_remote(&mut app, crate::remote::FromPhone::Submit("first".into())),
+            Outcome::Handled
+        );
+        assert_eq!(app.take_submission().as_deref(), Some("first"));
+
+        app.begin_turn("active");
+        assert_eq!(
+            handle_remote(&mut app, crate::remote::FromPhone::Steer("urgent".into())),
+            Outcome::Interrupt
+        );
+        assert_eq!(app.take_submission().as_deref(), Some("urgent"));
+    }
+
+    /// A picture, and where the frame put it.
+    fn pictured(data: &str, row: u16) -> (Pictures, Vec<Placement>) {
+        let mut pictures = Pictures::new(Some(ImageProtocol::Kitty));
+        pictures.reserve(data, 40, row as usize).expect("reserved");
+        let placements = pictures.placements(ratatui::layout::Rect::new(0, 0, 40, 20), 0, 0);
+        (pictures, placements)
+    }
+
+    /// A base64 PNG header describing an image of the given size.
+    fn png(width: u32, height: u32) -> String {
+        let mut bytes = vec![0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a];
+        bytes.extend([0, 0, 0, 13]);
+        bytes.extend(b"IHDR");
+        bytes.extend(width.to_be_bytes());
+        bytes.extend(height.to_be_bytes());
+        crate::typeset::base64(&bytes)
+    }
+
+    /// The interface is drawn from the cursor, so the images must hand it back untouched.
+    #[test]
+    fn drawing_the_images_leaves_the_cursor_where_the_frame_left_it() {
+        let (pictures, placements) = pictured(&png(90, 18), 3);
+        let escapes = picture_escapes(
+            ImageProtocol::Kitty,
+            "",
+            &[],
+            &placements,
+            &pictures,
+            &mut HashSet::new(),
+        );
+
+        assert!(escapes.starts_with(SAVE_CURSOR));
+        assert!(escapes.ends_with(RESTORE_CURSOR));
+
+        assert!(escapes.contains("C=1"));
+    }
+
+    /// The rows an image sits on are redrawn as the conversation moves, so a picture comes off the
+    /// screen before it goes back on, and is never left behind over what replaced it.
+    #[test]
+    fn a_picture_comes_off_the_screen_before_it_goes_back_on() {
+        let (pictures, placements) = pictured(&png(90, 18), 3);
+        let moved = pictures.placements(ratatui::layout::Rect::new(0, 0, 40, 20), 0, 2);
+        let escapes = picture_escapes(
+            ImageProtocol::Kitty,
+            "",
+            &placements,
+            &moved,
+            &pictures,
+            &mut HashSet::new(),
+        );
+
+        let id = placements[0].id;
+        let off = escapes
+            .find(&format!("a=d,d=i,i={id}"))
+            .expect("taken off the screen");
+        let on = escapes.find("a=p").expect("and then put back");
+        assert!(off < on, "off before on");
+    }
+
+    /// Whatever the terminal was showing before the session started is not ours to take away.
+    #[test]
+    fn the_first_frame_takes_nothing_off_the_screen() {
+        let (pictures, placements) = pictured(&png(90, 18), 3);
+        let escapes = picture_escapes(
+            ImageProtocol::Kitty,
+            "",
+            &[],
+            &placements,
+            &pictures,
+            &mut HashSet::new(),
+        );
+
+        assert!(!escapes.contains("a=d"), "nothing was ours yet");
+    }
+
+    /// A picture crosses the wire once. Redrawing it afterwards costs a handful of bytes, not the
+    /// whole image, which is what kept the interface from answering the keyboard.
+    #[test]
+    fn a_picture_is_only_sent_to_the_terminal_once() {
+        let image = png(90, 18);
+        let (pictures, placements) = pictured(&image, 3);
+        let mut held = HashSet::new();
+
+        let first = picture_escapes(
+            ImageProtocol::Kitty,
+            "",
+            &[],
+            &placements,
+            &pictures,
+            &mut held,
+        );
+        assert!(first.contains(&image), "the picture itself goes once");
+
+        let again = picture_escapes(
+            ImageProtocol::Kitty,
+            "",
+            &placements,
+            &placements,
+            &pictures,
+            &mut held,
+        );
+        assert!(!again.contains(&image), "and never again");
+        assert!(again.contains("a=p"), "it is still drawn");
+        assert!(again.len() < 120, "{} bytes to redraw", again.len());
+    }
+
+    /// The escape carries the row and column the transcript left for the picture, counted from one
+    /// the way a terminal counts.
+    #[test]
+    fn a_picture_is_drawn_on_the_row_the_transcript_held_for_it() {
+        let (pictures, placements) = pictured(&png(90, 18), 3);
+        let escapes = picture_escapes(
+            ImageProtocol::Kitty,
+            "",
+            &[],
+            &placements,
+            &pictures,
+            &mut HashSet::new(),
+        );
+
+        assert!(escapes.contains("\x1b[4;1H"), "{escapes:?}");
+    }
+
+    /// An iTerm2 image is cell content that nothing can name once it is drawn: when its placement
+    /// moves, the cells the frame left blank are painted over, while a row the transcript has
+    /// written words over is left to the words.
+    #[test]
+    fn an_iterm_picture_that_moves_has_its_blank_rows_painted_over() {
+        let mut pictures = Pictures::new(Some(ImageProtocol::ITerm2));
+        pictures
+            .reserve_sized(&png(90, 36), (10, 2), 40, 3)
+            .expect("reserved");
+        let shown = pictures.placements(ratatui::layout::Rect::new(0, 0, 40, 20), 0, 0);
+        assert_eq!(shown[0].rows, 2);
+
+        // The frame after a one-line scroll: words landed on the picture's first row, and its
+        // second row is still blank.
+        let mut drawn = ratatui::buffer::Buffer::empty(ratatui::layout::Rect::new(0, 0, 40, 20));
+        drawn.set_string(
+            0,
+            3,
+            "words the transcript wrote",
+            ratatui::style::Style::default(),
+        );
+
+        let vacated = vacated_blanks(&shown, &drawn);
+        assert!(
+            !vacated.contains("\x1b[4;1H"),
+            "the written row keeps its words: {vacated:?}"
+        );
+        assert!(
+            vacated.contains("\x1b[5;1H"),
+            "the blank row is painted over: {vacated:?}"
+        );
+    }
 
     /// Waiting answers three different ways, and two of them are not the end of the session.
     #[test]
@@ -1689,14 +2117,13 @@ mod tests {
         ];
         let mut backend =
             Anchored::over(ratatui::backend::TestBackend::with_lines(screen), Some(2));
-        
+
         backend
             .set_cursor_position(ratatui::layout::Position { x: 3, y: 9 })
             .unwrap();
 
         let mut terminal = inline_region(backend, 8).unwrap();
 
-        
         assert_eq!(
             terminal.get_frame().area(),
             ratatui::layout::Rect::new(0, 2, 4, 8)
@@ -1705,19 +2132,16 @@ mod tests {
         terminal.backend().inner.assert_buffer_lines(screen);
     }
 
-    
     #[test]
     fn a_region_that_scrolled_reports_where_it_landed() {
         let backend = Anchored::over(ratatui::backend::TestBackend::new(20, 10), Some(6));
 
-        
         let mut terminal = inline_region(backend, 10).unwrap();
 
         assert_eq!(terminal.get_frame().area().y, 0);
         assert_eq!(terminal.backend().anchor, Some(0));
     }
 
-    
     fn inline_screen(
         backend: ratatui::backend::TestBackend,
         anchor: u16,
@@ -1731,6 +2155,8 @@ mod tests {
             rows: 0,
             anchor: None,
             size,
+            held: HashSet::new(),
+            shown: Vec::new(),
         };
         screen.settle();
         screen
@@ -1790,7 +2216,6 @@ mod tests {
             "          ",
         ]);
 
-        
         screen.fit_rows(9, false).unwrap();
         paint(&mut screen, 'B');
         assert_eq!(screen.anchor, Some(3));
@@ -1817,7 +2242,6 @@ mod tests {
             "history-04",
         ]);
 
-        
         screen.fit_rows(4, false).unwrap();
         paint(&mut screen, 'C');
         assert_eq!(screen.anchor, Some(3));
@@ -1836,7 +2260,6 @@ mod tests {
             "          ",
         ]);
 
-        
         screen.fit_rows(6, false).unwrap();
         paint(&mut screen, 'D');
         screen.terminal.backend().inner.assert_buffer_lines([
@@ -1855,7 +2278,6 @@ mod tests {
         ]);
     }
 
-    
     #[test]
     fn clear_on_shrink_sweeps_to_the_foot_of_the_screen() {
         let backend = ratatui::backend::TestBackend::new(10, 12);
@@ -1880,7 +2302,6 @@ mod tests {
         ]);
     }
 
-    
     #[test]
     fn inserted_lines_land_above_the_region_and_the_region_follows() {
         let backend = ratatui::backend::TestBackend::new(10, 12);
@@ -1906,7 +2327,6 @@ mod tests {
             "          ",
         ]);
 
-        
         screen.fit_rows(2, false).unwrap();
         paint(&mut screen, 'C');
         screen.terminal.backend().inner.assert_buffer_lines([
@@ -1925,14 +2345,12 @@ mod tests {
         ]);
     }
 
-    
     #[test]
     fn a_resize_rebuilds_the_region_on_the_screen_that_remains() {
         let backend = ratatui::backend::TestBackend::new(10, 12);
         let mut screen = inline_screen(backend, 4, 8);
         paint(&mut screen, 'A');
 
-        
         screen.terminal.backend_mut().inner.resize(10, 6);
         screen.fit_screen().unwrap();
         paint(&mut screen, 'B');
@@ -1948,12 +2366,72 @@ mod tests {
             "B5        ",
         ]);
 
-        
         screen.terminal.backend_mut().inner.resize(10, 12);
         screen.fit_screen().unwrap();
         paint(&mut screen, 'C');
         assert_eq!(screen.anchor, Some(0));
         assert_eq!(screen.rows, 6);
+    }
+
+    /// A terminal may drop the images it holds when its window is resized: what looked stored is
+    /// gone, and placing a picture by number alone draws nothing. The frame after a resize must
+    /// send every picture again, not merely place it.
+    #[test]
+    fn a_resize_forgets_what_the_terminal_held_so_pictures_are_sent_again() {
+        let backend = ratatui::backend::TestBackend::new(10, 12);
+        let mut screen = inline_screen(backend, 4, 8);
+        screen.held.insert(7);
+        screen.shown.push(Placement {
+            id: 7,
+            column: 0,
+            row: 0,
+            columns: 4,
+            rows: 2,
+            band: None,
+        });
+
+        screen.terminal.backend_mut().inner.resize(10, 6);
+        screen.fit_screen().unwrap();
+
+        assert!(screen.held.is_empty(), "the pictures are sent afresh");
+        assert!(screen.shown.is_empty(), "and placed afresh");
+    }
+
+    /// A fullscreen resize is ratatui's to redraw, but the pictures are still the screen's: the
+    /// redraw wipes them, and the terminal may have dropped what it held, so both are forgotten
+    /// and the next frame sends and places them again.
+    #[test]
+    fn a_fullscreen_resize_forgets_the_pictures_so_they_are_drawn_again() {
+        let backend = ratatui::backend::TestBackend::new(10, 12);
+        let terminal = Terminal::new(Anchored::over(backend, None)).unwrap();
+        let size = terminal.size().unwrap();
+        let mut screen = Screen {
+            terminal,
+            mode: TuiMode::Fullscreen,
+            rows: 0,
+            anchor: None,
+            size,
+            held: HashSet::new(),
+            shown: Vec::new(),
+        };
+        screen.held.insert(7);
+        screen.shown.push(Placement {
+            id: 7,
+            column: 0,
+            row: 0,
+            columns: 4,
+            rows: 2,
+            band: None,
+        });
+
+        screen.notice_resize().unwrap();
+        assert_eq!(screen.held.len(), 1, "the same size forgets nothing");
+
+        screen.terminal.backend_mut().inner.resize(10, 6);
+        screen.notice_resize().unwrap();
+
+        assert!(screen.held.is_empty(), "the pictures are sent afresh");
+        assert!(screen.shown.is_empty(), "and placed afresh");
     }
 
     /// A key offered to `setEditorComponent`'s replacement carries the built-in editor's text along

@@ -13,6 +13,23 @@ pub const COPILOT_PROVIDER: &str = "github-copilot";
 pub const COPILOT_BASE_URL: &str = "https://api.individual.githubcopilot.com";
 const COPILOT_API_VERSION: &str = "2025-04-01";
 
+/// Copilot answers an editor rather than a program, and turns away any request that does not say
+/// which editor it is. Every request carries these, listing the models included.
+const COPILOT_EDITOR: [(&str, &str); 4] = [
+    ("User-Agent", "GitHubCopilotChat/0.35.0"),
+    ("Editor-Version", "vscode/1.107.0"),
+    ("Editor-Plugin-Version", "copilot-chat/0.35.0"),
+    ("Copilot-Integration-Id", "vscode-chat"),
+];
+
+/// Those headers, as a model carries them.
+fn copilot_editor_headers() -> BTreeMap<String, String> {
+    COPILOT_EDITOR
+        .iter()
+        .map(|(name, value)| (name.to_string(), value.to_string()))
+        .collect()
+}
+
 const LISTING_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Fetch OpenRouter's model list.
@@ -29,12 +46,15 @@ pub async fn fetch_copilot(
     base_url: &str,
 ) -> Result<Vec<ModelDef>> {
     let url = format!("{}/models", base_url.trim_end_matches('/'));
-    let headers = [
+    let mut headers = vec![
         ("Authorization", format!("Bearer {token}")),
         ("X-GitHub-Api-Version", COPILOT_API_VERSION.to_string()),
-        ("Copilot-Integration-Id", "vscode-chat".to_string()),
-        ("Editor-Version", "vscode/1.107.0".to_string()),
     ];
+    headers.extend(
+        COPILOT_EDITOR
+            .iter()
+            .map(|(name, value)| (*name, value.to_string())),
+    );
     let body = get(client, &url, COPILOT_PROVIDER, &headers).await?;
     parse_copilot(&body, base_url)
 }
@@ -156,7 +176,8 @@ pub fn parse_copilot(body: &str, base_url: &str) -> Result<Vec<ModelDef>> {
                 max_output_tokens: limits.max_output_tokens.unwrap_or(UNKNOWN_LIMIT),
                 reasoning: false,
                 input,
-                headers: BTreeMap::new(),
+
+                headers: copilot_editor_headers(),
                 aliases: Vec::new(),
                 cost: ModelCost::default(),
                 compat: Default::default(),
@@ -216,6 +237,14 @@ impl<'a> CopilotCredentials<'a> {
     }
 }
 
+/// The wire a model speaks when the catalog does not list it, for the providers whose models say so
+/// in their names. Nothing is assumed of the rest.
+pub(crate) fn assumed_api(provider: &str, id: &str) -> Option<WireApi> {
+    match provider {
+        COPILOT_PROVIDER => Some(copilot_api(id)),
+        _ => None,
+    }
+}
 
 fn copilot_api(id: &str) -> WireApi {
     if id == "claude-fable-5" {
@@ -257,14 +286,13 @@ fn per_million(price: Option<&str>) -> f64 {
     if !parsed.is_finite() {
         return 0.0;
     }
-    
+
     (parsed * 1_000_000.0 * 1e6).round() / 1e6
 }
 
 fn modalities<'a>(names: impl Iterator<Item = &'a str>) -> Vec<Modality> {
     let mut input = Vec::new();
     for name in names {
-        
         let modality = match name {
             "text" => Modality::Text,
             "image" => Modality::Image,
@@ -437,7 +465,6 @@ mod tests {
         let models = parse_openrouter(OPENROUTER_SAMPLE).unwrap();
         let glm = models.iter().find(|m| m.id == "z-ai/glm-5.2").unwrap();
 
-        
         assert_close(glm.cost.cache_write, 0.0);
         assert_close(glm.cost.input, 0.76);
         assert_eq!(glm.input, vec![Modality::Text]);
@@ -512,6 +539,42 @@ mod tests {
     fn a_copilot_listing_reports_no_pricing() {
         let models = parse_copilot(COPILOT_SAMPLE, COPILOT_BASE_URL).unwrap();
         assert!(models.iter().all(|m| m.cost.is_free()));
+    }
+
+    /// Copilot turns away a request that does not name the editor asking, so a model discovered
+    /// from the listing carries the same headers as one that shipped in the catalog. Without this
+    /// a model too new to be bundled answers 400 and nothing else.
+    #[test]
+    fn a_listed_copilot_model_names_the_editor_it_is_for() {
+        let models = parse_copilot(COPILOT_SAMPLE, COPILOT_BASE_URL).unwrap();
+
+        assert!(!models.is_empty());
+        for model in &models {
+            assert_eq!(
+                model.headers.get("Editor-Version").map(String::as_str),
+                Some("vscode/1.107.0"),
+                "{} was listed without an editor",
+                model.id
+            );
+            assert!(model.headers.contains_key("Copilot-Integration-Id"));
+            assert!(model.headers.contains_key("Editor-Plugin-Version"));
+            assert!(model.headers.contains_key("User-Agent"));
+        }
+    }
+
+    /// A listed model the catalog has never heard of is the case the bundled headers cannot cover.
+    #[test]
+    fn a_copilot_model_the_catalog_does_not_know_still_names_the_editor() {
+        let mut catalog = Catalog::bundled();
+        catalog.merge_listing(parse_copilot(COPILOT_SAMPLE, COPILOT_BASE_URL).unwrap());
+
+        let listed = catalog
+            .get("github-copilot", "kimi-k3")
+            .expect("the listing added it");
+        assert_eq!(
+            listed.headers.get("Editor-Version").map(String::as_str),
+            Some("vscode/1.107.0")
+        );
     }
 
     #[test]

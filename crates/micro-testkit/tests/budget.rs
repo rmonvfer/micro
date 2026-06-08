@@ -74,14 +74,12 @@ fn events(recorded: &mut tokio::sync::mpsc::UnboundedReceiver<Record>) -> Vec<Le
     collected
 }
 
-
 fn stopped_with(log: &micro_testkit::EventLog) -> Option<String> {
     log.assistant_message_ends()
         .iter()
         .rev()
         .find_map(|assistant| assistant.error.clone())
 }
-
 
 #[tokio::test]
 async fn a_turn_past_the_ceiling_ends_the_run_and_records_why() {
@@ -148,7 +146,6 @@ async fn a_run_inside_its_ceiling_is_left_alone() {
     assert_eq!(stopped_with(&log), None, "and nothing was reported wrong");
 }
 
-
 #[tokio::test]
 async fn a_session_reopened_over_its_ceiling_still_answers_once() {
     let provider = two_turns();
@@ -175,7 +172,6 @@ async fn a_session_reopened_over_its_ceiling_still_answers_once() {
         "and what it answered is in the conversation",
     );
 }
-
 
 #[tokio::test]
 async fn a_run_with_no_ceiling_is_never_stopped() {

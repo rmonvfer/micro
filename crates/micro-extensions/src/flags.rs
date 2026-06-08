@@ -18,7 +18,7 @@ pub fn split_unknown(
     let mut kept = Vec::new();
     let mut leftover = Vec::new();
     let mut arguments = arguments.into_iter().peekable();
-    
+
     let mut only_positional = false;
 
     while let Some(argument) = arguments.next() {
@@ -35,7 +35,7 @@ pub fn split_unknown(
 
         if known.contains(&name) || known_with_value.contains(&name) {
             kept.push(argument.clone());
-            
+
             if inline.is_none() && known_with_value.contains(&name) {
                 if let Some(value) = arguments.peek() {
                     if !value.starts_with("--") {
@@ -46,7 +46,6 @@ pub fn split_unknown(
             continue;
         }
 
-        
         leftover.push(Given {
             name: name.to_string(),
             value: inline,
@@ -97,7 +96,6 @@ mod tests {
         let (_, leftover) = split(&["micro", "--env=staging"]);
         assert_eq!(leftover[0].value.as_deref(), Some("staging"));
 
-        
         let (kept, leftover) = split(&["micro", "--env", "staging"]);
         assert_eq!(kept, vec!["micro", "staging"]);
         assert_eq!(leftover[0].value, None);

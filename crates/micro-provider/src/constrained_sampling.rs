@@ -70,7 +70,6 @@ fn schema_allows_null(schema: &Value) -> bool {
     false
 }
 
-
 fn make_node_strict(schema: &mut Value) -> Result<(), String> {
     let Some(object) = schema.as_object_mut() else {
         return Err("boolean schemas are unsupported".to_string());
@@ -164,7 +163,6 @@ fn make_node_strict(schema: &mut Value) -> Result<(), String> {
     Ok(())
 }
 
-
 pub fn make_strict_json_schema(schema: &Value) -> Result<Value, String> {
     let mut cloned = schema.clone();
     if !cloned.is_object() {
@@ -208,7 +206,6 @@ pub fn resolve_json_schema_strict_sampling(
         )),
     }
 }
-
 
 pub fn json_schema_tool_parameters(
     tool: &ToolDefinition,
@@ -263,12 +260,12 @@ mod tests {
             std::collections::BTreeSet::from(["pattern", "limit"]),
             "every property becomes required, in whatever order the schema holds them"
         );
-        
+
         assert_eq!(
             strict["properties"]["limit"],
             json!({ "anyOf": [{ "type": "number" }, { "type": "null" }] })
         );
-        
+
         assert_eq!(strict["properties"]["pattern"], json!({ "type": "string" }));
     }
 

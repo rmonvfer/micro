@@ -55,24 +55,27 @@ impl Summarizer for ProviderSummarizer {
         };
 
         let mut model = self.model.clone();
-        
+
         model.thinking = ThinkingLevel::Off;
 
-        let mut stream = self
-            .provider
-            .stream(model, context, self.api_key.current().await);
+        let api_key = self
+            .api_key
+            .current()
+            .await
+            .map_err(ContextError::summarizer)?;
+        let mut stream = self.provider.stream(model, context, api_key);
 
         while let Some(event) = stream.recv().await {
             match event {
                 StreamEvent::Done { message } => {
                     let summary = message.text().trim().to_string();
-                    
+
                     if summary.is_empty() {
                         return Err(ContextError::summarizer("the model returned no summary"));
                     }
                     return Ok(Summary {
                         text: summary,
-                        
+
                         cost: CompactionCost {
                             usage: message.usage,
                             provider: message.provider,

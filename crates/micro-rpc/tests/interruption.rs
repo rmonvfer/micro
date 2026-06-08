@@ -13,7 +13,6 @@ use tokio::io::AsyncBufReadExt as _;
 use tokio::io::AsyncWriteExt as _;
 use tokio::sync::Mutex;
 
-
 struct SlowTool;
 
 #[async_trait::async_trait]
@@ -87,7 +86,7 @@ async fn abort_stops_a_running_turn() {
         .write_all(b"{\"type\":\"prompt\",\"message\":\"go\",\"id\":\"1\"}\n")
         .await
         .unwrap();
-    
+
     tokio::time::sleep(Duration::from_millis(200)).await;
     caller
         .write_all(b"{\"type\":\"abort\",\"id\":\"2\"}\n")
@@ -113,7 +112,6 @@ async fn abort_stops_a_running_turn() {
     drop(caller);
     let _ = tokio::time::timeout(Duration::from_secs(5), running).await;
 }
-
 
 #[tokio::test]
 async fn a_follow_up_sent_mid_turn_continues_the_run() {

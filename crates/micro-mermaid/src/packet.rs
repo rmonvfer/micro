@@ -7,15 +7,11 @@ use crate::parse::statements_of;
 use crate::types::Cls;
 use crate::width::string_width;
 
-
 const ROW_BITS: u32 = 32;
-
 
 const BIT_W: usize = 4;
 
-
 const MAX_FIELDS: usize = 128;
-
 
 const MAX_BITS: u32 = 512;
 
@@ -54,7 +50,6 @@ pub(crate) fn render_packet(src: &str) -> Option<Canvas> {
         return None;
     }
 
-    
     let mut fields: Vec<Field> = Vec::new();
     let mut cursor = 0u32;
     for field in declared {
@@ -99,7 +94,7 @@ fn read_field(st: &str) -> Option<Field> {
 fn draw(title: Option<&str>, fields: &[Field], total_bits: u32) -> Canvas {
     let row_count = total_bits.div_ceil(ROW_BITS).max(1) as usize;
     let top = usize::from(title.is_some());
-    
+
     let row_height = 4;
     let height = top + row_count * row_height + row_count.saturating_sub(1);
 
@@ -107,7 +102,7 @@ fn draw(title: Option<&str>, fields: &[Field], total_bits: u32) -> Canvas {
         .map(|r| row_bit_count(r as u32, total_bits))
         .max()
         .unwrap_or(0);
-    
+
     let width = (widest_row_bits as usize * BIT_W + 1).max(string_width(title.unwrap_or("")));
 
     let mut canvas = Canvas::new(width.max(1), height.max(1));
@@ -126,7 +121,6 @@ fn draw(title: Option<&str>, fields: &[Field], total_bits: u32) -> Canvas {
     canvas.finalize_mask();
     canvas
 }
-
 
 fn row_bit_count(row: u32, total_bits: u32) -> u32 {
     let row_start = row * ROW_BITS;
@@ -239,7 +233,7 @@ mod tests {
             "{rows:?}"
         );
         assert!(rows.iter().any(|r| r.contains("31")), "{rows:?}");
-        
+
         let top_border = rows
             .iter()
             .find(|r| r.starts_with('┌'))
@@ -252,7 +246,6 @@ mod tests {
         assert!(bottom_border.ends_with('┘'), "{bottom_border:?}");
     }
 
-    
     #[test]
     fn a_gap_between_fields_gets_an_unlabelled_cell() {
         let rows = drawn("packet-beta\n0-3: \"Version\"\n8-15: \"Length\"");
@@ -260,7 +253,7 @@ mod tests {
             .iter()
             .find(|r| r.starts_with('┌'))
             .expect("a border row");
-        
+
         assert_eq!(border_row.matches('┬').count(), 2, "{border_row:?}");
     }
 
@@ -276,12 +269,10 @@ mod tests {
     /// A single bit is a field of width one, same as any other.
     #[test]
     fn a_single_bit_is_a_field_of_width_one() {
-        
         let rows = drawn("packet-beta\n0: \"Bit\"");
         assert!(rows.iter().any(|r| r.contains("Bit")), "{rows:?}");
     }
 
-    
     #[test]
     fn what_is_not_a_packet_diagram_is_left_alone() {
         assert!(render_packet("graph TD\n A --> B").is_none());

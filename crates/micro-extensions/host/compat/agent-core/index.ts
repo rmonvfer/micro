@@ -257,9 +257,12 @@ export function createTypedSpanStarter(
 	return startSpan;
 }
 
+/** Constructing an Agent is bookkeeping and succeeds, but asking one to do anything would send a
+ *  real request to a real model, and micro keeps the credentials for that out of the extension
+ *  host's reach. Saying so beats answering `undefined`. */
 function agentRunUnavailable(method: string): never {
 	throw new Error(
-		`pi-agent-core Agent.${method}() is unavailable in micro; use the extension API instead`,
+		`pi-agent-core Agent.${method}() would send a real request to a real model, and micro keeps model credentials out of the extension host's reach. Ask through the extension API instead — the object passed to export default (micro) => {...}.`,
 	);
 }
 

@@ -19,6 +19,7 @@ const API_TOKEN_URL: &str = "https://api.github.com/copilot_internal/v2/token";
 pub const USER_AGENT: &str = "GitHubCopilotChat/0.35.0";
 pub const EDITOR_VERSION: &str = "vscode/1.107.0";
 pub const EDITOR_PLUGIN_VERSION: &str = "copilot-chat/0.35.0";
+
 /// Which Copilot integration is asking, which the service expects to be told.
 pub const INTEGRATION_ID: &str = "vscode-chat";
 
@@ -26,6 +27,7 @@ pub const INTEGRATION_ID: &str = "vscode-chat";
 /// tripping `slow_down`.
 const POLL_MARGIN: Duration = Duration::from_secs(3);
 const SLOW_DOWN_PENALTY_SECS: u64 = 5;
+
 /// Used when the exchange response omits both an expiry and a refresh hint.
 const DEFAULT_TOKEN_LIFETIME_MS: i64 = 25 * 60 * 1000;
 
@@ -60,7 +62,7 @@ pub async fn start_device_flow(http: &reqwest::Client) -> Result<DeviceAuthoriza
         return Err(AuthError::DeviceFlow(format!(
             "GitHub returned {}: {}",
             status.as_u16(),
-            body.trim()
+            refusal(&body)
         )));
     }
 
@@ -68,7 +70,6 @@ pub async fn start_device_flow(http: &reqwest::Client) -> Result<DeviceAuthoriza
         .map_err(|error| AuthError::DeviceFlow(format!("unreadable response: {error}")))?;
     parse_device_authorization(&body)
 }
-
 
 pub async fn poll_for_token(
     http: &reqwest::Client,
@@ -110,7 +111,7 @@ pub async fn poll_for_token(
             return Err(AuthError::DeviceFlow(format!(
                 "GitHub returned {}: {}",
                 status.as_u16(),
-                body.trim()
+                refusal(&body)
             )));
         }
 
@@ -133,7 +134,6 @@ pub async fn poll_for_token(
     }
 }
 
-
 pub fn base_url_from_token(token: &str) -> Option<String> {
     let proxy = token
         .split(';')
@@ -147,6 +147,30 @@ pub fn base_url_from_token(token: &str) -> Option<String> {
         None => proxy.to_string(),
     };
     Some(format!("https://{host}"))
+}
+
+/// What a refusal says for itself, in a line.
+///
+/// A service having a bad day answers with a web page rather than with JSON, and a page is not
+/// something to print at somebody: it says only that the service, not the request, is the trouble.
+fn refusal(body: &str) -> String {
+    let body = body.trim();
+
+    if let Ok(value) = serde_json::from_str::<Value>(body) {
+        for field in ["error_description", "message", "error"] {
+            if let Some(said) = value.get(field).and_then(Value::as_str) {
+                return said.to_string();
+            }
+        }
+    }
+
+    match body {
+        "" => "nothing at all".to_string(),
+        page if page.starts_with('<') => {
+            "a web page rather than an answer, so the trouble is at their end".to_string()
+        }
+        said => said.chars().take(200).collect(),
+    }
 }
 
 /// Trade a GitHub token for a Copilot API token.
@@ -176,7 +200,6 @@ pub async fn exchange_token(http: &reqwest::Client, github_token: &str) -> Resul
         .map_err(|error| AuthError::TokenExchange(error.to_string()))?;
 
     if !status.is_success() {
-        
         if status.as_u16() == 403 {
             return Err(AuthError::TokenExchange(
                 "this GitHub credential is not entitled to Copilot. Sign in again with \
@@ -188,7 +211,7 @@ pub async fn exchange_token(http: &reqwest::Client, github_token: &str) -> Resul
         return Err(AuthError::TokenExchange(format!(
             "GitHub returned {}: {}",
             status.as_u16(),
-            body.trim()
+            refusal(&body)
         )));
     }
 

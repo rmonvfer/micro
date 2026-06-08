@@ -485,7 +485,7 @@ fn draw_piece(piece: &Stacked, pieces: &[Stacked]) -> Drawn {
         Stacked::Fraction { above, below } => {
             let above = lay_out(above, pieces);
             let below = lay_out(below, pieces);
-            
+
             let inner = above.width.max(below.width).max(1);
             let width = inner + 2;
             let mut lines: Vec<String> = above
@@ -561,7 +561,6 @@ fn alongside(pieces: &[Drawn]) -> Drawn {
     for row in 0..=baseline + below {
         let mut line = String::new();
         for piece in pieces {
-            
             let at = (row + piece.baseline).checked_sub(baseline);
             match at.and_then(|at| piece.lines.get(at)) {
                 Some(text) => {
@@ -595,7 +594,7 @@ pub fn render(source: &str) -> Option<String> {
 struct Renderer {
     characters: Vec<char>,
     at: usize,
-    
+
     display: bool,
     /// The stacked pieces met so far.
     layout: Vec<Stacked>,
@@ -617,7 +616,6 @@ enum Stacked {
 /// Where a stacked piece stands in the line around it.
 const MARK_START: char = '\u{f0000}';
 const MARK_END: char = '\u{f0001}';
-
 
 const BIG_OPERATORS: [&str; 10] = ["∑", "∏", "∐", "∫", "∬", "∭", "∮", "⋃", "⋂", "⨆"];
 
@@ -669,7 +667,7 @@ impl Renderer {
         let mut out = String::new();
         while self.at < self.characters.len() {
             let piece = self.step();
-            
+
             let piece = match self.display && BIG_OPERATORS.contains(&piece.trim()) {
                 true => {
                     let operator = piece.trim().to_string();
@@ -679,7 +677,7 @@ impl Renderer {
             };
             out.push_str(&piece);
         }
-        
+
         out.replace("  ", " ")
     }
 
@@ -725,8 +723,7 @@ impl Renderer {
             '\\' => self.command(),
             '{' => {
                 self.at += 1;
-                let inner = self.group_body();
-                inner
+                self.group_body()
             }
             '^' | '_' => {
                 let kind = character;
@@ -735,7 +732,6 @@ impl Renderer {
                 self.script(kind, &value)
             }
             '$' => {
-                
                 self.at += 1;
                 String::new()
             }
@@ -765,7 +761,6 @@ impl Renderer {
         }
         let inner: String = self.characters[start..self.at].iter().collect();
         if self.at < self.characters.len() {
-            
             self.at += 1;
         }
         self.render_inner(&inner)
@@ -791,12 +786,11 @@ impl Renderer {
 
     /// The name after a backslash.
     fn command_name(&mut self) -> String {
-        
         self.at += 1;
         if self.at >= self.characters.len() {
             return String::new();
         }
-        
+
         if !self.characters[self.at].is_ascii_alphabetic() {
             let single = self.characters[self.at];
             self.at += 1;
@@ -816,7 +810,7 @@ impl Renderer {
             "frac" | "dfrac" | "tfrac" => {
                 let numerator = self.argument();
                 let denominator = self.argument();
-                
+
                 return match self.display {
                     true => self.stack(Stacked::Fraction {
                         above: numerator,
@@ -826,7 +820,6 @@ impl Renderer {
                 };
             }
             "sqrt" => {
-                
                 let degree = self.bracketed();
                 let value = self.argument();
                 return match degree {
@@ -838,7 +831,7 @@ impl Renderer {
                 let value = self.argument();
                 return map_all(&value, BLACKBOARD).unwrap_or(value);
             }
-            
+
             name if IGNORED_COMMANDS.contains(&name) => {
                 return match self.characters.get(self.at) {
                     Some('{') => {
@@ -861,14 +854,12 @@ impl Renderer {
             return symbol.to_string();
         }
 
-        
         match name.is_empty() {
             true => "\\".to_string(),
             false => format!("\\{name}"),
         }
     }
 
-    
     fn bracketed(&mut self) -> Option<String> {
         if self.characters.get(self.at) != Some(&'[') {
             return None;
@@ -894,7 +885,7 @@ impl Renderer {
         };
         match map_all(value, table) {
             Some(mapped) => mapped,
-            
+
             None => format!("{kind}({value})"),
         }
     }
@@ -904,7 +895,6 @@ impl Renderer {
 mod tests {
     use super::*;
 
-    
     #[test]
     fn a_fraction_is_stacked_over_its_rule() {
         assert_eq!(
@@ -917,7 +907,6 @@ mod tests {
         );
     }
 
-    
     #[test]
     fn an_operators_limits_sit_above_and_below_it() {
         assert_eq!(
@@ -955,13 +944,12 @@ mod tests {
         assert_eq!(render(r"\infty").as_deref(), Some("∞"));
     }
 
-    
     #[test]
     fn an_exponent_is_raised_when_it_can_be() {
         assert_eq!(render(r"x^2").as_deref(), Some("x²"));
         assert_eq!(render(r"x^{10}").as_deref(), Some("x¹⁰"));
         assert_eq!(render(r"e^{-x}").as_deref(), Some("e⁻ˣ"));
-        
+
         assert_eq!(render(r"x^{\alpha}").as_deref(), Some("x^(α)"));
     }
 

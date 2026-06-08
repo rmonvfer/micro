@@ -26,7 +26,6 @@ pub fn policy(
     trusted: bool,
     settings: &micro_config::Settings,
 ) -> Result<SandboxPolicy> {
-    
     let project = micro_config::ProjectConfig::load(workspace, trusted)
         .map_err(|error| anyhow!("{error}"))?
         .sandbox;
@@ -48,7 +47,6 @@ pub fn policy(
     serde_json::from_value(written).map_err(|error| anyhow!("{source}: {error}"))
 }
 
-
 fn written_as(flag: &str) -> Result<serde_json::Value, serde_json::Error> {
     match flag.trim_start().starts_with('{') {
         true => serde_json::from_str(flag),
@@ -67,7 +65,6 @@ pub async fn try_command(
         return Err(anyhow!("nothing to run: micro sandbox try -- <command>"));
     };
 
-    
     let policy = policy(named, workspace, true, settings)?;
     let sandbox = around(policy, workspace);
     let wrapped = sandbox.wrap(program, arguments.to_vec(), workspace);
@@ -85,7 +82,6 @@ pub async fn try_command(
     );
     println!("running: {}", shown(&wrapped));
 
-    
     let finished = tokio::process::Command::from(wrapped.to_std_command())
         .stdin(std::process::Stdio::null())
         .output()

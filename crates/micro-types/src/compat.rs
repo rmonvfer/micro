@@ -13,7 +13,6 @@ pub enum MaxTokensField {
     MaxTokens,
 }
 
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum ThinkingFormat {
@@ -102,7 +101,7 @@ pub struct Compat {
     pub supports_cache_control_on_tools: bool,
     /// How long a tool call's id may be, when the service will not take an arbitrary one.
     pub tool_call_id_length: Option<usize>,
-    
+
     pub force_adaptive_thinking: bool,
     /// What each thinking level is called here.
     pub thinking: BTreeMap<String, Option<String>>,

@@ -34,7 +34,6 @@ pub(crate) async fn login(argument: Option<&str>, context: &CommandContext<'_>) 
         return CommandOutcome::error(unknown_provider(name));
     };
 
-    
     match context.auth.begin_login(provider).await {
         Ok(LoginFlow::ApiKey {
             provider,
@@ -283,18 +282,18 @@ mod tests {
     fn only_providers_micro_knows_are_accepted() {
         assert_eq!(known("copilot"), Some("github-copilot"));
         assert_eq!(known("GEMINI"), Some("google"));
-        
+
         assert_eq!(
             known("azure-openai-responses"),
             Some("azure-openai-responses")
         );
-        
+
         assert_eq!(known("mistral"), Some("mistral"));
-        
+
         assert_eq!(known("amazon-bedrock"), Some("amazon-bedrock"));
-        
+
         assert_eq!(known("google-vertex"), Some("google-vertex"));
-        
+
         assert_eq!(known("not-a-service"), None);
     }
 }

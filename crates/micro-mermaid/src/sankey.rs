@@ -1,5 +1,3 @@
-
-
 use std::collections::BTreeMap;
 
 use crate::canvas::draw_text;
@@ -55,7 +53,7 @@ fn read_flow(line: &str) -> Option<Flow> {
         return None;
     }
     let value: f64 = fields[2].trim().parse().ok()?;
-    
+
     if !value.is_finite() || value <= 0.0 {
         return None;
     }
@@ -89,7 +87,6 @@ fn split_fields(line: &str) -> Vec<String> {
 }
 
 fn draw(flows: &[Flow]) -> Canvas {
-    
     let mut order: Vec<&str> = Vec::new();
     let mut grouped: BTreeMap<&str, Vec<&Flow>> = BTreeMap::new();
     for flow in flows {
@@ -103,7 +100,6 @@ fn draw(flows: &[Flow]) -> Canvas {
     let amounts: Vec<String> = flows.iter().map(|flow| trim_number(flow.value)).collect();
     let widest_amount = amounts.iter().map(|a| string_width(a)).max().unwrap_or(0);
 
-    
     let widest_target = flows
         .iter()
         .map(|flow| INDENT + 2 + string_width(&flow.target))
@@ -124,7 +120,7 @@ fn draw(flows: &[Flow]) -> Canvas {
     let mut y = 0;
     for source in &order {
         let out: f64 = grouped[source].iter().map(|flow| flow.value).sum();
-        
+
         let heading = format!("{source} ({})", trim_number(out));
         draw_text(&mut canvas, &heading, 0, y, Cls::Title);
         y += 1;
@@ -191,14 +187,12 @@ mod tests {
         assert!(rows[1].trim_end().ends_with("100"), "{rows:?}");
     }
 
-    
     #[test]
     fn a_quoted_name_may_hold_a_comma() {
         let rows = drawn("sankey-beta\n\"Bread, baked\",Shops,10");
         assert!(rows[0].starts_with("Bread, baked (10)"), "{rows:?}");
     }
 
-    
     #[test]
     fn what_is_not_a_sankey_is_left_alone() {
         assert!(render_sankey("graph TD\n  A --> B").is_none());

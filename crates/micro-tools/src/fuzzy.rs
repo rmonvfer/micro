@@ -27,14 +27,13 @@ pub fn normalize(text: &str) -> String {
         let mapped: String = line
             .chars()
             .map(|character| match character {
-                
                 '\u{2018}' | '\u{2019}' | '\u{201A}' | '\u{201B}' => '\'',
-                
+
                 '\u{201C}' | '\u{201D}' | '\u{201E}' | '\u{201F}' => '"',
-                
+
                 '\u{2010}' | '\u{2011}' | '\u{2012}' | '\u{2013}' | '\u{2014}' | '\u{2015}'
                 | '\u{2212}' => '-',
-                
+
                 '\u{00A0}' | '\u{2002}'..='\u{200A}' | '\u{202F}' | '\u{205F}' | '\u{3000}' => ' ',
                 other => other,
             })
@@ -90,7 +89,6 @@ mod tests {
         );
     }
 
-    
     #[test]
     fn a_smart_quote_still_finds_a_straight_one() {
         let file = "let name = \"micro\";";
@@ -131,7 +129,7 @@ mod tests {
     #[test]
     fn occurrences_are_counted_the_way_they_are_matched() {
         assert_eq!(count("a a a", "a"), 3);
-        
+
         assert_eq!(count("\"x\" and \"x\"", "\u{201C}x\u{201D}"), 2);
         assert_eq!(count("let a = 1;", "nope"), 0);
     }

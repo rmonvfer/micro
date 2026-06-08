@@ -1,5 +1,3 @@
-
-
 use crate::canvas::{draw_text, Canvas};
 use crate::labels::{clean_label, strip_controls};
 use crate::types::Cls;
@@ -39,7 +37,7 @@ fn parse_treemap(src: &str) -> Option<(Option<String>, Vec<Node>, Vec<usize>)> {
     let mut title = None;
     let mut arena: Vec<Node> = Vec::new();
     let mut roots: Vec<usize> = Vec::new();
-    
+
     let mut stack: Vec<(usize, usize)> = Vec::new();
 
     for line in lines {
@@ -152,7 +150,6 @@ fn draw(title: Option<&str>, arena: &[Node], roots: &[usize]) -> Canvas {
     canvas
 }
 
-
 fn collect_rows(
     arena: &[Node],
     indices: &[usize],
@@ -235,7 +232,6 @@ mod tests {
         );
     }
 
-    
     #[test]
     fn tree_connectors_mark_the_last_branch() {
         let rows = drawn("treemap-beta\n\"A\": 1\n\"B\": 2");
@@ -247,7 +243,7 @@ mod tests {
     #[test]
     fn a_grandchilds_share_is_of_its_own_parent() {
         let rows = drawn("treemap-beta\n\"A\"\n  \"B\"\n    \"C\": 5\n    \"D\": 5\n\"E\": 10");
-        
+
         assert!(
             rows.iter()
                 .any(|r| r.contains('C') && r.contains("(5, 50%)")),
@@ -255,7 +251,6 @@ mod tests {
         );
     }
 
-    
     #[test]
     fn what_is_not_a_treemap_is_left_alone() {
         assert!(render_treemap("graph TD\n A --> B").is_none());

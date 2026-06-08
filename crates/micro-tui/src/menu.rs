@@ -17,7 +17,7 @@ pub struct MenuItem {
     pub value: String,
     /// The argument hint and description, shown in a second column.
     pub description: String,
-    
+
     pub raw: Option<Value>,
 }
 
@@ -45,7 +45,7 @@ pub enum Offering {
     Commands,
     /// Workspace files, reached with `@`.
     Files,
-    
+
     Extension,
 }
 
@@ -67,7 +67,6 @@ impl Menu {
             return None;
         }
 
-        
         let mut offered: Vec<MenuItem> = micro_commands::commands()
             .iter()
             .copied()
@@ -143,7 +142,6 @@ impl Menu {
         })
     }
 
-    
     pub fn set_extension_items(&mut self, prefix: &str, items: Vec<MenuItem>) -> bool {
         if self.offering != Offering::Extension || self.prefix != prefix {
             return false;
@@ -214,7 +212,6 @@ impl Menu {
 
 impl From<Command> for MenuItem {
     fn from(command: Command) -> Self {
-        
         let description = match command.argument {
             Some(argument) => format!("{argument} — {}", command.description),
             None => command.description.to_string(),
@@ -260,7 +257,6 @@ mod tests {
 
     #[test]
     fn the_menu_belongs_to_the_text_before_the_cursor() {
-        
         assert!(Menu::open_for("/model", 0, &[]).is_none());
         let menu = Menu::open_for("/model", 2, &[]).expect("a menu");
         assert_eq!(menu.prefix(), "/m");
@@ -268,7 +264,10 @@ mod tests {
 
     #[test]
     fn typing_narrows_the_list() {
-        assert_eq!(values(&Menu::open_for("/com", 4, &[]).unwrap()), vec!["compact"]);
+        assert_eq!(
+            values(&Menu::open_for("/com", 4, &[]).unwrap()),
+            vec!["compact"]
+        );
         assert_eq!(
             values(&Menu::open_for("/co", 3, &[]).unwrap()),
             vec!["copy", "compact", "clone", "changelog"]
@@ -344,7 +343,6 @@ mod tests {
         assert!(window.contains(&menu.selected()));
         assert_eq!(window.len(), MAX_VISIBLE);
 
-        
         menu.select_previous();
         for _ in 0..total {
             menu.select_next();
@@ -410,7 +408,6 @@ mod files {
         assert!(Menu::files_for("", 0, &paths()).is_none());
     }
 
-    
     #[test]
     fn a_name_matching_nothing_offers_nothing() {
         assert!(Menu::files_for("@zzzzz", 6, &paths()).is_none());

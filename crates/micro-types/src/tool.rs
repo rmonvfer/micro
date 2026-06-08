@@ -1,5 +1,3 @@
-
-
 use serde::Deserialize;
 use serde::Serialize;
 use serde_json::Value;
@@ -8,9 +6,8 @@ use serde_json::Value;
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ConstrainedSampling {
-    
     JsonSchema { strict: JsonSchemaStrictness },
-    
+
     Grammar { variants: GrammarVariants },
 }
 
@@ -29,9 +26,8 @@ impl ConstrainedSampling {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum JsonSchemaStrictness {
-    
     Prefer,
-    
+
     Require,
 }
 
@@ -105,7 +101,6 @@ mod tests {
         );
     }
 
-    
     #[test]
     fn an_unrecognized_shape_is_read_as_absent() {
         let value = serde_json::json!({ "type": "something_else" });

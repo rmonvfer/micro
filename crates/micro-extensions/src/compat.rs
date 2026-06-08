@@ -3,7 +3,6 @@
 use std::path::Path;
 use std::path::PathBuf;
 
-
 const PI_TUI_FILES: &[(&str, &str)] = &[
     ("index.ts", include_str!("../host/compat/tui/index.ts")),
     ("tui.ts", include_str!("../host/compat/tui/tui.ts")),
@@ -127,19 +126,26 @@ const EAST_ASIAN_WIDTH_FILES: &[(&str, &str)] = &[(
     include_str!("../host/compat/east-asian-width/index.ts"),
 )];
 
-
 const TYPEBOX_FILES: &[(&str, &str)] = &[
-    ("index.mjs", include_str!("../host/compat/typebox/index.mjs")),
-    ("compile.mjs", include_str!("../host/compat/typebox/compile.mjs")),
-    ("value.mjs", include_str!("../host/compat/typebox/value.mjs")),
+    (
+        "index.mjs",
+        include_str!("../host/compat/typebox/index.mjs"),
+    ),
+    (
+        "compile.mjs",
+        include_str!("../host/compat/typebox/compile.mjs"),
+    ),
+    (
+        "value.mjs",
+        include_str!("../host/compat/typebox/value.mjs"),
+    ),
 ];
 
-
-const MARKED_FILES: &[(&str, &str)] = &[("index.mjs", include_str!("../host/compat/marked/index.mjs"))];
+const MARKED_FILES: &[(&str, &str)] =
+    &[("index.mjs", include_str!("../host/compat/marked/index.mjs"))];
 
 /// pi's own runtime is published under two npm scopes.
 const SCOPES: &[&str] = &["@earendil-works", "@mariozechner"];
-
 
 struct Package {
     name: &'static str,
@@ -164,7 +170,6 @@ const PACKAGES: &[Package] = &[
         files: PI_AI_FILES,
     },
 ];
-
 
 fn package_json(name: &str) -> String {
     format!(r#"{{"name":"{name}","version":"0.0.0","type":"module"}}"#)
@@ -204,11 +209,16 @@ pub fn install(home: &Path) -> Result<PathBuf, String> {
             write_package(&node_modules, Some(scope), package.name, package.files)?;
         }
     }
-    write_package(&node_modules, None, "get-east-asian-width", EAST_ASIAN_WIDTH_FILES)?;
-    
+    write_package(
+        &node_modules,
+        None,
+        "get-east-asian-width",
+        EAST_ASIAN_WIDTH_FILES,
+    )?;
+
     write_package(&node_modules, None, "typebox", TYPEBOX_FILES)?;
     write_package(&node_modules, Some("@sinclair"), "typebox", TYPEBOX_FILES)?;
-    
+
     write_package(&node_modules, None, "marked", MARKED_FILES)?;
     write_catalog_json(&node_modules)?;
     Ok(node_modules)
@@ -219,20 +229,24 @@ pub fn install(home: &Path) -> Result<PathBuf, String> {
 fn write_catalog_json(node_modules: &Path) -> Result<(), String> {
     let catalog = micro_models::Catalog::bundled();
     let json = micro_models::catalog_json(&catalog, None);
-    let text = serde_json::to_string(&json).map_err(|error| format!("cannot build the model catalog: {error}"))?;
+    let text = serde_json::to_string(&json)
+        .map_err(|error| format!("cannot build the model catalog: {error}"))?;
 
     for scope in SCOPES {
         let path = node_modules.join(scope).join("pi-ai").join("catalog.json");
-        std::fs::write(&path, &text).map_err(|error| format!("cannot write {}: {error}", path.display()))?;
+        std::fs::write(&path, &text)
+            .map_err(|error| format!("cannot write {}: {error}", path.display()))?;
     }
     Ok(())
 }
 
-
 pub fn node_path(home: &Path, compat_node_modules: &Path) -> Result<std::ffi::OsString, String> {
     let npm_node_modules = home.join("npm").join("node_modules");
-    std::env::join_paths([compat_node_modules.as_os_str(), npm_node_modules.as_os_str()])
-        .map_err(|error| format!("cannot build NODE_PATH: {error}"))
+    std::env::join_paths([
+        compat_node_modules.as_os_str(),
+        npm_node_modules.as_os_str(),
+    ])
+    .map_err(|error| format!("cannot build NODE_PATH: {error}"))
 }
 
 #[cfg(test)]
@@ -250,7 +264,6 @@ mod tests {
         path
     }
 
-    
     #[test]
     fn every_package_is_written_under_both_scopes() {
         let home = scratch("both-scopes");
@@ -267,11 +280,17 @@ mod tests {
                 );
                 for (relative, source) in package.files {
                     let written = std::fs::read_to_string(package_dir.join(relative)).unwrap();
-                    assert_eq!(&written, source, "{}/{relative} was not written whole", package.name);
+                    assert_eq!(
+                        &written, source,
+                        "{}/{relative} was not written whole",
+                        package.name
+                    );
                 }
             }
         }
-        assert!(node_modules.join("get-east-asian-width/package.json").is_file());
+        assert!(node_modules
+            .join("get-east-asian-width/package.json")
+            .is_file());
 
         let _ = std::fs::remove_dir_all(&home);
     }
@@ -289,7 +308,10 @@ mod tests {
             let written: serde_json::Value =
                 serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
             assert_eq!(written, expected, "{}", path.display());
-            assert!(written["providers"].as_array().unwrap().contains(&serde_json::json!("anthropic")));
+            assert!(written["providers"]
+                .as_array()
+                .unwrap()
+                .contains(&serde_json::json!("anthropic")));
             assert!(!written["models"].as_array().unwrap().is_empty());
         }
 
@@ -311,7 +333,7 @@ mod tests {
         std::fs::write(
             &script,
             r#"
-import catalog from "@earendil-works/pi-ai/catalog.json" with { type: "json" };
+const { default: catalog } = await import("@earendil-works/pi-ai/catalog.json", { with: { type: "json" } });
 console.log(JSON.stringify({
   hasProviders: Array.isArray(catalog.providers) && catalog.providers.length > 0,
   hasModels: Array.isArray(catalog.models) && catalog.models.length > 0,
@@ -324,7 +346,10 @@ console.log(JSON.stringify({
             .arg("run")
             .arg("--no-install")
             .arg(&script)
+            .current_dir(&home)
+            .env_clear()
             .env("NODE_PATH", &node_path)
+            .env("HOME", &home)
             .output()
             .await
             .unwrap();
@@ -349,18 +374,29 @@ console.log(JSON.stringify({
         let home = scratch("typebox");
         let node_modules = install(&home).unwrap();
 
-        for package_dir in [node_modules.join("typebox"), node_modules.join("@sinclair").join("typebox")] {
-            assert!(package_dir.join("package.json").is_file(), "{}", package_dir.display());
+        for package_dir in [
+            node_modules.join("typebox"),
+            node_modules.join("@sinclair").join("typebox"),
+        ] {
+            assert!(
+                package_dir.join("package.json").is_file(),
+                "{}",
+                package_dir.display()
+            );
             for (relative, source) in TYPEBOX_FILES {
                 let written = std::fs::read_to_string(package_dir.join(relative)).unwrap();
-                assert_eq!(&written, source, "{}/{relative} was not written whole", package_dir.display());
+                assert_eq!(
+                    &written,
+                    source,
+                    "{}/{relative} was not written whole",
+                    package_dir.display()
+                );
             }
         }
 
         let _ = std::fs::remove_dir_all(&home);
     }
 
-    
     #[tokio::test]
     async fn the_vendored_typebox_actually_works() {
         let Some(bun) = crate::host::which_bun() else {
@@ -407,23 +443,30 @@ console.log(JSON.stringify({ schema, valid: check.Check({ who: "x" }), invalid: 
         let _ = std::fs::remove_dir_all(&script_dir);
     }
 
-    
     #[test]
     fn marked_is_written_under_its_own_name() {
         let home = scratch("marked");
         let node_modules = install(&home).unwrap();
 
         let package_dir = node_modules.join("marked");
-        assert!(package_dir.join("package.json").is_file(), "{}", package_dir.display());
+        assert!(
+            package_dir.join("package.json").is_file(),
+            "{}",
+            package_dir.display()
+        );
         for (relative, source) in MARKED_FILES {
             let written = std::fs::read_to_string(package_dir.join(relative)).unwrap();
-            assert_eq!(&written, source, "{}/{relative} was not written whole", package_dir.display());
+            assert_eq!(
+                &written,
+                source,
+                "{}/{relative} was not written whole",
+                package_dir.display()
+            );
         }
 
         let _ = std::fs::remove_dir_all(&home);
     }
 
-    
     #[tokio::test]
     async fn the_vendored_marked_actually_works() {
         let Some(bun) = crate::host::which_bun() else {
@@ -467,7 +510,6 @@ console.log(marked.parse("hello world **bold**\n\n# heading"));
         let _ = std::fs::remove_dir_all(&script_dir);
     }
 
-    
     #[tokio::test]
     async fn pi_ais_shim_reaches_the_vendored_typebox() {
         let Some(bun) = crate::host::which_bun() else {
@@ -508,7 +550,6 @@ console.log(JSON.stringify(Type.String()));
         let _ = std::fs::remove_dir_all(&script_dir);
     }
 
-    
     #[test]
     fn node_path_carries_both_directories() {
         let home = scratch("node-path");
@@ -520,7 +561,6 @@ console.log(JSON.stringify(Type.String()));
         let _ = std::fs::remove_dir_all(&home);
     }
 
-    
     fn write_real_micro_session(dir: &Path, workspace: &str) -> PathBuf {
         let log = dir.join("1700000000000.jsonl");
         std::fs::write(
@@ -600,10 +640,17 @@ console.log(JSON.stringify({
             .output()
             .await
             .unwrap();
-        assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
 
         let printed: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-        assert_eq!(printed["branchLength"], 3, "the whole chain, not just the leaf: {printed}");
+        assert_eq!(
+            printed["branchLength"], 3,
+            "the whole chain, not just the leaf: {printed}"
+        );
         assert_eq!(printed["parentIds"], serde_json::json!([null, "1", "2"]));
         assert_eq!(printed["toolCallId"], "call_1");
         assert_eq!(printed["toolName"], "bash");
@@ -624,7 +671,6 @@ console.log(JSON.stringify({
         let _ = std::fs::remove_dir_all(&script_dir);
     }
 
-    
     #[tokio::test]
     async fn pi_ais_pure_logic_actually_works() {
         let Some(bun) = crate::host::which_bun() else {
@@ -702,7 +748,11 @@ console.log(JSON.stringify(results));
             .output()
             .await
             .unwrap();
-        assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
 
         let printed: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
         assert_eq!(printed["stringEnumType"], "string");
@@ -710,7 +760,10 @@ console.log(JSON.stringify(results));
         assert_eq!(printed["contentText"], "a\nb");
         assert_eq!(printed["overflow"], true);
         assert_eq!(printed["retryable"], true);
-        assert_eq!(printed["retriedAttempts"], 2, "one failed attempt, one retry that succeeds");
+        assert_eq!(
+            printed["retriedAttempts"], 2,
+            "one failed attempt, one retry that succeeds"
+        );
         assert_eq!(printed["retriedStop"], "stop");
         assert_eq!(
             printed["streamingJson"],
@@ -730,13 +783,15 @@ console.log(JSON.stringify(results));
             "1000 * $3/M + 500 * $15/M: {}",
             printed["cost"]["output"]
         );
-        assert_eq!(printed["clampedThinking"], "high", "xhigh isn't in this model's map, clamps down to the nearest supported level");
+        assert_eq!(
+            printed["clampedThinking"], "high",
+            "xhigh isn't in this model's map, clamps down to the nearest supported level"
+        );
 
         let _ = std::fs::remove_dir_all(&home);
         let _ = std::fs::remove_dir_all(&script_dir);
     }
 
-    
     #[tokio::test]
     async fn pi_ai_compat_registry_dispatches_and_refuses_unregistered_apis() {
         let Some(bun) = crate::host::which_bun() else {
@@ -781,11 +836,21 @@ console.log(JSON.stringify({ dispatchedText: dispatched.content[0], refusedMessa
             .output()
             .await
             .unwrap();
-        assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
 
         let printed: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-        assert_eq!(printed["dispatchedText"], serde_json::json!({"type": "text", "text": "hi"}));
-        assert_eq!(printed["refusedMessage"], "No API provider registered for api: custom-api");
+        assert_eq!(
+            printed["dispatchedText"],
+            serde_json::json!({"type": "text", "text": "hi"})
+        );
+        assert_eq!(
+            printed["refusedMessage"],
+            "No API provider registered for api: custom-api"
+        );
 
         let _ = std::fs::remove_dir_all(&home);
         let _ = std::fs::remove_dir_all(&script_dir);
@@ -822,7 +887,11 @@ console.log(JSON.stringify({ ok: true }));
             .output()
             .await
             .unwrap();
-        assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
         let printed: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
         assert_eq!(printed["ok"], true);
 
@@ -830,7 +899,6 @@ console.log(JSON.stringify({ ok: true }));
         let _ = std::fs::remove_dir_all(&script_dir);
     }
 
-    
     #[tokio::test]
     async fn pi_agent_core_uuid_telemetry_and_agent_boundary() {
         let Some(bun) = crate::host::which_bun() else {
@@ -882,7 +950,11 @@ console.log(JSON.stringify({
             .output()
             .await
             .unwrap();
-        assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
 
         let printed: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
         assert_eq!(printed["sameUuidFn"], true);
@@ -940,7 +1012,11 @@ console.log(JSON.stringify({
             .output()
             .await
             .unwrap();
-        assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
 
         let printed: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
         assert_eq!(printed["submitKeyIsEnter"], true);
@@ -1003,7 +1079,11 @@ console.log(JSON.stringify({
             .output()
             .await
             .unwrap();
-        assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
 
         let printed: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
         assert_eq!(printed["hintMentionsEscape"], true, "{printed}");
@@ -1069,7 +1149,11 @@ console.log(JSON.stringify({
             .output()
             .await
             .unwrap();
-        assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
 
         let printed: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
         assert_eq!(printed["isCustomEditor"], true);
@@ -1113,7 +1197,11 @@ console.log(JSON.stringify({ lineCount: lines.length, hasContent: lines.some((l:
             .output()
             .await
             .unwrap();
-        assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
 
         let printed: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
         assert!(printed["lineCount"].as_u64().unwrap() > 0, "{printed}");

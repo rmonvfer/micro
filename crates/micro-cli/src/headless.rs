@@ -19,6 +19,7 @@ pub async fn run(mut agent: Agent, prompt: Message, quiet: bool) -> Result<()> {
     let mut failure = None;
     while let Some(event) = receiver.recv().await {
         match event {
+            AgentEvent::AgentSettled => break,
             AgentEvent::MessageDelta { event } => match event {
                 StreamEvent::TextDelta { delta, .. } => {
                     print!("{delta}");

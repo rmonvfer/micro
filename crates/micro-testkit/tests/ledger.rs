@@ -53,7 +53,6 @@ fn events(records: &[Record]) -> Vec<LedgerEvent> {
         .collect()
 }
 
-
 #[tokio::test]
 async fn every_turn_records_the_request_it_issued_and_what_it_cost() {
     let provider = FakeProvider::builder()
@@ -101,7 +100,11 @@ async fn every_turn_records_the_request_it_issued_and_what_it_cost() {
             _ => None,
         })
         .collect();
-    assert_eq!(turns, vec![(1, 1), (2, 1)], "one request per turn, in order");
+    assert_eq!(
+        turns,
+        vec![(1, 1), (2, 1)],
+        "one request per turn, in order"
+    );
 
     let billed: Vec<(u64, Usage)> = recorded_events
         .iter()
@@ -114,7 +117,6 @@ async fn every_turn_records_the_request_it_issued_and_what_it_cost() {
     assert_eq!(billed[0].0, 1);
     assert_eq!(billed[1].1.cache_read, 8, "what the provider reported");
 
-    
     let LedgerEvent::TurnRequest {
         request_hash,
         prefix_spans,
@@ -129,9 +131,12 @@ async fn every_turn_records_the_request_it_issued_and_what_it_cost() {
     let sent = provider.call(1);
     let body = serde_json::to_vec(&provider.payload(&sent.model, &sent.context)).unwrap();
     assert_eq!(*request_hash, content_hash(&body));
-    assert_eq!(prefix_spans.len(), 1, "the prompt is attributed as it was built");
+    assert_eq!(
+        prefix_spans.len(),
+        1,
+        "the prompt is attributed as it was built"
+    );
 }
-
 
 #[tokio::test]
 async fn content_a_record_names_is_handed_over_once() {
@@ -167,8 +172,28 @@ async fn content_a_record_names_is_handed_over_once() {
     once.dedup();
     assert_eq!(carried.len(), once.len(), "nothing was carried twice");
 
-    
-    assert_eq!(carried.len(), 3, "got {carried:?}");
+    let turns = records
+        .iter()
+        .filter(|record| {
+            matches!(
+                record,
+                Record::Event {
+                    event: LedgerEvent::TurnRequest { .. },
+                    ..
+                }
+            )
+        })
+        .count();
+    assert_eq!(
+        turns, 2,
+        "one request opened the tool call and one closed it"
+    );
+
+    assert_eq!(
+        carried.len(),
+        3 + turns,
+        "the prompt, the tool definitions and the model, then one body per turn: {carried:?}"
+    );
     assert!(carried.contains(&content_hash(b"you are micro")));
 }
 

@@ -205,7 +205,6 @@ impl PendingDeviceLogin {
     }
 }
 
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CredentialSource {
     /// The credential file.
@@ -234,7 +233,6 @@ impl ProviderStatus {
         !matches!(self.source, CredentialSource::Missing)
     }
 }
-
 
 #[derive(Default)]
 struct Cache {
@@ -853,7 +851,7 @@ mod tests {
         assert_eq!(env_names(OPENROUTER), vec!["OPENROUTER_API_KEY"]);
         assert_eq!(env_names(GOOGLE), vec!["GEMINI_API_KEY"]);
         assert_eq!(env_names(GITHUB_COPILOT), vec!["COPILOT_GITHUB_TOKEN"]);
-        
+
         assert_eq!(
             env_names(ANTHROPIC),
             vec![
@@ -862,7 +860,7 @@ mod tests {
                 "ANTHROPIC_API_KEY"
             ]
         );
-        
+
         assert_eq!(env_names("z-ai"), vec!["Z_AI_API_KEY"]);
     }
 
@@ -911,7 +909,7 @@ mod tests {
         store.logout(OPENROUTER).unwrap();
 
         assert!(store.providers().is_empty());
-        
+
         assert_ne!(store.status_of(OPENROUTER).source, CredentialSource::Stored);
     }
 
@@ -924,7 +922,7 @@ mod tests {
         let status = store.status();
         let ids: Vec<&str> = status.iter().map(|entry| entry.provider.as_str()).collect();
         let mut expected = providers();
-        
+
         expected.push("a-proxy");
         assert_eq!(ids, expected);
 

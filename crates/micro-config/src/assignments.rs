@@ -7,7 +7,6 @@ use serde_json::Value;
 
 /// A setting an assignment wrote, and the text that wrote it.
 pub struct Written {
-    
     pub key: String,
     /// The `key=value` text as it was given.
     pub assignment: String,
@@ -28,7 +27,6 @@ pub fn apply_all(target: &mut Value, assignments: &[String]) -> Result<Vec<Writt
 
 /// Apply one `key=value` assignment, and say which top-level setting it reached.
 pub fn apply(target: &mut Value, assignment: &str) -> Result<String> {
-    
     let (key, raw) = assignment
         .split_once('=')
         .ok_or_else(|| malformed(assignment, "expected key=value"))?;
@@ -66,7 +64,6 @@ fn read(raw: &str) -> Value {
 
 /// Write `value` at `segments`, creating the objects on the way to it.
 fn place(target: &mut Value, segments: &[String], value: Value, assignment: &str) -> Result<()> {
-    
     if !target.is_object() {
         return Err(malformed(assignment, "the config is not a JSON object"));
     }

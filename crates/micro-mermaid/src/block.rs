@@ -114,7 +114,7 @@ pub(crate) fn render_block(src: &str) -> Option<Canvas> {
     for line in lines {
         apply(line, &mut parser)?;
     }
-    
+
     if !parser.stack.is_empty() || parser.top_children.is_empty() {
         return None;
     }
@@ -185,7 +185,6 @@ fn apply(line: &str, p: &mut Parser) -> Option<()> {
         return Some(());
     }
 
-    
     for declaration in declarations(line) {
         if p.cell_count >= MAX_CELLS {
             return None;
@@ -324,7 +323,6 @@ fn measure(cell: &Cell) -> MeasuredCell {
     }
 }
 
-
 fn pack_grid(
     cells: Vec<MeasuredCell>,
     columns: usize,
@@ -401,7 +399,6 @@ fn draw(parser: &Parser) -> Option<Canvas> {
     Some(canvas)
 }
 
-
 fn connect(
     canvas: &mut Canvas,
     from: (usize, usize, usize, usize),
@@ -459,7 +456,7 @@ mod tests {
         let rows = drawn("block-beta\n  columns 2\n  a\n  b\n  c");
         let joined = rows.join("\n");
         assert!(joined.contains('a') && joined.contains('b') && joined.contains('c'));
-        
+
         let row_of = |c: char| rows.iter().position(|r| r.contains(c)).unwrap();
         assert!(row_of('c') > row_of('a'), "{rows:?}");
     }
@@ -515,7 +512,6 @@ mod tests {
         assert!(rows.join("\n").contains("Start Here"), "{rows:?}");
     }
 
-    
     #[test]
     fn what_is_not_a_block_diagram_is_left_alone() {
         assert!(render_block("graph TD\n A --> B").is_none());

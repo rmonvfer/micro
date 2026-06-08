@@ -10,7 +10,6 @@ const NETWORK_POLICY: &str = include_str!("seatbelt_network_policy.sbpl");
 /// Only the copy in `/usr/bin` is ever run.
 pub(crate) const SANDBOX_EXEC: &str = "/usr/bin/sandbox-exec";
 
-
 pub(crate) fn seatbelt_args(rules: &SandboxRules, command: Vec<String>) -> Vec<String> {
     let (write_policy, mut definitions) = write_policy(&rules.writable_roots);
     let (read_policy, read_definitions) = read_policy(rules.readable_roots.as_deref());
@@ -23,9 +22,8 @@ pub(crate) fn seatbelt_args(rules: &SandboxRules, command: Vec<String>) -> Vec<S
         String::new()
     };
 
-    let profile = format!(
-        "{BASE_POLICY}\n{process_policy}\n{read_policy}\n{write_policy}\n{network_policy}"
-    );
+    let profile =
+        format!("{BASE_POLICY}\n{process_policy}\n{read_policy}\n{write_policy}\n{network_policy}");
 
     let mut args = vec!["-p".to_string(), profile];
     args.extend(
@@ -56,9 +54,15 @@ fn read_policy(roots: Option<&[PathBuf]>) -> (String, Vec<(String, PathBuf)>) {
     if matches.is_empty() {
         return (String::new(), definitions);
     }
+
+    matches.push("(literal \"/\")".to_string());
     (
         format!(
-            "; extension read allowlist\n(allow file-read*\n{}\n)",
+            "; extension read allowlist, and the root directory every path in it is reached
+; through: seatbelt grants a subtree without granting the directory the walk starts from, and a
+; runtime that cannot stat `/` dies before it can say why. The literal admits the root directory
+; itself, not what is under it, so the allowlist above still decides what can be read.
+(allow file-read*\n{}\n)",
             matches.join("\n")
         ),
         definitions,
@@ -152,7 +156,7 @@ mod tests {
         let profile = &args[1];
         assert!(profile.contains("(deny default)"), "{profile}");
         assert!(profile.contains("(allow file-read*)"), "{profile}");
-        
+
         assert!(!profile.contains("WRITABLE_ROOT"), "{profile}");
         assert!(!args.iter().any(|arg| arg.starts_with("-D")), "{args:?}");
         assert_eq!(args.last().unwrap(), "/bin/echo");
@@ -190,10 +194,7 @@ mod tests {
             root: PathBuf::from("/work/\") (allow default) ;"),
             read_only_subpaths: Vec::new(),
         };
-        let args = seatbelt_args(
-            &rules(vec![root], false),
-            vec!["/bin/echo".to_string()],
-        );
+        let args = seatbelt_args(&rules(vec![root], false), vec!["/bin/echo".to_string()]);
         assert!(!args[1].contains("allow default"), "{}", args[1]);
     }
 

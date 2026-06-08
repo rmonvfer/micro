@@ -83,6 +83,7 @@ A Markdown file under `prompts/` becomes a slash command named after the file:
 description: Review a pull request
 argument-hint: <number> [branch]
 ---
+
 Review PR $1 against ${2:-main}. List merge blockers first.
 ```
 

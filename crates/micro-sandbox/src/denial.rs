@@ -2,7 +2,6 @@
 
 use std::process::ExitStatus;
 
-
 pub fn is_likely_denied(status: &ExitStatus, output: &str) -> bool {
     if status.success() {
         return false;
@@ -12,7 +11,6 @@ pub fn is_likely_denied(status: &ExitStatus, output: &str) -> bool {
     {
         use std::os::unix::process::ExitStatusExt;
 
-        
         const SIGNALLED_EXIT_BASE: i32 = 128;
         if status.signal() == Some(libc::SIGSYS)
             || status.code() == Some(SIGNALLED_EXIT_BASE + libc::SIGSYS)

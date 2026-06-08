@@ -39,7 +39,7 @@ macro_rules! tokens {
             /// Every token name, in schema order.
             pub const TOKEN_NAMES: &'static [&'static str] = &[$($name),*];
 
-            
+
             pub fn token(&self, name: &str) -> Option<Color> {
                 match name {
                     $($name => Some(self.$field),)*
@@ -179,7 +179,6 @@ impl Theme {
 
         Theme::named(&wanted)
             .or_else(|| Theme::from_user_file(&wanted).ok())
-            
             .unwrap_or_else(Theme::dark)
     }
 
@@ -201,7 +200,7 @@ impl Theme {
                 .map(|(_, color)| *color)
                 .unwrap_or(Color::Reset)
         };
-        
+
         let fallback = Theme::dark();
         Ok(Theme {
             surface: fallback.surface,
@@ -524,7 +523,7 @@ mod tests {
         };
         assert_eq!(Theme::resolve_setting(Some("light"), dark).name, "light");
         assert_eq!(Theme::resolve_setting(Some("dark"), dark).name, "dark");
-        
+
         assert_eq!(Theme::resolve_setting(Some("nocturne"), dark).name, "dark");
     }
 
@@ -561,7 +560,7 @@ mod tests {
             Theme::resolve_setting(Some("light/dark"), dark).name,
             "dark"
         );
-        
+
         assert_eq!(
             Theme::resolve_setting(Some(" light / dark "), dark).name,
             "dark"
@@ -594,7 +593,7 @@ mod tests {
             assert_eq!(theme.token(token), Some(rgb("#123456")), "{token}");
         }
         assert_eq!(Theme::user_theme_name(&json).unwrap(), "mine");
-        
+
         assert_eq!(theme.surface, Theme::dark().surface);
     }
 

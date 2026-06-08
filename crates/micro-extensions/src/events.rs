@@ -1,5 +1,3 @@
-
-
 use micro_types::AgentEvent;
 use micro_types::ContentBlock;
 use micro_types::Message;
@@ -25,8 +23,7 @@ pub fn name_of(event: &AgentEvent) -> Option<&'static str> {
         AgentEvent::ToolStart { .. } => Some("tool_execution_start"),
         AgentEvent::ToolUpdate { .. } => Some("tool_execution_update"),
         AgentEvent::ToolEnd { .. } => Some("tool_execution_end"),
-        
-        
+
         AgentEvent::Retry { .. } => None,
     }
 }
@@ -35,7 +32,6 @@ pub fn name_of(event: &AgentEvent) -> Option<&'static str> {
 /// handlers are written against.
 #[derive(Debug, Default)]
 pub struct Translator {
-    
     turn_index: u32,
     /// How many of `AgentEvent::TurnEnd`'s cumulative messages had already been reported as of the
     /// last turn.
@@ -109,7 +105,7 @@ impl Translator {
     /// tool results followed it.
     fn turn_end(&mut self, messages: &[Message]) -> Value {
         let this_turn = messages.get(self.reported..).unwrap_or(&[]);
-        
+
         let message = this_turn
             .iter()
             .find(|message| matches!(message, Message::Assistant(_)))
@@ -144,7 +140,6 @@ impl Translator {
         json!({ "message": message, "assistantMessageEvent": assistant_message_event })
     }
 
-    
     fn stream_event_json(&mut self, event: &StreamEvent) -> Value {
         match event {
             StreamEvent::Start => {
@@ -191,7 +186,8 @@ impl Translator {
                 })
             }
             StreamEvent::ThinkingEnd { index, thinking } => {
-                *self.block(*index, || Value::Null) = json!({ "type": "thinking", "thinking": thinking });
+                *self.block(*index, || Value::Null) =
+                    json!({ "type": "thinking", "thinking": thinking });
                 json!({
                     "type": "thinking_end",
                     "contentIndex": index,
@@ -200,16 +196,19 @@ impl Translator {
                 })
             }
             StreamEvent::ToolCallStart { index, id, name } => {
-                let block = self.block(*index, || {
-                    json!({ "type": "toolCall", "id": "", "name": "", "arguments": {} })
-                });
+                let block = self.block(
+                    *index,
+                    || json!({ "type": "toolCall", "id": "", "name": "", "arguments": {} }),
+                );
                 block["id"] = json!(id);
                 block["name"] = json!(name);
                 json!({ "type": "toolcall_start", "contentIndex": index, "partial": self.partial_message() })
             }
             StreamEvent::ToolCallDelta { index, delta } => {
-                
-                self.block(*index, || json!({ "type": "toolCall", "id": "", "name": "", "arguments": {} }));
+                self.block(
+                    *index,
+                    || json!({ "type": "toolCall", "id": "", "name": "", "arguments": {} }),
+                );
                 json!({
                     "type": "toolcall_delta",
                     "contentIndex": index,
@@ -223,7 +222,8 @@ impl Translator {
                 name,
                 arguments,
             } => {
-                let tool_call = json!({ "type": "toolCall", "id": id, "name": name, "arguments": arguments });
+                let tool_call =
+                    json!({ "type": "toolCall", "id": id, "name": name, "arguments": arguments });
                 *self.block(*index, || Value::Null) = tool_call.clone();
                 json!({
                     "type": "toolcall_end",
@@ -241,7 +241,6 @@ impl Translator {
                 })
             }
             StreamEvent::Error { message } => {
-                
                 let content = self
                     .partial
                     .take()
@@ -265,7 +264,6 @@ impl Translator {
         }
     }
 
-    
     fn block(&mut self, index: usize, default: impl FnOnce() -> Value) -> &mut Value {
         self.partial
             .get_or_insert_with(PartialAssistant::default)
@@ -303,7 +301,6 @@ fn tool_result_json(output: &str) -> Value {
         "details": Value::Null,
     })
 }
-
 
 pub fn message_json(message: &Message) -> Value {
     match message {
@@ -343,7 +340,10 @@ pub fn message_json(message: &Message) -> Value {
 pub fn content_json(block: &ContentBlock) -> Value {
     match block {
         ContentBlock::Text { text } => json!({ "type": "text", "text": text }),
-        ContentBlock::Thinking { thinking, signature } => {
+        ContentBlock::Thinking {
+            thinking,
+            signature,
+        } => {
             let mut value = json!({ "type": "thinking", "thinking": thinking });
             if let Some(signature) = signature {
                 value["thinkingSignature"] = json!(signature);
@@ -377,7 +377,12 @@ pub fn content_json(block: &ContentBlock) -> Value {
 
 /// A message as an extension handed it back.
 pub fn message_from_json(value: &Value) -> Option<Message> {
-    let timestamp = || value.get("timestamp").and_then(Value::as_i64).unwrap_or_else(micro_types::now_ms);
+    let timestamp = || {
+        value
+            .get("timestamp")
+            .and_then(Value::as_i64)
+            .unwrap_or_else(micro_types::now_ms)
+    };
     let content = || -> Vec<ContentBlock> {
         value
             .get("content")
@@ -397,14 +402,20 @@ pub fn message_from_json(value: &Value) -> Option<Message> {
             model: text(value, "model"),
             usage: usage_from_json(value.get("usage")),
             stop_reason: stop_reason_from_json(value.get("stopReason").and_then(Value::as_str)),
-            error: value.get("errorMessage").and_then(Value::as_str).map(str::to_string),
+            error: value
+                .get("errorMessage")
+                .and_then(Value::as_str)
+                .map(str::to_string),
             timestamp: timestamp(),
         })),
         "toolResult" => Some(Message::ToolResult {
             tool_call_id: value.get("toolCallId")?.as_str()?.to_string(),
             tool_name: value.get("toolName")?.as_str()?.to_string(),
             content: content(),
-            is_error: value.get("isError").and_then(Value::as_bool).unwrap_or(false),
+            is_error: value
+                .get("isError")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
             timestamp: timestamp(),
         }),
         _ => None,
@@ -414,7 +425,9 @@ pub fn message_from_json(value: &Value) -> Option<Message> {
 /// A content block as an extension handed it back.
 pub fn content_from_json(value: &Value) -> Option<ContentBlock> {
     match value.get("type").and_then(Value::as_str)? {
-        "text" => Some(ContentBlock::Text { text: text(value, "text") }),
+        "text" => Some(ContentBlock::Text {
+            text: text(value, "text"),
+        }),
         "thinking" if value.get("redacted").and_then(Value::as_bool) == Some(true) => {
             Some(ContentBlock::RedactedThinking {
                 data: text(value, "thinkingSignature"),
@@ -422,7 +435,10 @@ pub fn content_from_json(value: &Value) -> Option<ContentBlock> {
         }
         "thinking" => Some(ContentBlock::Thinking {
             thinking: text(value, "thinking"),
-            signature: value.get("thinkingSignature").and_then(Value::as_str).map(str::to_string),
+            signature: value
+                .get("thinkingSignature")
+                .and_then(Value::as_str)
+                .map(str::to_string),
         }),
         "image" => Some(ContentBlock::Image {
             data: text(value, "data"),
@@ -439,7 +455,11 @@ pub fn content_from_json(value: &Value) -> Option<ContentBlock> {
 }
 
 fn text(value: &Value, field: &str) -> String {
-    value.get(field).and_then(Value::as_str).unwrap_or_default().to_string()
+    value
+        .get(field)
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string()
 }
 
 fn usage_from_json(value: Option<&Value>) -> Usage {
@@ -463,7 +483,7 @@ fn stop_reason_from_json(value: Option<&str>) -> StopReason {
         Some("toolUse") => StopReason::ToolUse,
         Some("error") => StopReason::Error,
         Some("aborted") => StopReason::Aborted,
-        
+
         _ => StopReason::Stop,
     }
 }
@@ -615,7 +635,6 @@ mod tests {
         assert_eq!(json["toolName"], "read");
     }
 
-    
     #[test]
     fn an_assistant_messages_fields_are_camel_cased() {
         let assistant = micro_types::AssistantMessage {
@@ -667,7 +686,10 @@ mod tests {
             messages: vec![first_reply.clone(), tool_result.clone()],
         });
         assert_eq!(first_turn["turnIndex"], 0);
-        assert_eq!(first_turn["message"]["content"][0]["text"], "running a tool");
+        assert_eq!(
+            first_turn["message"]["content"][0]["text"],
+            "running a tool"
+        );
         assert_eq!(first_turn["toolResults"].as_array().unwrap().len(), 1);
         assert_eq!(first_turn["toolResults"][0]["toolCallId"], "call_1");
 
@@ -720,7 +742,10 @@ mod tests {
             after_second_delta["assistantMessageEvent"]["type"],
             "text_delta"
         );
-        assert_eq!(after_second_delta["assistantMessageEvent"]["contentIndex"], 0);
+        assert_eq!(
+            after_second_delta["assistantMessageEvent"]["contentIndex"],
+            0
+        );
         assert_eq!(after_second_delta["assistantMessageEvent"]["delta"], "lo");
 
         let ended = translator.payload_of(&AgentEvent::MessageDelta {
@@ -749,7 +774,6 @@ mod tests {
         assert_eq!(done["message"]["stopReason"], "stop");
     }
 
-    
     #[test]
     fn a_failed_stream_keeps_what_it_had_produced() {
         let mut translator = Translator::new();
@@ -822,12 +846,12 @@ mod tests {
 
         for message in &messages {
             let json = message_json(message);
-            let parsed = message_from_json(&json).expect("a message an extension wrote back parses");
+            let parsed =
+                message_from_json(&json).expect("a message an extension wrote back parses");
             assert_eq!(&parsed, message, "{json}");
         }
     }
 
-    
     #[test]
     fn redacted_thinking_round_trips_through_pis_shape() {
         let block = ContentBlock::RedactedThinking {
@@ -838,7 +862,6 @@ mod tests {
         assert_eq!(content_from_json(&json), Some(block));
     }
 
-    
     #[test]
     fn an_unrecognized_role_does_not_parse() {
         assert_eq!(message_from_json(&json!({ "role": "system" })), None);

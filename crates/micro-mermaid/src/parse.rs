@@ -10,8 +10,6 @@ use crate::labels::{
     ascii_lower, clean_label, decode_html_entities, display_generics, is_id_char, src_lines,
 };
 
-
-
 fn flush_statement(cur: &str, out: &mut Vec<String>) {
     let trimmed = cur.trim();
     if !trimmed.is_empty() {
@@ -161,8 +159,6 @@ pub fn diagram_kind(src: &str) -> Option<DiagramKind> {
     }
 }
 
-
-
 pub fn parse_graph(src: &str) -> Option<Graph> {
     let statements = statements_of(src);
     let kind = header_kind(&statements);
@@ -229,7 +225,6 @@ fn parse_subgraph_decl(rest: &str) -> (String, String) {
     (rest.to_string(), rest.to_string())
 }
 
-
 fn parse_statement(st: &str, graph: &mut Graph) {
     let chars: Vec<char> = st.chars().collect();
     let mut i;
@@ -275,7 +270,6 @@ fn parse_statement(st: &str, graph: &mut Graph) {
         let mut aborted = false;
         'edges: for &f in &prev {
             for &t in &target.group {
-                
                 let reversed = link.left == Head::Arrow && link.right != Head::Arrow;
                 let pushed = graph.push_edge(Edge {
                     from: if reversed { t } else { f },
@@ -425,7 +419,7 @@ fn read_shape(chars: &[char], start: usize, closer: &'static str, shape: Shape) 
         text.push(c);
         i += 1;
     }
-    
+
     Shaped {
         shape,
         label: Some(clean_label(&text)),
@@ -484,7 +478,7 @@ fn line_kind(op: &str) -> LineKind {
 fn parse_link(chars: &[char], start: usize) -> Option<Link> {
     let mut i = skip_spaces(chars, start);
     let mut left = Head::None;
-    
+
     if matches!(chars.get(i), Some(&'o') | Some(&'x'))
         && matches!(chars.get(i + 1), Some(&'-') | Some(&'.') | Some(&'='))
     {
@@ -581,8 +575,6 @@ fn parse_link(chars: &[char], start: usize) -> Option<Link> {
     })
 }
 
-
-
 pub fn parse_state(src: &str) -> Option<Graph> {
     let statements = statements_of(src);
     let kind = header_kind(&statements)?;
@@ -605,7 +597,6 @@ pub fn parse_state(src: &str) -> Option<Graph> {
             let w = words(st);
             graph.dir = parse_dir(w.get(1).map(|s| s.as_str()).unwrap_or(""));
         } else if first == "note" {
-            
             if !st.contains(':') {
                 in_note = true;
             }
@@ -615,7 +606,6 @@ pub fn parse_state(src: &str) -> Option<Graph> {
             first.as_str(),
             "classdef" | "class" | "hide" | "scale" | "}" | "--"
         ) {
-            
         } else if st.contains("-->") {
             parse_transition(st, &mut graph)?;
         } else {
@@ -681,7 +671,6 @@ fn parse_transition(st: &str, graph: &mut Graph) -> Option<()> {
     while let Some((lhs, rhs)) = rest.split_once("-->") {
         let from_id = lhs.trim_end().trim_end_matches('-').trim();
         let from = if let Some(p) = prev {
-            
             if !from_id.is_empty() {
                 return None;
             }
@@ -757,8 +746,6 @@ fn parse_state_desc(st: &str, graph: &mut Graph) -> Option<()> {
     }
     graph.node_index(st, None, Shape::Round).map(|_| ())
 }
-
-
 
 /// Relation operators, longest-first so `--|>` wins over `--`.
 const CLASS_OPS: &[(&str, Head, Head, LineKind)] = &[
@@ -941,7 +928,7 @@ fn parse_class_relation(st: &str) -> Option<ClassRelation> {
             if !tail.starts_with(op) {
                 continue;
             }
-            
+
             if op.starts_with('o') && pos > 0 && is_id_char(chars[pos - 1]) {
                 continue;
             }
@@ -1000,7 +987,6 @@ fn parse_class_relation(st: &str) -> Option<ClassRelation> {
     })
 }
 
-
 fn strip_cardinality_suffix(s: &str) -> (String, String) {
     let t = s.trim_end();
     if let Some(rest) = t.strip_suffix('"') {
@@ -1010,7 +996,6 @@ fn strip_cardinality_suffix(s: &str) -> (String, String) {
     }
     (t.to_string(), String::new())
 }
-
 
 fn strip_cardinality_prefix(s: &str) -> (String, String) {
     let t = s.trim_start();
@@ -1024,8 +1009,6 @@ fn strip_cardinality_prefix(s: &str) -> (String, String) {
     }
     (t.to_string(), String::new())
 }
-
-
 
 pub fn parse_er(src: &str) -> Option<(Graph, Vec<ClassInfo>)> {
     let statements = statements_of(src);
@@ -1195,8 +1178,6 @@ pub fn push_er_attribute(info: &mut ClassInfo, raw: &str) {
     }
 }
 
-
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SeqHead {
     Arrow,
@@ -1279,7 +1260,7 @@ pub fn parse_sequence(src: &str) -> Option<Sequence> {
     let mut seq = Sequence::new();
     let mut autonumber = false;
     let mut msg_count = 0u32;
-    
+
     let mut blocks: Vec<bool> = Vec::new();
 
     for st in &statements[1..] {
@@ -1335,7 +1316,6 @@ pub fn parse_sequence(src: &str) -> Option<Sequence> {
             "loop" | "alt" | "opt" | "par" | "critical" | "break" | "else" | "and" | "option"
         ) {
             if matches!(lower.as_str(), "else" | "and" | "option") {
-                
                 if blocks.last() != Some(&true) {
                     continue;
                 }
@@ -1483,7 +1463,7 @@ fn parse_seq_message(st: &str, seq: &mut Sequence) -> Option<SeqMessage> {
     if from_id.is_empty() {
         return None;
     }
-    
+
     let rest_chars: String = chars[pos + op_len..].iter().collect();
     let rest = rest_chars.trim_start().trim_start_matches(['+', '-']);
 

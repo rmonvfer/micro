@@ -1,10 +1,18 @@
 # Getting started
 
-micro currently installs from a source checkout. You need a Rust toolchain. Bun is optional and only required for TypeScript extensions.
+The release installer downloads the native binary for macOS on Apple Silicon and Linux on x86_64 or ARM64. Bun is optional and only required for TypeScript extensions.
 
 ## Install
 
-From the repository root:
+Install the latest release:
+
+```bash
+curl --fail --silent --show-error --location https://raw.githubusercontent.com/rmonvfer/micro/main/scripts/install.sh | bash
+```
+
+The installer verifies the release checksum, keeps versioned copies under `~/.local/share/micro/dist`, and links `micro` from `~/.local/bin`. Packaged interactive installations check for updates automatically once every 24 hours. Set `auto_update` to `false`, set `MICRO_NO_AUTO_UPDATE=1`, or run `micro update` when you want explicit control.
+
+To build from a source checkout instead:
 
 ```bash
 cargo install --path crates/micro-cli

@@ -41,7 +41,6 @@ pub fn declare(name: &str, config: &Value) -> Result<Declared, String> {
         provider.insert("models".into(), Value::Array(described?));
     }
 
-    
     if provider.is_empty() {
         return Err(format!("{name} was declared without anything to apply"));
     }
@@ -206,11 +205,10 @@ mod tests {
         let model = catalog.get("my-proxy", "fast").expect("the model is there");
         assert_eq!(model.base_url, "https://proxy.example.com");
         assert_eq!(model.context_window, 128000);
-        
+
         assert_eq!(model.name, "fast");
     }
 
-    
     #[test]
     fn a_base_url_alone_points_an_existing_provider_somewhere_else() {
         let declared = declare(

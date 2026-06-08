@@ -87,7 +87,6 @@ pub enum ConfigError {
     Override { assignment: String, message: String },
 }
 
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Thinking {
@@ -140,7 +139,6 @@ pub enum SteeringMode {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum TreeFilter {
-    
     #[default]
     Default,
     /// The same, without what the tools did.
@@ -157,10 +155,9 @@ pub enum TreeFilter {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum ExitOutput {
-    
     #[default]
     Transcript,
-    
+
     ResumeHint,
 }
 
@@ -201,7 +198,7 @@ pub struct Config {
     pub thinking: Option<Thinking>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub theme: Option<String>,
-    
+
     pub tui_mode: Option<TuiMode>,
     /// Merge live provider listings into the model catalog on startup.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -210,7 +207,13 @@ pub struct Config {
     /// Summarize the conversation on its own once the context fills up.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub auto_compact: Option<bool>,
-    
+    /// Check packaged installations for a newer signed release before an interactive session.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub auto_update: Option<bool>,
+    /// Hours between automatic update checks.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub update_check_interval_hours: Option<u64>,
+
     #[serde(skip_serializing_if = "Option::is_none")]
     pub hide_thinking: Option<bool>,
     /// Draw images in the terminal, where the terminal can.
@@ -243,7 +246,7 @@ pub struct Config {
     /// How many completions the command menu offers at once.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub autocomplete_max_items: Option<usize>,
-    
+
     #[serde(skip_serializing_if = "Option::is_none")]
     pub show_hardware_cursor: Option<bool>,
     /// Report progress to the terminal while a turn runs.
@@ -252,7 +255,7 @@ pub struct Config {
     /// Open without the introduction.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub quiet_startup: Option<bool>,
-    
+
     #[serde(skip_serializing_if = "Option::is_none")]
     pub collapse_changelog: Option<bool>,
     /// Show warnings at all.
@@ -289,7 +292,7 @@ pub struct Config {
     /// How the ChatGPT Codex backend should answer: `sse`, or `auto` to let it decide.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub transport: Option<String>,
-    
+
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sandbox: Option<Value>,
     /// What one session may spend before it stops, in US dollars.
@@ -317,7 +320,6 @@ pub struct Overrides {
 /// The settings actually in force, with every default applied.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Settings {
-    
     pub model: Option<String>,
     pub provider: Option<String>,
     pub thinking: Thinking,
@@ -326,6 +328,8 @@ pub struct Settings {
     pub live_models: bool,
 
     pub auto_compact: bool,
+    pub auto_update: bool,
+    pub update_check_interval_hours: u64,
     pub hide_thinking: bool,
     pub show_images: bool,
     pub image_width_cells: u16,
@@ -385,6 +389,8 @@ impl Default for Settings {
             live_models: false,
 
             auto_compact: true,
+            auto_update: true,
+            update_check_interval_hours: 24,
             hide_thinking: true,
             show_images: true,
             image_width_cells: DEFAULT_IMAGE_WIDTH_CELLS,
@@ -446,7 +452,6 @@ impl Config {
             Err(error) => return Err(io_error(path, error)),
         };
 
-        
         let mut value: Value = if contents.trim().is_empty() {
             Value::Object(Map::new())
         } else {
@@ -458,7 +463,6 @@ impl Config {
 
         let written = assignments::apply_all(&mut value, overrides)?;
 
-        
         Config::from_value(value, path).map_err(|error| match &error {
             ConfigError::Field { field, message, .. } => written
                 .iter()
@@ -556,8 +560,12 @@ impl Config {
             )
             .unwrap_or(false),
 
-            
             auto_compact: self.auto_compact.unwrap_or(defaults.auto_compact),
+            auto_update: self.auto_update.unwrap_or(defaults.auto_update),
+            update_check_interval_hours: self
+                .update_check_interval_hours
+                .unwrap_or(defaults.update_check_interval_hours)
+                .max(1),
             hide_thinking: self.hide_thinking.unwrap_or(defaults.hide_thinking),
             show_images: self.show_images.unwrap_or(defaults.show_images),
             image_width_cells: self
@@ -605,9 +613,9 @@ impl Config {
                 .anthropic_extra_usage
                 .unwrap_or(defaults.anthropic_extra_usage),
             transport: self.transport.clone().unwrap_or(defaults.transport),
-            
+
             sandbox: self.sandbox.clone().or(defaults.sandbox),
-            
+
             budget: self.budget.unwrap_or(defaults.budget).max(0.0),
             extensions: self.extensions.clone().unwrap_or(defaults.extensions),
         })
@@ -634,6 +642,8 @@ impl Config {
             theme: take(&mut fields, "theme", path)?,
             live_models: take(&mut fields, "live_models", path)?,
             auto_compact: take(&mut fields, "auto_compact", path)?,
+            auto_update: take(&mut fields, "auto_update", path)?,
+            update_check_interval_hours: take(&mut fields, "update_check_interval_hours", path)?,
             hide_thinking: take(&mut fields, "hide_thinking", path)?,
             show_images: take(&mut fields, "show_images", path)?,
             image_width_cells: take(&mut fields, "image_width_cells", path)?,
@@ -813,7 +823,6 @@ mod tests {
         None
     }
 
-    
     #[test]
     fn the_settings_file_sits_in_the_configuration_directory() {
         let directory = config_dir().expect("a home directory");
@@ -857,7 +866,6 @@ mod tests {
         assert!(config.extra.is_empty());
     }
 
-    
     #[test]
     fn a_settled_sandbox_policy_survives_resolution() {
         let path = scratch("sandbox").join("config.json");
@@ -962,7 +970,7 @@ mod tests {
         assert_eq!(Config::load_from(&path).unwrap(), config);
         let written = fs::read_to_string(&path).unwrap();
         assert!(written.contains("\"model\": \"opus\""), "{written}");
-        
+
         assert!(!written.contains("theme"), "{written}");
     }
 
@@ -1060,6 +1068,25 @@ mod tests {
         assert_eq!(settings.theme, "dark");
         assert!(!settings.live_models);
         assert_eq!(settings.model, None);
+    }
+
+    #[test]
+    fn update_settings_default_to_a_daily_automatic_check() {
+        let settings = Config::default()
+            .resolve(&Overrides::default(), no_environment)
+            .unwrap();
+        assert!(settings.auto_update);
+        assert_eq!(settings.update_check_interval_hours, 24);
+
+        let configured = Config {
+            auto_update: Some(false),
+            update_check_interval_hours: Some(0),
+            ..Config::default()
+        }
+        .resolve(&Overrides::default(), no_environment)
+        .unwrap();
+        assert!(!configured.auto_update);
+        assert_eq!(configured.update_check_interval_hours, 1);
     }
 
     #[test]

@@ -200,8 +200,8 @@ mod tests {
 
     #[test]
     fn a_configured_execution_mode_is_reported() {
-        let tool = FakeTool::new("write")
-            .with_execution_mode(micro_types::ToolExecutionMode::Sequential);
+        let tool =
+            FakeTool::new("write").with_execution_mode(micro_types::ToolExecutionMode::Sequential);
         assert_eq!(
             tool.execution_mode(),
             Some(micro_types::ToolExecutionMode::Sequential)

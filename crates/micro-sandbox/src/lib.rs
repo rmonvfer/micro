@@ -140,6 +140,24 @@ impl Sandbox {
         sandbox
     }
 
+    /// A confined host for extensions the user has trusted, which may also write in the active
+    /// workspace. Its reads, network access, and executable remain explicitly restricted.
+    pub fn trusted_extension_host<I, P>(
+        runtime: impl Into<PathBuf>,
+        readable_roots: I,
+        workspace: impl Into<PathBuf>,
+    ) -> Self
+    where
+        I: IntoIterator<Item = P>,
+        P: Into<PathBuf>,
+    {
+        let workspace = paths::canonicalize_deepest_existing(&workspace.into());
+        let mut sandbox = Self::extension_host(runtime, readable_roots);
+        sandbox.workspace = workspace;
+        sandbox.policy = SandboxPolicy::workspace_write();
+        sandbox
+    }
+
     /// Protect one of micro's own directories.
     pub fn with_micro_home(mut self, micro_home: impl Into<PathBuf>) -> Self {
         let micro_home = paths::canonicalize_deepest_existing(&micro_home.into());
@@ -149,7 +167,6 @@ impl Sandbox {
         self
     }
 
-    
     pub fn with_helper_program(mut self, program: impl Into<PathBuf>) -> Self {
         self.helper_program = Some(program.into());
         self
@@ -157,6 +174,13 @@ impl Sandbox {
 
     pub fn policy(&self) -> &SandboxPolicy {
         &self.policy
+    }
+
+    /// Create a sandbox with the same workspace and protected paths under `policy`.
+    pub fn with_policy(&self, policy: SandboxPolicy) -> Self {
+        let mut sandbox = self.clone();
+        sandbox.policy = policy;
+        sandbox
     }
 
     pub fn workspace(&self) -> &Path {
@@ -197,7 +221,7 @@ impl Sandbox {
         );
         roots.dedup();
 
-        roots
+        let roots: Vec<WritableRoot> = roots
             .into_iter()
             .map(|root| {
                 let mut read_only_subpaths: Vec<PathBuf> =
@@ -212,10 +236,36 @@ impl Sandbox {
                     read_only_subpaths,
                 }
             })
-            .collect()
+            .collect();
+
+        #[cfg(target_os = "macos")]
+        {
+            let mut aliases = Vec::new();
+            for writable in &roots {
+                let Ok(suffix) = writable.root.strip_prefix("/private") else {
+                    continue;
+                };
+                aliases.push(WritableRoot {
+                    root: Path::new("/").join(suffix),
+                    read_only_subpaths: writable
+                        .read_only_subpaths
+                        .iter()
+                        .filter_map(|path| {
+                            path.strip_prefix("/private")
+                                .ok()
+                                .map(|suffix| Path::new("/").join(suffix))
+                        })
+                        .collect(),
+                });
+            }
+            aliases.retain(|alias| !roots.contains(alias));
+            roots.into_iter().chain(aliases).collect()
+        }
+
+        #[cfg(not(target_os = "macos"))]
+        roots
     }
 
-    
     pub fn rules(&self) -> SandboxRules {
         SandboxRules {
             writable_roots: self.writable_roots(),
@@ -226,11 +276,16 @@ impl Sandbox {
     }
 
     /// Describe `program` and `args` as a command confined by this policy, to be run in `cwd`.
+    ///
+    /// The directory is resolved the same way the policy's own paths are. A rule written against
+    /// `/private/var/…` does not admit the `/var/…` that reaches it through a symlink, so a command
+    /// started in the unresolved form cannot read the directory it is standing in.
     pub fn wrap<I, S>(&self, program: &str, args: I, cwd: &Path) -> WrappedCommand
     where
         I: IntoIterator<Item = S>,
         S: Into<String>,
     {
+        let cwd = &paths::canonicalize_deepest_existing(cwd);
         let mut command = vec![program.to_string()];
         command.extend(args.into_iter().map(Into::into));
         if !self.is_enforced() {
@@ -330,6 +385,7 @@ fn platform_runtime_roots() -> Vec<PathBuf> {
             "/etc/ld.so.cache",
             "/etc/localtime",
             "/usr/share/zoneinfo",
+            "/usr/share/icu",
             "/dev/null",
             "/dev/urandom",
             "/proc/self",
@@ -346,6 +402,7 @@ fn platform_runtime_roots() -> Vec<PathBuf> {
             "/usr/lib",
             "/etc/localtime",
             "/usr/share/zoneinfo",
+            "/usr/share/icu",
             "/dev/null",
             "/dev/urandom",
         ]
@@ -495,13 +552,46 @@ mod tests {
         let rules = sandbox.rules();
         assert!(!rules.allow_network);
         assert!(rules.writable_roots.is_empty());
-        let readable = rules.readable_roots.expect("extension reads are allowlisted");
+        let readable = rules
+            .readable_roots
+            .expect("extension reads are allowlisted");
         assert!(readable.contains(&std::fs::canonicalize(&runtime).unwrap()));
         assert!(readable.contains(&std::fs::canonicalize(&package).unwrap()));
         assert_eq!(
             rules.allowed_executables,
             [std::fs::canonicalize(runtime).unwrap()]
         );
+    }
+
+    #[test]
+    fn a_trusted_extension_host_can_write_only_its_workspace() {
+        let (dir, workspace) = workspace("trusted-extension-host");
+        let runtime = workspace.join("bun");
+        std::fs::write(&runtime, "runtime").unwrap();
+        let package = workspace.join("extension");
+        std::fs::create_dir_all(&package).unwrap();
+
+        let sandbox = Sandbox::trusted_extension_host(&runtime, [&package], &workspace);
+        assert!(
+            sandbox
+                .check_write(&workspace.join("extension.log"))
+                .allowed
+        );
+        assert!(!sandbox.check_write(&dir.join("outside.log")).allowed);
+        assert!(!sandbox.rules().allow_network);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn writable_roots_include_the_var_alias_of_a_canonical_workspace() {
+        let (_dir, workspace) = workspace("var-alias");
+        let sandbox = Sandbox::new(SandboxPolicy::workspace_write(), &workspace);
+        let roots = sandbox.writable_roots();
+        if let Ok(suffix) = workspace.strip_prefix("/private") {
+            assert!(roots
+                .iter()
+                .any(|root| root.root == Path::new("/").join(suffix)));
+        }
     }
 
     #[test]
@@ -530,7 +620,10 @@ mod tests {
         let sandbox = Sandbox::new(SandboxPolicy::workspace_write(), &workspace);
         let rules = sandbox.rules();
         assert!(!rules.allow_network);
-        assert_eq!(rules.writable_roots.len(), 1);
+        assert_eq!(
+            rules.writable_roots.len(),
+            if cfg!(target_os = "macos") { 2 } else { 1 }
+        );
         assert_eq!(rules.writable_roots[0].root, workspace);
         assert!(rules.writable_roots[0]
             .read_only_subpaths

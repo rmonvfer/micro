@@ -96,8 +96,8 @@ impl SessionStore {
         validate_id(id)?;
         let raw = self.read_log(id).await?;
         let (lines, skipped_lines) = parse_log(&raw);
-        let tree = Tree::from_lines(lines);
-        
+        let tree = checked_tree(&self.log_path(id), lines)?;
+
         let messages = tree.path();
 
         let meta = self.meta_for(id).await?;
@@ -108,7 +108,7 @@ impl SessionStore {
             meta_path: self.meta_path(id),
             blobs_path: self.blobs_path(id),
             meta,
-            
+
             next_seq: tree
                 .ledger()
                 .iter()
@@ -118,12 +118,10 @@ impl SessionStore {
             tree,
         };
 
-        
         if !raw.is_empty() && !raw.ends_with('\n') {
             session.seal_partial_line().await?;
         }
 
-        
         let entry_count = session.tree.entries().len();
         if session.meta.message_count != entry_count {
             session.meta.message_count = entry_count;
@@ -143,7 +141,6 @@ impl SessionStore {
         self.meta_for(id).await
     }
 
-    
     pub async fn raw_log(&self, id: &str) -> Result<String> {
         validate_id(id)?;
         self.read_log(id).await
@@ -170,6 +167,7 @@ impl SessionStore {
         validate_id(id)?;
         let raw = self.read_log(id).await?;
         let (lines, _) = parse_log(&raw);
+        checked_tree(&self.log_path(id), lines.clone())?;
 
         let mut tree = Tree::new();
         let mut request = None;
@@ -255,7 +253,6 @@ impl SessionStore {
         })
     }
 
-    
     async fn parsed_blob<T: serde::de::DeserializeOwned>(&self, id: &str, hash: &str) -> Result<T> {
         let raw = self.blob(id, hash).await?;
         serde_json::from_slice(&raw)
@@ -285,7 +282,6 @@ impl SessionStore {
             Err(source) => return Err(SessionError::io(log_path, source)),
         }
 
-        
         let _ = tokio::fs::remove_dir_all(self.blobs_path(id)).await;
 
         let meta_path = self.meta_path(id);
@@ -333,7 +329,7 @@ impl SessionStore {
             .map_err(|error| SessionError::io(source, error))?;
 
         let (lines, skipped_lines) = parse_log(&raw);
-        let messages = Tree::from_lines(lines).path();
+        let messages = checked_tree(source, lines)?.path();
         if messages.is_empty() {
             return Err(SessionError::NotFound(source.display().to_string()));
         }
@@ -392,7 +388,6 @@ impl SessionStore {
         Ok(listed)
     }
 
-    
     async fn meta_for(&self, id: &str) -> Result<SessionMeta> {
         let path = self.meta_path(id);
         match tokio::fs::read(&path).await {
@@ -411,7 +406,7 @@ impl SessionStore {
     async fn reconcile_meta(&self, id: &str, mut meta: SessionMeta) -> Result<SessionMeta> {
         let raw = self.read_log(id).await?;
         let (lines, _) = parse_log(&raw);
-        let tree = Tree::from_lines(lines);
+        let tree = checked_tree(&self.log_path(id), lines)?;
         if tree.entries().is_empty() {
             return Ok(meta);
         }
@@ -453,8 +448,8 @@ impl SessionStore {
     async fn rebuild_meta(&self, id: &str) -> Result<SessionMeta> {
         let raw = self.read_log(id).await?;
         let (lines, _) = parse_log(&raw);
-        
-        let messages: Vec<Message> = Tree::from_lines(lines)
+
+        let messages: Vec<Message> = checked_tree(&self.log_path(id), lines)?
             .entries()
             .iter()
             .map(|entry| entry.message.clone())
@@ -503,7 +498,7 @@ impl SessionStore {
         for attempt in 0..MAX_ID_ATTEMPTS {
             let id = match attempt {
                 0 => stamp.to_string(),
-                
+
                 _ => format!("{stamp}-{attempt:03}"),
             };
             let path = self.log_path(&id);
@@ -535,7 +530,6 @@ impl SessionStore {
         self.root.join(format!("{id}.meta.json"))
     }
 
-    
     fn blobs_path(&self, id: &str) -> PathBuf {
         self.root.join(format!("{id}.blobs"))
     }
@@ -549,13 +543,13 @@ pub struct ReconstructedTurn {
     pub attempt: u32,
     pub provider: String,
     pub model_id: String,
-    
+
     pub model: Model,
     pub prefix_hash: String,
     pub request_hash: String,
     /// Exact serialized provider body for ledgers written by versions that retain it.
     pub recorded_request_body: Option<Vec<u8>>,
-    
+
     pub prefix_spans: Vec<PrefixSpan>,
     pub system_prompt: Option<String>,
     pub tools: Vec<ToolDefinition>,
@@ -605,7 +599,6 @@ impl Session {
         Ok(true)
     }
 
-    
     pub fn branch(&self) -> Vec<Message> {
         self.tree.path()
     }
@@ -647,7 +640,7 @@ impl Session {
     ) -> Result<()> {
         let compaction = self.tree.push_compaction(summary, kept);
         self.write_line(&compaction).await?;
-        
+
         let summary_blob = self.store_blob(summary.as_bytes()).await?;
         self.append_event(LedgerEvent::Compaction {
             summary_blob,
@@ -764,7 +757,6 @@ impl Session {
 
         let mut lines = Vec::new();
         for message in messages {
-            
             let entry = self.tree.push(message.clone());
             serde_json::to_writer(&mut lines, &entry)
                 .map_err(|source| SessionError::json(&self.log_path, source))?;
@@ -789,7 +781,6 @@ impl Session {
         write_meta(&self.meta_path, &self.meta).await
     }
 
-    
     async fn seal_partial_line(&mut self) -> Result<()> {
         self.log
             .write_all(b"\n")
@@ -828,6 +819,17 @@ pub fn default_root() -> Result<PathBuf> {
         env: micro_dirs::MICRO_DIR_ENV,
     })?;
     Ok(data.join(SESSIONS_DIR))
+}
+
+/// Build a conversation tree only after confirming that its parent links are safe to traverse.
+fn checked_tree(path: &Path, lines: Vec<tree::Line>) -> Result<Tree> {
+    let tree = Tree::from_lines(lines);
+    tree.validate()
+        .map_err(|reason| SessionError::InvalidGraph {
+            path: path.to_path_buf(),
+            reason,
+        })?;
+    Ok(tree)
 }
 
 /// Parses a log, returning the messages it yields and how many lines were unreadable.
@@ -911,7 +913,6 @@ mod tests {
         })
     }
 
-    
     #[tokio::test]
     async fn importing_copies_a_log_written_elsewhere() {
         let root = scratch("import");
@@ -935,7 +936,6 @@ mod tests {
         assert_eq!(imported.messages.len(), 2);
         assert_eq!(imported.skipped_lines, 1);
 
-        
         let reopened = store.load(imported.session.id()).await.unwrap();
         assert_eq!(reopened.messages.len(), 2);
         assert_eq!(tokio::fs::read_to_string(&source).await.unwrap(), written);
@@ -954,7 +954,6 @@ mod tests {
             .is_err());
     }
 
-    
     #[tokio::test]
     async fn a_branch_survives_being_reopened() {
         let store = SessionStore::new(scratch("branching"));
@@ -968,7 +967,6 @@ mod tests {
             .await
             .expect("wrote");
 
-        
         assert!(session.branch_from("1").await.expect("moved"));
         session
             .append(&Message::user("second answer"))
@@ -1055,7 +1053,6 @@ mod tests {
         session.append(&Message::user("intact")).await.unwrap();
         session.append(&assistant("also intact")).await.unwrap();
 
-        
         let mut raw = std::fs::read_to_string(&path).unwrap();
         raw.push_str("{\"role\":\"user\",\"content\":[{\"type\":\"tex");
         std::fs::write(&path, raw).unwrap();
@@ -1108,7 +1105,7 @@ mod tests {
         let reloaded = store.load(&id).await.unwrap();
         assert_eq!(reloaded.messages.len(), 2);
         assert_eq!(reloaded.messages[1], assistant("recovered"));
-        
+
         assert_eq!(reloaded.skipped_lines, 1);
     }
 
@@ -1137,7 +1134,6 @@ mod tests {
         let branch = store.load(&forked_id).await.unwrap();
         assert_eq!(branch.messages, written[..2]);
 
-        
         let original = store.load(&id).await.unwrap();
         assert_eq!(original.messages.len(), 3);
         assert!(original.session.meta().parent.is_none());
@@ -1221,7 +1217,6 @@ mod tests {
             .unwrap();
         session.append(&assistant("done")).await.unwrap();
 
-        
         std::fs::write(session.path(), "not json\nnot json either\n").unwrap();
 
         let listed = store.list().await.unwrap();
@@ -1424,7 +1419,6 @@ mod tests {
         assert_eq!(seqs, vec![1, 2, 3, 4]);
     }
 
-    
     #[tokio::test]
     async fn a_session_written_before_the_ledger_still_loads() {
         let store = SessionStore::new(scratch("legacy"));
@@ -1433,7 +1427,6 @@ mod tests {
         let path = session.path().to_path_buf();
         drop(session);
 
-        
         let mut written = String::new();
         for message in [Message::user("first"), assistant("second")] {
             written.push_str(&serde_json::to_string(&message).unwrap());
@@ -1451,7 +1444,6 @@ mod tests {
         ));
     }
 
-    
     #[tokio::test]
     async fn content_is_stored_once_under_the_hash_of_its_bytes() {
         let store = SessionStore::new(scratch("blobs"));
@@ -1471,7 +1463,6 @@ mod tests {
         ));
     }
 
-    
     #[tokio::test]
     async fn a_turn_is_rebuilt_as_the_conversation_stood_then() {
         let store = SessionStore::new(scratch("reconstruct"));
@@ -1521,7 +1512,7 @@ mod tests {
             })
             .await
             .unwrap();
-        
+
         session.branch_from("1").await.unwrap();
         session.append(&Message::user("second")).await.unwrap();
 
@@ -1531,7 +1522,10 @@ mod tests {
         assert_eq!(rebuilt.system_prompt.as_deref(), Some("you are micro"));
         assert!(rebuilt.tools.is_empty());
         assert_eq!(rebuilt.model, model);
-        assert_eq!(rebuilt.recorded_request_body.as_deref(), Some(br#"{"messages":[]}"#.as_slice()));
+        assert_eq!(
+            rebuilt.recorded_request_body.as_deref(),
+            Some(br#"{"messages":[]}"#.as_slice())
+        );
         assert_eq!(rebuilt.usage.map(|usage| usage.input), Some(7));
         assert_eq!(rebuilt.stop_reason, Some(StopReason::Stop));
     }
@@ -1566,7 +1560,62 @@ mod tests {
         );
     }
 
-    
+    #[tokio::test]
+    async fn reopening_restores_the_last_recorded_head() {
+        let store = SessionStore::new(scratch("replay-head-moved"));
+        let mut session = store.create("/work", "opus").await.unwrap();
+        let id = session.id().to_string();
+
+        session.append(&Message::user("question")).await.unwrap();
+        session.append(&assistant("first answer")).await.unwrap();
+        session.branch_from("1").await.unwrap();
+        drop(session);
+
+        let loaded = store.load(&id).await.unwrap();
+        assert_eq!(loaded.session.tree().head(), Some("1"));
+        assert_eq!(loaded.messages.len(), 1);
+        assert_eq!(loaded.messages[0].content()[0].as_text(), "question");
+    }
+
+    #[tokio::test]
+    async fn loading_a_cyclic_or_duplicate_graph_is_refused() {
+        let store = SessionStore::new(scratch("invalid-graphs"));
+        let session = store.create("/work", "opus").await.unwrap();
+        let id = session.id().to_string();
+        let path = session.path().to_path_buf();
+        drop(session);
+
+        let cycle = [
+            Entry::new("1", Some("2".into()), Message::user("first")),
+            Entry::new("2", Some("1".into()), Message::user("second")),
+        ];
+        let raw = cycle
+            .iter()
+            .map(serde_json::to_string)
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .unwrap()
+            .join("\n");
+        std::fs::write(&path, format!("{raw}\n")).unwrap();
+
+        let error = store.load(&id).await.unwrap_err();
+        assert!(matches!(error, SessionError::InvalidGraph { .. }));
+
+        let duplicate = [
+            Entry::new("1", None, Message::user("first")),
+            Entry::new("1", None, Message::user("second")),
+        ];
+        let raw = duplicate
+            .iter()
+            .map(serde_json::to_string)
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .unwrap()
+            .join("\n");
+        std::fs::write(&path, format!("{raw}\n")).unwrap();
+
+        let error = store.load(&id).await.unwrap_err();
+        assert!(matches!(error, SessionError::InvalidGraph { .. }));
+    }
+
     #[test]
     fn the_root_sits_under_the_data_directory() {
         assert_eq!(

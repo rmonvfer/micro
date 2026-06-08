@@ -47,7 +47,6 @@ fn the_first_request_carries_the_prompt_the_model_and_the_tools() {
     assert_eq!(request["stream"], true);
     assert!(transcript(&request).contains("count the files"));
 
-    
     let tools = offered_tools(&request);
     for expected in ["read", "write", "edit", "ls", "grep", "bash"] {
         assert!(
@@ -91,7 +90,6 @@ fn a_tool_call_runs_and_its_result_returns_in_the_next_request() {
     output.expect_success("micro --print with a tool call");
     assert!(output.stdout.contains("remember the milk"));
 
-    
     assert_eq!(api.request_count(), 2);
     let second = api.request(1);
     let results = tool_results(&second);
@@ -170,7 +168,6 @@ fn continue_resumes_the_conversation() {
         .print(&["-m", "test", "--continue", "what is my name?"])
         .expect_success("the resumed run");
 
-    
     let resumed = api.request(1);
     let conversation = transcript(&resumed);
     assert!(
@@ -186,7 +183,6 @@ fn continue_resumes_the_conversation() {
         "the new prompt is missing"
     );
 
-    
     assert_eq!(fixture.session_logs().len(), 1);
 }
 
@@ -232,7 +228,6 @@ fn a_client_error_from_the_provider_fails_with_a_useful_message() {
 
 #[test]
 fn a_server_error_is_retried_and_then_reported() {
-    
     let api = FakeApi::start((0..5).map(|_| {
         Reply::Status(
             500,
@@ -296,7 +291,6 @@ fn a_setting_named_on_the_command_line_takes_effect() {
     assert_eq!(api.request_count(), 0, "no request should go out");
 }
 
-
 #[test]
 fn a_malformed_setting_on_the_command_line_is_refused() {
     let api = FakeApi::start([]);
@@ -342,7 +336,6 @@ fn a_bad_value_on_the_command_line_names_the_flag_not_the_file() {
 
 #[test]
 fn an_ambiguous_model_reports_the_candidates_rather_than_guessing() {
-    
     let api = FakeApi::start([]);
     let fixture = Fixture::new(&api);
 
@@ -578,7 +571,6 @@ fn sessions_are_scoped_to_a_workspace_and_follow_the_cwd_flag() {
         .print(&["-m", "test", "a question worth finding"])
         .expect_success("micro --print");
 
-    
     let mut elsewhere = fixture.micro();
     elsewhere.current_dir(std::env::temp_dir());
     let unscoped = Output::run(elsewhere.args(["sessions", "list"]));
@@ -589,7 +581,6 @@ fn sessions_are_scoped_to_a_workspace_and_follow_the_cwd_flag() {
         unscoped.stdout
     );
 
-    
     let workspace = fixture.workspace().display().to_string();
     let mut command = fixture.micro();
     command.current_dir(std::env::temp_dir());
@@ -601,7 +592,6 @@ fn sessions_are_scoped_to_a_workspace_and_follow_the_cwd_flag() {
         scoped.stdout
     );
 
-    
     let all = Output::run(fixture.micro().args(["sessions", "list", "--all"]));
     all.expect_success("micro sessions list --all");
     assert!(all.stdout.contains("a question worth finding"));
@@ -740,7 +730,6 @@ fn rpc_answers_every_command_it_is_given() {
     assert_eq!(lines[5]["data"]["title"], "the good one");
 }
 
-
 #[test]
 fn rpc_reports_a_line_it_cannot_read_and_keeps_going() {
     let api = FakeApi::start([]);
@@ -770,7 +759,6 @@ fn rpc_streams_a_turn_as_it_happens() {
 
     let lines = fixture.rpc(&[r#"{"type":"prompt","message":"ask something","id":"turn"}"#]);
 
-    
     assert_eq!(lines[0]["type"], "response");
     assert_eq!(lines[0]["command"], "prompt");
     assert_eq!(lines[0]["success"], true);
@@ -790,7 +778,6 @@ fn rpc_streams_a_turn_as_it_happens() {
     });
     assert!(answered, "the answer reached the stream: {lines:#?}");
 }
-
 
 #[test]
 fn rpc_refuses_a_model_it_does_not_have() {
@@ -839,11 +826,9 @@ export default (micro) => {
 "#,
     );
 
-    
     let output = fixture.print(&["-m", "test", "greet the world"]);
     assert!(output.status.success(), "{}", output.stderr);
 
-    
     let request = api.request(0);
     let tools = request["tools"].as_array().expect("tools were sent");
     assert!(
@@ -853,7 +838,6 @@ export default (micro) => {
         "the extension's tool was offered: {tools:#?}"
     );
 
-    
     let second = api.request(1);
     let messages = second["messages"].as_array().expect("a conversation");
     let carried = messages.iter().any(|message| {
@@ -892,7 +876,6 @@ fn an_installed_package_is_loaded_on_the_next_run() {
     let api = FakeApi::start([Reply::text("fine")]);
     let fixture = Fixture::new(&api);
 
-    
     fixture.write(
         "package/package.json",
         r#"{ "name": "micro-demo", "pi": { "extensions": ["index.ts"] } }"#,
@@ -918,7 +901,6 @@ export default (micro) => {
         installed.stdout
     );
 
-    
     let output = fixture.print(&["-m", "test", "say something"]);
     assert!(output.status.success(), "{}", output.stderr);
 
@@ -962,7 +944,6 @@ fn an_extension_hears_the_lifecycle_events() {
     let fixture = Fixture::new(&api);
     fixture.write("notes.txt", "the file's contents");
 
-    
     let log = fixture.workspace().join("events.log");
     fixture.write(
         ".micro/extensions/listener.ts",
@@ -1008,7 +989,6 @@ export default (micro) => {{
         assert!(heard.contains(event), "{event} was heard: {heard}");
     }
 
-    
     assert!(heard.contains("\"toolName\":\"read\""), "{heard}");
     assert!(heard.contains("notes.txt"), "{heard}");
 }
@@ -1038,7 +1018,7 @@ export default (micro) => {
     let commands = lines[0]["data"]["commands"]
         .as_array()
         .expect("a list of commands");
-    
+
     assert!(!commands.is_empty());
 
     let output = fixture.print(&["-m", "test", "/shout hello there"]);
@@ -1128,7 +1108,6 @@ export default (micro) => {{
         output.stdout
     );
 
-    
     assert_eq!(api.request_count(), 1);
     let headers = api.headers(0);
     let authorization = headers
@@ -1172,7 +1151,6 @@ export default (micro) => {
     let output = fixture.print(&["-m", "test", "write the file"]);
     assert!(output.status.success(), "{}", output.stderr);
 
-    
     assert!(!fixture.exists("secrets.env"), "the call did not run");
     let second = api.request(1);
     let refused = second["messages"]
@@ -1228,7 +1206,6 @@ export default (micro) => {
         "the secret never reached the model: {conversation}"
     );
 }
-
 
 #[test]
 fn a_listener_that_answers_nothing_changes_nothing() {
@@ -1351,7 +1328,6 @@ export default (micro) => {
     let output = fixture.print(&["-m", "test", "say something"]);
     assert!(output.status.success(), "{}", output.stderr);
 
-    
     let request = api.request(0);
     let system = request["messages"][0]["content"]
         .as_str()
@@ -1470,7 +1446,6 @@ export default (micro) => {{
     let read_back = std::fs::read_to_string(&log).expect("the extension read it back");
     assert!(read_back.contains("kept aside"), "{read_back}");
 
-    
     let output = fixture.print(&["-m", "test", "say something"]);
     assert!(output.status.success(), "{}", output.stderr);
     let sent = serde_json::to_string(&api.request(0)).unwrap();
@@ -1505,7 +1480,6 @@ export default (micro) => {
 "#,
     );
 
-    
     let installed =
         fixture.micro_run(&["install", &path_of(&fixture, ".micro/extensions/drawer.ts")]);
     assert!(installed.status.success(), "{}", installed.stderr);
@@ -1550,7 +1524,6 @@ export default (micro) => {{
     assert!(seen.contains("\"loud\":true"), "{seen}");
 }
 
-
 #[test]
 fn a_flag_nobody_declared_is_reported() {
     let api = FakeApi::start([Reply::text("fine")]);
@@ -1566,13 +1539,11 @@ fn a_flag_nobody_declared_is_reported() {
     );
 }
 
-
 #[test]
 fn an_mcp_servers_tools_are_offered_like_any_other() {
     let api = FakeApi::start([Reply::text("done")]);
     let fixture = Fixture::new(&api);
 
-    
     let server = fixture.workspace().join("echo-server.sh");
     std::fs::write(
         &server,
@@ -1612,15 +1583,14 @@ done
         tools.contains(&"mcp__demo__echo".to_string()),
         "the server's tool should be offered, got {tools:?}"
     );
-    
+
     assert!(tools.contains(&"read".to_string()), "{tools:?}");
-    
+
     assert!(
         !tools.iter().any(|name| name.starts_with("mcp__off__")),
         "{tools:?}"
     );
 }
-
 
 #[test]
 fn an_mcp_server_that_will_not_start_is_reported() {
@@ -1645,7 +1615,7 @@ fn an_mcp_server_that_will_not_start_is_reported() {
         "the server should be named, got {:?}",
         output.stderr
     );
-    
+
     assert!(offered_tools(&api.request(0)).contains(&"read".to_string()));
 }
 
@@ -1760,7 +1730,6 @@ fn the_threshold_can_be_turned_off() {
     assert!(!tools.contains(&"tool_search".to_string()), "{tools:?}");
 }
 
-
 #[test]
 fn an_extension_command_reads_the_extension_context() {
     if which_bun().is_none() {
@@ -1811,7 +1780,7 @@ export default (micro) => {{
 
     assert_eq!(read["mode"], "print");
     assert_eq!(read["hasUI"], false);
-    
+
     assert_eq!(read["isProjectTrusted"], true);
     assert_eq!(read["model"]["id"], "test-model");
     assert_eq!(read["model"]["provider"], "openai");
@@ -1820,7 +1789,9 @@ export default (micro) => {{
     assert_eq!(read["contextUsage"]["tokens"], serde_json::Value::Null);
     assert_eq!(read["contextUsage"]["contextWindow"], 200000);
     assert!(
-        read["systemPrompt"].as_str().is_some_and(|text| !text.is_empty()),
+        read["systemPrompt"]
+            .as_str()
+            .is_some_and(|text| !text.is_empty()),
         "{read}"
     );
     for member in [
@@ -1833,7 +1804,6 @@ export default (micro) => {{
         assert_eq!(read[member], true, "{member}: {read}");
     }
 }
-
 
 #[test]
 fn an_extension_reads_the_conversation_through_session_manager() {
@@ -1889,7 +1859,7 @@ export default (micro) => {{
     assert!(read["sessionFile"].as_str().unwrap().ends_with(".jsonl"));
     assert!(!read["sessionId"].as_str().unwrap().is_empty());
     let entries = read["allEntries"].as_array().expect("entries");
-    assert!(entries.len() >= 2, "{entries:?}"); 
+    assert!(entries.len() >= 2, "{entries:?}");
     assert!(
         entries.iter().any(|entry| {
             entry["type"] == "message"
@@ -1899,16 +1869,20 @@ export default (micro) => {{
         }),
         "{entries:?}"
     );
-    
+
     assert_eq!(read["leafEntry"], read["sameAsLeafEntry"]);
     assert!(!read["leafEntry"].is_null());
-    
+
     let branch = read["branch"].as_array().expect("a branch");
     assert_eq!(branch.last().unwrap(), &read["leafEntry"]);
-    
-    assert_eq!(read["tree"].as_array().unwrap().len(), 1, "{}", read["tree"]);
-}
 
+    assert_eq!(
+        read["tree"].as_array().unwrap().len(),
+        1,
+        "{}",
+        read["tree"]
+    );
+}
 
 #[test]
 fn is_idle_and_signal_track_a_turn_through_its_lifecycle_events() {
@@ -2053,7 +2027,10 @@ export default (micro) => {{
     let context_files = read["contextFiles"].as_array().expect("context files");
     assert!(
         context_files.iter().any(|file| {
-            file["path"].as_str().unwrap_or_default().ends_with("AGENTS.md")
+            file["path"]
+                .as_str()
+                .unwrap_or_default()
+                .ends_with("AGENTS.md")
                 && file["content"] == "Be nice to the user."
         }),
         "{context_files:?}"
@@ -2072,7 +2049,6 @@ export default (micro) => {{
         .unwrap_or_default()
         .ends_with("SKILL.md"));
 }
-
 
 #[test]
 fn scoped_models_reach_the_extension_context_resolved() {
@@ -2157,7 +2133,6 @@ export default (micro) => {{
     assert_eq!(read, serde_json::json!([]));
 }
 
-
 #[test]
 fn session_navigation_is_absent_from_a_tool_calls_context() {
     if which_bun().is_none() {
@@ -2202,7 +2177,7 @@ export default (micro) => {{
     let read: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(&log).expect("the tool wrote a log"))
             .expect("the log is JSON");
-    
+
     assert_eq!(read["hasModel"], true, "{read}");
     for member in [
         "hasNewSession",
@@ -2257,7 +2232,6 @@ export default (micro) => {
         lines[update_index]
     );
 
-    
     let end_index = lines
         .iter()
         .position(|line| line["type"] == "tool_end" && line["name"] == "narrate")
@@ -2267,7 +2241,6 @@ export default (micro) => {
         "the update should precede the result: {lines:#?}"
     );
 }
-
 
 #[test]
 fn an_extension_tool_is_stopped_when_the_turn_is_aborted() {
@@ -2304,7 +2277,6 @@ export default (micro) => {{
         ),
     );
 
-    
     use std::io::Write as _;
     let mut command = fixture.micro();
     command.arg("--rpc");
@@ -2324,14 +2296,17 @@ export default (micro) => {{
     while !started.exists() && std::time::Instant::now() < running_deadline {
         std::thread::sleep(std::time::Duration::from_millis(20));
     }
-    assert!(started.exists(), "the tool call should have started running");
+    assert!(
+        started.exists(),
+        "the tool call should have started running"
+    );
 
     writeln!(
         child.stdin.as_mut().expect("stdin is piped"),
         r#"{{"type":"abort","id":"2"}}"#
     )
     .expect("the abort is written");
-    
+
     drop(child.stdin.take());
     let _ = child.wait_with_output().expect("micro --rpc finishes");
 
@@ -2523,7 +2498,6 @@ export default (micro) => {{
     assert_eq!(result["ranWithoutThrowing"], true);
 }
 
-
 #[test]
 fn setting_a_widget_component_never_throws_even_headless() {
     if which_bun().is_none() {
@@ -2558,7 +2532,6 @@ export default (micro) => {{
     assert!(output.status.success(), "{}", output.stderr);
     assert_eq!(std::fs::read_to_string(&log).unwrap(), "ok");
 }
-
 
 #[test]
 fn an_extension_can_register_and_unregister_a_terminal_input_listener() {
@@ -2654,13 +2627,19 @@ export default (micro) => {{
     let written = std::fs::read_to_string(&log).expect("the extension wrote its findings");
     let result: serde_json::Value = serde_json::from_str(&written).expect("valid JSON");
     assert_eq!(result["width"], 5, "visibleWidth answered for real");
-    assert_eq!(result["truncated"], "he...", "truncateToWidth answered for real");
+    assert_eq!(
+        result["truncated"], "he...",
+        "truncateToWidth answered for real"
+    );
     assert_eq!(
         result["configDirName"], ".micro",
         "CONFIG_DIR_NAME answers with micro's own directory name, not pi's — an extension \
          building a path from it should land somewhere micro actually reads"
     );
-    assert_eq!(result["toolName"], "x", "defineTool is pi's own identity function");
+    assert_eq!(
+        result["toolName"], "x",
+        "defineTool is pi's own identity function"
+    );
     let error = result["unsupportedError"]
         .as_str()
         .expect("main() is not supported here, and says so");
@@ -2669,7 +2648,6 @@ export default (micro) => {{
         "the failure names what was actually reached for: {error}"
     );
 }
-
 
 #[test]
 fn an_extension_uses_pi_tuis_pure_layout_and_autocomplete_components() {
@@ -2742,14 +2720,26 @@ export default (micro) => {{
 
     let written = std::fs::read_to_string(&log).expect("the extension wrote its findings");
     let result: serde_json::Value = serde_json::from_str(&written).expect("valid JSON");
-    assert_eq!(result["hstackLineCount"], 1, "one line of text laid out side by side stays one line");
+    assert_eq!(
+        result["hstackLineCount"], 1,
+        "one line of text laid out side by side stays one line"
+    );
     assert_eq!(
         result["hstackFirstLine"], "aaa bbb   ",
         "HStack actually composited both children with the gap between them, padded to the full requested width"
     );
-    assert_eq!(result["vstackLineCount"], 2, "two stacked single-line children produce two lines");
-    assert_eq!(result["truncated"], "a very ...", "TruncatedText actually truncated to the given width");
-    assert_eq!(result["latex"], "x²", "renderLatex actually rendered the expression, not a stub answer");
+    assert_eq!(
+        result["vstackLineCount"], 2,
+        "two stacked single-line children produce two lines"
+    );
+    assert_eq!(
+        result["truncated"], "a very ...",
+        "TruncatedText actually truncated to the given width"
+    );
+    assert_eq!(
+        result["latex"], "x²",
+        "renderLatex actually rendered the expression, not a stub answer"
+    );
     assert_eq!(
         result["suggestionNames"],
         serde_json::json!(["help"]),
@@ -2793,7 +2783,6 @@ export default (micro) => {
         output.stdout
     );
 }
-
 
 #[test]
 fn an_extension_renders_real_markdown() {
@@ -2852,7 +2841,10 @@ export default (micro) => {{
         .map(|line| line.as_str().unwrap_or_default().to_string())
         .collect();
     let joined = lines.join("\n");
-    assert!(joined.contains("Title"), "the heading text made it through: {joined:?}");
+    assert!(
+        joined.contains("Title"),
+        "the heading text made it through: {joined:?}"
+    );
     assert!(
         joined.contains("[code]"),
         "inline code was actually tokenized by marked and styled through the theme's code fn: {joined:?}"

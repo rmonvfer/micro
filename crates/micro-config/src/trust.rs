@@ -1,5 +1,3 @@
-
-
 use crate::config_dir;
 use crate::ConfigError;
 use serde::Deserialize;

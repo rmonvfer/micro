@@ -111,7 +111,7 @@ fn written(fixture: &Fixture, turns: &[(u64, u64, u64, u64)]) -> String {
                     "type": "turn_request", "turn": turn,
                     "provider": "openai", "model": "test-model",
                     "prefix_hash": "aa", "request_hash": "bb",
-                    
+
                     "tools_blob": "cc", "model_blob": "dd",
                     "prefix_spans": [
                         { "source": "system_prompt", "bytes": 400, "hash": "ee" },
@@ -301,7 +301,6 @@ fn the_bill_subcommand_reads_a_recorded_ledger() {
     missing.expect_failure("a turn nobody billed");
 }
 
-
 #[test]
 fn a_bill_adds_up_to_what_the_provider_reported() {
     let api = FakeApi::start([
@@ -338,7 +337,6 @@ fn a_bill_adds_up_to_what_the_provider_reported() {
         );
     }
 
-    
     let first = (1_000.0 * INPUT + 200.0 * OUTPUT) / 1e6;
     let second = (500.0 * INPUT + 100.0 * OUTPUT + 1_000.0 * CACHE_READ) / 1e6;
     assert!((read[0].total - first).abs() < 5e-7, "turn 1: {report}");
@@ -368,14 +366,13 @@ fn a_bill_names_where_the_money_went() {
     for named in ["system_prompt", "project_instructions", "user", "model"] {
         assert!(report.contains(named), "no {named} line: {report}");
     }
-    
+
     assert!(report.contains("tool:read"), "no tool lines: {report}");
     assert!(
         report.contains("always add up to the turn"),
         "the report should say what is exact and what is an estimate: {report}"
     );
 }
-
 
 #[test]
 fn the_diff_of_a_turn_says_what_it_added_and_why() {
@@ -438,7 +435,7 @@ fn the_bill_command_reports_on_the_session_it_is_run_in() {
     let report = &asked.stdout;
 
     assert!(
-        report.contains(&format!("Bill for session {id}")),
+        report.contains(&format!("Session {id}")),
         "the session it was run in: {report}"
     );
     let expected = (1_000.0 * INPUT + 200.0 * OUTPUT) / 1e6;
@@ -446,13 +443,8 @@ fn the_bill_command_reports_on_the_session_it_is_run_in() {
         report.contains(&format!("${expected:.6}")),
         "and what it has cost: {report}"
     );
-    assert_eq!(
-        api.request_count(),
-        1,
-        "slash command should run locally"
-    );
+    assert_eq!(api.request_count(), 1, "slash command should run locally");
 }
-
 
 #[test]
 fn a_session_over_its_budget_stops_and_says_so() {
@@ -519,7 +511,6 @@ fn raising_the_budget_lets_a_stopped_session_carry_on() {
     assert_eq!(api.request_count(), 2, "both prompts reached the provider");
 }
 
-
 #[test]
 fn what_earlier_runs_spent_counts_against_the_budget() {
     let api = FakeApi::start([
@@ -529,7 +520,6 @@ fn what_earlier_runs_spent_counts_against_the_budget() {
     let fixture = Fixture::new(&api);
     priced(&fixture, &api);
 
-    
     let ceiling = "0.0065";
     fixture
         .print(&["-m", "test", "--budget", ceiling, "hello"])

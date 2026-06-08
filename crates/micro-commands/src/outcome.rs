@@ -18,10 +18,7 @@ pub enum RemoteAction {
     /// Put this session on the paired phone.
     Publish,
     /// Bond a phone to this machine, showing it what it needs.
-    Pair {
-        
-        qr: bool,
-    },
+    Pair { qr: bool },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -50,7 +47,7 @@ pub enum CommandOutcome {
         text: String,
         items: Vec<InspectionItem>,
     },
-    
+
     Send {
         prompt: String,
     },
@@ -104,6 +101,10 @@ pub enum CommandOutcome {
     RemoteControl {
         action: RemoteAction,
     },
+    /// Configure command sandbox access in the interactive host.
+    Sandbox {
+        argument: Option<String>,
+    },
     /// Offer a choice.
     Choose(Picker),
     /// Ask the user for a key, then hand it to [`micro_auth::AuthStore::store_api_key`].
@@ -125,7 +126,7 @@ pub enum CommandOutcome {
     Fork {
         session_id: String,
         through_index: usize,
-        
+
         whole: bool,
     },
     /// Summarize the conversation so far and continue from the summary.
@@ -198,7 +199,6 @@ impl CommandOutcome {
     }
 }
 
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Picker {
     pub title: String,
@@ -215,10 +215,9 @@ pub struct Picker {
     pub column: (usize, usize),
     /// The same choices cut down to what the workspace put on its shortlist, when it has one.
     pub scoped: Vec<PickerItem>,
-    
+
     pub refreshes: bool,
 }
-
 
 pub const DEFAULT_COLUMN: usize = 32;
 
@@ -399,6 +398,10 @@ impl fmt::Debug for CommandOutcome {
             CommandOutcome::Export { path } => formatter
                 .debug_struct("Export")
                 .field("path", path)
+                .finish(),
+            CommandOutcome::Sandbox { argument } => formatter
+                .debug_struct("Sandbox")
+                .field("argument", argument)
                 .finish(),
             CommandOutcome::Choose(picker) => {
                 formatter.debug_tuple("Choose").field(picker).finish()

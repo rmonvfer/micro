@@ -1,5 +1,3 @@
-
-
 mod capabilities;
 mod compat;
 mod discover;
@@ -19,8 +17,8 @@ pub use capabilities::Grant;
 pub use capabilities::Grants;
 pub use discover::discover;
 pub use discover::entries_of;
-pub use discover::package_name;
 pub use discover::in_directory;
+pub use discover::package_name;
 pub use discover::PROJECT_DIR;
 pub use events::content_from_json;
 pub use events::content_json;

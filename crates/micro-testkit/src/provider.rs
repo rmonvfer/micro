@@ -196,7 +196,6 @@ impl Turn {
         })
     }
 
-    
     fn into_events(self, provider: &str, model: &str) -> Vec<StreamEvent> {
         let mut events = Vec::with_capacity(self.events.len() + 2);
         if self.emit_start {

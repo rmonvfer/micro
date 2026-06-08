@@ -32,7 +32,7 @@ pub enum LedgerEvent {
         /// The hash of the system prompt and the tool definitions together, which is the part of a
         /// request a provider can cache.
         prefix_hash: String,
-        
+
         request_hash: String,
         /// The exact serialized provider request body.
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -131,14 +131,12 @@ pub struct CompactionCost {
     pub model: String,
 }
 
-
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PrefixSpan {
     pub source: EventSource,
     pub bytes: u64,
     pub hash: String,
 }
-
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub enum EventSource {
@@ -188,7 +186,6 @@ impl EventSource {
 }
 
 impl std::fmt::Display for EventSource {
-    
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter.pad(&self.as_str())
     }
@@ -253,7 +250,6 @@ mod tests {
         }
     }
 
-    
     #[test]
     fn a_source_with_no_name_is_written_as_its_kind_alone() {
         let source = EventSource::Skill(String::new());

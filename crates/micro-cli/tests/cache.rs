@@ -88,7 +88,6 @@ fn a_second_turn_sends_the_first_turns_prefix_unchanged() {
     );
     assert_eq!(first["tools"], second["tools"], "the tools moved");
 
-    
     let (had, has) = (messages(&first), messages(&second));
     assert!(has.len() > had.len(), "the conversation grew");
     assert_eq!(has[..had.len()], had[..], "and only at the end");
@@ -110,7 +109,6 @@ fn a_second_turn_sends_the_first_turns_prefix_unchanged() {
         "and nothing claimed it changed"
     );
 
-    
     let explained = fixture.micro_run(&["why-miss", &session_id(&fixture), "2"]);
     explained.expect_success("micro why-miss");
     assert!(
@@ -119,7 +117,6 @@ fn a_second_turn_sends_the_first_turns_prefix_unchanged() {
         explained.stdout
     );
 }
-
 
 #[test]
 fn reloading_mid_session_reaches_the_next_request_and_why_miss_names_the_span() {
@@ -131,7 +128,7 @@ fn reloading_mid_session_reaches_the_next_request_and_why_miss_names_the_span() 
     let api = FakeApi::start([Reply::text("first answer"), Reply::text("second answer")]);
     let fixture = Fixture::new(&api);
     fixture.write("AGENTS.md", "Always run the linter.");
-    
+
     if micro_extensions::which_bun().is_some() {
         fixture.write(
             ".micro/extensions/noop.ts",
@@ -210,7 +207,7 @@ fn reloading_mid_session_reaches_the_next_request_and_why_miss_names_the_span() 
         "and show what it used to say: {printed}"
     );
     assert!(
-        printed.contains("The cache broke because"),
+        printed.contains("The prefix changed because"),
         "and say why: {printed}"
     );
 }
@@ -218,7 +215,6 @@ fn reloading_mid_session_reaches_the_next_request_and_why_miss_names_the_span() 
 fn drive_script() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/pty/drive.py")
 }
-
 
 fn pty_command(fixture: &Fixture, micro_args: &[&str]) -> Command {
     let base = fixture.micro();

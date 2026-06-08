@@ -17,7 +17,6 @@ pub fn match_score(query: &str, text: &str) -> Option<Match> {
         return Some(found);
     }
 
-    
     let swapped = swap_letters_and_digits(&query)?;
     score_in_order(&swapped, &text).map(|found| Match {
         score: found.score + 5.0,
@@ -51,7 +50,6 @@ fn score_in_order(query: &[char], text: &[char]) -> Option<Match> {
             });
 
         match last_match {
-            
             Some(previous) if previous + 1 == position => {
                 consecutive += 1;
                 score -= consecutive as f64 * 5.0;
@@ -140,7 +138,6 @@ where
         }
     }
 
-    
     scored.sort_by(|left, right| left.0.total_cmp(&right.0));
     scored.into_iter().map(|(_, item)| item).collect()
 }
@@ -192,7 +189,7 @@ mod tests {
     fn a_word_boundary_beats_a_match_inside_a_word() {
         let boundary = match_score("s", "micro-session").unwrap().score;
         let inside = match_score("s", "sessions").unwrap().score;
-        
+
         assert!(inside < boundary);
 
         let start = match_score("m", "model").unwrap().score;
@@ -218,7 +215,7 @@ mod tests {
             names(models.clone(), "anthropic opus"),
             vec!["anthropic/claude-opus-5"]
         );
-        
+
         assert_eq!(
             names(models.clone(), "anthropic/opus"),
             vec!["anthropic/claude-opus-5"]
@@ -231,7 +228,6 @@ mod tests {
         assert!(match_score("5opus", "claude-opus-5").is_some());
         assert!(match_score("opus5", "claude-5-opus").is_some());
 
-        
         let typed = match_score("opus5", "opus5").unwrap().score;
         let swapped = match_score("5opus", "opus5").unwrap().score;
         assert!(typed < swapped);

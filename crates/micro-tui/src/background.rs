@@ -53,7 +53,6 @@ fn asked() -> Option<(u8, u8, u8)> {
     *ANSWER.get_or_init(|| query(TIMEOUT))
 }
 
-
 pub fn prime() {
     let _ = asked();
 }
@@ -85,7 +84,7 @@ pub fn progress(buffer: &[u8]) -> Progress {
                 .ok()
                 .and_then(parse_background),
         ),
-        
+
         None if buffer.len() >= MAX_REPLY => Progress::Foreign,
         None => Progress::Incomplete,
     }
@@ -103,7 +102,6 @@ pub fn parse_background(payload: &str) -> Option<(u8, u8, u8)> {
     let value = payload.trim();
 
     if let Some(hex) = value.strip_prefix('#') {
-        
         let width = match hex.len() {
             6 => 2,
             12 => 4,

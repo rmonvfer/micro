@@ -12,7 +12,6 @@ use std::sync::Arc;
 /// How many tools a search answers with when the caller does not say.
 const DEFAULT_LIMIT: usize = 8;
 
-
 pub struct Deferred(Arc<dyn Tool>);
 
 impl Deferred {
@@ -54,7 +53,6 @@ impl Tool for Deferred {
 
 /// The one tool that stands in for all the deferred ones.
 pub struct ToolSearch {
-    
     hidden: Vec<ToolDefinition>,
 }
 
@@ -138,7 +136,6 @@ impl Tool for ToolSearch {
             .unwrap_or(DEFAULT_LIMIT)
             .max(1);
 
-        
         let matched: Vec<&ToolDefinition> = self
             .hidden
             .iter()
@@ -171,7 +168,7 @@ impl Tool for ToolSearch {
 
         let mut answer = serde_json::to_string_pretty(&json!({ "tools": described }))
             .map_err(|error| format!("cannot describe the tools found: {error}"))?;
-        
+
         if total > limit {
             answer.push_str(&format!(
                 "\n\n{total} tools match; {limit} are shown. Search again with a narrower \
@@ -249,7 +246,7 @@ mod tests {
             .unwrap();
         assert!(found.contains("mcp__github__create_issue"), "{found}");
         assert!(!found.contains("mcp__notes__append"), "{found}");
-        
+
         assert!(found.contains("parameters"), "{found}");
     }
 

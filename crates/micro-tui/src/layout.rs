@@ -15,7 +15,6 @@ pub trait Component {
     }
 }
 
-
 pub struct Lines(pub Vec<Line<'static>>);
 
 impl Component for Lines {
@@ -85,7 +84,6 @@ impl Stack {
         Stack::default()
     }
 
-    
     pub fn within(rows: usize) -> Self {
         Stack {
             available: Some(rows),
@@ -116,7 +114,6 @@ impl Stack {
             .collect();
 
         let Some(available) = self.available else {
-            
             for (index, child) in self.children.iter().enumerate() {
                 if matches!(child.sizing, Sizing::Flexible(_)) {
                     rows[index] = child.component.height(width);
@@ -126,7 +123,7 @@ impl Stack {
         };
 
         let taken: usize = rows.iter().sum();
-        let mut left = available.saturating_sub(taken);
+        let left = available.saturating_sub(taken);
 
         let weights: usize = self
             .children
@@ -152,18 +149,16 @@ impl Stack {
                     Sizing::Flexible(weight) => weight,
                     _ => 1,
                 };
-                
+
                 let share = match position + 1 == flexible.len() {
                     true => left - given,
-                    false => left * weight / weights,
+                    false => (left * weight).checked_div(weights).unwrap_or_default(),
                 };
                 rows[*index] = share;
                 given += share;
             }
-            left = 0;
         }
 
-        
         let mut over = rows.iter().sum::<usize>().saturating_sub(available);
         for row in rows.iter_mut() {
             if over == 0 {
@@ -173,7 +168,6 @@ impl Stack {
             *row -= taken;
             over -= taken;
         }
-        let _ = left;
         rows
     }
 }
@@ -191,7 +185,7 @@ impl Component for Stack {
                 continue;
             }
             let mut drawn = child.component.render(width);
-            
+
             if drawn.len() > allotted {
                 drawn = drawn.split_off(drawn.len() - allotted);
             }
@@ -259,7 +253,7 @@ mod tests {
 
         let drawn = rendered(&stack, 80);
         assert_eq!(drawn.len(), 10);
-        
+
         assert_eq!(drawn[0], "line 42");
         assert_eq!(drawn[7], "line 49");
         assert_eq!(drawn[8], "line 0", "then the fixed child");
@@ -276,7 +270,6 @@ mod tests {
         assert_eq!(drawn.len(), 9, "every row is used");
     }
 
-    
     #[test]
     fn the_bottom_survives_a_small_terminal() {
         let stack = Stack::within(2)
@@ -296,7 +289,7 @@ mod tests {
         let second = stack.render(80);
         assert_eq!(first, second);
         assert_eq!(stack.cache.borrow().len(), 1);
-        
+
         stack.render(40);
         assert_eq!(stack.cache.borrow().len(), 2);
     }

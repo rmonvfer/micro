@@ -7,15 +7,17 @@ use micro_commands::CommandOutcome;
 use micro_commands::Picker;
 use micro_models::Catalog;
 use micro_models::ModelDef;
+use micro_sandbox::SandboxPolicy;
 use micro_session::Session;
 use micro_session::SessionStore;
 use micro_tui::Applied;
 use micro_tui::Commands;
 use micro_tui::ConversationState;
+use serde_json::Value;
+use std::fs;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::Mutex;
-
 
 pub struct CliCommands {
     catalog: Catalog,
@@ -24,25 +26,25 @@ pub struct CliCommands {
     workspace: PathBuf,
     provider: String,
     model: ModelDef,
-    
+
     session: Arc<Mutex<Session>>,
     /// Held alongside so a command can be answered without waiting on the writer.
     session_id: String,
-    
+
     prefix: micro_agent::PrefixControl,
     /// Where micro keeps what the user has settled, which is where a trust decision and a
     /// remembered model are written.
     config_home: PathBuf,
     /// Where micro keeps what it produced, which is where a phone pairing is written.
     data_home: PathBuf,
-    
+
     skills_enabled: bool,
     scoped_models: Vec<String>,
     /// What this run was told to look at beyond the usual places, so a reload looks in the same
     /// places the first load did.
     resources: crate::runtime::Resources,
     tree_filter: micro_config::TreeFilter,
-    
+
     collapse_changelog: bool,
     /// How hard the model is being asked to reason, so a model swap keeps it.
     thinking: micro_types::ThinkingLevel,
@@ -54,19 +56,26 @@ pub struct CliCommands {
     mirror: crate::remote::Mirror,
     /// What the phone is told about the session.
     snapshot: Arc<Mutex<crate::remote::Snapshot>>,
-    
+
     remote_started: bool,
     /// Warn that a subscription credential bills per token here.
     anthropic_extra_usage: bool,
     warned_about_extra_usage: bool,
     /// The user's own prompt files, which become commands named after them.
     prompts: Vec<micro_prompts::PromptTemplate>,
-    
+    /// The user's reusable instructions, which can be run explicitly by name.
+    skills: Vec<micro_skills::Skill>,
+
     model_source: &'static str,
     /// Every tool this run actually offers the model.
     tool_names: Vec<String>,
+    /// The policy that commands in this session currently use.
+    sandbox: micro_tools::Guard,
+    /// Whether this workspace was trusted when the session started.
+    project_trusted: bool,
+    /// Whether a command-line policy overrides settings for this run.
+    sandbox_overridden: bool,
 }
-
 
 pub struct HostParts {
     pub catalog: Catalog,
@@ -91,7 +100,11 @@ pub struct HostParts {
     pub anthropic_extra_usage: bool,
     pub extensions: Option<Arc<micro_extensions::Host>>,
     pub prompts: Vec<micro_prompts::PromptTemplate>,
+    pub skills: Vec<micro_skills::Skill>,
     pub tool_names: Vec<String>,
+    pub sandbox: micro_tools::Guard,
+    pub project_trusted: bool,
+    pub sandbox_overridden: bool,
     /// How a phone reaches the interface, once this session has been handed to one.
     pub seam: crate::remote::Seam,
     /// Where the run is copied to while a phone is watching.
@@ -124,12 +137,16 @@ impl CliCommands {
             anthropic_extra_usage: parts.anthropic_extra_usage,
             warned_about_extra_usage: false,
             prompts: parts.prompts,
+            skills: parts.skills,
             seam: parts.seam,
             mirror: parts.mirror,
             snapshot: parts.snapshot,
             remote_started: false,
             model_source: "set",
             tool_names: parts.tool_names,
+            sandbox: parts.sandbox,
+            project_trusted: parts.project_trusted,
+            sandbox_overridden: parts.sandbox_overridden,
         }
     }
 
@@ -165,6 +182,193 @@ impl CliCommands {
             .map_err(|error| format!("cannot write the settings: {error}"))
     }
 
+    /// Open sandbox controls or apply a selected scope and policy.
+    fn sandbox_command(&self, argument: Option<&str>) -> CommandOutcome {
+        let requested = argument.unwrap_or_default().trim();
+        if requested.is_empty() {
+            let policy = self.sandbox.sandbox().policy().name();
+            let source = if self.sandbox_overridden {
+                "command line"
+            } else if self.project_trusted
+                && micro_config::ProjectConfig::load(&self.workspace, true)
+                    .ok()
+                    .and_then(|config| config.sandbox)
+                    .is_some()
+            {
+                "project settings"
+            } else {
+                "user settings or default"
+            };
+            return CommandOutcome::Choose(
+                Picker::new(
+                    format!("Sandbox: {policy} ({source})"),
+                    vec![
+                        micro_commands::PickerItem::new(
+                            "Session access",
+                            "change access for commands in this session",
+                            "/sandbox session",
+                        ),
+                        micro_commands::PickerItem::new(
+                            "User default",
+                            "choose the policy new sessions use",
+                            "/sandbox user",
+                        ),
+                        micro_commands::PickerItem::new(
+                            "Project policy",
+                            match self.project_trusted {
+                                true => "choose the policy this trusted project uses",
+                                false => "trust this project before saving a project policy",
+                            },
+                            "/sandbox project",
+                        ),
+                    ],
+                )
+                .titled(),
+            );
+        }
+
+        let scope = requested.split_whitespace().next().unwrap_or_default();
+        if !["session", "user", "project"].contains(&scope) {
+            return CommandOutcome::error("Usage: /sandbox [session|user|project]");
+        }
+        let selected = requested[scope.len()..].trim();
+        if selected.is_empty() {
+            let current = match scope {
+                "session" => self.sandbox.sandbox().policy().name().to_string(),
+                "user" => {
+                    micro_config::Config::load_from(self.config_home.join(micro_config::FILE_NAME))
+                        .ok()
+                        .and_then(|config| config.sandbox)
+                        .and_then(|value| value.as_str().map(str::to_string))
+                        .unwrap_or_else(|| "workspace-write".to_string())
+                }
+                "project" => {
+                    micro_config::ProjectConfig::load(&self.workspace, self.project_trusted)
+                        .ok()
+                        .and_then(|config| config.sandbox)
+                        .and_then(|value| value.as_str().map(str::to_string))
+                        .unwrap_or_else(|| "workspace-write".to_string())
+                }
+                _ => unreachable!(),
+            };
+            return CommandOutcome::Choose(
+                Picker::new(
+                    match scope {
+                        "session" => "Session sandbox",
+                        "user" => "User sandbox default",
+                        "project" => "Project sandbox policy",
+                        _ => unreachable!(),
+                    },
+                    [
+                        ("read-only", "read anything, write nothing"),
+                        ("workspace-write", "write inside the workspace only"),
+                        ("full", "no command confinement"),
+                    ]
+                    .into_iter()
+                    .map(|(policy, detail)| {
+                        micro_commands::PickerItem::new(
+                            policy,
+                            detail,
+                            format!("/sandbox {scope} {policy}"),
+                        )
+                        .current(policy == current)
+                    })
+                    .collect(),
+                )
+                .titled(),
+            );
+        }
+
+        CommandOutcome::Sandbox {
+            argument: Some(requested.to_string()),
+        }
+    }
+
+    /// Apply a sandbox choice selected from the configuration UI.
+    async fn sandbox(&mut self, argument: Option<&str>) -> Applied {
+        let Some(argument) = argument else {
+            return Applied::error("Choose a sandbox scope and policy.");
+        };
+        let mut parts = argument.split_whitespace();
+        let (Some(scope), Some(policy), None) = (parts.next(), parts.next(), parts.next()) else {
+            return Applied::error("Usage: /sandbox <session|user|project> <policy>");
+        };
+        let policy = match policy.parse::<SandboxPolicy>() {
+            Ok(policy) => policy,
+            Err(error) => return Applied::error(error.to_string()),
+        };
+
+        match scope {
+            "session" => {
+                self.sandbox
+                    .set_sandbox(self.sandbox.sandbox_with_policy(policy.clone()));
+                Applied::note(format!(
+                    "Session sandbox is now {}. This grant ends when the session ends.",
+                    policy.name()
+                ))
+            }
+            "user" => {
+                let path = self.config_home.join(micro_config::FILE_NAME);
+                let mut config = match micro_config::Config::load_from(&path) {
+                    Ok(config) => config,
+                    Err(error) => {
+                        return Applied::error(format!("Cannot read the settings: {error}"))
+                    }
+                };
+                config.sandbox =
+                    Some(serde_json::to_value(policy).expect("sandbox policy serializes"));
+                match config.save_to(&path) {
+                    Ok(()) => Applied::note("Saved the user sandbox default for new sessions."),
+                    Err(error) => Applied::error(format!("Could not save the settings: {error}")),
+                }
+            }
+            "project" => {
+                if !self.project_trusted {
+                    return Applied::error("Trust this project with `/trust on` before saving a project sandbox policy.");
+                }
+                let path = micro_config::ProjectConfig::path(&self.workspace);
+                let mut settings = match fs::read_to_string(&path) {
+                    Ok(contents) if !contents.trim().is_empty() => {
+                        match serde_json::from_str::<serde_json::Map<String, Value>>(&contents) {
+                            Ok(settings) => settings,
+                            Err(error) => {
+                                return Applied::error(format!(
+                                    "Cannot read the project settings: {error}"
+                                ))
+                            }
+                        }
+                    }
+                    Ok(_) => serde_json::Map::new(),
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                        serde_json::Map::new()
+                    }
+                    Err(error) => {
+                        return Applied::error(format!("Cannot read the project settings: {error}"))
+                    }
+                };
+                settings.insert(
+                    "sandbox".to_string(),
+                    serde_json::to_value(policy).expect("sandbox policy serializes"),
+                );
+                let Some(parent) = path.parent() else {
+                    return Applied::error("Cannot find the project settings directory.");
+                };
+                if let Err(error) = fs::create_dir_all(parent)
+                    .and_then(|()| {
+                        serde_json::to_string_pretty(&settings).map_err(std::io::Error::other)
+                    })
+                    .and_then(|contents| fs::write(&path, format!("{contents}\n")))
+                {
+                    return Applied::error(format!("Could not save the project settings: {error}"));
+                }
+                Applied::note(
+                    "Saved the sandbox policy for this trusted project. New sessions will use it.",
+                )
+            }
+            _ => Applied::error("Usage: /sandbox <session|user|project> <policy>"),
+        }
+    }
+
     /// Run one of the user's own prompt files, if the line names one.
     fn prompt_command(&self, line: &str) -> Option<CommandOutcome> {
         let (name, arguments) = command_parts(line)?;
@@ -172,6 +376,32 @@ impl CliCommands {
         Some(CommandOutcome::Send {
             prompt: template.render(arguments),
         })
+    }
+
+    /// Run a skill explicitly, adding any text after its name as the user's request.
+    async fn skill_command(&self, line: &str) -> Option<CommandOutcome> {
+        let (name, arguments) = command_parts(line)?;
+        let skill = self.skills.iter().find(|skill| skill.name == name)?;
+        let source = match tokio::fs::read_to_string(&skill.path).await {
+            Ok(source) => source,
+            Err(error) => {
+                return Some(CommandOutcome::error(format!(
+                    "Could not read /{name}: {error}"
+                )))
+            }
+        };
+        let parsed = micro_skills::parse_frontmatter(&source);
+        let instructions = parsed.body().trim();
+        if instructions.is_empty() {
+            return Some(CommandOutcome::error(format!(
+                "/{name} has no instructions."
+            )));
+        }
+        let prompt = match arguments.trim() {
+            "" => instructions.to_string(),
+            request => format!("{instructions}\n\n{request}"),
+        };
+        Some(CommandOutcome::Send { prompt })
     }
 
     /// What a sign-in leaves behind, however the credential was collected.
@@ -213,20 +443,18 @@ impl CliCommands {
             ));
         }
 
-        
         let previous_model = self.model.clone();
         let source = std::mem::replace(&mut self.model_source, "set");
 
-        
         self.provider = model.provider.clone();
         self.model = model.clone();
         let session_model = model.qualified_id();
         if let Err(error) = self.session.lock().await.set_model_id(session_model).await {
             return Applied::error(format!("Could not update the session model: {error}"));
         }
-        
+
         let remembered = self.remember_model(model);
-        
+
         if previous_model.qualified_id() != model.qualified_id() {
             crate::extensions::announce(
                 self.extensions.as_ref(),
@@ -251,7 +479,7 @@ impl CliCommands {
         Applied::Model {
             swap: Box::new(micro_agent::ModelSwap {
                 provider: resolved.client,
-                
+
                 model: crate::runtime::with_host(
                     model.to_runtime(self.thinking),
                     resolved.base_url.as_deref(),
@@ -264,7 +492,6 @@ impl CliCommands {
         }
     }
 
-    
     fn subscription_warning(&mut self, api_key: &str, provider: &str) -> Option<String> {
         if !self.anthropic_extra_usage || self.warned_about_extra_usage {
             return None;
@@ -302,7 +529,10 @@ impl CliCommands {
         let mut entries: Vec<(usize, &micro_session::Entry)> = tree
             .entries()
             .iter()
-            .filter_map(|entry| tree.position_on_path(&entry.id).map(|position| (position, entry)))
+            .filter_map(|entry| {
+                tree.position_on_path(&entry.id)
+                    .map(|position| (position, entry))
+            })
             .collect();
         entries.sort_by_key(|(position, _)| *position);
         entries
@@ -323,10 +553,10 @@ impl CliCommands {
                 "preparation": {
                     "targetId": entry_id,
                     "oldLeafId": old_leaf_id,
-                    
+
                     "commonAncestorId": entry_id,
                     "entriesToSummarize": [],
-                    
+
                     "userWantsSummary": false,
                 },
             }),
@@ -360,7 +590,6 @@ impl CliCommands {
         )
         .await;
 
-        
         Applied::Conversation {
             messages: session.branch(),
             note: Some("Navigated to selected point".to_string()),
@@ -369,7 +598,6 @@ impl CliCommands {
 
     /// Reopen another session in place of this one.
     async fn resume(&mut self, session_id: &str) -> Applied {
-        
         if crate::extensions::cancelled(
             self.extensions.as_ref(),
             "session_before_switch",
@@ -502,7 +730,6 @@ impl CliCommands {
             })
             .collect();
 
-        
         if let Ok(session) = self.session.try_lock() {
             let title = session.meta().title.clone();
             if !title.is_empty() {
@@ -526,7 +753,9 @@ impl CliCommands {
                 self.remote_started = true;
                 Applied::note("This session is on your phone.")
             }
-            Err(error) => Applied::error(format!("Could not put this session on your phone: {error}")),
+            Err(error) => {
+                Applied::error(format!("Could not put this session on your phone: {error}"))
+            }
         }
     }
 
@@ -662,7 +891,6 @@ impl CliCommands {
 
     /// Copy the conversation up to a point into a session of its own, and carry on in the copy.
     async fn fork(&mut self, session_id: &str, through_index: usize, whole: bool) -> Applied {
-        
         let entry_id = {
             let session = self.session.lock().await;
             let tree = session.tree();
@@ -672,7 +900,7 @@ impl CliCommands {
                 .map(|entry| entry.id.clone())
                 .unwrap_or_else(|| through_index.to_string())
         };
-        
+
         if crate::extensions::cancelled(
             self.extensions.as_ref(),
             "session_before_fork",
@@ -691,7 +919,7 @@ impl CliCommands {
         };
 
         let messages = forked.branch();
-        
+
         let previous_session_file = self.session.lock().await.path().display().to_string();
         self.session_id = forked.id().to_string();
         *self.session.lock().await = forked;
@@ -723,8 +951,7 @@ impl Commands for CliCommands {
         let bill = micro_commands::bill(&self.sessions, &self.catalog, &self.session_id)
             .await
             .ok()?;
-        let cost = if bill.total == 0.0
-            && (!bill.unmetered.is_empty() || !bill.unpriced.is_empty())
+        let cost = if bill.total == 0.0 && (!bill.unmetered.is_empty() || !bill.unpriced.is_empty())
         {
             None
         } else {
@@ -769,7 +996,7 @@ impl Commands for CliCommands {
                         line = text.to_string();
                     }
                 }
-                
+
                 _ => {}
             }
         }
@@ -790,7 +1017,6 @@ impl Commands for CliCommands {
             return false;
         }
 
-        
         let _ = host
             .ask_event("shortcut", serde_json::json!({ "key": key }))
             .await;
@@ -815,7 +1041,6 @@ impl Commands for CliCommands {
     }
 
     async fn compacting(&mut self) -> bool {
-        
         !crate::extensions::cancelled(
             self.extensions.as_ref(),
             "session_before_compact",
@@ -829,7 +1054,6 @@ impl Commands for CliCommands {
     }
 
     async fn compacted(&mut self, summary: &str) {
-        
         crate::extensions::announce(
             self.extensions.as_ref(),
             "session_compact",
@@ -860,7 +1084,6 @@ impl Commands for CliCommands {
         )
         .await;
 
-        
         answers.iter().find_map(|answer| {
             let result = answer.get("result")?;
             let output = result
@@ -868,7 +1091,10 @@ impl Commands for CliCommands {
                 .and_then(serde_json::Value::as_str)
                 .unwrap_or_default()
                 .to_string();
-            let failed = result.get("cancelled").and_then(serde_json::Value::as_bool).unwrap_or(false)
+            let failed = result
+                .get("cancelled")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false)
                 || result
                     .get("exitCode")
                     .and_then(serde_json::Value::as_i64)
@@ -882,10 +1108,10 @@ impl Commands for CliCommands {
         &mut self,
     ) -> Option<tokio::sync::oneshot::Receiver<micro_tui::Listings>> {
         let (sender, receiver) = tokio::sync::oneshot::channel();
-        
+
         tokio::spawn(async move {
             let client = reqwest::Client::new();
-            
+
             let copilot = match micro_auth::AuthStore::open() {
                 Ok(store) => {
                     store
@@ -921,7 +1147,7 @@ impl Commands for CliCommands {
         if !listings.models.is_empty() {
             self.catalog.merge_listing(listings.models);
         }
-        
+
         let context = self.context(ConversationState::default());
         match micro_commands::dispatch("/model", &context).await {
             Some(CommandOutcome::Choose(picker)) => Some(picker),
@@ -930,13 +1156,19 @@ impl Commands for CliCommands {
     }
 
     async fn dispatch(&mut self, line: &str, state: ConversationState) -> Option<CommandOutcome> {
-        
         self.model_source = match command_parts(line) {
-            Some(("model", argument)) if matches!(argument.trim(), "next" | "previous" | "prev") => "cycle",
+            Some(("model", argument))
+                if matches!(argument.trim(), "next" | "previous" | "prev") =>
+            {
+                "cycle"
+            }
             _ => "set",
         };
 
-        
+        if let Some(("sandbox", argument)) = command_parts(line) {
+            return Some(self.sandbox_command(Some(argument)));
+        }
+
         let claimed =
             command_parts(line).is_some_and(|(name, _)| micro_commands::find(name).is_some());
         if claimed {
@@ -945,28 +1177,31 @@ impl Commands for CliCommands {
         if let Some(outcome) = self.prompt_command(line) {
             return Some(outcome);
         }
+        if let Some(outcome) = self.skill_command(line).await {
+            return Some(outcome);
+        }
         if let Some(outcome) = self.extension_command(line).await {
             return Some(outcome);
         }
-        
+
         micro_commands::dispatch(line, &self.context(state)).await
     }
 
     async fn apply(&mut self, outcome: CommandOutcome) -> Applied {
         match outcome {
-            
             CommandOutcome::Fork {
                 session_id,
                 through_index,
                 whole,
             } => self.fork(&session_id, through_index, whole).await,
 
-            
             CommandOutcome::Branch { entry_id } => self.branch(&entry_id).await,
 
             CommandOutcome::Rename { title } => self.rename(&title).await,
 
             CommandOutcome::Trust { trusted } => self.trust(trusted).await,
+
+            CommandOutcome::Sandbox { argument } => self.sandbox(argument.as_deref()).await,
 
             CommandOutcome::Reload => self.reload().await,
 
@@ -978,7 +1213,6 @@ impl Commands for CliCommands {
 
             CommandOutcome::SetModel { model } => self.swap_to(&model).await,
 
-            
             CommandOutcome::SetProvider { provider } => {
                 let canonical = micro_auth::canonical_provider(provider).to_string();
                 match self
@@ -997,7 +1231,6 @@ impl Commands for CliCommands {
 
             CommandOutcome::Clear => self.start_new_session().await,
 
-            
             other => Applied::error(format!("Nothing here knows how to carry out {other:?}.")),
         }
     }
@@ -1050,6 +1283,15 @@ fn model_json(model: &ModelDef) -> serde_json::Value {
     })
 }
 
+/// The name and arguments of a slash command, or nothing when the line is not one.
+fn command_parts(line: &str) -> Option<(&str, &str)> {
+    let rest = line.trim().strip_prefix('/')?;
+    Some(match rest.split_once(char::is_whitespace) {
+        Some((name, arguments)) => (name, arguments.trim()),
+        None => (rest, ""),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1076,13 +1318,14 @@ mod tests {
             .expect("the bundled catalog carries this model")
             .clone();
 
-        
         let sessions = SessionStore::new(root.join("sessions"));
         let session = sessions
             .create(&workspace, "anthropic/claude-opus-5")
             .await
             .unwrap();
         let session_id = session.id().to_string();
+
+        let sandbox = micro_tools::Guard::for_workspace(&workspace);
 
         let host = CliCommands::new(HostParts {
             catalog,
@@ -1093,9 +1336,9 @@ mod tests {
             model,
             session: Arc::new(Mutex::new(session)),
             session_id,
-            
+
             prefix: Default::default(),
-            
+
             config_home: root.join("home"),
             data_home: root.join("home"),
             skills_enabled: true,
@@ -1107,8 +1350,13 @@ mod tests {
             extensions: None,
             anthropic_extra_usage: true,
             prompts: Vec::new(),
+            skills: Vec::new(),
             tool_names: Vec::new(),
-            
+            sandbox,
+
+            project_trusted: false,
+            sandbox_overridden: false,
+
             seam: crate::remote::Seam::build().0,
             mirror: Default::default(),
             snapshot: Default::default(),
@@ -1156,6 +1404,35 @@ mod tests {
         assert!(outcome.text().unwrap().contains("did you mean /model"));
     }
 
+    #[tokio::test]
+    async fn a_skill_command_sends_its_instructions_and_request() {
+        let (mut host, root) = host("skill-command").await;
+        let path = root.join("review.md");
+        std::fs::write(
+            &path,
+            "---\nname: review-changes\ndescription: Review changes.\n---\nReview the current changes.",
+        )
+        .expect("skill");
+        host.skills.push(micro_skills::Skill {
+            name: "review-changes".to_string(),
+            description: "Review changes.".to_string(),
+            path,
+            base_dir: root,
+            source: "test".to_string(),
+            model_invocable: false,
+        });
+
+        let outcome = host
+            .dispatch("/review-changes crates/micro-tui", state(0))
+            .await
+            .expect("a command");
+
+        let CommandOutcome::Send { prompt } = outcome else {
+            panic!("expected skill instructions to be sent");
+        };
+        assert_eq!(prompt, "Review the current changes.\n\ncrates/micro-tui");
+    }
+
     /// The list offers what can actually answer, and marks what is running.
     #[tokio::test]
     async fn the_model_picker_offers_what_is_signed_in_and_marks_the_model_in_use() {
@@ -1175,9 +1452,7 @@ mod tests {
             .collect();
         assert_eq!(current, vec!["claude-opus-5"]);
 
-        
         for item in &picker.items {
-            
             let provider = item.detail.trim_matches(['[', ']']);
             assert!(
                 host.auth.status_of(provider).is_authenticated(),
@@ -1308,7 +1583,7 @@ mod tests {
 
         assert_ne!(host.session_id, first, "a different session is open");
         assert_eq!(host.session.lock().await.id(), host.session_id);
-        
+
         let kept = host.sessions.load(&first).await.unwrap();
         assert_eq!(kept.messages.len(), 1);
     }
@@ -1355,7 +1630,6 @@ mod tests {
         assert!(applied.is_error(), "{applied:?}");
     }
 
-    
     #[tokio::test]
     async fn branching_continues_from_an_earlier_entry() {
         let (mut host, _root) = host("branch").await;
@@ -1378,7 +1652,6 @@ mod tests {
             other => panic!("expected a conversation, got {other:?}"),
         }
 
-        
         host.session
             .lock()
             .await
@@ -1421,7 +1694,6 @@ mod tests {
         let meta = host.sessions.meta(&host.session_id).await.unwrap();
         assert_eq!(meta.title, "the good one");
 
-        
         let outcome = host.dispatch("/name", state(1)).await.expect("a command");
         assert_eq!(outcome.text(), Some("Session name: the good one"));
     }
@@ -1442,7 +1714,6 @@ mod tests {
             other => panic!("expected a conversation, got {other:?}"),
         }
 
-        
         assert_ne!(host.session_id, original);
         assert_eq!(host.sessions.list().await.unwrap().len(), 2);
         assert_eq!(
@@ -1479,7 +1750,6 @@ mod tests {
         let (mut host, root) = host("import").await;
         let original = host.session_id.clone();
 
-        
         let source = root.join("elsewhere.jsonl");
         let written = format!(
             "{}\n{}\n",
@@ -1535,7 +1805,6 @@ mod tests {
         }
     }
 
-    
     #[tokio::test]
     async fn sharing_without_a_token_names_the_variable() {
         let (mut host, _root) = host("share").await;
@@ -1702,7 +1971,6 @@ export default (micro) => {
             })
         );
 
-        
         let untouched = host.before_bash("ls", false, "/workspace").await;
         assert_eq!(untouched, None);
 
@@ -1710,13 +1978,4 @@ export default (micro) => {
             host.shutdown("quit").await;
         }
     }
-}
-
-/// The name and arguments of a slash command, or nothing when the line is not one.
-fn command_parts(line: &str) -> Option<(&str, &str)> {
-    let rest = line.trim().strip_prefix('/')?;
-    Some(match rest.split_once(char::is_whitespace) {
-        Some((name, arguments)) => (name, arguments.trim()),
-        None => (rest, ""),
-    })
 }

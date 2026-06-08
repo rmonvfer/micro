@@ -43,7 +43,6 @@ pub fn sign(
     let date = &timestamp[..8];
     let scope = format!("{date}/{region}/{service}/{TERMINATOR}");
 
-    
     let mut headers: Vec<(String, String)> = request
         .headers
         .iter()
@@ -65,7 +64,6 @@ pub fn sign(
         .collect();
     let payload_hash = hex(&Sha256::digest(request.body));
 
-    
     let canonical_request = format!(
         "{}\n{}\n{}\n{}\n{}\n{}",
         request.method,
@@ -158,7 +156,6 @@ pub fn format_timestamp(epoch_seconds: u64) -> String {
         seconds_today % 60,
     );
 
-    
     let mut year = 1970;
     let mut left = days;
     loop {
@@ -188,7 +185,7 @@ pub fn format_timestamp(epoch_seconds: u64) -> String {
 }
 
 fn is_leap(year: u64) -> bool {
-    (year % 4 == 0 && year % 100 != 0) || year % 400 == 0
+    (year.is_multiple_of(4) && !year.is_multiple_of(100)) || year.is_multiple_of(400)
 }
 
 fn month_lengths(year: u64) -> [u64; 12] {
@@ -332,9 +329,9 @@ mod tests {
     #[test]
     fn a_timestamp_is_written_the_way_aws_reads_it() {
         assert_eq!(format_timestamp(0), "19700101T000000Z");
-        
+
         assert_eq!(format_timestamp(1_440_938_160), "20150830T123600Z");
-        
+
         assert_eq!(format_timestamp(1_709_208_000), "20240229T120000Z");
     }
 }

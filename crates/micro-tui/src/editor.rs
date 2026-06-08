@@ -85,7 +85,6 @@ impl Editor {
         }
     }
 
-    
     fn checkpoint(&mut self) {
         let snapshot = self.snapshot();
         self.undo.push(snapshot);
@@ -138,7 +137,7 @@ impl Editor {
         if prompt.trim().is_empty() {
             return;
         }
-        
+
         if self.history.last().map(String::as_str) != Some(prompt) {
             self.history.push(prompt.to_string());
         }
@@ -188,7 +187,6 @@ impl Editor {
         true
     }
 
-    
     pub fn is_browsing_history(&self) -> bool {
         self.browsing.is_some()
     }
@@ -254,15 +252,14 @@ impl Editor {
         self.row = 0;
         self.col = 0;
         self.sticky = None;
-        
+
         self.browsing = None;
         self.last = LastAction::Other;
-        
+
         self.pastes.clear();
     }
 
     pub fn insert_char(&mut self, character: char) {
-        
         if undo::opens_new_unit(character, self.last) {
             self.checkpoint();
         }
@@ -317,7 +314,7 @@ impl Editor {
     pub fn backspace(&mut self) {
         self.checkpoint();
         self.last = LastAction::Other;
-        
+
         if let Some(marker) = self.marker_before_cursor() {
             self.delete_marker(marker);
             return;
@@ -343,7 +340,7 @@ impl Editor {
     pub fn delete(&mut self) {
         self.checkpoint();
         self.last = LastAction::Other;
-        
+
         if let Some(marker) = self.marker_after_cursor() {
             self.delete_marker(marker);
             return;
@@ -409,7 +406,7 @@ impl Editor {
             self.record_kill(&killed, false);
             return;
         }
-        
+
         if self.row + 1 < self.lines.len() {
             let next = self.lines.remove(self.row + 1);
             self.lines[self.row].push_str(&next);
@@ -453,7 +450,6 @@ impl Editor {
     }
 
     pub fn move_left(&mut self) {
-        
         if let Some(marker) = self.marker_before_cursor() {
             self.col = marker.start;
             self.sticky = None;
@@ -547,7 +543,6 @@ impl Editor {
         }
     }
 
-    
     pub fn expanded_text(&self) -> String {
         self.pastes.expand(&self.text())
     }
@@ -731,7 +726,6 @@ fn cursor_row_matches(range: &Range<usize>, cursor: usize, line_length: usize) -
 
 /// The byte offset within `range` whose display column is closest to `column`.
 fn column_to_byte(line: &str, range: &Range<usize>, column: usize) -> usize {
-    
     let limit = if range.end < line.len() {
         prev_boundary(line, range.end).max(range.start)
     } else {
@@ -779,7 +773,7 @@ fn class_of(text: &str) -> CharClass {
         Some(character) if character.is_whitespace() => CharClass::Whitespace,
         Some(character) if character.is_alphanumeric() || character == '_' => CharClass::Word,
         Some(character) if character.is_ascii_punctuation() => CharClass::Punctuation,
-        
+
         Some(_) => CharClass::Word,
         None => CharClass::Whitespace,
     }
@@ -884,7 +878,6 @@ mod tests {
         assert_eq!(editor.cursor(), (1, 1));
     }
 
-    
     #[test]
     fn set_text_with_cursor_clamps_past_the_end() {
         let mut editor = Editor::new();
@@ -1029,7 +1022,6 @@ mod tests {
         assert_eq!(editor.text(), "/model ");
         assert_eq!(editor.cursor(), (0, 7));
 
-        
         let mut editor = editor_with("/mod tail");
         editor.move_line_start();
         for _ in 0..4 {
@@ -1078,7 +1070,7 @@ mod tests {
     #[test]
     fn vertical_motion_moves_within_a_wrapped_line() {
         let mut editor = editor_with("aaaa bbbb cccc");
-        
+
         assert_eq!(editor.height(5), 3);
         assert!(editor.move_up(5));
         assert_eq!(editor.cursor(), (0, 9));
@@ -1258,7 +1250,6 @@ mod ring_tests {
         assert_eq!(editor.expanded_text(), big(), "and comes back on submit");
     }
 
-    
     #[test]
     fn backspace_takes_a_whole_marker() {
         let mut editor = Editor::new();
@@ -1269,7 +1260,6 @@ mod ring_tests {
         assert_eq!(editor.expanded_text(), "see ");
     }
 
-    
     #[test]
     fn forward_delete_takes_a_whole_marker() {
         let mut editor = Editor::new();
@@ -1442,13 +1432,9 @@ mod ring_tests {
     fn paging_stops_at_the_edges_rather_than_running_off() {
         let mut editor = Editor::new();
         editor.insert_str("one\ntwo\nthree");
-        
+
         editor.page_up(40, 24);
-        assert_eq!(
-            editor.cursor().0,
-            0,
-            "cursor should stop at the top"
-        );
+        assert_eq!(editor.cursor().0, 0, "cursor should stop at the top");
         editor.page_down(40, 24);
         assert_eq!(editor.cursor().0, 2, "and at the bottom");
     }

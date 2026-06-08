@@ -16,7 +16,6 @@ pub fn themes_dir() -> Option<PathBuf> {
 
 /// The path a named user theme would live at.
 pub fn path_for(name: &str) -> Option<PathBuf> {
-    
     if name.is_empty() || name.contains(['/', '\\']) || name.contains("..") {
         return None;
     }
@@ -76,7 +75,7 @@ fn resolve(
     let Some(text) = value.as_str() else {
         return Err(format!("expected a color, found {value}"));
     };
-    
+
     if text.is_empty() {
         return Ok(Color::Reset);
     }
@@ -141,7 +140,7 @@ mod tests {
         .unwrap();
 
         assert_eq!(resolved[0].1, Color::Indexed(214));
-        
+
         assert_eq!(resolved[1].1, Color::Reset);
     }
 

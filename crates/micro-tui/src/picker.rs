@@ -51,7 +51,7 @@ impl Picker {
             selected: 0,
         };
         picker.refilter();
-        
+
         if let Some(current) = picker
             .matches
             .iter()
@@ -111,7 +111,6 @@ impl Picker {
         self.choices.titled
     }
 
-    
     pub fn column(&self) -> usize {
         if self.choices.layout == micro_commands::PickerLayout::Badges {
             return 0;
@@ -328,7 +327,7 @@ mod tests {
         picker.push("zzzz");
         assert!(picker.is_empty());
         assert_eq!(picker.commit(), None);
-        
+
         picker.select_next();
         assert_eq!(picker.selected(), 0);
     }

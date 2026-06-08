@@ -17,7 +17,7 @@ const MAX_DESCRIPTION: usize = 1024;
 pub struct Skill {
     pub name: String,
     pub description: String,
-    
+
     pub path: PathBuf,
     /// The directory it lives in, which anything it refers to is relative to.
     pub base_dir: PathBuf,
@@ -34,7 +34,6 @@ impl Skill {
         format!("- {}: {}", self.name, self.description)
     }
 }
-
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Diagnostic {
@@ -84,7 +83,6 @@ pub async fn discover(
     let mut loaded = Loaded::default();
     let mut roots: Vec<(PathBuf, &str)> = Vec::new();
 
-    
     if trusted {
         roots.push((workspace.as_ref().join(".micro/skills"), "project"));
         roots.push((workspace.as_ref().join(".agents/skills"), "project"));
@@ -96,7 +94,6 @@ pub async fn discover(
     for (dir, source) in roots {
         let found = load_from_dir(&dir, source).await;
         for skill in found.skills {
-            
             if !loaded.skills.iter().any(|kept| kept.name == skill.name) {
                 loaded.skills.push(skill);
             }
@@ -123,7 +120,6 @@ async fn walk(dir: &Path, source: &str, include_root_files: bool, loaded: &mut L
         }
     }
 
-    
     if let Some(declared) = files.iter().find(|path| is_skill_file(path)) {
         read_skill(declared, dir, source, loaded).await;
         return;
@@ -163,7 +159,6 @@ async fn read_skill(path: &Path, base_dir: &Path, source: &str, loaded: &mut Loa
     let name = parsed
         .field("name")
         .map(str::to_string)
-        
         .or_else(|| directory_name(path, base_dir))
         .unwrap_or_default();
 
@@ -185,7 +180,7 @@ async fn read_skill(path: &Path, base_dir: &Path, source: &str, loaded: &mut Loa
         path: path.to_path_buf(),
         base_dir: base_dir.to_path_buf(),
         source: source.to_string(),
-        
+
         model_invocable: parsed.field("disable-model-invocation") != Some("true"),
     });
 }
@@ -374,7 +369,6 @@ mod tests {
         assert_eq!(loaded.skills[0].description, "The project's.");
     }
 
-    
     #[tokio::test]
     async fn skills_are_read_from_the_shared_directory_too() {
         let root = scratch("shared");
@@ -416,7 +410,6 @@ mod tests {
         assert_eq!(loaded.skills[0].description, "micro's own.");
     }
 
-    
     #[tokio::test]
     async fn the_projects_shared_skills_wait_on_trust() {
         let root = scratch("shared-trust");

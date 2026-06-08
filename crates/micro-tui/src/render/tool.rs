@@ -70,7 +70,6 @@ fn custom_lines(
     band(rows, width, ground(tool, focused, theme))
 }
 
-
 fn ground(tool: &ToolEntry, focused: bool, theme: &Theme) -> Color {
     if focused {
         return theme.selected_bg;
@@ -163,7 +162,7 @@ fn body_lines(
 
 fn row_lines(row: &Row, theme: &Theme, width: usize, indent: usize) -> Vec<Line<'static>> {
     let pad = " ".repeat(indent);
-    
+
     let hard = |spans: Vec<Span<'static>>| wrap_spans_hard(&spans, width, indent + 1);
 
     match row {
@@ -171,7 +170,7 @@ fn row_lines(row: &Row, theme: &Theme, width: usize, indent: usize) -> Vec<Line<
             Span::raw(pad),
             Span::styled(text.clone(), Style::new().fg(theme.tool_output)),
         ]),
-        
+
         Row::Diff(_) => Vec::new(),
         Row::Path { path, count } => {
             let mut spans = vec![
@@ -206,7 +205,7 @@ fn hidden_line(hidden: usize, expanded: bool, focused: bool, theme: &Theme) -> L
         format!("… +{hidden} {noun}"),
         Style::new().fg(theme.tool_output),
     )];
-    
+
     if focused && !expanded {
         spans.push(Span::styled("  ctrl+o", Style::new().fg(theme.dim)));
     }
@@ -240,7 +239,6 @@ mod tests {
                     .iter()
                     .map(|span| span.content.as_ref())
                     .collect::<String>()
-                    
                     .strip_prefix(' ')
                     .unwrap_or_default()
                     .trim_end()
@@ -262,7 +260,6 @@ mod tests {
             .collect()
     }
 
-    
     #[test]
     fn a_tool_with_a_registered_component_draws_what_it_answered_instead_of_the_built_in_view() {
         let theme = Theme::dark();
@@ -278,7 +275,6 @@ mod tests {
         );
     }
 
-    
     #[test]
     fn a_self_framed_tool_draws_without_the_band() {
         let theme = Theme::dark();
@@ -383,7 +379,7 @@ mod tests {
         let theme = Theme::dark();
         let tool = entry("read", json!({ "path": "a.rs" }), Some("one"));
         let out = lines(&tool, false, &theme, 60);
-        
+
         let header: Vec<_> = out[1].spans.iter().skip(1).collect();
 
         assert_eq!(header[0].content.as_ref(), "read");
@@ -415,7 +411,7 @@ mod tests {
             Some("Edited a.rs"),
         );
         let out = lines(&tool, false, &theme, 60);
-        
+
         let colour = |row: usize| out[row].spans[1].style.fg;
         assert_eq!(colour(2), Some(theme.tool_diff_context));
         assert_eq!(colour(3), Some(theme.tool_diff_removed));
@@ -536,7 +532,7 @@ mod tests {
             marked.iter().all(|text| !text.starts_with(' ')),
             "indentation should not be lit up: {marked:?}"
         );
-        
+
         assert!(
             marked.iter().any(|text| text.contains("c);")),
             "the added argument should be marked: {marked:?}"

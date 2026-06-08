@@ -11,48 +11,48 @@ micro <COMMAND>
 
 With no subcommand, micro opens the terminal interface. A prompt on the command line becomes the first user message.
 
-| Option | Description |
-| --- | --- |
-| `-p`, `--print` | Run the prompt and exit. Final output is written to stdout. |
-| `--rpc` | Read JSON-line commands from stdin and write responses to stdout. Cannot be combined with `--print`. |
-| `-C`, `--cwd <PATH>` | Set the workspace root. Defaults to the current directory. |
-| `-q`, `--quiet` | Suppress tool progress on stderr. |
-| `--tui-mode <regular|fullscreen>` | Select inline or full-screen terminal rendering. |
+| Option               | Description                                                                                          |
+| -------------------- | ---------------------------------------------------------------------------------------------------- | ------------------------------------------------ |
+| `-p`, `--print`      | Run the prompt and exit. Final output is written to stdout.                                          |
+| `--rpc`              | Read JSON-line commands from stdin and write responses to stdout. Cannot be combined with `--print`. |
+| `-C`, `--cwd <PATH>` | Set the workspace root. Defaults to the current directory.                                           |
+| `-q`, `--quiet`      | Suppress tool progress on stderr.                                                                    |
+| `--tui-mode <regular | fullscreen>`                                                                                         | Select inline or full-screen terminal rendering. |
 
 ## Model and session options
 
-| Option | Description |
-| --- | --- |
-| `-m`, `--model <QUERY>` | Select a model by ID, qualified ID, alias, or unique partial match. |
-| `--provider <ID>` | Select a provider when the model query does not determine one. |
-| `--thinking <LEVEL>` | Set reasoning effort. Supported levels are model-dependent. |
-| `--resume <ID>` | Resume a saved session. |
-| `--continue` | Resume the latest session for the workspace. |
-| `--budget <USD>` | Stop at the first turn boundary after the session total reaches this amount. |
+| Option                  | Description                                                                  |
+| ----------------------- | ---------------------------------------------------------------------------- |
+| `-m`, `--model <QUERY>` | Select a model by ID, qualified ID, alias, or unique partial match.          |
+| `--provider <ID>`       | Select a provider when the model query does not determine one.               |
+| `--thinking <LEVEL>`    | Set reasoning effort. Supported levels are model-dependent.                  |
+| `--resume <ID>`         | Resume a saved session.                                                      |
+| `--continue`            | Resume the latest session for the workspace.                                 |
+| `--budget <USD>`        | Stop at the first turn boundary after the session total reaches this amount. |
 
 ## Tools and project resources
 
-| Option | Description |
-| --- | --- |
-| `-t`, `--tools <NAMES>` | Comma-separated allowlist of model-callable tools. |
-| `-x`, `--exclude-tools <NAMES>` | Comma-separated denylist of tools. |
-| `--skill <PATH>` | Load an additional skill file or directory. Repeatable. |
-| `--no-skills` | Disable skill discovery. |
-| `-e`, `--extension <PATH>` | Load an additional extension. Repeatable. |
-| `--no-extensions` | Disable extension loading. |
-| `--prompt-template <PATH>` | Load an additional prompt template file or directory. |
-| `--no-prompt-templates` | Disable prompt-template discovery. |
-| `--no-context-files` | Ignore `AGENTS.md`, `CLAUDE.md`, and other instruction files. |
+| Option                          | Description                                                   |
+| ------------------------------- | ------------------------------------------------------------- |
+| `-t`, `--tools <NAMES>`         | Comma-separated allowlist of model-callable tools.            |
+| `-x`, `--exclude-tools <NAMES>` | Comma-separated denylist of tools.                            |
+| `--skill <PATH>`                | Load an additional skill file or directory. Repeatable.       |
+| `--no-skills`                   | Disable skill discovery.                                      |
+| `-e`, `--extension <PATH>`      | Load an additional extension. Repeatable.                     |
+| `--no-extensions`               | Disable extension loading.                                    |
+| `--prompt-template <PATH>`      | Load an additional prompt template file or directory.         |
+| `--no-prompt-templates`         | Disable prompt-template discovery.                            |
+| `--no-context-files`            | Ignore `AGENTS.md`, `CLAUDE.md`, and other instruction files. |
 
 ## Trust, sandbox, and settings
 
-| Option | Description |
-| --- | --- |
-| `-a`, `--approve` | Trust project-provided `.micro/` resources for this run. Does not save the decision. |
-| `--no-approve` | Ignore project-provided `.micro/` resources for this run. |
-| `--sandbox <POLICY>` | Use `read-only`, `workspace-write`, `full`, or a JSON policy object. |
-| `--theme <NAME>` | Select a theme. |
-| `-c`, `--config <KEY=VALUE>` | Override one config value for the run. Repeatable. |
+| Option                       | Description                                                                          |
+| ---------------------------- | ------------------------------------------------------------------------------------ |
+| `-a`, `--approve`            | Trust project-provided `.micro/` resources for this run. Does not save the decision. |
+| `--no-approve`               | Ignore project-provided `.micro/` resources for this run.                            |
+| `--sandbox <POLICY>`         | Use `read-only`, `workspace-write`, `full`, or a JSON policy object.                 |
+| `--theme <NAME>`             | Select a theme.                                                                      |
+| `-c`, `--config <KEY=VALUE>` | Override one config value for the run. Repeatable.                                   |
 
 ## Subcommands
 
@@ -70,6 +70,14 @@ micro auth status
 micro models [QUERY]
 micro models --live
 ```
+
+### Updates
+
+```bash
+micro update
+```
+
+Updates are available only for installations created by the release installer. See [Getting started](getting-started.md) for automatic-update controls.
 
 ### Extensions
 
@@ -102,35 +110,35 @@ micro sandbox try [--sandbox <POLICY>] -- <COMMAND>...
 
 Type `/help` in the interface for the list from the installed version.
 
-| Command | Purpose |
-| --- | --- |
-| `/model [query]` | Choose or switch models. |
-| `/provider [name]` | Choose or switch providers. |
-| `/thinking [level]` | Change reasoning effort. |
-| `/sessions` | List sessions for the workspace. |
-| `/session` | Show the current session information and usage. |
-| `/resume [id]` | Resume another session. |
-| `/clone` | Duplicate the current session at the current position. |
-| `/fork [index]` | Create a branch from an earlier message. |
-| `/tree [id]` | Show branches or continue from one. |
-| `/name [title]` | Name the session. |
-| `/bill [turn]` | Show session or turn cost. |
-| `/why-miss [turn]` | Explain a cache miss. |
-| `/request <turn> [--raw]` | Inspect the model-facing request for a turn. |
-| `/compact` | Summarize older context. |
-| `/trust [on|off]` | Save a project trust decision. |
-| `/reload` | Reload skills and context files. |
-| `/skills` | List discovered skills. |
-| `/settings` | Show settings and their sources. |
-| `/set <key> [value]` | Read or change a setting. |
-| `/remote [pair]` | Pair a phone or publish the current session. |
-| `/share` | Export the session to a secret GitHub gist. Requires a token with `gist` scope. |
-| `/export [path]` | Write the conversation to a file. |
-| `/import <path>` | Import and resume a JSONL session. |
-| `/copy` | Copy the last answer. |
-| `/hotkeys` | List terminal key bindings. |
-| `/debug` | Show runtime details for the current session. |
-| `/new`, `/clear` | Start a fresh conversation. |
-| `/quit` | Exit micro. |
+| Command                   | Purpose                                                                         |
+| ------------------------- | ------------------------------------------------------------------------------- | ------------------------------ |
+| `/model [query]`          | Choose or switch models.                                                        |
+| `/provider [name]`        | Choose or switch providers.                                                     |
+| `/thinking [level]`       | Change reasoning effort.                                                        |
+| `/sessions`               | List sessions for the workspace.                                                |
+| `/session`                | Show the current session information and usage.                                 |
+| `/resume [id]`            | Resume another session.                                                         |
+| `/clone`                  | Duplicate the current session at the current position.                          |
+| `/fork [index]`           | Create a branch from an earlier message.                                        |
+| `/tree [id]`              | Show branches or continue from one.                                             |
+| `/name [title]`           | Name the session.                                                               |
+| `/bill [turn]`            | Show session or turn cost.                                                      |
+| `/why-miss [turn]`        | Explain a cache miss.                                                           |
+| `/request <turn> [--raw]` | Inspect the model-facing request for a turn.                                    |
+| `/compact`                | Summarize older context.                                                        |
+| `/trust [on               | off]`                                                                           | Save a project trust decision. |
+| `/reload`                 | Reload skills and context files.                                                |
+| `/skills`                 | List discovered skills.                                                         |
+| `/settings`               | Show settings and their sources.                                                |
+| `/set <key> [value]`      | Read or change a setting.                                                       |
+| `/remote [pair]`          | Pair a phone or publish the current session.                                    |
+| `/share`                  | Export the session to a secret GitHub gist. Requires a token with `gist` scope. |
+| `/export [path]`          | Write the conversation to a file.                                               |
+| `/import <path>`          | Import and resume a JSONL session.                                              |
+| `/copy`                   | Copy the last answer.                                                           |
+| `/hotkeys`                | List terminal key bindings.                                                     |
+| `/debug`                  | Show runtime details for the current session.                                   |
+| `/new`, `/clear`          | Start a fresh conversation.                                                     |
+| `/quit`                   | Exit micro.                                                                     |
 
 Extensions and prompt templates may add more commands.

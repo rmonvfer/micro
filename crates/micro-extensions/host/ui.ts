@@ -240,7 +240,8 @@ function themesDir(): string {
 
 
 function configDir(): string {
-	const configured = process.env.MICRO_DIR?.trim();
+	const at = process.argv.indexOf("--micro-home");
+	const configured = process.env.MICRO_DIR?.trim() || (at >= 0 ? process.argv[at + 1] : undefined);
 	if (configured) {
 		return configured;
 	}

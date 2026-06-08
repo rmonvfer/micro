@@ -144,7 +144,7 @@ impl GitGraph {
             parent,
             col: start_col,
         });
-        
+
         self.current = child;
         Some(())
     }
@@ -231,7 +231,6 @@ pub(crate) fn render_gitgraph(src: &str) -> Option<Canvas> {
     draw(&graph)
 }
 
-
 fn take_field(body: &mut String, key: &str) -> Option<String> {
     let pat = format!("{key}:");
     let start = body.find(&pat)?;
@@ -300,7 +299,6 @@ fn apply(line: &str, graph: &mut GitGraph) -> Option<()> {
         _ => None,
     }
 }
-
 
 fn place(canvas: &mut Canvas, text: &str, row: usize, start_x: usize) {
     if row >= canvas.h {
@@ -406,8 +404,6 @@ fn draw(graph: &GitGraph) -> Option<Canvas> {
                 to_lane,
                 to_col,
             } => {
-                
-                
                 canvas.cur_style = STY_DOT;
                 canvas.seg_h(row(from_lane), x(from_col), x(to_col));
                 canvas.seg_v(x(to_col), row(from_lane), row(to_lane));
@@ -449,14 +445,13 @@ mod tests {
         assert_eq!(rows[0].matches('●').count(), 3);
     }
 
-    
     #[test]
     fn a_branch_forks_off_its_parent_lane() {
         let rows = drawn("gitGraph\n  commit\n  branch feature\n  commit");
         assert_eq!(rows.len(), 2);
         assert!(rows[0].starts_with("main "), "{rows:?}");
         assert!(rows[1].starts_with("feature "), "{rows:?}");
-        
+
         let fork_col = rows[0].chars().position(|c| c == '●').unwrap();
         assert!(
             rows[1].chars().nth(fork_col).is_some_and(|c| c != ' '),
@@ -472,7 +467,7 @@ mod tests {
             "gitGraph\n  commit\n  branch feature\n  commit\n  checkout main\n  merge feature",
         );
         assert_eq!(rows.len(), 2);
-        
+
         assert_eq!(rows[0].matches('●').count(), 2);
         assert_eq!(rows[1].matches('●').count(), 1);
         let merge_col = rows[0]
@@ -488,7 +483,6 @@ mod tests {
         );
     }
 
-    
     #[test]
     fn a_cherry_pick_draws_a_dotted_line_back_to_its_source() {
         let rows = drawn(
@@ -527,7 +521,6 @@ mod tests {
         assert!(rows[1].starts_with("main "), "{rows:?}");
     }
 
-    
     #[test]
     fn what_is_not_a_gitgraph_is_left_alone() {
         assert!(render_gitgraph("graph TD\n A --> B").is_none());

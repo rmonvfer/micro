@@ -10,7 +10,6 @@ use crate::width::string_width;
 /// Tasks past this and a chart says nothing useful in a terminal.
 const MAX_TASKS: usize = 128;
 
-
 const MAX_DURATION_DAYS: i64 = 100_000;
 
 /// Refuse to allocate a canvas larger than this many cells, mirroring the bound
@@ -33,7 +32,7 @@ struct Task {
     label: String,
     /// Day the task begins.
     start: i64,
-    
+
     end: i64,
     milestone: bool,
     done: bool,
@@ -97,12 +96,11 @@ fn parse_gantt(src: &str) -> Option<Chart> {
         match ascii_lower(word).as_str() {
             "title" => title = Some(clean_label(rest)),
             "dateformat" => {
-                
                 if rest != "YYYY-MM-DD" {
                     return None;
                 }
             }
-            
+
             "axisformat" => {}
             "excludes" => {
                 for token in rest.split(',') {
@@ -251,15 +249,13 @@ fn add_working_days(start: i64, mut n: i64, excl: &Exclusions) -> i64 {
     day
 }
 
-
-
 /// Days since 1970-01-01 for a Gregorian calendar date.
 fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
     let y = if m <= 2 { y - 1 } else { y };
     let era = if y >= 0 { y } else { y - 399 } / 400;
-    let yoe = y - era * 400; 
-    let doy = (153 * (m + if m > 2 { -3 } else { 9 }) + 2) / 5 + d - 1; 
-    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy; 
+    let yoe = y - era * 400;
+    let doy = (153 * (m + if m > 2 { -3 } else { 9 }) + 2) / 5 + d - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
     era * 146097 + doe - 719468
 }
 
@@ -267,16 +263,15 @@ fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
 fn civil_from_days(days: i64) -> (i64, i64, i64) {
     let z = days + 719468;
     let era = if z >= 0 { z } else { z - 146096 } / 146097;
-    let doe = z - era * 146097; 
-    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365; 
+    let doe = z - era * 146097;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
     let y = yoe + era * 400;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100); 
-    let mp = (5 * doy + 2) / 153; 
-    let d = doy - (153 * mp + 2) / 5 + 1; 
-    let m = if mp < 10 { mp + 3 } else { mp - 9 }; 
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
     (if m <= 2 { y + 1 } else { y }, m, d)
 }
-
 
 fn weekday_from_days(days: i64) -> i64 {
     if days >= -4 {
@@ -286,12 +281,10 @@ fn weekday_from_days(days: i64) -> i64 {
     }
 }
 
-
-
 fn draw_gantt(chart: &Chart) -> Option<Canvas> {
     let tasks: Vec<&Task> = chart.groups.iter().flat_map(|g| g.tasks.iter()).collect();
     let min_start = tasks.iter().map(|t| t.start).min()?;
-    
+
     let max_end = tasks.iter().map(|t| t.end.max(t.start + 1)).max()?;
     let total_days = (max_end - min_start).max(1) as usize;
 
@@ -303,7 +296,7 @@ fn draw_gantt(chart: &Chart) -> Option<Canvas> {
     for g in chart.groups.iter().filter(|g| !g.tasks.is_empty()) {
         rows += usize::from(g.name.is_some()) + g.tasks.len();
     }
-    rows += 2; 
+    rows += 2;
 
     let last_tick_end = ticks
         .last()
@@ -341,7 +334,6 @@ fn draw_gantt(chart: &Chart) -> Option<Canvas> {
             if t.milestone {
                 draw_text(&mut canvas, "◆", grid_x + offset, y, Cls::Border);
             } else {
-                
                 let glyph = if t.done {
                     "█"
                 } else if t.active {
@@ -372,7 +364,6 @@ fn draw_gantt(chart: &Chart) -> Option<Canvas> {
     Some(canvas)
 }
 
-
 fn label_column_width(chart: &Chart) -> usize {
     let mut width = 0usize;
     for g in &chart.groups {
@@ -385,7 +376,6 @@ fn label_column_width(chart: &Chart) -> usize {
     }
     width
 }
-
 
 fn axis_ticks(min_start: i64, total_days: usize) -> Vec<(usize, String)> {
     let step = TICK_MIN_GAP.max(total_days / MAX_TICKS + 1);
@@ -410,7 +400,6 @@ mod tests {
             .plain
     }
 
-    
     #[test]
     fn civil_dates_round_trip_and_know_their_weekday() {
         assert_eq!(days_from_civil(1970, 1, 1), 0);
@@ -450,14 +439,12 @@ mod tests {
         assert!(rows[2].contains("▓▓"), "{rows:?}");
     }
 
-    
     #[test]
     fn a_milestone_draws_as_a_single_marker() {
         let rows = drawn("gantt\n  dateFormat YYYY-MM-DD\n  Ship :milestone, m1, 2024-01-05, 0d");
         assert!(rows[0].contains('◆'), "{rows:?}");
     }
 
-    
     #[test]
     fn after_chains_to_the_end_of_the_named_task_honouring_excluded_weekends() {
         let rows = drawn(
@@ -467,7 +454,7 @@ mod tests {
              Design :des1, 2024-01-05, 3d\n\
              Review  :des2, after des1, 1d",
         );
-        
+
         assert!(rows[0].contains("░░░░░"), "{rows:?}");
         let review = &rows[1];
         let bar_col = review.find('░').expect("des2 has a bar");
@@ -493,7 +480,6 @@ mod tests {
         assert!(rows[3].trim_start().starts_with("Release"), "{rows:?}");
     }
 
-    
     #[test]
     fn what_is_not_a_gantt_chart_is_left_alone() {
         assert!(render_gantt("graph TD\n A --> B").is_none());
@@ -516,7 +502,6 @@ mod tests {
         );
     }
 
-    
     #[test]
     fn too_many_tasks_are_refused() {
         let mut source = String::from("gantt\n  dateFormat YYYY-MM-DD\n");

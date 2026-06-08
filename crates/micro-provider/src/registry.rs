@@ -52,17 +52,17 @@ pub fn client_for(api: WireApi, provider: &str) -> Arc<dyn Provider> {
         WireApi::GoogleGenerativeAi => Arc::new(Gemini::new()),
         WireApi::BedrockConverseStream => Arc::new(crate::bedrock::Bedrock::new()),
         WireApi::GoogleVertex => Arc::new(Gemini::vertex()),
-        
+
         WireApi::OpenaiResponses if canonical_provider(provider) == micro_auth::OPENAI_CODEX => {
             Arc::new(Codex::new())
         }
-        
+
         WireApi::OpenaiResponses
             if canonical_provider(provider) == crate::codex::AZURE_PROVIDER =>
         {
             Arc::new(Codex::azure())
         }
-        
+
         WireApi::OpenaiResponses => Arc::new(Codex::for_provider(canonical_provider(provider))),
         WireApi::OpenaiCompletions => Arc::new(OpenAi::for_provider(canonical_provider(provider))),
     }
@@ -97,7 +97,6 @@ pub async fn resolve(
     let credential = store.resolve(&model.provider).await?;
     let token = credential.token().to_string();
 
-    
     let base_url = match canonical_provider(&model.provider) == micro_auth::GITHUB_COPILOT {
         true => micro_auth::copilot::base_url_from_token(&token),
         false => None,
@@ -146,7 +145,7 @@ mod tests {
             client_for_model(&model(copilot, WireApi::AnthropicMessages)).name(),
             "anthropic"
         );
-        
+
         assert_eq!(
             client_for_model(&model(copilot, WireApi::OpenaiResponses)).name(),
             copilot

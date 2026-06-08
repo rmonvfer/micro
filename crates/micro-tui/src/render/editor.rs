@@ -42,7 +42,6 @@ pub fn draw(
         return;
     }
 
-    
     let rule = match editor.text().starts_with('!') {
         true => Style::new().fg(theme.bash_mode),
         false => Style::new().fg(level),
@@ -86,7 +85,7 @@ pub fn draw(
         let text = Style::new().fg(theme.text);
         for (offset, row) in layout.rows.iter().skip(first).take(height).enumerate() {
             let source = &editor.lines()[row.line][row.range.clone()];
-            
+
             let line = Line::from(vec![Span::styled(source.replace('\t', " "), text)]);
             frame
                 .buffer_mut()
@@ -121,12 +120,12 @@ pub(super) fn first_visible_row(cursor_row: usize, total: usize, height: usize) 
         .min(total - height)
 }
 
-
 pub fn draw_component(
     frame: &mut Frame,
     area: Rect,
     content: Rect,
     lines: &[String],
+    cursor: Option<(usize, usize)>,
     theme: &Theme,
     level: ratatui::style::Color,
 ) {
@@ -158,6 +157,14 @@ pub fn draw_component(
         frame
             .buffer_mut()
             .set_line(rows.x, rows.y + offset as u16, &line, rows.width);
+    }
+    if let Some((row, column)) = cursor {
+        if row < rows.height as usize {
+            frame.set_cursor_position((
+                rows.x + (column as u16).min(rows.width.saturating_sub(1)),
+                rows.y + row as u16,
+            ));
+        }
     }
 }
 

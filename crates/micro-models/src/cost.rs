@@ -129,7 +129,6 @@ mod tests {
         let catalog = Catalog::bundled();
         let opus = catalog.get("anthropic", "claude-opus-5").unwrap();
 
-        
         let priced = opus.price(TokenUsage::new(12_000, 3_000).with_cache(40_000, 0));
 
         assert_close(priced.input, 0.06);
@@ -177,7 +176,7 @@ mod tests {
 
         assert_eq!(usage, TokenUsage::new(30_000, 3_000));
         assert_eq!(usage.total(), 33_000);
-        
+
         assert_close(spent.total(), 0.06 + 0.03);
     }
 }

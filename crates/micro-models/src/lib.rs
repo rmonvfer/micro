@@ -22,6 +22,6 @@ pub use remote::{
 };
 pub use resolve::Resolution;
 pub use wire_json::catalog_json;
-pub use wire_json::model_json;
 pub use wire_json::modality_name;
+pub use wire_json::model_json;
 pub use wire_json::wire_api_name;

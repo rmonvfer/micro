@@ -17,7 +17,6 @@ use micro_types::ToolDefinition;
 use micro_types::Usage;
 use std::collections::HashMap;
 
-
 #[derive(Debug, Clone, PartialEq)]
 pub struct Bill {
     pub session_id: String,
@@ -27,7 +26,7 @@ pub struct Bill {
     pub compactions: Vec<CompactionBill>,
     /// Models the catalog carries no price for, so their turns are billed at nothing.
     pub unpriced: Vec<String>,
-    
+
     pub unmetered: Vec<String>,
     /// Every turn and every compaction, added up.
     pub total: f64,
@@ -78,7 +77,7 @@ impl TurnBill {
 pub struct BillLine {
     pub source: EventSource,
     pub side: Side,
-    
+
     pub bytes: u64,
     pub amount: f64,
 }
@@ -117,7 +116,6 @@ pub async fn bill(
     let session = &loaded.session;
     let current_path = session.tree().path_entry_ids();
 
-    
     let entries: HashMap<&str, &Message> = session
         .tree()
         .entries()
@@ -140,7 +138,7 @@ pub async fn bill(
                 ..
             } => {
                 reached = reached.max(*turn);
-                
+
                 let described = Requested {
                     tools_blob: tools_blob.clone(),
                     prefix_spans: prefix_spans
@@ -234,7 +232,6 @@ pub async fn bill(
         });
     }
 
-    
     if !from_ledger && turns.is_empty() {
         for (index, entry) in session.tree().entries().iter().enumerate() {
             let Message::Assistant(assistant) = &entry.message else {
@@ -415,7 +412,6 @@ fn itemize(
         })
         .collect();
 
-    
     let shared: f64 = lines.iter().map(|line| line.amount).sum();
     if let Some(largest) = lines
         .iter_mut()
@@ -432,7 +428,6 @@ fn itemize(
     });
     lines
 }
-
 
 fn spoken_by(message: &Message) -> EventSource {
     match message {
@@ -547,7 +542,6 @@ impl Bill {
             return out;
         }
 
-        
         let mut summaries = self.compactions.iter().peekable();
         for turn in &self.turns {
             while let Some(summarized) =
@@ -565,7 +559,11 @@ impl Bill {
             out.push_str(&summary_row(summarized));
         }
 
-        out.push_str(&format!("\n{:<44}{}\n", "Total session cost", money(self.total)));
+        out.push_str(&format!(
+            "\n{:<44}{}\n",
+            "Total session cost",
+            money(self.total)
+        ));
         if (self.total - self.current_branch_total).abs() > f64::EPSILON {
             out.push_str(&format!(
                 "{:<44}{}\n{:<44}{}\n",
@@ -583,7 +581,6 @@ impl Bill {
         }
         out.push_str(&format!("\n{}\n", self.tokens()));
 
-        
         if !self.unmetered.is_empty() {
             out.push_str(&format!(
                 "\n{} uses subscription billing; this report excludes the plan charge.\n",
@@ -620,7 +617,6 @@ impl Bill {
                 .map(|summarized| summarized.cost.total())
                 .sum::<f64>();
 
-        
         let mut out = format!(
             "Turn {turn} of session {}  {}/{}\n\n{:<44}{}\n",
             self.session_id,
@@ -742,7 +738,6 @@ impl Bill {
         )
     }
 
-    
     fn caveat(&self) -> &'static str {
         match self.from_ledger {
             true => {
@@ -928,7 +923,7 @@ mod tests {
                         hash: "ee".into(),
                     },
                 ],
-                
+
                 message_entry_ids: Vec::new(),
                 attempt: 1,
             })
@@ -959,7 +954,6 @@ mod tests {
         })
     }
 
-    
     #[tokio::test]
     async fn a_bill_of_a_recorded_session_adds_up_to_what_was_reported() {
         let harness = Harness::new("bill-adds-up");
@@ -1055,7 +1049,6 @@ mod tests {
         assert!(report.contains("always add up to the turn"), "{report}");
     }
 
-    
     #[tokio::test]
     async fn a_summary_is_billed_on_a_line_of_its_own() {
         let harness = Harness::new("bill-compaction");
@@ -1129,7 +1122,6 @@ mod tests {
         assert!(report.contains("there is nothing to split"), "{report}");
     }
 
-    
     #[tokio::test]
     async fn the_diff_of_a_turn_reports_what_it_added() {
         let harness = Harness::new("bill-diff");
@@ -1152,7 +1144,7 @@ mod tests {
             report.starts_with(&format!("Turn 2 of session {id}")),
             "{report}"
         );
-        
+
         assert!(report.contains("What it added"), "{report}");
         assert_eq!(
             report.matches("turn 2").count(),
@@ -1189,7 +1181,6 @@ mod tests {
         let id = session.id().to_string();
         drop(session);
 
-        
         let free: ModelDef = serde_json::from_value(serde_json::json!({
             "id": "test-model",
             "name": "Test Model",
@@ -1217,7 +1208,6 @@ mod tests {
         );
     }
 
-    
     #[tokio::test]
     async fn a_model_the_catalog_cannot_price_is_named() {
         let harness = Harness::new("bill-unpriced");
@@ -1277,7 +1267,6 @@ mod tests {
         );
     }
 
-    
     #[test]
     fn a_remainder_that_will_not_divide_lands_on_the_largest_line() {
         let cost = RequestCost {
@@ -1298,7 +1287,6 @@ mod tests {
         assert!((summed - 1.0).abs() < 1e-12, "{summed} is not 1.0");
     }
 
-    
     #[test]
     fn the_answer_is_billed_to_the_model_alone() {
         let cost = RequestCost {
@@ -1348,7 +1336,6 @@ mod tests {
         assert!((share(EventSource::ProjectInstructions) - 0.1).abs() < 1e-12);
     }
 
-    
     #[test]
     fn a_turn_with_nothing_recorded_about_it_has_no_lines() {
         let cost = RequestCost {
@@ -1360,7 +1347,6 @@ mod tests {
         assert!(itemize(&cost, &spans(&[]), &[], &HashMap::new()).is_empty());
     }
 
-    
     #[test]
     fn a_message_is_measured_by_what_the_model_reads_of_it() {
         let said = Message::user("hello");

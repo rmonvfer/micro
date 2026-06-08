@@ -55,7 +55,6 @@ impl Tool for Read {
         let path = resolve_path(&self.root, &required_str(arguments, "path")?)?;
         self.guard.read(&path)?;
 
-        
         if let Some(mime_type) = image_mime_type(&path) {
             let bytes = tokio::fs::read(&path)
                 .await
@@ -205,13 +204,11 @@ impl Tool for Edit {
             return Err("old_string and new_string are identical".to_string());
         }
 
-        
         let _held = crate::mutations::hold(&path).await;
         let contents = tokio::fs::read_to_string(&path)
             .await
             .map_err(|error| format!("cannot read {}: {error}", path.display()))?;
 
-        
         let occurrences = crate::fuzzy::count(&contents, &old_string);
         match occurrences {
             0 => return Err(format!("old_string not found in {}", path.display())),
@@ -235,7 +232,6 @@ impl Tool for Edit {
             .await
             .map_err(|error| format!("cannot write {}: {error}", path.display()))?;
 
-        
         Ok(match fuzzy {
             true => format!(
                 "Edited {} (matched ignoring quote, dash and whitespace differences)",
@@ -306,7 +302,6 @@ impl Tool for MultiEdit {
             .await
             .map_err(|error| format!("cannot read {}: {error}", path.display()))?;
 
-        
         let mut updated = contents;
         for (index, edit) in edits.iter().enumerate() {
             let position = index + 1;
@@ -324,7 +319,6 @@ impl Tool for MultiEdit {
                 ));
             }
 
-            
             match crate::fuzzy::count(&updated, &old_string) {
                 0 => {
                     return Err(format!(
@@ -424,7 +418,6 @@ impl Tool for Ls {
             return Ok(format!("{} is empty", path.display()));
         }
 
-        
         let total = names.len();
         names.truncate(limit);
         let mut listing = names.join("\n");
@@ -789,7 +782,6 @@ mod forgiving_edits {
         assert!(after.contains("let name = \"pi\";"), "{after}");
     }
 
-    
     #[tokio::test]
     async fn an_edit_written_with_a_dash_still_lands() {
         let root = scratch("dash");
@@ -808,7 +800,6 @@ mod forgiving_edits {
         assert!(after.contains("cargo test --all"), "{after}");
     }
 
-    
     #[tokio::test]
     async fn an_edit_for_absent_text_still_fails() {
         let root = scratch("absent");

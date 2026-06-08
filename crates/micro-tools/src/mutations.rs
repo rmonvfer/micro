@@ -28,7 +28,6 @@ pub async fn hold(path: &Path) -> tokio::sync::OwnedMutexGuard<()> {
 mod tests {
     use super::*;
 
-    
     #[tokio::test]
     async fn one_writer_at_a_time_per_file() {
         let path = std::env::temp_dir().join("micro-mutations-shared.txt");
@@ -40,7 +39,7 @@ mod tests {
             let counter = Arc::clone(&counter);
             running.push(tokio::spawn(async move {
                 let _held = hold(&path).await;
-                
+
                 let seen = *counter.lock().await;
                 tokio::time::sleep(std::time::Duration::from_millis(5)).await;
                 *counter.lock().await = seen + 1;
@@ -57,7 +56,7 @@ mod tests {
     #[tokio::test]
     async fn different_files_do_not_wait_on_each_other() {
         let first = hold(Path::new("/tmp/micro-mutations-a")).await;
-        
+
         let second = hold(Path::new("/tmp/micro-mutations-b")).await;
         drop((first, second));
     }

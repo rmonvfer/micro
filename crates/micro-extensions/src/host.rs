@@ -35,6 +35,12 @@ const TOOL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
 /// How long a live component may take to answer before it is treated as unreachable.
 const COMPONENT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
+/// How long a host is given to finish its shutdown callback before it is stopped.
+const SHUTDOWN_GRACE: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// A blocked protocol writer must not prevent the host from being reaped.
+const SHUTDOWN_WRITE_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(250);
+
 /// What an extension registered, as the host describes it.
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct Registered {
@@ -87,7 +93,7 @@ pub struct RegisteredTool {
     /// A provider-side sampling directive for this tool's arguments.
     #[serde(default)]
     pub constrained_sampling: Option<Value>,
-    
+
     #[serde(default)]
     pub render_shell: Option<String>,
     /// `"sequential"` or `"parallel"`.
@@ -155,8 +161,10 @@ pub enum FromHost {
         extension: Option<String>,
         payload: Value,
     },
-    
-    ComponentChanged { component_id: String },
+
+    ComponentChanged {
+        component_id: String,
+    },
     /// An extension's handler threw.
     Failed {
         path: String,
@@ -193,7 +201,7 @@ pub struct Host {
     stdin: Arc<Mutex<ChildStdin>>,
     /// Answers waiting to be matched to the request that asked for them.
     pending: Arc<Mutex<HashMap<String, oneshot::Sender<Value>>>>,
-    
+
     updates: Arc<Mutex<HashMap<String, micro_tools::Progress>>>,
     /// Tells a call still in flight to stop: a turn that was abandoned, or one that ran past
     /// `TOOL_TIMEOUT`.
@@ -223,11 +231,23 @@ impl Host {
         })?;
 
         let script = install_host(home)?;
-        
+
+        let home = &std::fs::canonicalize(home).unwrap_or_else(|_| home.to_path_buf());
+        let script = std::fs::canonicalize(&script).unwrap_or(script);
+
         let compat_node_modules = crate::compat::install(home)?;
         let node_path = crate::compat::node_path(home, &compat_node_modules)?;
-        let readable_roots = extension_read_roots(home, paths, workspace);
-        let sandbox = micro_sandbox::Sandbox::extension_host(&runtime, readable_roots);
+        let workspace_compat = crate::compat::install(&workspace.join(".micro"))?;
+        let mut readable_roots = extension_read_roots(home, paths, workspace);
+        readable_roots.push(compat_node_modules.clone());
+        readable_roots.push(workspace_compat);
+        readable_roots.push(workspace.to_path_buf());
+        let sandbox = match trusted {
+            true => {
+                micro_sandbox::Sandbox::trusted_extension_host(&runtime, readable_roots, workspace)
+            }
+            false => micro_sandbox::Sandbox::extension_host(&runtime, readable_roots),
+        };
         if !sandbox.is_enforced() {
             return Err(
                 "extensions are disabled because this platform cannot confine the Bun host"
@@ -239,9 +259,10 @@ impl Host {
             &runtime_name,
             [
                 "run".to_string(),
-                
                 "--no-install".to_string(),
                 script.display().to_string(),
+                "--micro-home".to_string(),
+                home.display().to_string(),
             ],
             home,
         );
@@ -254,7 +275,7 @@ impl Host {
         command
             .args(&wrapped.args)
             .current_dir(&wrapped.cwd)
-            
+            .kill_on_drop(true)
             .env_clear();
         for (name, value) in &wrapped.env {
             command.env(name, value);
@@ -272,6 +293,12 @@ impl Host {
         let stdin = Arc::new(Mutex::new(stdin));
         let stdout = child.stdout.take().ok_or("the host has no stdout")?;
 
+        let complaint = Arc::new(Mutex::new(String::new()));
+        let complaining = child
+            .stderr
+            .take()
+            .map(|stderr| tokio::spawn(read_complaint(stderr, Arc::clone(&complaint))));
+
         let pending: Arc<Mutex<HashMap<String, oneshot::Sender<Value>>>> =
             Arc::new(Mutex::new(HashMap::new()));
         let updates: Arc<Mutex<HashMap<String, micro_tools::Progress>>> =
@@ -287,7 +314,6 @@ impl Host {
             loaded_sender,
         ));
 
-        
         let (cancel, mut cancelled) = tokio::sync::mpsc::unbounded_channel::<String>();
         {
             let stdin = Arc::clone(&stdin);
@@ -302,28 +328,48 @@ impl Host {
             });
         }
 
-        let listed: Vec<String> = paths
-            .iter()
-            .map(|path| path.display().to_string())
-            .collect();
-        write_line(
+        let listed: Vec<String> = paths.iter().map(|path| resolved(path)).collect();
+        if let Err(error) = write_line(
             &mut *stdin.lock().await,
             &serde_json::json!({
                 "type": "load",
                 "paths": listed,
-                "cwd": workspace.display().to_string(),
+                "cwd": resolved(workspace),
                 "has_ui": has_ui,
                 "trusted": trusted,
                 "mode": mode,
             }),
         )
-        .await?;
+        .await
+        {
+            stop_child(&mut child).await;
+            return Err(error);
+        }
 
-        
-        let loaded = tokio::time::timeout(TOOL_TIMEOUT, loaded_receiver)
-            .await
-            .map_err(|_| "the extension host did not finish loading".to_string())?
-            .map_err(|_| "the extension host stopped while loading".to_string())?;
+        let loaded = match tokio::time::timeout(TOOL_TIMEOUT, loaded_receiver).await {
+            Ok(Ok(loaded)) => loaded,
+
+            Ok(Err(_)) => {
+                let error = with_complaint(
+                    "the extension host stopped while loading",
+                    &complaint,
+                    complaining,
+                )
+                .await;
+                stop_child(&mut child).await;
+                return Err(error);
+            }
+            Err(_) => {
+                let error = with_complaint(
+                    "the extension host did not finish loading",
+                    &complaint,
+                    complaining,
+                )
+                .await;
+                stop_child(&mut child).await;
+                return Err(error);
+            }
+        };
 
         Ok(Host {
             child: Mutex::new(child),
@@ -365,11 +411,7 @@ impl Host {
             if !grant.allows(crate::Capability::Tools) {
                 refuse(
                     "tools",
-                    extension
-                        .tools
-                        .drain(..)
-                        .map(|tool| tool.name)
-                        .collect(),
+                    extension.tools.drain(..).map(|tool| tool.name).collect(),
                 );
             }
             if !grant.allows(crate::Capability::Commands) {
@@ -549,7 +591,7 @@ impl Host {
             .and_then(Value::as_array)
             .cloned()
             .unwrap_or_default();
-        
+
         let sources = answer
             .get("sources")
             .and_then(Value::as_array)
@@ -575,6 +617,7 @@ impl Host {
         let (sender, receiver) = oneshot::channel();
         self.pending.lock().await.insert(id.clone(), sender);
 
+        let path = &resolved(Path::new(path));
         write_line(
             &mut *self.stdin.lock().await,
             &serde_json::json!({ "type": "deactivate", "id": id, "path": path }),
@@ -621,7 +664,7 @@ impl Host {
 
         let guard = CancelOnDrop::new(id.clone(), self.cancel.clone());
         let outcome = tokio::time::timeout(TOOL_TIMEOUT, receiver).await;
-        
+
         guard.disarm();
         self.updates.lock().await.remove(&id);
 
@@ -629,7 +672,6 @@ impl Host {
             Ok(Ok(answer)) => answer,
             Ok(Err(_)) => return Err(format!("the extension host stopped while running {name}")),
             Err(_) => {
-                
                 let _ = self.cancel.send(id.clone());
                 self.pending.lock().await.remove(&id);
                 return Err(format!("{name} did not answer in time"));
@@ -643,7 +685,11 @@ impl Host {
     }
 
     /// Ask a registered markdown transformer to rewrite this text, and hand back what it produced.
-    pub async fn transform_markdown(&self, markdown: &str, context: &Value) -> Result<String, String> {
+    pub async fn transform_markdown(
+        &self,
+        markdown: &str,
+        context: &Value,
+    ) -> Result<String, String> {
         let id = self.claim_id();
         let (sender, receiver) = oneshot::channel();
         self.pending.lock().await.insert(id.clone(), sender);
@@ -675,7 +721,11 @@ impl Host {
     }
 
     /// Ask a registered component for its lines at this width.
-    pub async fn render_component(&self, component_id: &str, width: usize) -> Result<Vec<String>, String> {
+    pub async fn render_component(
+        &self,
+        component_id: &str,
+        width: usize,
+    ) -> Result<Vec<String>, String> {
         let id = self.claim_id();
         let (sender, receiver) = oneshot::channel();
         self.pending.lock().await.insert(id.clone(), sender);
@@ -740,9 +790,14 @@ impl Host {
         let answer = tokio::time::timeout(COMPONENT_TIMEOUT, receiver)
             .await
             .map_err(|_| format!("component {component_id} did not answer in time"))?
-            .map_err(|_| "the extension host stopped while offering a component input".to_string())?;
+            .map_err(|_| {
+                "the extension host stopped while offering a component input".to_string()
+            })?;
 
-        Ok(answer.get("consume").and_then(Value::as_bool).unwrap_or(false))
+        Ok(answer
+            .get("consume")
+            .and_then(Value::as_bool)
+            .unwrap_or(false))
     }
 
     /// Tell a registered component to drop any cached rendering state of its own.
@@ -774,7 +829,6 @@ impl Host {
         self.render_tool(name, "call", args, None, fields).await
     }
 
-    
     pub async fn render_tool_result(
         &self,
         name: &str,
@@ -833,7 +887,10 @@ impl Host {
                 .get("supported")
                 .and_then(Value::as_bool)
                 .unwrap_or(false),
-            error: answer.get("error").and_then(Value::as_str).map(str::to_string),
+            error: answer
+                .get("error")
+                .and_then(Value::as_str)
+                .map(str::to_string),
         })
     }
 
@@ -860,7 +917,6 @@ impl Host {
         }
     }
 
-    
     pub async fn answer(&self, id: &str, payload: Value) -> Result<(), String> {
         let mut message = serde_json::json!({ "type": "answer", "id": id });
         if let (Some(object), Some(extra)) = (message.as_object_mut(), payload.as_object()) {
@@ -878,15 +934,18 @@ impl Host {
 
     /// Tell the extensions the session is over, and let the process go.
     pub async fn shutdown(&self, reason: &str) {
-        let _ = write_line(
-            &mut *self.stdin.lock().await,
-            &serde_json::json!({ "type": "shutdown", "reason": reason }),
-        )
+        let _ = tokio::time::timeout(SHUTDOWN_WRITE_TIMEOUT, async {
+            write_line(
+                &mut *self.stdin.lock().await,
+                &serde_json::json!({ "type": "shutdown", "reason": reason }),
+            )
+            .await
+        })
         .await;
-        
+
         let mut child = self.child.lock().await;
-        let _ = tokio::time::timeout(std::time::Duration::from_secs(2), child.wait()).await;
-        let _ = child.kill().await;
+        let _ = tokio::time::timeout(SHUTDOWN_GRACE, child.wait()).await;
+        stop_child(&mut child).await;
     }
 
     fn claim_id(&self) -> String {
@@ -894,6 +953,69 @@ impl Host {
             .next_id
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         format!("micro-{next}")
+    }
+}
+
+/// Stop a child and wait for it so a failed host cannot outlive its owner or remain unreaped.
+async fn stop_child(child: &mut Child) {
+    if child.try_wait().ok().flatten().is_none() {
+        let _ = child.start_kill();
+    }
+    let _ = child.wait().await;
+}
+
+/// A path as the confined host will see it.
+///
+/// The sandbox is written against resolved paths, and a rule for `/private/var/…` does not admit
+/// the `/var/…` that reaches it through a symlink. Anything handed across that boundary — the
+/// script, the directory it runs in, the extensions it is asked to load — goes in resolved form, or
+/// the host is denied a file whose name it was just given.
+fn resolved(path: &Path) -> String {
+    std::fs::canonicalize(path)
+        .unwrap_or_else(|_| path.to_path_buf())
+        .display()
+        .to_string()
+}
+
+/// The most of the host's complaint worth repeating, so a runaway stack trace cannot become the
+/// whole message.
+const COMPLAINT_LIMIT: usize = 4_000;
+
+/// Keep what the host writes to its error stream. A host that dies on the way up says why there and
+/// nowhere else, so without this its last words are lost and every failure reads the same.
+async fn read_complaint(stderr: tokio::process::ChildStderr, complaint: Arc<Mutex<String>>) {
+    let mut lines = BufReader::new(stderr).lines();
+    while let Ok(Some(line)) = lines.next_line().await {
+        let mut held = complaint.lock().await;
+        if held.len() >= COMPLAINT_LIMIT {
+            return;
+        }
+        if !held.is_empty() {
+            held.push('\n');
+        }
+        held.push_str(&line);
+    }
+}
+
+/// How long a dying host is given to finish saying why.
+const COMPLAINT_GRACE: std::time::Duration = std::time::Duration::from_millis(500);
+
+/// `reason`, and what the host said for itself if it said anything.
+///
+/// A host that dies on the way up closes both its streams at once, so the reading of its error
+/// stream is waited out here rather than raced: whatever it managed to say is the whole diagnosis.
+async fn with_complaint(
+    reason: &str,
+    complaint: &Arc<Mutex<String>>,
+    complaining: Option<tokio::task::JoinHandle<()>>,
+) -> String {
+    if let Some(complaining) = complaining {
+        let _ = tokio::time::timeout(COMPLAINT_GRACE, complaining).await;
+    }
+    let said = complaint.lock().await;
+    match said.trim().is_empty() {
+        true => reason.to_string(),
+        false => format!("{reason}: {}", said.trim()),
     }
 }
 
@@ -925,8 +1047,13 @@ async fn read_host(
                     let _ = sender.send(described);
                 }
             }
-            "tool_result" | "command_result" | "event_result" | "render_result"
-            | "transform_markdown_result" | "component_result" | "render_tool_result"
+            "tool_result"
+            | "command_result"
+            | "event_result"
+            | "render_result"
+            | "transform_markdown_result"
+            | "component_result"
+            | "render_tool_result"
             | "deactivated" => {
                 let Some(id) = message.get("id").and_then(Value::as_str) else {
                     continue;
@@ -935,7 +1062,7 @@ async fn read_host(
                     let _ = sender.send(message);
                 }
             }
-            
+
             "component_changed" => {
                 let Some(component_id) = message.get("componentId").and_then(Value::as_str) else {
                     continue;
@@ -944,7 +1071,7 @@ async fn read_host(
                     component_id: component_id.to_string(),
                 });
             }
-            
+
             "tool_update" => {
                 let Some(id) = message.get("id").and_then(Value::as_str) else {
                     continue;
@@ -1070,7 +1197,6 @@ impl CancelOnDrop {
 impl Drop for CancelOnDrop {
     fn drop(&mut self) {
         if self.armed {
-            
             let _ = self.cancel.send(std::mem::take(&mut self.id));
         }
     }
@@ -1122,9 +1248,9 @@ fn extension_read_roots(home: &Path, paths: &[PathBuf], workspace: &Path) -> Vec
             continue;
         }
         let parent = path.parent().unwrap_or(path.as_path());
-        let package_root = parent.ancestors().find(|ancestor| {
-            *ancestor != workspace && ancestor.join("package.json").is_file()
-        });
+        let package_root = parent
+            .ancestors()
+            .find(|ancestor| *ancestor != workspace && ancestor.join("package.json").is_file());
         roots.push(package_root.unwrap_or(parent).to_path_buf());
     }
     roots.sort();
@@ -1142,7 +1268,7 @@ mod tests {
         let path = install_host(&home).unwrap();
 
         assert!(path.ends_with(HOST_FILE));
-        
+
         for (name, source) in HOST_SOURCE {
             let written = std::fs::read_to_string(home.join(name)).unwrap();
             assert_eq!(&written, source, "{name} was not written whole");
@@ -1161,6 +1287,20 @@ mod tests {
             Ok(_) => panic!("nothing to load is not a host"),
         };
         assert!(error.contains("no extensions"), "{error}");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn stopping_a_child_reaps_it() {
+        let mut child = tokio::process::Command::new("sh")
+            .args(["-c", "exec sleep 60"])
+            .kill_on_drop(true)
+            .spawn()
+            .expect("the child starts");
+
+        stop_child(&mut child).await;
+
+        assert!(child.try_wait().unwrap().is_some(), "the child was reaped");
     }
 
     /// A registration is read from what the host says, including a tool's schema.
@@ -1199,7 +1339,10 @@ mod tests {
 
     /// The text a call_tool answer carries, joined the way the model would read it.
     fn as_text(blocks: &[micro_types::ContentBlock]) -> String {
-        blocks.iter().map(micro_types::ContentBlock::as_text).collect()
+        blocks
+            .iter()
+            .map(micro_types::ContentBlock::as_text)
+            .collect()
     }
 
     /// Answer every `get_context` the host asks for, for as long as the test runs.
@@ -1228,10 +1371,9 @@ mod tests {
             COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
         ));
         std::fs::create_dir_all(&path).unwrap();
-        path
+        path.canonicalize().unwrap_or(path)
     }
 
-    
     #[tokio::test]
     async fn an_extension_registers_a_tool_and_the_tool_runs() {
         if which_bun().is_none() {
@@ -1258,9 +1400,16 @@ export default (micro) => {
         .unwrap();
 
         let host = Arc::new(
-            Host::start(&root, std::slice::from_ref(&extension), &root, false, false, "tui")
-                .await
-                .expect("the host starts"),
+            Host::start(
+                &root,
+                std::slice::from_ref(&extension),
+                &root,
+                false,
+                true,
+                "tui",
+            )
+            .await
+            .expect("the host starts"),
         );
         answer_context_requests(Arc::clone(&host));
 
@@ -1296,7 +1445,49 @@ export default (micro) => {
         let _ = std::fs::remove_dir_all(&root);
     }
 
-    
+    #[tokio::test]
+    async fn an_extension_resolves_the_bundled_pi_tui_package() {
+        if which_bun().is_none() {
+            return;
+        }
+        let root = scratch("pi-tui");
+        let home = root.join("home");
+        let workspace = root.join("workspace");
+        std::fs::create_dir_all(&home).unwrap();
+        let extension = workspace.join(".micro/extensions/pi-tui.ts");
+        std::fs::create_dir_all(extension.parent().unwrap()).unwrap();
+        std::fs::write(
+            &extension,
+            r#"
+import { visibleWidth } from "@earendil-works/pi-tui";
+export default (micro) => {
+    micro.registerCommand("probe", { handler: async () => String(visibleWidth("hello")) });
+};
+"#,
+        )
+        .unwrap();
+
+        let host = Host::start(
+            &home,
+            std::slice::from_ref(&extension),
+            &workspace,
+            true,
+            false,
+            "tui",
+        )
+        .await
+        .expect("the host starts");
+        assert!(
+            host.loaded().errors.is_empty(),
+            "{:?}",
+            host.loaded().errors
+        );
+        assert_eq!(host.call_command("probe", "").await.unwrap(), "5");
+
+        host.shutdown("quit").await;
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     #[tokio::test]
     async fn what_an_extension_declares_about_itself_reaches_micro() {
         if which_bun().is_none() {
@@ -1371,14 +1562,23 @@ export default (micro) => {{
         .unwrap();
 
         let host = Arc::new(
-            Host::start(&root, std::slice::from_ref(&extension), &root, false, false, "tui")
-                .await
-                .expect("the host starts"),
+            Host::start(
+                &root,
+                std::slice::from_ref(&extension),
+                &root,
+                false,
+                true,
+                "tui",
+            )
+            .await
+            .expect("the host starts"),
         );
         answer_context_requests(Arc::clone(&host));
 
         assert_eq!(
-            host.call_command("probe", "").await.expect("the command runs"),
+            host.call_command("probe", "")
+                .await
+                .expect("the command runs"),
             serde_json::json!("here")
         );
 
@@ -1400,7 +1600,6 @@ export default (micro) => {{
         let _ = std::fs::remove_dir_all(&root);
     }
 
-    
     #[tokio::test]
     async fn a_tool_that_throws_is_reported_and_the_host_lives() {
         if which_bun().is_none() {
@@ -1428,7 +1627,7 @@ export default (micro) => {
         .unwrap();
 
         let host = Arc::new(
-            Host::start(&root, &[extension], &root, false, false, "tui")
+            Host::start(&root, &[extension], &root, false, true, "tui")
                 .await
                 .expect("the host starts"),
         );
@@ -1444,7 +1643,6 @@ export default (micro) => {
             .expect_err("it throws");
         assert!(error.contains("it went wrong"), "{error}");
 
-        
         let answer = host
             .call_tool(
                 "fine",
@@ -1475,9 +1673,16 @@ export default (micro) => {
         )
         .unwrap();
 
-        let host = Host::start(&root, &[broken.clone(), working], &root, false, false, "tui")
-            .await
-            .expect("the host starts");
+        let host = Host::start(
+            &root,
+            &[broken.clone(), working],
+            &root,
+            false,
+            false,
+            "tui",
+        )
+        .await
+        .expect("the host starts");
 
         assert_eq!(host.loaded().errors.len(), 1, "{:?}", host.loaded().errors);
         assert!(host.loaded().errors[0].path.ends_with("broken.ts"));
@@ -1487,7 +1692,6 @@ export default (micro) => {
         let _ = std::fs::remove_dir_all(&root);
     }
 
-    
     #[tokio::test]
     async fn a_missing_declared_dependency_says_how_to_fix_it() {
         if which_bun().is_none() {
@@ -1606,7 +1810,7 @@ export default (micro) => {
         .unwrap();
 
         let host = Arc::new(
-            Host::start(&root, &[extension], &root, false, false, "tui")
+            Host::start(&root, &[extension], &root, false, true, "tui")
                 .await
                 .expect("the host starts"),
         );
@@ -1625,7 +1829,10 @@ export default (micro) => {
         while let Ok(update) = reported.try_recv() {
             updates.push(update);
         }
-        assert_eq!(updates, vec!["step one".to_string(), "step two".to_string()]);
+        assert_eq!(
+            updates,
+            vec!["step one".to_string(), "step two".to_string()]
+        );
 
         host.shutdown("quit").await;
         let _ = std::fs::remove_dir_all(&root);
@@ -1666,7 +1873,7 @@ export default (micro) => {{
         .unwrap();
 
         let host = Arc::new(
-            Host::start(&root, &[extension], &root, false, false, "tui")
+            Host::start(&root, &[extension], &root, false, true, "tui")
                 .await
                 .expect("the host starts"),
         );
@@ -1684,7 +1891,7 @@ export default (micro) => {{
                     .await;
             })
         };
-        
+
         tokio::time::sleep(std::time::Duration::from_millis(200)).await;
         running.abort();
 
@@ -1724,7 +1931,10 @@ export default (micro) => {
             .expect("the host starts");
 
         let rewritten = host
-            .transform_markdown("hello there", &serde_json::json!({ "messageType": "assistant" }))
+            .transform_markdown(
+                "hello there",
+                &serde_json::json!({ "messageType": "assistant" }),
+            )
             .await
             .expect("a transformer answers");
         assert_eq!(rewritten, "HELLO THERE");
@@ -1814,7 +2024,6 @@ export default (micro) => {
         let _ = std::fs::remove_dir_all(&root);
     }
 
-    
     #[tokio::test]
     async fn a_tool_with_no_rendercall_says_so_rather_than_erroring() {
         if which_bun().is_none() {
@@ -1960,14 +2169,16 @@ export default (micro) => {
         };
         assert_eq!(payload["method"], "tool_call_rendered");
         assert_eq!(payload["title"], "call_1");
-        assert!(payload["detail"].as_str().is_some(), "a component id: {payload}");
+        assert!(
+            payload["detail"].as_str().is_some(),
+            "a component id: {payload}"
+        );
         assert_eq!(payload["options"], serde_json::json!(["lima: checking..."]));
 
         host.shutdown("quit").await;
         let _ = std::fs::remove_dir_all(&root);
     }
 
-    
     #[tokio::test]
     async fn a_tools_renderresult_draws_itself_when_the_result_arrives() {
         if which_bun().is_none() {
@@ -2024,7 +2235,6 @@ export default (micro) => {
         let _ = std::fs::remove_dir_all(&root);
     }
 
-    
     #[tokio::test]
     async fn fork_waits_for_session_start_before_running_with_session() {
         if which_bun().is_none() {
@@ -2068,10 +2278,13 @@ export default (micro) => {
                             .await;
                     }
                     FromHost::Request { id, request, .. } if request == "fork" => {
-                        
-                        let _ = watching.answer(&id, serde_json::json!({ "cancelled": false })).await;
+                        let _ = watching
+                            .answer(&id, serde_json::json!({ "cancelled": false }))
+                            .await;
                     }
-                    FromHost::Action { action, payload, .. } if action == "send_user_message" => {
+                    FromHost::Action {
+                        action, payload, ..
+                    } if action == "send_user_message" => {
                         return payload
                             .get("content")
                             .and_then(serde_json::Value::as_str)
@@ -2083,17 +2296,18 @@ export default (micro) => {
             None
         });
 
-        
         let calling = Arc::clone(&host);
         let command = tokio::spawn(async move { calling.call_command("probe", "").await });
 
-        
         tokio::time::sleep(std::time::Duration::from_millis(200)).await;
         assert!(
             !seen_send_user_message.is_finished(),
             "withSession ran before session_start was ever sent"
         );
-        assert!(!command.is_finished(), "the command resolved before its fork was confirmed");
+        assert!(
+            !command.is_finished(),
+            "the command resolved before its fork was confirmed"
+        );
 
         host.notify("session_start", serde_json::json!({ "reason": "fork" }))
             .await

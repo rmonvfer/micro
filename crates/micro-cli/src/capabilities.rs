@@ -19,7 +19,9 @@ pub async fn resolve(
     trusted: bool,
     has_ui: bool,
 ) -> Resolved {
-    let mut store = micro_config::CapabilityStore::load().await.unwrap_or_default();
+    let mut store = micro_config::CapabilityStore::load()
+        .await
+        .unwrap_or_default();
     let mut grants = Vec::new();
     let mut notices = Vec::new();
     let mut decided = false;
@@ -28,7 +30,6 @@ pub async fn resolve(
         let name = crate::runtime::extension_name(&extension.path, roots);
         let path = Path::new(&extension.path);
 
-        
         let spoken = extension
             .capabilities
             .clone()
@@ -51,10 +52,8 @@ pub async fn resolve(
             continue;
         }
 
-        
         let would_need = micro_extensions::derived(extension);
         let allowed = if trusted {
-            
             would_need
         } else if let Some(decision) = store.decision(path) {
             let (allowed, _) = micro_extensions::parse_all(&decision.capabilities);
@@ -177,14 +176,16 @@ mod tests {
         };
 
         let resolved = resolve(&loaded, &[], false, false).await;
-        let grant = resolved.grants.grant(Some("/x/declared.ts")).expect("a grant");
+        let grant = resolved
+            .grants
+            .grant(Some("/x/declared.ts"))
+            .expect("a grant");
         assert!(grant.declared);
         assert!(grant.allows(Capability::Tools));
         assert!(grant.allows(Capability::Exec));
         assert!(!grant.allows(Capability::SessionControl));
     }
 
-    
     #[tokio::test]
     async fn a_capability_nobody_has_heard_of_is_reported() {
         let loaded = micro_extensions::Loaded {
@@ -221,7 +222,10 @@ mod tests {
         };
 
         let resolved = resolve(&loaded, &[], true, false).await;
-        let grant = resolved.grants.grant(Some("/x/legacy.ts")).expect("a grant");
+        let grant = resolved
+            .grants
+            .grant(Some("/x/legacy.ts"))
+            .expect("a grant");
         assert!(!grant.declared);
         assert!(grant.allows(Capability::Tools));
         assert!(grant.allows(Capability::Exec));
@@ -238,7 +242,10 @@ mod tests {
         };
 
         let resolved = resolve(&loaded, &[], false, false).await;
-        let grant = resolved.grants.grant(Some("/x/legacy.ts")).expect("a grant");
+        let grant = resolved
+            .grants
+            .grant(Some("/x/legacy.ts"))
+            .expect("a grant");
         assert!(grant.allowed.is_empty());
         assert!(
             resolved
@@ -266,7 +273,7 @@ mod tests {
             declared: false,
             allowed: [Capability::Ui, Capability::Exec].into_iter().collect(),
         };
-        
+
         assert_eq!(describe(&legacy), "legacy: exec, ui");
 
         let refused = Grant {

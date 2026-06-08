@@ -13,13 +13,19 @@ The process keeps one session open until standard input closes. It uses the same
 Each input object must fit on one line and contain a `type` field:
 
 ```json
-{"type":"get_state","id":"state-1"}
+{ "type": "get_state", "id": "state-1" }
 ```
 
 The optional `id` is copied to the command response:
 
 ```json
-{"type":"response","id":"state-1","command":"get_state","success":true,"data":{"model":"..."}}
+{
+  "type": "response",
+  "id": "state-1",
+  "command": "get_state",
+  "success": true,
+  "data": { "model": "..." }
+}
 ```
 
 Failed commands use `success: false` and an `error` field. An unreadable input line produces a failed response and does not terminate the process.
@@ -29,7 +35,7 @@ JSON strings may contain escaped newlines. Records themselves are separated by t
 ## Send a prompt
 
 ```json
-{"type":"prompt","id":"p1","message":"explain the request path"}
+{ "type": "prompt", "id": "p1", "message": "explain the request path" }
 ```
 
 micro first acknowledges the command, then streams serialized `AgentEvent` objects. Common event types include:
@@ -65,42 +71,40 @@ Other commands received during a turn are held until that turn finishes.
 {
   "type": "prompt",
   "message": "describe this diagram",
-  "images": [
-    { "data": "iVBORw0KGgo...", "mime_type": "image/png" }
-  ]
+  "images": [{ "data": "iVBORw0KGgo...", "mime_type": "image/png" }]
 }
 ```
 
 ## Commands
 
-| Type | Required fields | Result |
-| --- | --- | --- |
-| `prompt` | `message` | Start a model run. |
-| `steer` | `message` | Add direction to the active run. |
-| `follow_up` | `message` | Queue another prompt in the same run. |
-| `abort` | none | Stop the active run or clear queued prompts. |
-| `new_session` | none | Create and switch to a new session. |
-| `get_state` | none | Return model, provider, thinking, session, and queue state. |
-| `set_model` | `provider`, `model_id` | Select an exact catalog model. |
-| `cycle_model` | none | Select the next catalog model. |
-| `get_available_models` | none | Return catalog models and limits. |
-| `set_thinking_level` | `level` | Change reasoning effort. |
-| `cycle_thinking_level` | none | Select the next reasoning level. |
-| `compact` | none | Compact the conversation immediately. |
-| `set_auto_compaction` | `enabled` | Enable or disable automatic compaction. |
-| `bash` | `command` | Run a shell command under the session sandbox. |
-| `abort_bash` | none | Acknowledge the request; RPC bash commands are not background jobs. |
-| `get_session_stats` | none | Return session metadata and message count. |
-| `switch_session` | `session_path` | Open another session file. |
-| `navigate_tree` | `entry_id` | Move the current session head to an earlier entry. |
-| `fork` | `entry_id` | Copy a branch into a new session. |
-| `clone` | none | Duplicate the current session at its current head. |
-| `get_entries` | none | Return conversation entries; optional `since` limits the result. |
-| `get_tree` | none | Return the branch outline. |
-| `get_last_assistant_text` | none | Return the latest non-empty assistant text. |
-| `set_session_name` | `name` | Rename the session. |
-| `get_messages` | none | Return the current agent messages. |
-| `get_commands` | none | Return available slash commands and their sources. |
+| Type                      | Required fields        | Result                                                              |
+| ------------------------- | ---------------------- | ------------------------------------------------------------------- |
+| `prompt`                  | `message`              | Start a model run.                                                  |
+| `steer`                   | `message`              | Add direction to the active run.                                    |
+| `follow_up`               | `message`              | Queue another prompt in the same run.                               |
+| `abort`                   | none                   | Stop the active run or clear queued prompts.                        |
+| `new_session`             | none                   | Create and switch to a new session.                                 |
+| `get_state`               | none                   | Return model, provider, thinking, session, and queue state.         |
+| `set_model`               | `provider`, `model_id` | Select an exact catalog model.                                      |
+| `cycle_model`             | none                   | Select the next catalog model.                                      |
+| `get_available_models`    | none                   | Return catalog models and limits.                                   |
+| `set_thinking_level`      | `level`                | Change reasoning effort.                                            |
+| `cycle_thinking_level`    | none                   | Select the next reasoning level.                                    |
+| `compact`                 | none                   | Compact the conversation immediately.                               |
+| `set_auto_compaction`     | `enabled`              | Enable or disable automatic compaction.                             |
+| `bash`                    | `command`              | Run a shell command under the session sandbox.                      |
+| `abort_bash`              | none                   | Acknowledge the request; RPC bash commands are not background jobs. |
+| `get_session_stats`       | none                   | Return session metadata and message count.                          |
+| `switch_session`          | `session_path`         | Open another session file.                                          |
+| `navigate_tree`           | `entry_id`             | Move the current session head to an earlier entry.                  |
+| `fork`                    | `entry_id`             | Copy a branch into a new session.                                   |
+| `clone`                   | none                   | Duplicate the current session at its current head.                  |
+| `get_entries`             | none                   | Return conversation entries; optional `since` limits the result.    |
+| `get_tree`                | none                   | Return the branch outline.                                          |
+| `get_last_assistant_text` | none                   | Return the latest non-empty assistant text.                         |
+| `set_session_name`        | `name`                 | Rename the session.                                                 |
+| `get_messages`            | none                   | Return the current agent messages.                                  |
+| `get_commands`            | none                   | Return available slash commands and their sources.                  |
 
 The `bash` command accepts `exclude_from_context: true` when its output should not be added to the model conversation.
 

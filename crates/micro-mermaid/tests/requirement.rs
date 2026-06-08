@@ -50,11 +50,10 @@ fn a_relation_connects_two_boxes_with_a_routed_labelled_arrow() {
     );
 }
 
-
 #[test]
 fn an_unparseable_requirement_diagram_renders_nothing() {
     let src = "requirementDiagram\nrequirement r {\nid 1\n}";
     assert!(render(src).is_none());
-    
+
     assert!(diagram_kind(src).is_some());
 }

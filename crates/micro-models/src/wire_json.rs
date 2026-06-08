@@ -1,5 +1,3 @@
-
-
 use crate::Catalog;
 use crate::Modality;
 use crate::ModelDef;
@@ -49,7 +47,6 @@ pub fn model_json(def: &ModelDef) -> Value {
         },
     })
 }
-
 
 pub fn catalog_json(catalog: &Catalog, provider: Option<&str>) -> Value {
     let providers: Vec<&str> = catalog.providers();

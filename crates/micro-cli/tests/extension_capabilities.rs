@@ -37,7 +37,6 @@ fn crossings(fixture: &Fixture, id: &str) -> Vec<Value> {
         .collect()
 }
 
-
 #[test]
 fn an_ask_outside_the_manifest_is_refused_by_name_and_the_session_continues() {
     if which_bun().is_none() {
@@ -64,7 +63,9 @@ export default (micro) => {
     let output = fixture.print(&["-m", "test", "/probe"]);
     output.expect_success("micro --print /probe");
     assert!(
-        output.stdout.contains("capability 'exec' not granted to narrow"),
+        output
+            .stdout
+            .contains("capability 'exec' not granted to narrow"),
         "the extension was not told why: {}",
         output.stdout
     );
@@ -76,9 +77,11 @@ export default (micro) => {
         .unwrap_or_else(|| panic!("no exec crossing among {recorded:?}"));
     assert_eq!(refusal["extension"], "narrow");
     assert_eq!(refusal["allowed"], false);
-    assert_eq!(refusal["name"], "echo", "the ledger says what was asked for");
+    assert_eq!(
+        refusal["name"], "echo",
+        "the ledger says what was asked for"
+    );
 }
-
 
 #[test]
 fn an_ask_inside_the_manifest_is_answered_and_recorded() {
@@ -160,7 +163,6 @@ export default (micro) => {
     );
 }
 
-
 #[test]
 fn a_legacy_extension_in_a_trusted_project_keeps_working_unprompted() {
     if which_bun().is_none() {
@@ -196,7 +198,6 @@ export default (micro) => {
     );
 }
 
-
 #[test]
 fn a_legacy_extension_in_an_untrusted_project_is_granted_nothing_and_says_why() {
     if which_bun().is_none() {
@@ -204,7 +205,7 @@ fn a_legacy_extension_in_an_untrusted_project_is_granted_nothing_and_says_why() 
     }
     let api = FakeApi::start([Reply::text("nothing to do")]);
     let fixture = Fixture::new(&api);
-    
+
     let path = fixture.write(
         "probe.ts",
         r#"
@@ -229,7 +230,9 @@ export default (micro) => {
         output.stderr
     );
     assert!(
-        output.stderr.contains("without asking for the `commands` capability"),
+        output
+            .stderr
+            .contains("without asking for the `commands` capability"),
         "what was refused is named: {}",
         output.stderr
     );
@@ -239,7 +242,6 @@ export default (micro) => {
         output.stderr
     );
 }
-
 
 const EXIT_TIMEOUT: Duration = Duration::from_secs(30);
 
@@ -296,7 +298,6 @@ export default (micro) => {
         "a run with no extensions never exited"
     );
 }
-
 
 #[test]
 fn listing_installed_packages_says_what_each_may_do() {

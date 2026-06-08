@@ -33,7 +33,7 @@ pub(crate) fn render_kanban(src: &str) -> Option<Canvas> {
     }
 
     let mut columns: Vec<Column> = Vec::new();
-    
+
     let mut column_indent: Option<usize> = None;
     let mut task_count = 0usize;
 
@@ -67,7 +67,6 @@ pub(crate) fn render_kanban(src: &str) -> Option<Canvas> {
     }
     Some(draw(&columns))
 }
-
 
 fn read_column(line: &str) -> Option<Column> {
     let (id, title) = read_id_and_label(line)?;
@@ -153,7 +152,6 @@ fn task_meta(task: &Task) -> Option<String> {
 }
 
 fn card_height(task: &Task) -> usize {
-    
     3 + usize::from(task_meta(task).is_some())
 }
 
@@ -226,7 +224,6 @@ fn draw_card(canvas: &mut Canvas, x: usize, y: usize, w: usize, task: &Task) {
         canvas.add_bits(right, cy, U | D, Cls::Border);
     }
 
-    
     let inner = w.saturating_sub(4);
     draw_text(
         canvas,
@@ -292,7 +289,6 @@ mod tests {
         assert_eq!(rows, vec!["To Do      Done"]);
     }
 
-    
     #[test]
     fn what_is_not_a_kanban_board_is_left_alone() {
         assert!(render_kanban("graph TD\n A --> B").is_none());
@@ -304,7 +300,6 @@ mod tests {
         assert!(render_kanban("kanban\n  todo[To Do]\n    t1[No closing bracket").is_none());
     }
 
-    
     #[test]
     fn too_many_columns_are_refused() {
         let mut source = String::from("kanban\n");

@@ -1,0 +1,94 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@1.97.1
+        with:
+          components: clippy,rustfmt
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --check
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+      - run: cargo test --workspace
+      - run: bash -n scripts/install.sh
+
+  build:
+    needs: verify
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            target: darwin-arm64
+          - os: ubuntu-22.04
+            target: linux-x86_64
+          - os: ubuntu-22.04-arm
+            target: linux-arm64
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@1.97.1
+      - uses: Swatinem/rust-cache@v2
+      - name: Verify release version
+        shell: bash
+        run: |
+          tag_version="${GITHUB_REF_NAME#v}"
+          package_version="$(cargo metadata --no-deps --format-version 1 | python3 -c 'import json, sys; print(next(p["version"] for p in json.load(sys.stdin)["packages"] if p["name"] == "micro-cli"))')"
+          test "$tag_version" = "$package_version"
+      - name: Build distribution
+        run: cargo build --release -p micro-cli
+      - name: Stage archive
+        shell: bash
+        run: |
+          mkdir -p dist/micro/bin
+          cp target/release/micro dist/micro/bin/micro
+          tar -czf "micro-${{ matrix.target }}.tar.gz" -C dist micro
+      - name: Smoke test distribution
+        shell: bash
+        run: |
+          root="$RUNNER_TEMP/micro-dist"
+          mkdir -p "$root"
+          tar -xzf "micro-${{ matrix.target }}.tar.gz" -C "$root"
+          binary="$root/micro/bin/micro"
+          test -x "$binary"
+          "$binary" --help
+          test "$("$binary" --version)" = "micro ${GITHUB_REF_NAME#v}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: micro-${{ matrix.target }}
+          path: micro-${{ matrix.target }}.tar.gz
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      attestations: write
+      contents: write
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v5
+        with:
+          path: artifacts
+      - name: Prepare release assets
+        shell: bash
+        run: |
+          mkdir release
+          find artifacts -name 'micro-*.tar.gz' -exec cp {} release/ \;
+          (cd release && sha256sum micro-*.tar.gz > checksums-sha256.txt)
+      - uses: actions/attest-build-provenance@v3
+        with:
+          subject-path: release/*
+      - uses: softprops/action-gh-release@v2
+        with:
+          fail_on_unmatched_files: true
+          generate_release_notes: true
+          files: release/*

@@ -4,13 +4,13 @@ micro ships with a model catalog and clients for the wire protocols used by its 
 
 ## Common providers
 
-| Provider ID | Service | Authentication |
-| --- | --- | --- |
-| `anthropic` | Anthropic | API key or supported stored credential |
-| `openai` | OpenAI | API key |
-| `google` | Google Gemini | API key |
-| `openrouter` | OpenRouter | API key |
-| `github-copilot` | GitHub Copilot | Device-code login or token |
+| Provider ID      | Service        | Authentication                         |
+| ---------------- | -------------- | -------------------------------------- |
+| `anthropic`      | Anthropic      | API key or supported stored credential |
+| `openai`         | OpenAI         | API key                                |
+| `google`         | Google Gemini  | API key                                |
+| `openrouter`     | OpenRouter     | API key                                |
+| `github-copilot` | GitHub Copilot | Device-code login or token             |
 
 The bundled catalog also includes cloud platform endpoints, inference hosts, model vendors, and gateways.
 
@@ -32,13 +32,13 @@ API-key logins read the key from the terminal. Device-code logins open the provi
 
 Stored credentials are checked first. If none exists, micro checks environment variables:
 
-| Provider | Variables, in order |
-| --- | --- |
-| `anthropic` | `ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_OAUTH_TOKEN`, `ANTHROPIC_API_KEY` |
-| `openai` | `OPENAI_API_KEY` |
-| `google` | `GEMINI_API_KEY` |
-| `openrouter` | `OPENROUTER_API_KEY` |
-| `github-copilot` | `COPILOT_GITHUB_TOKEN` |
+| Provider         | Variables, in order                                                  |
+| ---------------- | -------------------------------------------------------------------- |
+| `anthropic`      | `ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_OAUTH_TOKEN`, `ANTHROPIC_API_KEY` |
+| `openai`         | `OPENAI_API_KEY`                                                     |
+| `google`         | `GEMINI_API_KEY`                                                     |
+| `openrouter`     | `OPENROUTER_API_KEY`                                                 |
+| `github-copilot` | `COPILOT_GITHUB_TOKEN`                                               |
 
 Other providers use the conventional `<PROVIDER>_API_KEY` name unless their catalog entry specifies another variable.
 

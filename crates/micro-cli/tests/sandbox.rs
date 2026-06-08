@@ -19,7 +19,6 @@ fn ledger(fixture: &Fixture) -> String {
     fixture.session_logs().join("\n")
 }
 
-
 #[test]
 fn a_command_writing_outside_the_workspace_is_refused_and_the_refusal_is_recorded() {
     if !enforced() {
@@ -243,7 +242,6 @@ export default (micro) => {{
         .print(&["-m", "test", "run the extension's tool"])
         .expect_success("micro --print");
 
-    
     let said = tool_results(&api.request(1))
         .first()
         .expect("the extension's tool answered")
@@ -310,7 +308,6 @@ fn the_settled_policy_applies_when_nothing_else_says_otherwise() {
     assert!(!fixture.exists("notes.txt"), "nothing was written");
 }
 
-
 #[test]
 fn sandbox_try_reports_what_it_ran_and_how_it_went() {
     let api = FakeApi::start([]);
@@ -365,7 +362,6 @@ fn sandbox_try_reports_what_it_ran_and_how_it_went() {
         );
     }
 }
-
 
 #[test]
 fn sandbox_try_says_whether_the_policy_is_enforced_at_all() {

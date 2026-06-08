@@ -9,7 +9,6 @@ use crate::width::string_width;
 /// Points past this and a scatter of them says nothing a terminal can show clearly.
 const MAX_POINTS: usize = 64;
 
-
 const GRID_W: usize = 43;
 const GRID_H: usize = 17;
 
@@ -33,7 +32,7 @@ struct Chart {
     title: Option<String>,
     x_axis: AxisLabel,
     y_axis: AxisLabel,
-    
+
     quadrants: [Option<String>; 4],
     points: Vec<Point>,
 }
@@ -127,11 +126,9 @@ fn parse_point(st: &str) -> Option<Point> {
     Some(Point { label: name, x, y })
 }
 
-
-
 fn draw_quadrant(chart: &Chart) -> Canvas {
     let top = usize::from(chart.title.is_some());
-    
+
     let grid_top = top + 1;
     let grid_bottom = grid_top + GRID_H - 1;
     let y_low_row = grid_bottom + 1;
@@ -177,7 +174,6 @@ fn draw_grid(chart: &Chart) -> Canvas {
     let mid_x = GRID_W / 2;
     let mid_y = GRID_H / 2;
 
-    
     g.set(0, 0, "┌", Cls::Border);
     g.set(right, 0, "┐", Cls::Border);
     g.set(0, bottom, "└", Cls::Border);
@@ -191,7 +187,6 @@ fn draw_grid(chart: &Chart) -> Canvas {
         g.add_bits(right, y, U | D, Cls::Border);
     }
 
-    
     g.seg_v(mid_x, 0, bottom);
     g.seg_h(mid_y, 0, right);
     g.finalize_mask();
@@ -260,9 +255,9 @@ fn draw_points(
         let xn = p.x.clamp(0.0, 1.0);
         let yn = p.y.clamp(0.0, 1.0);
         let mut col = 1 + (xn * (right.saturating_sub(2)) as f64).round() as usize;
-        
+
         let mut row = 1 + ((1.0 - yn) * (bottom.saturating_sub(2)) as f64).round() as usize;
-        
+
         if col == mid_x {
             col = if xn >= 0.5 {
                 mid_x + 1
@@ -282,11 +277,10 @@ fn draw_points(
         } else {
             (mid_y + 1, bottom.saturating_sub(1))
         };
-        
+
         let row = nearby_clear_row(g, col.saturating_sub(1), 3, row, top_bound, bottom_bound);
         draw_text(g, "●", col, row, Cls::Text);
 
-        
         let (half_lo, half_hi) = if col <= mid_x {
             (1, mid_x.saturating_sub(1))
         } else {
@@ -295,18 +289,17 @@ fn draw_points(
         let space_right = half_hi.saturating_sub(col + 1);
         let label = fit_label(&p.label, space_right.max(1));
         let label_w = string_width(&label);
-        
+
         let lx = if col + 2 + label_w <= half_hi {
             col + 2
         } else {
             col.saturating_sub(1 + label_w).max(half_lo)
         };
-        
+
         let ly = nearby_clear_row(g, lx, label_w, row, top_bound, bottom_bound);
         draw_text(g, &label, lx, ly, Cls::Text);
     }
 }
-
 
 fn nearby_clear_row(
     g: &Canvas,
@@ -381,7 +374,7 @@ mod tests {
             .find(|r| r.contains('└'))
             .expect("bottom border");
         assert!(bottom_border.contains('┴'), "{bottom_border:?}");
-        
+
         let interior_row = rows
             .iter()
             .find(|r| r.starts_with('│'))
@@ -407,10 +400,10 @@ mod tests {
         let top_left_row = rows.iter().position(|r| r.contains("TopLeft")).unwrap();
         let top_right_row = rows.iter().position(|r| r.contains("TopRight")).unwrap();
         let bottom_left_row = rows.iter().position(|r| r.contains("BottomLeft")).unwrap();
-        
+
         assert!(top_left_row < bottom_left_row);
         assert!(top_right_row < bottom_left_row);
-        
+
         let left_col = rows[top_left_row].find("TopLeft").unwrap();
         let right_col = rows[top_right_row].find("TopRight").unwrap();
         assert!(left_col < right_col, "{left_col} vs {right_col}");
@@ -423,7 +416,7 @@ mod tests {
         let text = rows.join("\n");
         assert!(text.contains('●'), "{text}");
         assert!(text.contains("Campaign A"), "{text}");
-        
+
         let marker_row = rows.iter().position(|r| r.contains('●')).unwrap();
         assert!(
             marker_row < rows.len() / 2,
@@ -432,7 +425,6 @@ mod tests {
         );
     }
 
-    
     #[test]
     fn a_point_on_the_divider_is_nudged_off_it_leaving_the_cross_intact() {
         let rows = drawn("quadrantChart\n  P: [0.5, 0.5]");
@@ -460,14 +452,12 @@ mod tests {
         );
     }
 
-    
     #[test]
     fn a_bare_axis_name_with_no_arrow_still_shows_a_label() {
         let rows = drawn("quadrantChart\n  x-axis Reach\n  P: [0.5, 0.5]");
         assert!(rows.iter().any(|r| r.contains("Reach")), "{rows:?}");
     }
 
-    
     #[test]
     fn what_is_not_a_quadrant_chart_is_left_alone() {
         assert!(render_quadrant("graph TD\n A --> B").is_none());
@@ -482,7 +472,6 @@ mod tests {
         );
     }
 
-    
     #[test]
     fn too_many_points_are_refused() {
         let mut source = String::from("quadrantChart\n");

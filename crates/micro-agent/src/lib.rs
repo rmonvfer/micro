@@ -60,7 +60,6 @@ pub struct ModelSwap {
 }
 
 impl std::fmt::Debug for ModelSwap {
-    
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ModelSwap")
             .field("provider", &self.provider.name())
@@ -84,7 +83,7 @@ impl PartialEq for ModelSwap {
 pub struct Budget {
     /// The ceiling for the whole session, in US dollars.
     pub limit: f64,
-    
+
     pub spent: f64,
     /// What the model in use charges.
     pub cost: ModelCost,
@@ -116,7 +115,7 @@ impl Budget {
 #[derive(Debug, Clone, PartialEq)]
 pub enum Record {
     Message(Message),
-    
+
     Compacted {
         summary: String,
         kept: usize,
@@ -139,7 +138,7 @@ pub struct Steering {
 struct Queues {
     /// Taken at the start of the next turn.
     steering: Vec<Message>,
-    
+
     follow_up: Vec<Message>,
 }
 
@@ -197,16 +196,17 @@ pub struct PrefixControl {
 
 #[derive(Default)]
 struct Asked {
-    
     prompt: String,
     spans: Vec<PrefixSpan>,
     /// Why the prompt above is not the one in force yet.
     reason: Option<String>,
+    /// A prompt standing in for the one above, for a single run only.
+    overriding: Option<(String, Vec<PrefixSpan>, String)>,
 }
 
 impl PrefixControl {
     /// What the model is being told before the conversation, including a change that has been asked
-    /// for and not yet taken effect.
+    /// for and not yet taken effect, but never a run-scoped override.
     pub fn system_prompt(&self) -> String {
         self.lock().prompt.clone()
     }
@@ -224,7 +224,18 @@ impl PrefixControl {
         asked.reason = Some(reason.into());
     }
 
-    
+    /// Tell the model this for the run about to start, and say why. The prompt settled with
+    /// [`Self::change`] returns once that run ends.
+    pub fn override_run(
+        &self,
+        prompt: impl Into<String>,
+        spans: Vec<PrefixSpan>,
+        reason: impl Into<String>,
+    ) {
+        let mut asked = self.lock();
+        asked.overriding = Some((prompt.into(), spans, reason.into()));
+    }
+
     pub(crate) fn opened_with(&self, prompt: &str, spans: &[PrefixSpan]) {
         let mut asked = self.lock();
         asked.prompt = prompt.to_string();
@@ -236,6 +247,17 @@ impl PrefixControl {
         let mut asked = self.lock();
         let reason = asked.reason.take()?;
         Some((asked.prompt.clone(), asked.spans.clone(), reason))
+    }
+
+    /// The stand-in for the coming run, if one was asked for, taken so it is applied once.
+    pub(crate) fn take_override(&self) -> Option<(String, Vec<PrefixSpan>, String)> {
+        self.lock().overriding.take()
+    }
+
+    /// The settled prompt and its spans, unaffected by any run-scoped override.
+    pub(crate) fn settled(&self) -> (String, Vec<PrefixSpan>) {
+        let asked = self.lock();
+        (asked.prompt.clone(), asked.spans.clone())
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, Asked> {
@@ -254,6 +276,8 @@ pub struct Agent {
     prefix: Prefix,
     /// How anything outside the run asks for the prefix to change.
     prefix_control: PrefixControl,
+    /// Whether a run-scoped override is standing in for the settled prompt.
+    overridden: bool,
     messages: Vec<Message>,
     recorder: Option<UnboundedSender<Record>>,
     /// Anything else watching the events this run produces.
@@ -267,9 +291,9 @@ pub struct Agent {
     context_window: usize,
     /// What has been said to the run while it was running.
     steering: Steering,
-    /// Which tools the model is told about, when something has narrowed them.
+    /// Which tools the model may see and the agent may execute, when something has narrowed them.
     offered: Option<Arc<std::sync::RwLock<Option<Vec<String>>>>>,
-    
+
     turn: u64,
     /// Results written to answer tool calls a conversation arrived with unanswered, waiting for a
     /// run to report them.
@@ -301,6 +325,7 @@ impl Agent {
             api_key,
             prefix: Prefix::default(),
             prefix_control: PrefixControl::default(),
+            overridden: false,
             messages: Vec::new(),
             recorder: None,
             observer: None,
@@ -333,7 +358,6 @@ impl Agent {
         self
     }
 
-    
     pub fn prefix_control(&self) -> PrefixControl {
         self.prefix_control.clone()
     }
@@ -349,14 +373,13 @@ impl Agent {
         self.model = swap.model;
         self.api_key = swap.api_key;
         self.context_window = swap.context_window;
-        
+
         if let Some(budget) = &mut self.budget {
             budget.cost = swap.cost;
         }
         self.summarizer = self.provider_summarizer();
     }
 
-    
     fn provider_summarizer(&self) -> Arc<dyn Summarizer> {
         Arc::new(
             ProviderSummarizer::new(
@@ -434,7 +457,6 @@ impl Agent {
         self
     }
 
-    
     pub fn with_prefix_spans(mut self, spans: Vec<PrefixSpan>) -> Self {
         self.prefix = Prefix::new(
             self.prefix.system_prompt().map(str::to_string),
@@ -448,7 +470,6 @@ impl Agent {
         self
     }
 
-    
     pub fn with_offered_tools(
         mut self,
         offered: Arc<std::sync::RwLock<Option<Vec<String>>>>,
@@ -508,7 +529,7 @@ impl Agent {
     /// Put the agent in a different conversation.
     pub fn set_messages(&mut self, messages: Vec<Message>) {
         self.messages = messages;
-        
+
         self.repairs = answer_abandoned_calls(&mut self.messages);
     }
 
@@ -542,7 +563,6 @@ impl Agent {
         }
     }
 
-    
     async fn finish_call(
         &self,
         id: String,
@@ -555,14 +575,13 @@ impl Agent {
         let (content, is_error) = match (settled, runnable) {
             (Some((text, is_error)), _) => (vec![ContentBlock::text(text)], is_error),
             (None, Some(tool)) => run_tool(tool, &id, &name, &arguments, events).await,
-            
+
             (None, None) => (
                 vec![ContentBlock::text(format!("tool not found: {name}"))],
                 true,
             ),
         };
 
-        
         let said: String = content.iter().map(ContentBlock::as_text).collect();
         let (output, is_error) = self.rewritten(&id, &name, said.clone(), is_error).await;
         let content = match output == said {
@@ -570,7 +589,6 @@ impl Agent {
             false => vec![ContentBlock::text(output.clone())],
         };
 
-        
         events.send(AgentEvent::ToolEnd {
             id: id.clone(),
             name: name.clone(),
@@ -603,7 +621,7 @@ impl Agent {
         };
         let _ = recorder.send(Record::Compacted {
             summary: summary.to_string(),
-            
+
             kept: compacted.messages.len().saturating_sub(1),
             cost: compacted.cost.clone(),
         });
@@ -614,8 +632,14 @@ impl Agent {
         if let Some((prompt, spans, reason)) = self.prefix_control.take() {
             let asked = self.prefix.with_system_prompt(prompt, spans);
             self.adopt_prefix(asked, &reason);
+            self.overridden = false;
         }
-        
+        if let Some((prompt, spans, reason)) = self.prefix_control.take_override() {
+            let asked = self.prefix.with_system_prompt(prompt, spans);
+            self.adopt_prefix(asked, &reason);
+            self.overridden = true;
+        }
+
         let offered = self.tool_definitions();
         if offered != self.prefix.tools() {
             let narrowed = self.prefix.with_tools(offered);
@@ -687,7 +711,6 @@ impl Agent {
         events.send(AgentEvent::MessageEnd { message });
     }
 
-    
     fn record_request(&mut self, context: &Context, attempt: u32, payload: &serde_json::Value) {
         if self.recorder.is_none() {
             return;
@@ -697,7 +720,6 @@ impl Agent {
         let described = serde_json::to_vec(&self.model).unwrap_or_default();
         let body = serde_json::to_vec(payload).unwrap_or_default();
 
-        
         let sent = Prefix::new(
             context.system_prompt.clone(),
             context.tools.clone(),
@@ -724,7 +746,7 @@ impl Agent {
             tools_blob,
             model_blob,
             prefix_spans: sent.spans().to_vec(),
-            
+
             message_entry_ids: Vec::new(),
             attempt,
         };
@@ -743,7 +765,6 @@ impl Agent {
         hash
     }
 
-    
     fn announce(&self, messages: Vec<Message>, events: &Fan<'_>, produced: &mut Vec<Message>) {
         for message in messages {
             if let Some(recorder) = &self.recorder {
@@ -769,7 +790,6 @@ impl Agent {
 
     /// The tools the model is told about.
     fn tool_definitions(&self) -> Vec<ToolDefinition> {
-        
         let offered = self.offered.as_ref().and_then(|offered| {
             offered
                 .read()
@@ -788,6 +808,15 @@ impl Agent {
     }
 
     fn find_tool(&self, name: &str) -> Option<&Arc<dyn Tool>> {
+        let offered = self.offered.as_ref().and_then(|offered| {
+            offered
+                .read()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .clone()
+        });
+        if offered.is_some_and(|names| !names.iter().any(|offered| offered == name)) {
+            return None;
+        }
         self.tools
             .iter()
             .find(|tool| tool.definition().name == name)
@@ -800,7 +829,15 @@ impl Agent {
         events: &UnboundedSender<AgentEvent>,
     ) -> Vec<Message> {
         let events = &self.fan(events);
-        
+
+        // A prompt overridden for one run does not outlive it.
+        if self.overridden {
+            let (prompt, spans) = self.prefix_control.settled();
+            let restored = self.prefix.with_system_prompt(prompt, spans);
+            self.adopt_prefix(restored, "override ended");
+            self.overridden = false;
+        }
+
         let mut settle = SettleGuard::armed(events.clone_for_updates());
         let prompt = match &self.hooks {
             Some(hooks) => hooks.before_agent_start(&prompt).await.unwrap_or(prompt),
@@ -808,11 +845,9 @@ impl Agent {
         };
         let mut produced = Vec::new();
 
-        
         let installed = std::mem::take(&mut self.repairs);
         self.announce(installed, events, &mut produced);
 
-        
         if ends_unanswered(&self.messages) {
             let repairs = answer_abandoned_calls(&mut self.messages);
             self.announce(repairs, events, &mut produced);
@@ -828,7 +863,6 @@ impl Agent {
         self.commit(prompt, &mut produced);
 
         loop {
-            
             for said in self.steering.take_steering() {
                 events.send(AgentEvent::MessageStart {
                     message: said.clone(),
@@ -840,9 +874,25 @@ impl Agent {
             }
 
             events.send(AgentEvent::TurnStart);
-            
+
             self.settle_prefix();
-            self.compact_if_needed(events).await;
+            if let Err(error) = self.compact_if_needed(events).await {
+                let message = Message::Assistant(self.empty_assistant(
+                    StopReason::Error,
+                    Some(format!("Automatic compaction failed: {error}")),
+                ));
+                events.send(AgentEvent::MessageStart {
+                    message: message.clone(),
+                });
+                events.send(AgentEvent::MessageEnd {
+                    message: message.clone(),
+                });
+                self.commit(message, &mut produced);
+                events.send(AgentEvent::TurnEnd {
+                    messages: produced.clone(),
+                });
+                break;
+            }
 
             let assistant = self.stream_once(events).await;
             if let Some(hooks) = &self.hooks {
@@ -854,14 +904,12 @@ impl Agent {
                 assistant.stop_reason,
                 StopReason::Error | StopReason::Aborted
             ) {
-                
                 events.send(AgentEvent::TurnEnd {
                     messages: produced.clone(),
                 });
                 break;
             }
 
-            
             if let Some((limit, spent)) = self.budget_reached() {
                 events.send(AgentEvent::TurnEnd {
                     messages: produced.clone(),
@@ -877,12 +925,10 @@ impl Agent {
                 .collect();
 
             if calls.is_empty() {
-                
                 events.send(AgentEvent::TurnEnd {
                     messages: produced.clone(),
                 });
 
-                
                 let queued = self.steering.take_follow_up();
                 if queued.is_empty() {
                     break;
@@ -899,20 +945,16 @@ impl Agent {
                 continue;
             }
 
-            
             let truncated = assistant.stop_reason == StopReason::Length;
 
-            
             let sequential = calls.iter().any(|(_, name, _)| {
                 self.find_tool(name).is_some_and(|tool| {
                     tool.execution_mode() == Some(ToolExecutionMode::Sequential)
                 })
             });
 
-            
             let mut prepared = Vec::with_capacity(calls.len());
             for (id, name, arguments) in calls {
-                
                 let mut arguments = arguments;
                 let mut settled = None;
                 let mut runnable = None;
@@ -927,18 +969,16 @@ impl Agent {
                     ));
                 } else {
                     match self.decide(&id, &name, &arguments).await {
-                        
                         ToolDecision::Refuse(reason) => {
                             self.record_event(LedgerEvent::ToolDenied {
                                 tool: name.clone(),
                                 reason: reason.clone(),
-                                
+
                                 source: EventSource::Extension(String::new()),
                             });
                             settled = Some((reason, true));
                         }
                         decision => {
-                            
                             if let ToolDecision::Rewrite(replacement) = decision {
                                 arguments = replacement;
                             }
@@ -960,7 +1000,6 @@ impl Agent {
             }
 
             if sequential {
-                
                 for (id, name, arguments, settled, runnable) in prepared {
                     let result = self
                         .finish_call(id, name, arguments, settled, runnable, events)
@@ -974,7 +1013,6 @@ impl Agent {
                     self.commit(result, &mut produced);
                 }
             } else {
-                
                 let agent = &*self;
                 let ran = futures::future::join_all(prepared.into_iter().map(
                     |(id, name, arguments, settled, runnable)| {
@@ -983,7 +1021,6 @@ impl Agent {
                 ))
                 .await;
 
-                
                 for result in ran {
                     events.send(AgentEvent::MessageStart {
                         message: result.clone(),
@@ -995,7 +1032,6 @@ impl Agent {
                 }
             }
 
-            
             events.send(AgentEvent::TurnEnd {
                 messages: produced.clone(),
             });
@@ -1004,7 +1040,7 @@ impl Agent {
         events.send(AgentEvent::AgentEnd {
             messages: produced.clone(),
         });
-        
+
         events.send(AgentEvent::AgentSettled);
         settle.disarm();
         produced
@@ -1012,18 +1048,18 @@ impl Agent {
 
     /// Replace the older part of the conversation with a summary once it approaches the context
     /// window.
-    async fn compact_if_needed(&mut self, events: &Fan<'_>) {
+    async fn compact_if_needed(&mut self, events: &Fan<'_>) -> std::result::Result<(), String> {
         let Some(config) = self.compaction else {
-            return;
+            return Ok(());
         };
 
         let compactor = Compactor::new(self.summarizer.clone(), config);
-        
-        let Ok(Some(compacted)) = compactor
+        let Some(compacted) = compactor
             .compact_if_needed(&self.messages, self.context_window)
             .await
+            .map_err(|error| error.to_string())?
         else {
-            return;
+            return Ok(());
         };
 
         let summary = compacted.messages[0].clone();
@@ -1031,11 +1067,11 @@ impl Agent {
         self.charge(compacted.cost.usage);
         self.messages = compacted.messages;
 
-        
         events.send(AgentEvent::MessageStart {
             message: summary.clone(),
         });
         events.send(AgentEvent::MessageEnd { message: summary });
+        Ok(())
     }
 
     /// Issue one model request, forwarding stream events and retrying transient failures that
@@ -1044,7 +1080,7 @@ impl Agent {
         let context = self
             .prefix
             .ahead_of(self.messages.clone(), self.cache_key.clone());
-        
+
         let context = match &self.hooks {
             Some(hooks) => hooks.before_request(context).await,
             None => context,
@@ -1054,18 +1090,26 @@ impl Agent {
         let turn = self.turn;
 
         let mut attempt = 0;
-        
-        let mut started = false;
+
+        events.send(AgentEvent::MessageStart {
+            message: Message::Assistant(self.empty_assistant(StopReason::Stop, None)),
+        });
 
         loop {
             attempt += 1;
-            
-            let api_key = self.api_key.current().await;
-            let payload = match self
-                .provider
-                .request_payload(&self.model, &context, &api_key)
-            {
-                Ok(payload) => payload,
+
+            // A request with nothing to authenticate it is not worth sending: the provider can only
+            // answer that the header is malformed, which says nothing about the credential that is
+            // missing behind it.
+            let prepared = match self.api_key.current().await {
+                Ok(api_key) => self
+                    .provider
+                    .request_payload(&self.model, &context, &api_key)
+                    .map(|payload| (api_key, payload)),
+                Err(error) => Err(error),
+            };
+            let (api_key, payload) = match prepared {
+                Ok(prepared) => prepared,
                 Err(error) => {
                     self.record_event(LedgerEvent::RequestAttemptFailed {
                         turn,
@@ -1080,11 +1124,14 @@ impl Agent {
                     return message;
                 }
             };
-            
+
             self.record_request(&context, attempt, &payload);
-            let mut stream = self
-                .provider
-                .stream_prepared(self.model.clone(), context.clone(), api_key, payload);
+            let mut stream = self.provider.stream_prepared(
+                self.model.clone(),
+                context.clone(),
+                api_key,
+                payload,
+            );
 
             let mut emitted_content = false;
             let mut outcome: Option<Result<AssistantMessage, String>> = None;
@@ -1100,14 +1147,6 @@ impl Agent {
                         break;
                     }
                     other => {
-                        if !started {
-                            started = true;
-                            events.send(AgentEvent::MessageStart {
-                                message: Message::Assistant(
-                                    self.empty_assistant(StopReason::Stop, None),
-                                ),
-                            });
-                        }
                         if matches!(
                             other,
                             StreamEvent::TextDelta { .. } | StreamEvent::ThinkingDelta { .. }
@@ -1124,7 +1163,6 @@ impl Agent {
 
             match result {
                 Ok(message) => {
-                    
                     self.record_event(LedgerEvent::TurnUsage {
                         turn,
                         usage: message.usage,
@@ -1242,7 +1280,6 @@ fn answer_abandoned_calls(messages: &mut Vec<Message>) -> Vec<Message> {
             continue;
         }
 
-        
         let mut end = index + 1;
         let mut answered = Vec::new();
         while let Some(Message::ToolResult { tool_call_id, .. }) = messages.get(end) {
@@ -1344,7 +1381,6 @@ mod tests {
             .collect()
     }
 
-    
     struct NamedTool(&'static str);
 
     #[async_trait::async_trait]
@@ -1390,7 +1426,6 @@ mod tests {
         assert!(agent.find_tool("read").is_some());
     }
 
-    
     struct NoProvider;
 
     impl Provider for NoProvider {
@@ -1464,7 +1499,6 @@ mod tests {
 
         answer_abandoned_calls(&mut messages);
 
-        
         assert!(matches!(messages[1], Message::ToolResult { .. }));
         assert_eq!(answered_ids(&messages), vec!["a", "b"]);
     }
@@ -1590,7 +1624,7 @@ async fn run_tool(
     let ran = tool
         .execute_content(arguments, &micro_tools::Progress::new(reporting))
         .await;
-    
+
     let _ = forwarding.await;
 
     match ran {
@@ -1633,7 +1667,6 @@ pub enum ToolDecision {
     Refuse(String),
 }
 
-
 #[async_trait::async_trait]
 pub trait Hooks: Send + Sync {
     /// Called before a tool runs, with the chance to change the call or refuse it.
@@ -1670,7 +1703,6 @@ pub trait Hooks: Send + Sync {
         let _ = message;
     }
 }
-
 
 struct Updates {
     primary: UnboundedSender<AgentEvent>,

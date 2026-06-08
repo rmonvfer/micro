@@ -18,7 +18,6 @@ fn a_task_draws_a_bar_on_the_date_axis() {
     );
 }
 
-
 #[test]
 fn after_chains_to_the_end_of_the_named_task() {
     let src = "gantt\n\
@@ -29,15 +28,14 @@ fn after_chains_to_the_end_of_the_named_task() {
     let rows = plain(src);
     let design_col = rows[0].find('░').expect("des1 has a bar");
     let review_col = rows[1].find('░').expect("des2 has a bar");
-    
+
     assert_eq!(review_col, design_col + 5, "{rows:?}");
 }
-
 
 #[test]
 fn an_unparseable_gantt_chart_renders_nothing() {
     let src = "gantt\n  Not a task line";
     assert!(render(src).is_none());
-    
+
     assert!(diagram_kind(src).is_some());
 }

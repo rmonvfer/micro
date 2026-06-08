@@ -91,7 +91,6 @@ async fn main() -> Result<(), String> {
     let pairing = match micro_remote::load_pairing(&path) {
         Some(pairing) => pairing,
         None => {
-            
             let enrolment = micro_remote::begin_enrolment(&relay).await?;
             println!("\n  Pairing code:  {}\n", enrolment.code);
             println!("  Type it into Parley on your phone.\n");
@@ -162,13 +161,15 @@ async fn replay(client: &RelayClient, bridge: &Bridge) {
     }));
     beat(400).await;
 
-    
     send(json!({ "type": "message_update", "assistantMessageEvent": { "type": "start" } }));
     send(json!({
         "type": "message_update",
         "assistantMessageEvent": { "type": "thinking_start", "contentIndex": 0 },
     }));
-    for piece in ["Long sessions mean many rows. ", "The list is probably rebuilding every frame."] {
+    for piece in [
+        "Long sessions mean many rows. ",
+        "The list is probably rebuilding every frame.",
+    ] {
         send(json!({
             "type": "message_update",
             "assistantMessageEvent": { "type": "thinking_delta", "contentIndex": 0, "delta": piece },
@@ -180,7 +181,6 @@ async fn replay(client: &RelayClient, bridge: &Bridge) {
         "assistantMessageEvent": { "type": "thinking_end", "contentIndex": 0 },
     }));
 
-    
     send(json!({
         "type": "tool_execution_start",
         "toolCallId": "call_1",
@@ -196,7 +196,6 @@ async fn replay(client: &RelayClient, bridge: &Bridge) {
         "isError": false,
     }));
 
-    
     send(json!({
         "type": "tool_execution_start",
         "toolCallId": "call_2",
@@ -212,7 +211,6 @@ async fn replay(client: &RelayClient, bridge: &Bridge) {
         "isError": false,
     }));
 
-    
     send(json!({
         "type": "tool_execution_start",
         "toolCallId": "call_3",
@@ -232,7 +230,6 @@ async fn replay(client: &RelayClient, bridge: &Bridge) {
         "isError": false,
     }));
 
-    
     send(json!({
         "type": "tool_execution_start",
         "toolCallId": "call_4",
@@ -248,7 +245,6 @@ async fn replay(client: &RelayClient, bridge: &Bridge) {
         "isError": true,
     }));
 
-    
     send(json!({
         "type": "message_update",
         "assistantMessageEvent": { "type": "text_start", "contentIndex": 1 },

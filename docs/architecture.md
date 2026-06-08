@@ -19,30 +19,30 @@ micro-cli
 
 ## Core crates
 
-| Crate | Responsibility |
-| --- | --- |
-| `micro-types` | Messages, content blocks, usage, stream events, agent events, and ledger events. |
-| `micro-dirs` | Configuration and data-path resolution. |
-| `micro-config` | Settings, project trust, and persisted configuration. |
-| `micro-auth` | Stored credentials and environment fallback. |
-| `micro-models` | Bundled, user, and live model catalogs. |
-| `micro-context` | System prompt, project instructions, skills, and compaction. |
-| `micro-provider` | Provider request formats and streaming parsers. |
-| `micro-tools` | Model-callable tools. |
-| `micro-sandbox` | Command wrapping and file-policy checks. |
-| `micro-agent` | Provider-neutral agent loop. |
-| `micro-session` | Append-only conversations, ledger events, metadata, and blobs. |
-| `micro-commands` | Slash-command parsing and outcomes. |
-| `micro-extensions` | Bun extension host and capability broker. |
-| `micro-mcp` | MCP server processes and tools. |
-| `micro-skills` | Skill discovery and loading. |
-| `micro-prompts` | Prompt-template discovery and argument expansion. |
-| `micro-mermaid` | Mermaid diagram rendering requested by a response. |
-| `micro-remote` | Phone pairing, encryption, relay protocol, and session mirroring. |
-| `micro-rpc` | JSON-line control protocol. |
-| `micro-tui` | Terminal rendering and input. |
-| `micro-cli` | Startup, subcommands, runtime assembly, and print mode. |
-| `micro-testkit` | Scripted providers, fake tools, and session fixtures. |
+| Crate              | Responsibility                                                                   |
+| ------------------ | -------------------------------------------------------------------------------- |
+| `micro-types`      | Messages, content blocks, usage, stream events, agent events, and ledger events. |
+| `micro-dirs`       | Configuration and data-path resolution.                                          |
+| `micro-config`     | Settings, project trust, and persisted configuration.                            |
+| `micro-auth`       | Stored credentials and environment fallback.                                     |
+| `micro-models`     | Bundled, user, and live model catalogs.                                          |
+| `micro-context`    | System prompt, project instructions, skills, and compaction.                     |
+| `micro-provider`   | Provider request formats and streaming parsers.                                  |
+| `micro-tools`      | Model-callable tools.                                                            |
+| `micro-sandbox`    | Command wrapping and file-policy checks.                                         |
+| `micro-agent`      | Provider-neutral agent loop.                                                     |
+| `micro-session`    | Append-only conversations, ledger events, metadata, and blobs.                   |
+| `micro-commands`   | Slash-command parsing and outcomes.                                              |
+| `micro-extensions` | Bun extension host and capability broker.                                        |
+| `micro-mcp`        | MCP server processes and tools.                                                  |
+| `micro-skills`     | Skill discovery and loading.                                                     |
+| `micro-prompts`    | Prompt-template discovery and argument expansion.                                |
+| `micro-mermaid`    | Mermaid diagram rendering requested by a response.                               |
+| `micro-remote`     | Phone pairing, encryption, relay protocol, and session mirroring.                |
+| `micro-rpc`        | JSON-line control protocol.                                                      |
+| `micro-tui`        | Terminal rendering and input.                                                    |
+| `micro-cli`        | Startup, subcommands, runtime assembly, and print mode.                          |
+| `micro-testkit`    | Scripted providers, fake tools, and session fixtures.                            |
 
 Lower-level crates do not depend on the UI or CLI.
 

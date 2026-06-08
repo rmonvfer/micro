@@ -150,7 +150,6 @@ pub fn qr_lines(uri: &str) -> Vec<String> {
     let width = code.width();
     let modules = code.to_colors();
 
-    
     let quiet = 2;
     let side = width + quiet * 2;
     let mut grid = vec![false; side * side];
@@ -160,7 +159,6 @@ pub fn qr_lines(uri: &str) -> Vec<String> {
         }
     }
 
-    
     (0..side)
         .step_by(2)
         .map(|y| {
@@ -168,7 +166,7 @@ pub fn qr_lines(uri: &str) -> Vec<String> {
                 .map(|x| {
                     let top = grid[y * side + x];
                     let bottom = y + 1 < side && grid[(y + 1) * side + x];
-                    
+
                     match (top, bottom) {
                         (true, true) => ' ',
                         (true, false) => '▄',
@@ -237,7 +235,6 @@ mod tests {
         assert_eq!(load(&path_in(&dir)), None);
     }
 
-    
     #[test]
     fn an_unreadable_pairing_is_no_pairing() {
         let dir = scratch("garbage");
@@ -273,7 +270,7 @@ mod tests {
         assert!(uri.starts_with("parley://pair?"));
         assert!(uri.contains("u=http%3A%2F%2Flocalhost%3A8090"));
         assert!(uri.contains("p=abc123"));
-        
+
         assert!(uri.contains(&format!("s={}", URL_SAFE_NO_PAD.encode([1u8; 32]))));
     }
 
@@ -281,10 +278,10 @@ mod tests {
     fn a_code_is_drawn_with_a_quiet_border_around_it() {
         let lines = qr_lines("parley://pair?u=http%3A%2F%2Flocalhost%3A8090&p=abc&s=xyz");
         assert!(!lines.is_empty());
-        
+
         let width = lines[0].chars().count();
         assert!(lines.iter().all(|line| line.chars().count() == width));
-        
+
         assert!(lines[0].chars().all(|character| character == '█'));
     }
 

@@ -1,5 +1,3 @@
-
-
 mod architecture;
 mod block;
 mod canvas;
@@ -96,9 +94,9 @@ fn draw(src: &str) -> Option<Drawn> {
                 warnings: graph.warnings,
             })
         }
-        
+
         DiagramKind::Pie => plain(pie::render_pie(src)),
-        
+
         DiagramKind::Mindmap => plain(mindmap::render_mindmap(src)),
         DiagramKind::Timeline => plain(timeline::render_timeline(src)),
         DiagramKind::Journey => plain(journey::render_journey(src)),

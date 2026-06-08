@@ -110,7 +110,6 @@ impl Tool for Grep {
             .and_then(Value::as_u64)
             .unwrap_or(0) as usize;
 
-        
         let expression = match literal {
             true => regex::escape(&pattern),
             false => pattern.clone(),
@@ -134,7 +133,6 @@ impl Tool for Grep {
             mode,
         };
 
-        
         tokio::task::spawn_blocking(move || search.run())
             .await
             .map_err(|error| format!("search failed: {error}"))?
@@ -244,7 +242,6 @@ impl Search {
         let mut capped = false;
 
         for entry in walker(&self.start, self.glob.as_deref())? {
-            
             let Ok(entry) = entry else { continue };
             if !entry.file_type().is_some_and(|kind| kind.is_file()) {
                 continue;
@@ -276,8 +273,7 @@ impl Search {
                     OutputMode::Content => {
                         let first = index.saturating_sub(self.context);
                         let last = (index + self.context).min(lines.len().saturating_sub(1));
-                        for around in first..=last {
-                            
+                        for (around, line) in lines.iter().enumerate().take(last + 1).skip(first) {
                             let marker = match around == index {
                                 true => ':',
                                 false => '-',
@@ -285,7 +281,7 @@ impl Search {
                             hits.push(format!(
                                 "{relative}{marker}{}{marker}{}",
                                 around + 1,
-                                lines[around].trim_end()
+                                line.trim_end()
                             ));
                         }
                         if hits.len() >= MAX_MATCHES {
@@ -293,7 +289,7 @@ impl Search {
                             break;
                         }
                     }
-                    
+
                     OutputMode::Files => break,
                     OutputMode::Count => {}
                 }
@@ -354,7 +350,6 @@ impl Lookup {
             return Ok(format!("no files match {}", self.pattern));
         }
 
-        
         found.sort_by(|left, right| right.0.cmp(&left.0).then_with(|| left.1.cmp(&right.1)));
 
         let total = found.len();
@@ -718,7 +713,6 @@ mod hidden {
         std::fs::write(path, contents).unwrap();
     }
 
-    
     #[tokio::test]
     async fn grep_reads_hidden_files() {
         let root = scratch("grep");

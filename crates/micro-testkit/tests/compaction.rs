@@ -177,13 +177,12 @@ async fn the_most_recent_messages_survive_verbatim() {
     run_agent(&mut agent, prompt.clone()).await;
 
     let sent = provider.call(0).context.messages;
-    
+
     let kept = &sent[1..];
     let mut original = history;
     original.push(prompt);
     assert_eq!(kept, &original[original.len() - kept.len()..]);
 
-    
     let summarized = summarizer.call(0);
     assert_eq!(summarized.len() + kept.len(), original.len());
     assert_eq!(summarized, original[..summarized.len()]);
@@ -191,7 +190,6 @@ async fn the_most_recent_messages_survive_verbatim() {
 
 #[tokio::test]
 async fn a_tool_call_and_its_result_are_never_split_by_the_cut() {
-    
     for width in [1, 3, 5] {
         let history: Vec<Message> = (0..8)
             .flat_map(|index| parallel_turn(index, width, 300))
@@ -217,7 +215,6 @@ async fn a_tool_call_and_its_result_are_never_split_by_the_cut() {
             );
 
             match summarizer.calls().first() {
-                
                 Some(summarized) => {
                     assert!(
                         is_self_contained(summarized),
@@ -229,7 +226,6 @@ async fn a_tool_call_and_its_result_are_never_split_by_the_cut() {
             }
         }
 
-        
         assert!(compacted > 0, "width {width}: nothing was ever compacted");
         assert!(untouched > 0, "width {width}: everything was compacted");
     }
@@ -237,7 +233,6 @@ async fn a_tool_call_and_its_result_are_never_split_by_the_cut() {
 
 #[tokio::test]
 async fn a_tool_result_produced_this_run_is_never_split_from_its_call() {
-    
     let provider = FakeProvider::builder()
         .turn(Turn::new().with_tool_call("call_live", "read", json!({ "path": "a.txt" })))
         .turn(Turn::text("done"))
@@ -329,7 +324,6 @@ async fn the_summary_is_reported_so_a_renderer_can_show_it() {
     assert_eq!(announced.len(), 1);
     assert_eq!(summary_text(announced[0]), Some("what happened earlier"));
 
-    
     let summary_at = events
         .events()
         .iter()
@@ -343,7 +337,6 @@ async fn the_summary_is_reported_so_a_renderer_can_show_it() {
 
 #[tokio::test]
 async fn compaction_is_recorded_rather_than_only_applied() {
-    
     let history = conversation(10, 400);
     let provider = FakeProvider::once(Turn::text("carrying on"));
     let summarizer = FakeSummarizer::new("earlier work");
@@ -357,7 +350,6 @@ async fn compaction_is_recorded_rather_than_only_applied() {
 
     let (messages, events) = run_agent(&mut agent, Message::user("continue")).await;
 
-    
     assert_eq!(messages.len(), 2);
     assert!(!messages.iter().any(is_summary));
     assert_eq!(events.final_messages(), Some(messages.as_slice()));
@@ -389,7 +381,7 @@ async fn compaction_is_recorded_rather_than_only_applied() {
 }
 
 #[tokio::test]
-async fn a_failing_summarizer_leaves_the_conversation_intact() {
+async fn a_failing_summarizer_stops_the_turn_with_its_error() {
     let history = conversation(10, 400);
     let provider = FakeProvider::once(Turn::text("carrying on"));
     let summarizer = FakeSummarizer::failing("the model said no");
@@ -402,11 +394,17 @@ async fn a_failing_summarizer_leaves_the_conversation_intact() {
     let (messages, events) = run_agent(&mut agent, Message::user("continue")).await;
 
     assert_eq!(summarizer.call_count(), 1);
-    
-    assert_eq!(provider.call_count(), 1);
-    assert_eq!(provider.call(0).context.messages.len(), history.len() + 1);
-    assert!(!provider.call(0).context.messages.iter().any(is_summary));
-    assert_eq!(events.assistant_message_ends()[0].text(), "carrying on");
+    assert_eq!(
+        provider.call_count(),
+        0,
+        "the oversized context must not be sent"
+    );
+    let assistant = events.assistant_message_ends()[0];
+    assert_eq!(assistant.stop_reason, StopReason::Error);
+    assert_eq!(
+        assistant.error.as_deref(),
+        Some("Automatic compaction failed: summarization failed: the model said no")
+    );
     assert_eq!(messages.len(), 2);
 }
 
@@ -415,7 +413,6 @@ async fn the_trigger_fraction_is_honoured() {
     let history = conversation(10, 400);
     let tokens = estimate_context_tokens(&history);
 
-    
     let window = tokens * 4;
     for (config, expected) in [
         (CompactionConfig::new(0.1, 0.05).unwrap(), 1),
@@ -448,7 +445,6 @@ async fn the_provider_summarizer_asks_the_model_for_a_summary() {
 
     assert_eq!(summary.text, "## Goal\nship the thing");
 
-    
     let request = provider.call(0);
     assert!(request.tool_names().is_empty());
     assert_eq!(request.message_roles(), vec!["user"]);
@@ -491,7 +487,6 @@ async fn a_provider_failure_fails_summarization() {
 
 #[tokio::test]
 async fn an_empty_summary_is_rejected() {
-    
     let provider = FakeProvider::once(Turn::text("   "));
     let summarizer = ProviderSummarizer::new(Arc::new(provider), model(), "test-key");
 
@@ -500,7 +495,6 @@ async fn an_empty_summary_is_rejected() {
 
 #[tokio::test]
 async fn the_agent_summarizes_with_its_own_provider_by_default() {
-    
     let provider = FakeProvider::builder()
         .turn(Turn::text("## Goal\nkeep going"))
         .turn(Turn::text("carrying on"))

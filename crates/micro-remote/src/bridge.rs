@@ -35,11 +35,10 @@ pub struct SessionState {
 
 /// What the bridge can ask of the session it is driving.
 pub trait Session {
-    
     fn submit(&mut self, text: &str, delivery: Delivery) -> Result<(), String>;
     fn abort(&mut self);
     fn is_idle(&self) -> bool;
-    
+
     fn entries(&self) -> Vec<Value>;
     fn state(&self) -> SessionState;
     fn available_models(&self) -> Vec<AvailableModel>;
@@ -100,9 +99,12 @@ impl Bridge {
         self.answer(&id, command.name(), outcome)
     }
 
-    fn run(&self, session: &mut impl Session, command: &PhoneCommand) -> Result<Option<Value>, String> {
+    fn run(
+        &self,
+        session: &mut impl Session,
+        command: &PhoneCommand,
+    ) -> Result<Option<Value>, String> {
         match command {
-            
             PhoneCommand::Prompt { text } => match session.is_idle() {
                 true => session.submit(text, Delivery::Prompt).map(|()| None),
                 false => Err("agent is busy — use steer or follow_up".into()),
@@ -138,7 +140,7 @@ impl Bridge {
                     }))
                     .collect::<Vec<_>>(),
             }))),
-            
+
             PhoneCommand::GetCommands => Ok(Some(json!({
                 "commands": session
                     .commands()
@@ -157,7 +159,12 @@ impl Bridge {
         }
     }
 
-    fn answer(&self, id: &str, command: &str, outcome: Result<Option<Value>, String>) -> MachinePayload {
+    fn answer(
+        &self,
+        id: &str,
+        command: &str,
+        outcome: Result<Option<Value>, String>,
+    ) -> MachinePayload {
         let (success, data, error) = match outcome {
             Ok(data) => (true, data, None),
             Err(reason) => (false, None, Some(reason)),
@@ -293,14 +300,13 @@ mod tests {
             }),
         );
 
-        assert_eq!(response(&answer).0, true);
+        assert!(response(&answer).0);
         assert_eq!(
             session.submitted,
             vec![("what changed?".to_string(), Delivery::Prompt)]
         );
     }
 
-    
     #[test]
     fn a_prompt_while_busy_is_refused_with_the_alternatives() {
         let mut session = Fake::default();
@@ -382,7 +388,10 @@ mod tests {
         assert_eq!(models["models"][0]["provider"], "anthropic");
 
         let commands = bridge.handle(&mut session, command(PhoneCommand::GetCommands));
-        assert_eq!(response(&commands).1.unwrap()["commands"][0]["name"], "compact");
+        assert_eq!(
+            response(&commands).1.unwrap()["commands"][0]["name"],
+            "compact"
+        );
     }
 
     #[test]
@@ -407,7 +416,6 @@ mod tests {
         assert_eq!(session.thinking.as_deref(), Some("high"));
     }
 
-    
     #[test]
     fn a_session_that_refuses_is_answered_with_its_reason() {
         let mut session = Fake {
@@ -428,7 +436,6 @@ mod tests {
         assert_eq!(error.unwrap(), "unknown model \"gpt-9\"");
     }
 
-    
     #[test]
     fn a_command_for_another_session_is_answered_rather_than_run() {
         let mut session = Fake::idle();
@@ -449,7 +456,6 @@ mod tests {
         assert!(session.submitted.is_empty());
     }
 
-    
     #[test]
     fn a_command_this_machine_does_not_know_is_answered_with_a_reason() {
         let mut session = Fake::idle();

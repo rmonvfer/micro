@@ -38,7 +38,7 @@ pub enum Action {
     ToggleThinking,
     /// Step reasoning effort to the next level.
     CycleThinking,
-    
+
     QueueFollowUp,
     /// Pull everything queued back into the buffer.
     Dequeue,
@@ -72,7 +72,7 @@ pub enum Action {
     YankPop,
     /// Step back one edit.
     Undo,
-    
+
     Paste(String),
     /// Back out of whatever is asking: an approval, a picker, the command menu.
     Cancel,
@@ -86,9 +86,9 @@ pub enum Action {
 pub fn action_for(event: &Event) -> Action {
     match event {
         Event::Key(key) => key_action(key),
-        
+
         Event::Paste(text) => Action::Paste(text.clone()),
-        
+
         Event::Mouse(mouse) => match mouse.kind {
             crossterm::event::MouseEventKind::ScrollUp => Action::ScrollUp,
             crossterm::event::MouseEventKind::ScrollDown => Action::ScrollDown,
@@ -100,7 +100,6 @@ pub fn action_for(event: &Event) -> Action {
 }
 
 fn key_action(key: &KeyEvent) -> Action {
-    
     if key.kind == KeyEventKind::Release {
         return Action::Ignored;
     }
@@ -110,7 +109,6 @@ fn key_action(key: &KeyEvent) -> Action {
     let shift = key.modifiers.contains(KeyModifiers::SHIFT);
 
     match key.code {
-        
         KeyCode::Enter if alt => Action::QueueFollowUp,
         KeyCode::Enter if shift || control => Action::Newline,
         KeyCode::Enter => Action::Submit,
@@ -124,14 +122,13 @@ fn key_action(key: &KeyEvent) -> Action {
         KeyCode::Left => Action::MoveLeft,
         KeyCode::Right if control || alt => Action::MoveWordRight,
         KeyCode::Right => Action::MoveRight,
-        
+
         KeyCode::Up if alt => Action::Dequeue,
         KeyCode::Up if control => Action::FocusPrevious,
         KeyCode::Up => Action::MoveUp,
         KeyCode::Down if control => Action::FocusNext,
         KeyCode::Down => Action::MoveDown,
 
-        
         KeyCode::PageUp => Action::PageUp,
         KeyCode::PageDown => Action::PageDown,
 
@@ -140,13 +137,12 @@ fn key_action(key: &KeyEvent) -> Action {
 
         KeyCode::Esc => Action::Cancel,
 
-        
         KeyCode::Char(']') if control && alt => Action::ArmJump { forward: false },
         KeyCode::Char('p' | 'P') if control && shift => Action::CycleModel { forward: false },
         KeyCode::Char(character) if control => control_action(character),
         KeyCode::Char(character) if alt => alt_action(character),
         KeyCode::Char(character) => Action::Insert(character.to_string()),
-        
+
         KeyCode::BackTab => Action::CycleThinking,
         KeyCode::Tab if shift => Action::CycleThinking,
         KeyCode::Tab => Action::Tab,
@@ -178,7 +174,7 @@ fn control_action(character: char) -> Action {
         'x' => Action::CopyMessage,
         'v' => Action::PasteImage,
         'z' => Action::Suspend,
-        
+
         '-' | '_' => Action::Undo,
         _ => Action::Ignored,
     }
@@ -190,7 +186,7 @@ fn alt_action(character: char) -> Action {
         'f' => Action::MoveWordRight,
         'd' => Action::DeleteWordAfter,
         'y' => Action::YankPop,
-        
+
         '\u{7f}' => Action::DeleteWordBefore,
         _ => Action::Ignored,
     }
@@ -212,7 +208,7 @@ pub fn key_name(event: &Event) -> Option<String> {
     if key.modifiers.contains(KeyModifiers::ALT) {
         parts.push("alt".to_string());
     }
-    
+
     let named = match key.code {
         KeyCode::Char(character) => character.to_ascii_lowercase().to_string(),
         KeyCode::Enter => "enter".to_string(),
@@ -252,7 +248,6 @@ pub fn key_to_data(event: &Event) -> Option<String> {
 
     let plain = match key.code {
         KeyCode::Char(character) if control => {
-            
             let lower = character.to_ascii_lowercase();
             if lower.is_ascii_lowercase() {
                 let byte = (lower as u8) - b'a' + 1;
@@ -279,7 +274,6 @@ pub fn key_to_data(event: &Event) -> Option<String> {
         _ => return None,
     };
 
-    
     Some(match alt {
         true => format!("\x1b{plain}"),
         false => plain,
@@ -305,7 +299,7 @@ mod tests {
             action_for(&key(KeyCode::Enter, KeyModifiers::SHIFT)),
             Action::Newline
         );
-        
+
         assert_eq!(
             action_for(&key(KeyCode::Enter, KeyModifiers::ALT)),
             Action::QueueFollowUp
@@ -459,7 +453,7 @@ mod tests {
             Some("shift+f5")
         );
         assert_eq!(key_name(&plain(KeyCode::Esc)).as_deref(), Some("escape"));
-        
+
         assert_eq!(
             key_name(&key(KeyCode::Char('A'), KeyModifiers::SHIFT)).as_deref(),
             Some("a")

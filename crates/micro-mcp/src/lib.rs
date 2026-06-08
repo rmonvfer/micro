@@ -56,7 +56,7 @@ pub struct ServerConfig {
     pub command: String,
     #[serde(default)]
     pub args: Vec<String>,
-    
+
     #[serde(default)]
     pub env: HashMap<String, String>,
     /// Where the server runs.
@@ -77,7 +77,6 @@ pub struct ServerConfig {
 fn enabled_by_default() -> bool {
     true
 }
-
 
 impl Default for ServerConfig {
     fn default() -> Self {
@@ -101,7 +100,7 @@ pub struct Client {
     pending: Arc<Mutex<HashMap<u64, oneshot::Sender<Result<Value>>>>>,
     next_id: AtomicU64,
     call_timeout: Duration,
-    
+
     _child: Arc<tokio::process::Child>,
 }
 
@@ -114,7 +113,6 @@ impl Client {
             .envs(&config.env)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            
             .stderr(Stdio::null())
             .kill_on_drop(true);
         if let Some(cwd) = &config.cwd {
@@ -131,7 +129,6 @@ impl Client {
         let stdout = child.stdout.take().expect("stdout was piped");
         let pending: Arc<Mutex<HashMap<u64, oneshot::Sender<Result<Value>>>>> = Arc::default();
 
-        
         let (outbound, mut queued) = tokio::sync::mpsc::unbounded_channel::<String>();
         tokio::spawn(async move {
             use tokio::io::AsyncWriteExt as _;
@@ -143,7 +140,6 @@ impl Client {
             }
         });
 
-        
         let reader_pending = Arc::clone(&pending);
         let reader_name = name.to_string();
         tokio::spawn(async move {
@@ -151,10 +147,9 @@ impl Client {
             let mut lines = tokio::io::BufReader::new(stdout).lines();
             while let Ok(Some(line)) = lines.next_line().await {
                 let Ok(message) = serde_json::from_str::<Value>(&line) else {
-                    
                     continue;
                 };
-                
+
                 let Some(id) = message.get("id").and_then(Value::as_u64) else {
                     continue;
                 };
@@ -164,7 +159,6 @@ impl Client {
                 let _ = waiting.send(answer(&reader_name, &message));
             }
 
-            
             let mut held = reader_pending.lock().await;
             for (_, waiting) in held.drain() {
                 let _ = waiting.send(Err(McpError::Closed {
@@ -230,12 +224,12 @@ impl Client {
                             .and_then(Value::as_str)
                             .unwrap_or_default()
                             .to_string(),
-                        
+
                         parameters: tool
                             .get("inputSchema")
                             .cloned()
                             .unwrap_or_else(|| json!({ "type": "object", "properties": {} })),
-                        
+
                         constrained_sampling: None,
                     },
                     remote,
@@ -263,12 +257,11 @@ impl Client {
 
         match tokio::time::timeout(within, answer).await {
             Ok(Ok(result)) => result,
-            
+
             Ok(Err(_)) => Err(McpError::Closed {
                 server: self.name.clone(),
             }),
             Err(_) => {
-                
                 self.pending.lock().await.remove(&id);
                 Err(McpError::TimedOut {
                     server: self.name.clone(),
@@ -345,7 +338,6 @@ impl micro_tools::Tool for RemoteTool {
 
         let blocks = content_blocks(&result);
 
-        
         match result.get("isError").and_then(Value::as_bool) {
             Some(true) => Err(blocks.iter().map(ContentBlock::as_text).collect()),
             _ => Ok(blocks),
@@ -361,7 +353,6 @@ fn content_blocks(result: &Value) -> Vec<ContentBlock> {
         .map(|content| content.iter().filter_map(content_block).collect())
         .unwrap_or_default();
 
-    
     match blocks.is_empty() {
         true => vec![ContentBlock::text("(no output)")],
         false => blocks,
@@ -384,7 +375,7 @@ fn content_block(block: &Value) -> Option<ContentBlock> {
                 .unwrap_or("image/png")
                 .to_string(),
         }),
-        
+
         Some(other) => Some(ContentBlock::text(format!("({other} content)"))),
         None => None,
     }
@@ -394,7 +385,6 @@ fn content_block(block: &Value) -> Option<ContentBlock> {
 pub async fn connect(
     servers: &HashMap<String, ServerConfig>,
 ) -> (Vec<Arc<dyn micro_tools::Tool>>, Vec<McpError>) {
-    
     let mut names: Vec<&String> = servers.keys().collect();
     names.sort();
 
@@ -475,7 +465,6 @@ mod tests {
         assert_eq!(said, "heard hello");
     }
 
-    
     #[tokio::test]
     async fn a_server_that_will_not_start_is_reported_and_skipped() {
         let mut servers = HashMap::new();
@@ -512,7 +501,6 @@ mod tests {
         assert!(problems.is_empty());
     }
 
-    
     #[tokio::test]
     async fn a_server_that_never_answers_times_out() {
         let silent = ServerConfig {

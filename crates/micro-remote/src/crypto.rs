@@ -16,7 +16,6 @@ use sha2::Sha256;
 /// How long a GCM nonce is, in bytes.
 const NONCE_LEN: usize = 12;
 
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Direction {
     /// Machine to phone.
@@ -69,7 +68,6 @@ pub fn seal(key: &[u8; 32], plaintext: &str) -> WireFrame {
     rand::thread_rng().fill_bytes(&mut nonce);
     seal_with_nonce(key, plaintext, &nonce)
 }
-
 
 pub fn seal_with_nonce(key: &[u8; 32], plaintext: &str, nonce: &[u8; NONCE_LEN]) -> WireFrame {
     let cipher = Aes256Gcm::new(key.into());
@@ -202,8 +200,7 @@ mod tests {
             Direction::Push,
         );
         let push = vectors["push"].clone();
-        
-        
+
         let payload = crate::protocol::PushPayload {
             kind: crate::protocol::PushKind::Offer,
             session_id: push["payload"]["sessionId"].as_str().unwrap().into(),
@@ -234,7 +231,6 @@ mod tests {
         assert_eq!(open(&inbound, &frame), Err(CryptoError::Authentication));
     }
 
-    
     #[test]
     fn a_damaged_frame_fails_the_way_every_other_damaged_frame_does() {
         let key = derive_key(b"a secret", "pairing", Direction::MachineToPhone);

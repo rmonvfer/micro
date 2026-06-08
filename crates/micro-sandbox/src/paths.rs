@@ -19,7 +19,6 @@ pub(crate) fn resolve(base: &Path, path: &Path) -> PathBuf {
             Component::RootDir => resolved.push(Component::RootDir.as_os_str()),
             Component::CurDir => {}
             Component::ParentDir => {
-                
                 if let Ok(canonical) = resolved.canonicalize() {
                     resolved = canonical;
                 }

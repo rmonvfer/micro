@@ -72,7 +72,6 @@ pub fn layout_sequence(seq: &Sequence) -> CanvasResult {
         .map(|i| SEQ_GAP.max(box_w[i].div_ceil(2) + box_w[i + 1].div_ceil(2) + 1))
         .collect();
 
-    
     let mut reqs: Vec<(usize, usize, usize)> = Vec::new();
     for item in &seq.items {
         match item {
@@ -111,7 +110,7 @@ pub fn layout_sequence(seq: &Sequence) -> CanvasResult {
             SeqItem::Divider { .. } => {}
         }
     }
-    
+
     reqs.sort_by_key(|&(l, r, _)| r - l);
     for (l, r, need) in reqs {
         let cur: usize = gaps[l..r].iter().sum();
@@ -234,7 +233,6 @@ fn draw_message(canvas: &mut Canvas, item: &SeqItem, xs: &[usize], r: usize) {
     let line_ch = if *dashed { "╌" } else { "─" };
 
     if from == to {
-        
         let x = xs[*from];
         canvas.junction(x, r, R);
         canvas.set(x + 1, r, line_ch, Cls::Edge);
@@ -258,7 +256,7 @@ fn draw_message(canvas: &mut Canvas, item: &SeqItem, xs: &[usize], r: usize) {
     let x0 = xs[*from];
     let x1 = xs[*to];
     let rightward = x1 > x0;
-    
+
     let arrow_row = if text.is_some() { r + 1 } else { r };
     let lo = x0.min(x1);
     let hi = x0.max(x1);

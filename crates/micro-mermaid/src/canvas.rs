@@ -1,5 +1,3 @@
-
-
 use crate::types::{Cls, Span};
 use crate::width::measured;
 
@@ -16,7 +14,6 @@ pub const R: u8 = 8;
 pub const STY_DOT: u8 = 1;
 pub const STY_THICK: u8 = 2;
 pub const STY_SOLID: u8 = 4;
-
 
 pub struct Lines {
     pub plain: Vec<String>,
@@ -80,7 +77,6 @@ impl Canvas {
         }
     }
 
-    
     pub fn add_edge_bits(&mut self, x: usize, y: usize, bits: u8) {
         self.add_bits(x, y, bits, Cls::Edge);
     }
@@ -217,7 +213,6 @@ impl Canvas {
         let mut styled: Vec<Vec<Span>> = Vec::new();
         let mut width = 0usize;
         for y in 0..self.h {
-            
             let mut last = 0usize;
             for x in (0..self.w).rev() {
                 if self.ch[self.idx(x, y)] != " " {
@@ -254,7 +249,7 @@ impl Canvas {
                 });
             }
             styled.push(spans);
-            
+
             plain.push(plain_row.trim_end_matches(' ').to_string());
         }
         let mut first = 0;
@@ -309,16 +304,16 @@ pub fn draw_text_over_edges(canvas: &mut Canvas, text: &str, x: usize, y: usize,
 pub fn mask_char(mask: u8) -> &'static str {
     match mask {
         0 => " ",
-        1..=3 => "│",      
-        4 | 8 | 12 => "─", 
-        10 => "┌",         
-        6 => "┐",          
-        9 => "└",          
-        5 => "┘",          
-        11 => "├",         
-        7 => "┤",          
-        14 => "┬",         
-        13 => "┴",         
+        1..=3 => "│",
+        4 | 8 | 12 => "─",
+        10 => "┌",
+        6 => "┐",
+        9 => "└",
+        5 => "┘",
+        11 => "├",
+        7 => "┤",
+        14 => "┬",
+        13 => "┴",
         _ => "┼",
     }
 }

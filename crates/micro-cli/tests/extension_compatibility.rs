@@ -12,7 +12,6 @@ use support::FakeApi;
 use support::Fixture;
 use support::Reply;
 
-
 const TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Where this repo keeps its own copy of pi's example extensions.
@@ -67,7 +66,6 @@ const fn dir_with_note(name: &'static str, note: &'static str) -> Example {
     }
 }
 
-
 const fn dir_needs_deps(name: &'static str, note: &'static str) -> Example {
     Example {
         name,
@@ -79,7 +77,6 @@ const fn dir_needs_deps(name: &'static str, note: &'static str) -> Example {
 
 /// Every example under `examples/extensions`, README-ordered.
 const EXAMPLES: &[Example] = &[
-    
     file("permission-gate"),
     file("project-trust"),
     file("protected-paths"),
@@ -93,7 +90,6 @@ const EXAMPLES: &[Example] = &[
         "gondolin",
         "declares a real npm dependency (@earendil-works/gondolin)",
     ),
-    
     file("todo"),
     file("hello"),
     file_with_note("question", "exercises ctx.ui.select(), a live terminal"),
@@ -107,70 +103,102 @@ const EXAMPLES: &[Example] = &[
     file("truncated-tool"),
     file("ssh"),
     dir("subagent"),
-    
     file("preset"),
     dir("plan-mode"),
     file("tools"),
     file("handoff"),
-    file_with_note("qna", "writes into the editor via ctx.ui.setEditorText(), a live terminal"),
+    file_with_note(
+        "qna",
+        "writes into the editor via ctx.ui.setEditorText(), a live terminal",
+    ),
     file_with_note("status-line", "renders into the footer, a live terminal"),
     file_with_note(
         "github-issue-autocomplete",
         "shells out to the real `gh` CLI against a real repo's issues",
     ),
-    file_with_note("widget-placement", "renders widgets around the editor, a live terminal"),
-    file_with_note("hidden-thinking-label", "customizes a collapsed-thinking label, a live terminal"),
-    file_with_note("working-indicator", "customizes the streaming indicator, a live terminal"),
+    file_with_note(
+        "widget-placement",
+        "renders widgets around the editor, a live terminal",
+    ),
+    file_with_note(
+        "hidden-thinking-label",
+        "customizes a collapsed-thinking label, a live terminal",
+    ),
+    file_with_note(
+        "working-indicator",
+        "customizes the streaming indicator, a live terminal",
+    ),
     file("model-status"),
     file_with_note("snake", "a keyboard-driven game, a live terminal"),
     file_with_note("tic-tac-toe", "a keyboard-driven game, a live terminal"),
     file("send-user-message"),
-    file_with_note("timed-confirm", "exercises ctx.ui.confirm()/select(), a live terminal"),
-    file_with_note("rpc-demo", "exercises RPC-supported extension UI methods interactively"),
-    file_with_note("modal-editor", "replaces the editor component, a live terminal"),
-    file_with_note("rainbow-editor", "an animated custom editor, a live terminal"),
+    file_with_note(
+        "timed-confirm",
+        "exercises ctx.ui.confirm()/select(), a live terminal",
+    ),
+    file_with_note(
+        "rpc-demo",
+        "exercises RPC-supported extension UI methods interactively",
+    ),
+    file_with_note(
+        "modal-editor",
+        "replaces the editor component, a live terminal",
+    ),
+    file_with_note(
+        "rainbow-editor",
+        "an animated custom editor, a live terminal",
+    ),
     file("notify"),
-    file_with_note("titlebar-spinner", "animates the terminal title, a live terminal"),
+    file_with_note(
+        "titlebar-spinner",
+        "animates the terminal title, a live terminal",
+    ),
     file("summarize"),
     file_with_note("custom-footer", "renders a custom footer, a live terminal"),
     file_with_note("custom-header", "renders a custom header, a live terminal"),
     file_with_note("overlay-test", "overlay compositing tests, a live terminal"),
-    file_with_note("overlay-qa-tests", "overlay compositing tests, a live terminal"),
-    dir_with_note("doom-overlay", "a real-time game rendered as an overlay, a live terminal"),
+    file_with_note(
+        "overlay-qa-tests",
+        "overlay compositing tests, a live terminal",
+    ),
+    dir_with_note(
+        "doom-overlay",
+        "a real-time game rendered as an overlay, a live terminal",
+    ),
     file("shutdown-command"),
     file("reload-runtime"),
     file("commands"),
-    file_with_note("interactive-shell", "runs vim/htop with a full terminal via user_bash"),
+    file_with_note(
+        "interactive-shell",
+        "runs vim/htop with a full terminal via user_bash",
+    ),
     file("inline-bash"),
     file("input-transform-streaming"),
-    
     file("input-transform"),
     file("bash-spawn-hook"),
     file("border-status-editor"),
     file_with_note("entry-renderer", "TUI-only session entry rendering"),
     file("event-bus"),
     file("git-merge-and-resolve"),
-    file_with_note("message-renderer", "custom message rendering, a live terminal"),
+    file_with_note(
+        "message-renderer",
+        "custom message rendering, a live terminal",
+    ),
     file("prompt-customizer"),
     file("provider-payload"),
     file_with_note("space-invaders", "a keyboard-driven game, a live terminal"),
     file("system-prompt-header"),
     file("working-message-test"),
     file("mac-system-theme"),
-    
     file("git-checkpoint"),
     file("auto-commit-on-exit"),
-    
     file("pirate"),
     file("claude-rules"),
     file("custom-compaction"),
     file("trigger-compact"),
-    
     dir("dynamic-resources"),
-    
     file("session-name"),
     file("bookmark"),
-    
     dir_needs_deps(
         "custom-provider-anthropic",
         "declares a real npm dependency (@anthropic-ai/sdk)",
@@ -179,15 +207,16 @@ const EXAMPLES: &[Example] = &[
         "custom-provider-gitlab-duo",
         "registers a real provider; not exercised end to end here, only loaded",
     ),
-    
     dir_needs_deps("with-deps", "declares a real npm dependency (ms)"),
     file_with_note("file-trigger", "watches a file for changes across the run"),
 ];
 
 /// Recursively copy a directory-based extension exactly as vendored.
 fn copy_dir_all(src: &Path, dst: &Path) {
-    std::fs::create_dir_all(dst).unwrap_or_else(|error| panic!("create {}: {error}", dst.display()));
-    let entries = std::fs::read_dir(src).unwrap_or_else(|error| panic!("read {}: {error}", src.display()));
+    std::fs::create_dir_all(dst)
+        .unwrap_or_else(|error| panic!("create {}: {error}", dst.display()));
+    let entries =
+        std::fs::read_dir(src).unwrap_or_else(|error| panic!("read {}: {error}", src.display()));
     for entry in entries {
         let entry = entry.expect("a directory entry reads");
         let path = entry.path();
@@ -195,7 +224,8 @@ fn copy_dir_all(src: &Path, dst: &Path) {
         if path.is_dir() {
             copy_dir_all(&path, &dest);
         } else {
-            std::fs::copy(&path, &dest).unwrap_or_else(|error| panic!("copy {}: {error}", path.display()));
+            std::fs::copy(&path, &dest)
+                .unwrap_or_else(|error| panic!("copy {}: {error}", path.display()));
         }
     }
 }
@@ -209,7 +239,6 @@ struct Attempt {
     exit_ok: bool,
     stderr: String,
 }
-
 
 fn run_with_timeout(mut command: std::process::Command) -> Attempt {
     command.stdin(Stdio::null());
@@ -244,7 +273,6 @@ fn run_with_timeout(mut command: std::process::Command) -> Attempt {
         }
     };
 
-    
     let _stdout = stdout_reader.join().unwrap_or_default();
     let stderr = stderr_reader.join().unwrap_or_default();
 
@@ -311,6 +339,7 @@ fn attempt(example: &Example) -> Attempt {
 
 /// Loads every vendored example extension and reports, per extension, whether it loaded.
 #[test]
+#[ignore = "report-only sweep of third-party-style examples; run explicitly"]
 fn example_extensions_load_report() {
     if micro_extensions::which_bun().is_none() {
         eprintln!("skipped: bun is not on the path, so nothing here could load anyway");
@@ -346,11 +375,18 @@ fn example_extensions_load_report() {
             }
             (None, false, _) => {
                 failed += 1;
-                "FAIL — timed out; likely blocked on a live terminal this fixture has none of".to_string()
+                "FAIL — timed out; likely blocked on a live terminal this fixture has none of"
+                    .to_string()
             }
             (None, true, false) => {
                 failed += 1;
-                let tail: String = attempt.stderr.lines().rev().take(3).collect::<Vec<_>>().join(" / ");
+                let tail: String = attempt
+                    .stderr
+                    .lines()
+                    .rev()
+                    .take(3)
+                    .collect::<Vec<_>>()
+                    .join(" / ");
                 format!("FAIL — loaded, but the run did not exit cleanly ({tail})")
             }
             (None, true, true) => {
@@ -358,7 +394,10 @@ fn example_extensions_load_report() {
                 "OK — loaded, one plain turn ran to completion".to_string()
             }
         };
-        lines.push(format!("| {} | {kind} | {path} | {result} | {caveat} |", example.name));
+        lines.push(format!(
+            "| {} | {kind} | {path} | {result} | {caveat} |",
+            example.name
+        ));
     }
 
     lines.push(String::new());

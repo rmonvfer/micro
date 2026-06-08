@@ -49,7 +49,6 @@ pub fn read_image() -> Option<ClipboardImage> {
         .or_else(read_via_macos)
 }
 
-
 fn read_via_wayland() -> Option<ClipboardImage> {
     let listed = run(&["wl-paste", "--list-types"])?;
     let available = String::from_utf8_lossy(&listed);
@@ -59,7 +58,6 @@ fn read_via_wayland() -> Option<ClipboardImage> {
     let data = run(&["wl-paste", "--type", mime_type, "--no-newline"])?;
     encoded(mime_type, &data)
 }
-
 
 fn read_via_x11() -> Option<ClipboardImage> {
     let listed = run(&["xclip", "-selection", "clipboard", "-t", "TARGETS", "-o"])?;
@@ -140,7 +138,6 @@ fn run(command: &[&str]) -> Option<Vec<u8>> {
 
 const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 
-
 fn base64(bytes: &[u8]) -> String {
     let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
     for chunk in bytes.chunks(3) {
@@ -151,7 +148,7 @@ fn base64(bytes: &[u8]) -> String {
         };
         out.push(ALPHABET[(block >> 18 & 63) as usize] as char);
         out.push(ALPHABET[(block >> 12 & 63) as usize] as char);
-        
+
         out.push(match chunk.len() > 1 {
             true => ALPHABET[(block >> 6 & 63) as usize] as char,
             false => '=',

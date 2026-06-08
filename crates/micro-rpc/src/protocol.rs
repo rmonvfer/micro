@@ -7,11 +7,9 @@ use serde::Deserialize;
 use serde::Serialize;
 use serde_json::Value;
 
-
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Command {
-    
     Prompt {
         #[serde(default)]
         id: Option<String>,
@@ -44,13 +42,11 @@ pub enum Command {
         id: Option<String>,
     },
 
-    
     GetState {
         #[serde(default)]
         id: Option<String>,
     },
 
-    
     SetModel {
         #[serde(default)]
         id: Option<String>,
@@ -66,7 +62,6 @@ pub enum Command {
         id: Option<String>,
     },
 
-    
     SetThinkingLevel {
         #[serde(default)]
         id: Option<String>,
@@ -77,7 +72,6 @@ pub enum Command {
         id: Option<String>,
     },
 
-    
     Compact {
         #[serde(default)]
         id: Option<String>,
@@ -88,12 +82,11 @@ pub enum Command {
         enabled: bool,
     },
 
-    
     Bash {
         #[serde(default)]
         id: Option<String>,
         command: String,
-        
+
         #[serde(default)]
         exclude_from_context: bool,
     },
@@ -102,7 +95,6 @@ pub enum Command {
         id: Option<String>,
     },
 
-    
     GetSessionStats {
         #[serde(default)]
         id: Option<String>,
@@ -148,13 +140,11 @@ pub enum Command {
         name: String,
     },
 
-    
     GetMessages {
         #[serde(default)]
         id: Option<String>,
     },
 
-    
     GetCommands {
         #[serde(default)]
         id: Option<String>,
@@ -343,7 +333,6 @@ mod tests {
         assert!(images.is_empty());
     }
 
-    
     #[test]
     fn forking_and_navigating_are_separate_commands() {
         let forked: Command = serde_json::from_str(r#"{"type":"fork","entry_id":"3"}"#).unwrap();

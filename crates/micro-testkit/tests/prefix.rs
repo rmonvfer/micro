@@ -73,7 +73,6 @@ fn prefix_hashes(events: &[LedgerEvent]) -> Vec<String> {
         .collect()
 }
 
-
 #[tokio::test]
 async fn consecutive_turns_open_with_the_same_prefix() {
     let provider = FakeProvider::builder()
@@ -100,7 +99,6 @@ async fn consecutive_turns_open_with_the_same_prefix() {
     assert_eq!(hashes[0], hashes[1], "and the same head on both");
     assert!(prefix_changes(&events).is_empty(), "nothing moved");
 
-    
     assert_eq!(provider.call(0).system_prompt(), Some("be brief"));
     assert_eq!(provider.call(1).system_prompt(), Some("be brief"));
     assert_eq!(provider.call(0).tool_names(), provider.call(1).tool_names());
@@ -142,7 +140,7 @@ async fn a_reloaded_prompt_lands_at_the_next_turn_and_is_recorded_once() {
         ],
         "reload",
     );
-    
+
     assert!(prefix.system_prompt().contains("run the tests"));
 
     run_agent(&mut agent, Message::user("second")).await;
@@ -163,7 +161,6 @@ async fn a_reloaded_prompt_lands_at_the_next_turn_and_is_recorded_once() {
         Some("be brief\n\nthe project says: run the tests"),
     );
 
-    
     let sources: Vec<EventSource> = second
         .iter()
         .find_map(|event| match event {
@@ -178,6 +175,78 @@ async fn a_reloaded_prompt_lands_at_the_next_turn_and_is_recorded_once() {
         sources,
         vec![EventSource::SystemPrompt, EventSource::ProjectInstructions]
     );
+}
+
+/// A prompt overridden for one run holds for every turn of that run and no longer: the next run
+/// opens with the settled prompt again, without anyone asking. An extension reading the prompt
+/// while its override waits sees the settled one, so overriding never compounds.
+#[tokio::test]
+async fn an_overridden_prompt_lasts_one_run_and_the_settled_one_returns() {
+    let provider = FakeProvider::builder()
+        .turn(Turn::text("first"))
+        .turn(Turn::text("looking").with_tool_call("call_1", "read", json!({})))
+        .turn(Turn::text("done"))
+        .turn(Turn::text("last"))
+        .build();
+    let (recorder, mut recorded) = tokio::sync::mpsc::unbounded_channel();
+
+    let mut agent = Agent::new(
+        Arc::new(provider.clone()),
+        vec![Arc::new(FakeTool::new("read").returning("contents"))],
+        model(),
+        "test-key",
+    )
+    .with_system_prompt("be brief")
+    .with_prefix_spans(vec![span("be brief", EventSource::SystemPrompt)])
+    .with_recorder(recorder);
+
+    let prefix = agent.prefix_control();
+    run_agent(&mut agent, Message::user("first")).await;
+    drain(&mut recorded);
+    assert_eq!(provider.call(0).system_prompt(), Some("be brief"));
+
+    prefix.override_run(
+        "be brief\n\nthe goal: ship it",
+        vec![
+            span("be brief", EventSource::SystemPrompt),
+            span(
+                "\n\nthe goal: ship it",
+                EventSource::Extension("goal".into()),
+            ),
+        ],
+        "extension",
+    );
+    assert_eq!(
+        prefix.system_prompt(),
+        "be brief",
+        "what is settled is what an extension is shown, never its own stand-in"
+    );
+
+    run_agent(&mut agent, Message::user("second")).await;
+    let overridden = drain(&mut recorded);
+    assert_eq!(
+        provider.call(1).system_prompt(),
+        Some("be brief\n\nthe goal: ship it"),
+    );
+    assert_eq!(
+        provider.call(2).system_prompt(),
+        Some("be brief\n\nthe goal: ship it"),
+        "the override holds for every turn of its run"
+    );
+    let changes = prefix_changes(&overridden);
+    assert_eq!(changes.len(), 1);
+    assert_eq!(changes[0].0, "extension");
+
+    run_agent(&mut agent, Message::user("third")).await;
+    let reverted = drain(&mut recorded);
+    assert_eq!(
+        provider.call(3).system_prompt(),
+        Some("be brief"),
+        "a run no one overrides opens with the settled prompt"
+    );
+    let changes = prefix_changes(&reverted);
+    assert_eq!(changes.len(), 1);
+    assert_eq!(changes[0].0, "override ended");
 }
 
 /// Narrowing the tools is a change to the head of the request.
@@ -314,7 +383,6 @@ async fn a_history_is_repaired_where_it_is_installed_and_not_between_turns() {
     let second_call = provider.call(1);
     let second = second_call.messages();
 
-    
     assert_eq!(
         second[..repaired.len()],
         repaired[..],

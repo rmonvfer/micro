@@ -140,11 +140,11 @@ async fn run(
         .bearer_auth(api_key)
         .header("content-type", "application/json")
         .header("accept", "text/event-stream");
-    
+
     for (name, value) in &model.headers {
         request = request.header(name.as_str(), value.as_str());
     }
-    
+
     if is_copilot(&provider, &model.base_url) {
         request = request
             .header("x-initiator", initiator(&context.messages))
@@ -153,7 +153,7 @@ async fn run(
             request = request.header("copilot-vision-request", "true");
         }
     }
-    
+
     if model.compat.send_session_affinity_headers {
         if let Some(key) = context.cache_key.as_deref().filter(|key| !key.is_empty()) {
             for (name, value) in affinity_headers(model.compat.session_affinity_format, key) {
@@ -162,7 +162,7 @@ async fn run(
         }
     }
     request = crate::with_attribution(request, &model.base_url);
-    
+
     for (name, value) in &context.headers {
         request = request.header(name.as_str(), value.as_str());
     }
@@ -216,7 +216,6 @@ struct OpenText {
 }
 
 impl OpenText {
-    
     fn open(&mut self, next: &mut usize) -> usize {
         *self.index.get_or_insert_with(|| {
             let index = *next;
@@ -291,7 +290,6 @@ impl Accumulator {
             return;
         };
 
-        
         if let Some(message) = stream_error(&self.label, &value) {
             self.finished = true;
             let _ = sender.send(StreamEvent::Error { message });
@@ -303,7 +301,6 @@ impl Accumulator {
             let _ = sender.send(StreamEvent::Start);
         }
 
-        
         if let Some(usage) = value.get("usage").filter(|usage| usage.is_object()) {
             self.read_usage(usage);
         }
@@ -317,7 +314,6 @@ impl Accumulator {
         };
 
         if let Some(delta) = choice.get("delta") {
-            
             let reasoning = non_empty(delta.get("reasoning_content"))
                 .or_else(|| non_empty(delta.get("reasoning")));
             if let Some(fragment) = reasoning {
@@ -475,10 +471,8 @@ impl Accumulator {
         }
 
         if !self.saw_finish_reason {
-            
             self.stop_reason = StopReason::Error;
         } else if self.stop_reason == StopReason::Stop && has_tool_calls {
-            
             self.stop_reason = StopReason::ToolUse;
         }
 
@@ -573,7 +567,6 @@ fn apply_thinking(payload: &mut Map<String, Value>, model: &Model) {
             }
         }
         ThinkingFormat::Openrouter => {
-            
             let level = match asked {
                 true => effort,
                 false => off.or("none"),
@@ -610,7 +603,7 @@ fn apply_thinking(payload: &mut Map<String, Value>, model: &Model) {
             if !compat.supports_reasoning_effort {
                 return;
             }
-            
+
             let level = match asked {
                 true => effort,
                 false => match off {
@@ -655,7 +648,6 @@ pub(crate) fn build_payload(model: &Model, context: &Context) -> Result<Value, S
 
     apply_thinking(&mut payload, model);
 
-    
     if model.base_url.contains("api.openai.com") {
         if let Some(key) = &context.cache_key {
             let clamped: String = key.chars().take(PROMPT_CACHE_KEY_MAX).collect();
@@ -663,7 +655,6 @@ pub(crate) fn build_payload(model: &Model, context: &Context) -> Result<Value, S
         }
     }
 
-    
     if compat.supports_store {
         payload.insert("store".into(), json!(false));
     }
@@ -682,7 +673,7 @@ pub(crate) fn build_payload(model: &Model, context: &Context) -> Result<Value, S
                 "description": tool.description,
                 "parameters": parameters,
             });
-            
+
             if compat.supports_strict_mode {
                 function["strict"] = json!(strict.unwrap_or(false));
             }
@@ -693,7 +684,6 @@ pub(crate) fn build_payload(model: &Model, context: &Context) -> Result<Value, S
             payload.insert("tool_stream".into(), json!(true));
         }
     } else if has_tool_history(&context.messages) {
-        
         payload.insert("tools".into(), Value::Array(Vec::new()));
     }
 
@@ -730,7 +720,6 @@ fn has_tool_history(messages: &[Message]) -> bool {
         Message::User { .. } => false,
     })
 }
-
 
 fn build_messages_for(context: &Context, id_length: Option<usize>) -> Vec<Value> {
     let mut wire = build_messages_inner(context);
@@ -805,7 +794,6 @@ fn assistant_message(assistant: &AssistantMessage) -> Option<Value> {
         .content
         .iter()
         .filter_map(|block| match block {
-            
             ContentBlock::ToolCall {
                 id,
                 name,
@@ -977,7 +965,6 @@ mod tests {
         assert!(payload.get("max_tokens").is_none());
     }
 
-    
     #[test]
     fn a_service_is_only_told_thinking_is_off_when_it_has_a_word_for_it() {
         let unsaid = served_by("openai", "o1");
@@ -986,7 +973,6 @@ mod tests {
             .get("reasoning_effort")
             .is_none());
 
-        
         let named = served_by("openai", "gpt-5.6-terra");
         assert_eq!(named.compat.off(), OffLevel::Named("none".into()));
         assert_eq!(
@@ -994,7 +980,6 @@ mod tests {
             "none"
         );
 
-        
         assert_eq!(
             build_payload(&model(), &Context::default()).unwrap()["reasoning"]["effort"],
             "none"
@@ -1016,7 +1001,6 @@ mod tests {
             "high"
         );
 
-        
         let copilot = served_by("github-copilot", "gpt-4.1").with_thinking(ThinkingLevel::High);
         assert!(build_payload(&copilot, &Context::default())
             .unwrap()
@@ -1067,7 +1051,6 @@ mod tests {
         }
     }
 
-    
     #[test]
     fn a_supported_provider_sends_strict_sampling_a_tool_asked_to_prefer() {
         let context = Context {
@@ -1085,7 +1068,6 @@ mod tests {
         );
     }
 
-    
     #[test]
     fn an_unsupported_provider_is_unaffected_by_a_tool_preferring_strict_sampling() {
         let original_parameters = json!({
@@ -1111,7 +1093,6 @@ mod tests {
         );
     }
 
-    
     #[test]
     fn requiring_strict_sampling_on_an_unsupported_provider_fails_the_request() {
         let context = Context {
@@ -1430,21 +1411,18 @@ mod tests {
 
         let cached = build_payload(&served_by("openai", "gpt-5.6-terra"), &context).unwrap();
         assert_eq!(cached["prompt_cache_key"], "session-1786");
-        
+
         assert_eq!(cached["store"], false);
 
-        
         let elsewhere = build_payload(&model(), &context).unwrap();
         assert!(elsewhere.get("prompt_cache_key").is_none());
         assert_eq!(elsewhere["store"], false);
 
-        
         let reimplementation =
             build_payload(&served_by("cerebras", "gpt-oss-120b"), &context).unwrap();
         assert!(reimplementation.get("store").is_none());
     }
 
-    
     #[test]
     fn a_name_too_long_to_send_is_cut() {
         let context = Context {
@@ -1458,7 +1436,6 @@ mod tests {
         );
     }
 
-    
     #[test]
     fn a_conversation_with_tool_history_still_declares_tools() {
         let context = Context {
@@ -1471,7 +1448,6 @@ mod tests {
         let payload = build_payload(&served_by("openai", "gpt-5.6-terra"), &context).unwrap();
         assert_eq!(payload["tools"], serde_json::json!([]));
 
-        
         let plain =
             build_payload(&served_by("openai", "gpt-5.6-terra"), &Context::default()).unwrap();
         assert!(plain.get("tools").is_none());
@@ -1503,7 +1479,7 @@ mod tests {
             content: vec![image.clone()],
             timestamp: 0,
         }]));
-        
+
         assert!(carries_images(&[Message::ToolResult {
             tool_call_id: "call_1".into(),
             tool_name: "read".into(),

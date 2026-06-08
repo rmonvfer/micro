@@ -36,9 +36,8 @@ async fn a_compacted_session_reopens_on_its_summary() {
     let id = session.id().to_string();
     drop(session);
 
-    
     let reopened = store.load(&id).await.expect("the session reopens");
-    
+
     let conversation = reopened.messages.clone();
 
     assert!(
@@ -53,6 +52,5 @@ async fn a_compacted_session_reopens_on_its_summary() {
         "the summary, the two it kept, and what was said after",
     );
 
-    
     assert_eq!(reopened.session.tree().entries().len(), 7);
 }

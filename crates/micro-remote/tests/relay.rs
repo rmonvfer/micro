@@ -21,7 +21,9 @@ async fn relay_is_up() -> bool {
     matches!(
         tokio::time::timeout(
             Duration::from_millis(500),
-            reqwest::Client::new().post(format!("{RELAY}/pairings")).send(),
+            reqwest::Client::new()
+                .post(format!("{RELAY}/pairings"))
+                .send(),
         )
         .await,
         Ok(Ok(_))
@@ -59,7 +61,7 @@ impl Phone {
             .expect("the relay accepts the phone's leg");
         Phone {
             socket,
-            
+
             encoder: FrameEncoder::new(micro_remote::derive_key(
                 &config.secret,
                 &config.pairing_id,
@@ -87,8 +89,9 @@ impl Phone {
     async fn next(&mut self) -> Option<MachinePayload> {
         let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
         loop {
-            let message =
-                tokio::time::timeout_at(deadline, self.socket.next()).await.ok()??;
+            let message = tokio::time::timeout_at(deadline, self.socket.next())
+                .await
+                .ok()??;
             let Ok(tokio_tungstenite::tungstenite::Message::Text(text)) = message else {
                 continue;
             };
@@ -114,7 +117,6 @@ fn urlencoding(value: &str) -> String {
         .collect()
 }
 
-
 #[tokio::test]
 async fn a_session_reaches_a_phone_through_a_running_relay() {
     if !relay_is_up().await {
@@ -123,14 +125,13 @@ async fn a_session_reaches_a_phone_through_a_running_relay() {
     }
 
     let config = config("micro-test-offer");
-    
+
     micro_remote::register(&config)
         .await
         .expect("the relay accepts a new pairing");
     let (events, mut incoming) = tokio::sync::mpsc::unbounded_channel();
     let client = RelayClient::start(config.clone(), events);
 
-    
     let connected = tokio::time::timeout(Duration::from_secs(5), async {
         while let Some(event) = incoming.recv().await {
             if matches!(
@@ -148,7 +149,6 @@ async fn a_session_reaches_a_phone_through_a_running_relay() {
 
     let mut phone = Phone::join(&config).await;
 
-    
     let peered = tokio::time::timeout(Duration::from_secs(5), async {
         while let Some(event) = incoming.recv().await {
             if event == (RelayEvent::Peer { connected: true }) {
@@ -180,7 +180,6 @@ async fn a_session_reaches_a_phone_through_a_running_relay() {
         other => panic!("expected the offer, got {other:?}"),
     }
 
-    
     phone
         .send(&PhonePayload::Command {
             session_id: "s1".into(),
@@ -228,13 +227,16 @@ async fn a_leg_without_a_registered_pairing_is_refused() {
         urlencoding(&config.auth_token(Role::Machine))
     );
 
-    
     match tokio_tungstenite::connect_async(url).await {
         Err(_) => {}
         Ok((mut socket, _)) => {
             let closed = tokio::time::timeout(Duration::from_secs(5), socket.next()).await;
             match closed {
-                Ok(Some(Ok(tokio_tungstenite::tungstenite::Message::Close(_))) | None | Some(Err(_))) => {}
+                Ok(
+                    Some(Ok(tokio_tungstenite::tungstenite::Message::Close(_)))
+                    | None
+                    | Some(Err(_)),
+                ) => {}
                 other => panic!("expected the relay to decline, got {other:?}"),
             }
         }

@@ -4,11 +4,11 @@ The sandbox restricts commands and file operations performed on behalf of the mo
 
 ## Policies
 
-| Policy | Command reads | Command writes | Network |
-| --- | --- | --- | --- |
-| `read-only` | allowed | blocked | blocked |
-| `workspace-write` | allowed | workspace only | blocked by default |
-| `full` | allowed | unrestricted | unrestricted |
+| Policy            | Command reads | Command writes | Network            |
+| ----------------- | ------------- | -------------- | ------------------ |
+| `read-only`       | allowed       | blocked        | blocked            |
+| `workspace-write` | allowed       | workspace only | blocked by default |
+| `full`            | allowed       | unrestricted   | unrestricted       |
 
 Under `workspace-write`, `.git`, `.micro`, and micro's own configuration and data directories remain read-only even when they are inside the workspace.
 
@@ -48,13 +48,19 @@ Add writable roots or network access with a policy object:
 
 `--sandbox` also accepts a JSON object.
 
+## Interactive configuration
+
+In the terminal interface, `/sandbox` opens controls for the active session, the user default, and the trusted project policy. Session changes apply immediately. User and project settings apply to new sessions; project settings require `/trust on` and are saved in `.micro/settings.json`.
+
+When a sandbox denial blocks the agent, it may request either network access or a writable temporary directory. The confirmation dialog identifies the capability, reason, and exact command, and offers `Allow once`, `Allow for this session`, or `Deny`. A one-time approval is consumed only by that exact command.
+
 ## Platform support
 
-| Platform | Commands | Built-in file tools | Network blocking |
-| --- | --- | --- | --- |
-| macOS | Seatbelt | in-process path checks | yes |
-| Linux | Landlock and seccomp | in-process path checks | yes |
-| Windows | not yet confined | in-process path checks | not yet |
+| Platform | Commands             | Built-in file tools    | Network blocking |
+| -------- | -------------------- | ---------------------- | ---------------- |
+| macOS    | Seatbelt             | in-process path checks | yes              |
+| Linux    | Landlock and seccomp | in-process path checks | yes              |
+| Windows  | not yet confined     | in-process path checks | not yet          |
 
 When command confinement is unavailable, micro reports that commands are running unconfined. File tools still apply path checks.
 

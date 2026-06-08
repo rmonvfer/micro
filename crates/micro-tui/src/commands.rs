@@ -16,6 +16,8 @@ pub struct ConversationState {
 /// What the host did with an outcome the interface handed it.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub enum Applied {
+    /// Ask the agent loop to run this shell command after its access request was approved.
+    RunGrantedCommand { command: String },
     /// Nothing to report.
     #[default]
     Nothing,
@@ -162,7 +164,6 @@ pub trait Commands: Send {
     /// Store a key the user typed at the interface's prompt.
     async fn store_api_key(&mut self, provider: String, key: String) -> Applied;
 
-    
     async fn finish_device_login(&mut self, pending: Box<PendingDeviceLogin>) -> Applied;
 }
 
@@ -223,10 +224,9 @@ pub enum Scrollbar {
 /// What is left on the terminal after a full-screen session ends.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ExitOutput {
-    
     #[default]
     Transcript,
-    
+
     ResumeHint,
 }
 
@@ -241,7 +241,6 @@ pub enum Mermaid {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Preferences {
-    
     pub steer_all_at_once: bool,
     /// When the conversation shows how far through it you are.
     pub scrollbar: Scrollbar,
@@ -251,7 +250,7 @@ pub struct Preferences {
     pub exit_output: ExitOutput,
     /// Whether rows the inline region gives up are cleared as it shrinks.
     pub clear_on_shrink: bool,
-    
+
     pub hide_thinking: bool,
     /// Draw images in the terminal, where the terminal can.
     pub show_images: bool,

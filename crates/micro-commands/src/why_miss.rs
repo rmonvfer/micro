@@ -69,7 +69,6 @@ pub async fn why_miss(
                 prefix_hash,
                 ..
             } => {
-                
                 let request = Request {
                     turn: *turn,
                     seq: recorded.seq,
@@ -133,7 +132,7 @@ pub async fn why_miss(
     let previous = parent.turn;
     let previous_seq = parent.seq;
     let wanted_seq = request.seq;
-    
+
     let between: Vec<&(u64, LedgerEvent)> = changes
         .iter()
         .filter(|(seq, _)| *seq > previous_seq && *seq < wanted_seq)
@@ -263,7 +262,6 @@ fn moved(
     }
 }
 
-
 fn said(reason: &str) -> String {
     match reason {
         "reload" => "the project's instructions and skills were read again (reload)".to_string(),
@@ -274,7 +272,6 @@ fn said(reason: &str) -> String {
         other => other.to_string(),
     }
 }
-
 
 fn tail_reasons(
     previous: u64,
@@ -392,7 +389,6 @@ fn changed_span(
     }
 }
 
-
 fn cut<'a>(prompt: &'a str, spans: &[PrefixSpan], index: usize) -> Option<&'a str> {
     let start: usize = spans[..index].iter().map(|span| span.bytes as usize).sum();
     let end = start + spans[index].bytes as usize;
@@ -412,7 +408,6 @@ fn diff(before: &str, after: &str) -> Vec<String> {
         )];
     }
 
-    
     let mut common = vec![vec![0u32; has.len() + 1]; had.len() + 1];
     for left in (0..had.len()).rev() {
         for right in (0..has.len()).rev() {
@@ -448,7 +443,6 @@ fn diff(before: &str, after: &str) -> Vec<String> {
     around_the_changes(lines)
 }
 
-
 fn around_the_changes(lines: Vec<String>) -> Vec<String> {
     const CONTEXT: usize = 2;
 
@@ -464,7 +458,7 @@ fn around_the_changes(lines: Vec<String>) -> Vec<String> {
 
     let mut kept = Vec::new();
     let mut last: Option<usize> = None;
-    for index in 0..lines.len() {
+    for (index, line) in lines.iter().enumerate() {
         let near = changed
             .iter()
             .any(|change| index.abs_diff(*change) <= CONTEXT);
@@ -474,7 +468,7 @@ fn around_the_changes(lines: Vec<String>) -> Vec<String> {
         if last.is_some_and(|last| index > last + 1) {
             kept.push("…".to_string());
         }
-        kept.push(lines[index].clone());
+        kept.push(line.clone());
         last = Some(index);
     }
     kept

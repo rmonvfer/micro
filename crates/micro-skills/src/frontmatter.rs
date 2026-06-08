@@ -54,7 +54,6 @@ pub fn parse_frontmatter(text: &str) -> Frontmatter {
         body.push_str(line);
     }
 
-    
     match in_header {
         true => Frontmatter {
             fields: Vec::new(),

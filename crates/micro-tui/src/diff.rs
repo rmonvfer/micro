@@ -53,7 +53,6 @@ pub fn diff_lines(old: &str, new: &str) -> Vec<Change> {
     changes
 }
 
-
 fn split_lines(text: &str) -> Vec<&str> {
     if text.is_empty() {
         return Vec::new();
@@ -86,12 +85,11 @@ fn align(old: &[&str], new: &[&str]) -> Vec<Change> {
     myers(old, new)
 }
 
-
 fn myers(old: &[&str], new: &[&str]) -> Vec<Change> {
     let n = old.len() as isize;
     let m = new.len() as isize;
     let max = (old.len() + new.len()) as isize;
-    
+
     let offset = max + 1;
     let mut furthest = vec![0isize; (2 * max + 3) as usize];
     let mut trace: Vec<Vec<isize>> = Vec::new();
@@ -190,7 +188,6 @@ pub const DEFAULT_CONTEXT: usize = 4;
 /// A tab is this many spaces, so a diff of indented code lines up.
 const TAB: &str = "   ";
 
-
 pub fn format(old: &str, new: &str, context: usize) -> Vec<DiffLine> {
     let parts = parts(&diff_lines(old, new));
     let mut lines = Vec::new();
@@ -283,7 +280,7 @@ pub fn format(old: &str, new: &str, context: usize) -> Vec<DiffLine> {
                             &mut new_number,
                         );
                     }
-                    
+
                     (false, false) => {
                         old_number += texts.len();
                         new_number += texts.len();
@@ -458,7 +455,6 @@ fn push_changed(spans: &mut Vec<Span<'static>>, text: &str, style: Style, first:
         ));
     }
 }
-
 
 fn diff_words(old: &str, new: &str) -> Vec<Change> {
     let old_tokens = word_tokens(old);
@@ -645,7 +641,7 @@ mod tests {
         let old = numbered(12, 1);
         let new = old.replace("line 12", "line twelve");
         let lines = laid_out(&old, &new, 1);
-        
+
         assert!(lines.iter().any(|line| line == " 11 line 11"));
         assert!(lines.iter().any(|line| line == "-12 line 12"));
         assert!(lines.iter().any(|line| line == "+12 line twelve"));
@@ -680,7 +676,6 @@ mod tests {
             .replace("line 4", "LINE 4");
         let lines = laid_out(&old, &new, 4);
 
-        
         assert!(!lines.iter().any(|line| line.ends_with("...")));
         assert!(lines.iter().any(|line| line == " 2 line 2"));
         assert!(lines.iter().any(|line| line == " 3 line 3"));
@@ -694,7 +689,6 @@ mod tests {
             .replace("line 25", "LINE 25");
         let lines = laid_out(&old, &new, 2);
 
-        
         assert_eq!(lines.iter().filter(|line| line.ends_with("...")).count(), 2);
         assert!(lines.iter().any(|line| line == "  4 line 4"));
         assert!(lines.iter().any(|line| line == " 23 line 23"));
@@ -702,7 +696,7 @@ mod tests {
             !lines.iter().any(|line| line.contains("line 13")),
             "the middle of the gap should be gone"
         );
-        
+
         assert!(lines.contains(&"    ...".to_string()));
     }
 
@@ -726,7 +720,6 @@ mod tests {
         let new = old.replace("line 25", "LINE 25");
         let lines = laid_out(&old, &new, 2);
 
-        
         assert!(lines.iter().any(|line| line == "-25 line 25"));
         assert!(lines.iter().any(|line| line == "+25 LINE 25"));
     }
@@ -804,7 +797,7 @@ mod tests {
         assert_eq!(painted.len(), 2);
         assert_eq!(painted_text(&painted[0]), "-1 let value = compute(a);");
         assert_eq!(painted_text(&painted[1]), "+1 let value = compute(b);");
-        
+
         assert_eq!(inverted(&painted[0]), vec!["compute(a);"]);
         assert_eq!(inverted(&painted[1]), vec!["compute(b);"]);
     }
@@ -819,7 +812,7 @@ mod tests {
 
         assert_eq!(inverted(&painted[0]), vec!["alpha"]);
         assert_eq!(inverted(&painted[1]), vec!["beta"]);
-        
+
         assert_eq!(painted_text(&painted[0]), "-1     alpha");
     }
 
@@ -832,7 +825,7 @@ mod tests {
         let painted = paint(&lines, number_width(old, new), &theme);
 
         assert_eq!(painted.len(), 4);
-        
+
         assert_eq!(painted_text(&painted[0]), "-1 one");
         assert_eq!(painted_text(&painted[1]), "-2 two");
         assert_eq!(painted_text(&painted[2]), "+1 three");

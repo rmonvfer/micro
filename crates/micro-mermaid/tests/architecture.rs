@@ -29,7 +29,6 @@ fn services_draw_inside_their_group_and_connect_by_a_line() {
     );
 }
 
-
 #[test]
 fn an_unparseable_architecture_diagram_renders_nothing() {
     let src = "architecture-beta\n  service db(database)[Database] in nowhere";

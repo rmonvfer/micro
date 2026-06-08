@@ -14,7 +14,6 @@ const COLLAPSED_OUTPUT_ROWS: usize = 6;
 const COLLAPSED_LIST_ROWS: usize = 8;
 const COLLAPSED_ERROR_ROWS: usize = 3;
 
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Row {
     Plain(String),
@@ -56,7 +55,6 @@ impl Body {}
 /// A tool result ready to render: what it acted on, how it went, and what it produced.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ToolView {
-    
     pub subject: String,
     /// A short outcome shown beside the subject: `+3 -1`, `12 lines`, `exit 2`.
     pub detail: Option<String>,
@@ -148,7 +146,6 @@ pub fn view(name: &str, arguments: &Value, output: Option<&str>, is_error: bool)
 
 /// A failed call shows why, never the diff it did not apply.
 fn failure(name: &str, subject: String, output: &str) -> ToolView {
-    
     let (detail, body) = match (name, output.split_once('\n')) {
         ("bash", Some((first, rest))) if first.starts_with("exit code ") => (
             Some(format!("exit {}", first.trim_start_matches("exit code "))),
@@ -177,7 +174,7 @@ fn file_change(name: &str, subject: String, arguments: &Value) -> ToolView {
         if formatted.is_empty() {
             return;
         }
-        
+
         if !lines.is_empty() {
             lines.push(DiffLine {
                 kind: LineKind::Elision,
@@ -190,7 +187,6 @@ fn file_change(name: &str, subject: String, arguments: &Value) -> ToolView {
     };
 
     match name {
-        
         "write" => record("", field(arguments, "content")),
         "edit" => record(
             field(arguments, "old_string"),
@@ -356,7 +352,6 @@ fn subject_text(name: &str, arguments: &Value) -> String {
     }
 }
 
-
 fn aside(output: &str) -> Option<String> {
     let trimmed = output.trim();
     let is_aside = trimmed.starts_with("no matches for ")
@@ -410,7 +405,7 @@ fn group_matches(output: &str) -> (Vec<FileMatches>, Vec<String>) {
                     lines: vec![(number, text)],
                 }),
             },
-            
+
             None => notes.push(trimmed.to_string()),
         }
     }
@@ -470,7 +465,6 @@ mod tests {
         view.visible(expanded).0
     }
 
-    
     fn gutters(view: &ToolView, expanded: bool) -> Vec<String> {
         let number_width = match &view.body {
             Body::Diff { number_width, .. } => *number_width,
@@ -508,7 +502,7 @@ mod tests {
 
         assert_eq!(view.subject, "src/main.rs");
         assert_eq!(view.detail.as_deref(), Some("+1 -1"));
-        
+
         assert_eq!(
             gutters(&view, true),
             vec![" 1 fn main() {", "-2     old();", "+2     new();", " 3 }"]
@@ -531,7 +525,7 @@ mod tests {
         );
 
         assert_eq!(view.detail.as_deref(), Some("+2 -2"));
-        
+
         assert_eq!(
             gutters(&view, true),
             vec!["-1 alpha", "+1 ALPHA", "   ...", "-1 omega", "+1 OMEGA"]

@@ -24,7 +24,6 @@ const BACKOFF_CAP: Duration = Duration::from_secs(30);
 /// The relay closes a channel with this code when it has never heard of the pairing.
 const CLOSE_PAIRING_UNKNOWN: u16 = 4404;
 
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Role {
     Machine,
@@ -64,7 +63,7 @@ pub struct RelayConfig {
     pub relay_url: String,
     pub pairing_id: String,
     pub secret: Vec<u8>,
-    
+
     pub session_id: String,
 }
 
@@ -73,14 +72,7 @@ impl RelayConfig {
     pub fn auth_token(&self, role: Role) -> String {
         let mut mac = hmac::Hmac::<sha2::Sha256>::new_from_slice(&self.secret)
             .expect("HMAC accepts a key of any length");
-        mac.update(
-            format!(
-                "parley-remote/auth/{}/{}",
-                self.pairing_id,
-                role.label()
-            )
-            .as_bytes(),
-        );
+        mac.update(format!("parley-remote/auth/{}/{}", self.pairing_id, role.label()).as_bytes());
         URL_SAFE_NO_PAD.encode(mac.finalize().into_bytes())
     }
 
@@ -124,7 +116,13 @@ impl RelayClient {
         let (stop, stop_rx) = mpsc::unbounded_channel();
         let http = reqwest::Client::new();
 
-        tokio::spawn(run(config.clone(), events, outgoing_rx, stop_rx, http.clone()));
+        tokio::spawn(run(
+            config.clone(),
+            events,
+            outgoing_rx,
+            stop_rx,
+            http.clone(),
+        ));
 
         RelayClient {
             config,
@@ -220,7 +218,10 @@ async fn run(
     ));
 
     loop {
-        if events.send(RelayEvent::State(ConnectionState::Connecting)).is_err() {
+        if events
+            .send(RelayEvent::State(ConnectionState::Connecting))
+            .is_err()
+        {
             return;
         }
 
@@ -233,9 +234,17 @@ async fn run(
         let close_code = match attempt {
             Ok((socket, _)) => {
                 backoff = BACKOFF_INITIAL;
-                serve(socket, &config, &events, &mut outgoing, &mut stop, &mut decoder).await
+                serve(
+                    socket,
+                    &config,
+                    &events,
+                    &mut outgoing,
+                    &mut stop,
+                    &mut decoder,
+                )
+                .await
             }
-            
+
             Err(_) => Outcome::Retry(None),
         };
 
@@ -254,7 +263,6 @@ async fn run(
         }
         backoff = (backoff * 2).min(BACKOFF_CAP);
 
-        
         if reregister {
             let _ = register_pairing(&http, &config).await;
         }
@@ -287,14 +295,16 @@ async fn serve(
 
     let (mut writer, mut reader) = socket.split();
 
-    
     let mut encoder = FrameEncoder::new(derive_key(
         &config.secret,
         &config.pairing_id,
         Direction::MachineToPhone,
     ));
     decoder.reset();
-    if events.send(RelayEvent::State(ConnectionState::Connected)).is_err() {
+    if events
+        .send(RelayEvent::State(ConnectionState::Connected))
+        .is_err()
+    {
         return Outcome::Stopped;
     }
 
@@ -321,7 +331,7 @@ async fn serve(
                     Some(Ok(tokio_tungstenite::tungstenite::Message::Close(frame))) => {
                         return Outcome::Retry(frame.map(|frame| u16::from(frame.code)));
                     }
-                    
+
                     Some(Ok(_)) => {}
                     Some(Err(_)) | None => return Outcome::Retry(None),
                 }
@@ -344,7 +354,7 @@ fn handle(text: &str, events: &mpsc::UnboundedSender<RelayEvent>, decoder: &mut 
         if peer.relay != "peer" || peer.role != "phone" {
             return;
         }
-        
+
         if peer.connected {
             decoder.reset();
         }
@@ -420,21 +430,28 @@ mod tests {
         );
     }
 
-    
     #[test]
     fn the_verifier_is_not_the_token() {
         let token = config().auth_token(Role::Machine);
         let verifier = RelayConfig::verifier(&token);
         assert_ne!(verifier, token);
         assert_eq!(verifier.len(), 64);
-        assert!(verifier.chars().all(|character| character.is_ascii_hexdigit()));
+        assert!(verifier
+            .chars()
+            .all(|character| character.is_ascii_hexdigit()));
     }
 
     #[test]
     fn the_websocket_address_follows_the_relays_own_scheme() {
-        assert_eq!(websocket_base("https://relay.example"), "wss://relay.example");
-        assert_eq!(websocket_base("http://localhost:8090"), "ws://localhost:8090");
-        
+        assert_eq!(
+            websocket_base("https://relay.example"),
+            "wss://relay.example"
+        );
+        assert_eq!(
+            websocket_base("http://localhost:8090"),
+            "ws://localhost:8090"
+        );
+
         assert_eq!(websocket_base("ws://localhost:8090"), "ws://localhost:8090");
     }
 
@@ -443,11 +460,10 @@ mod tests {
         let url = config().channel_url();
         assert!(url.starts_with("ws://localhost:8090/channel/vector-pairing?"));
         assert!(url.contains("role=machine"));
-        
+
         assert!(url.contains("token="));
     }
 
-    
     #[test]
     fn a_peer_frame_is_reported_as_the_phone_arriving() {
         let (events, mut received) = mpsc::unbounded_channel();
@@ -507,7 +523,11 @@ mod tests {
 
         let (events, mut received) = mpsc::unbounded_channel();
         let mut decoder = FrameDecoder::new(key);
-        handle(&serde_json::to_string(&frame).unwrap(), &events, &mut decoder);
+        handle(
+            &serde_json::to_string(&frame).unwrap(),
+            &events,
+            &mut decoder,
+        );
 
         assert_eq!(
             received.try_recv().unwrap(),

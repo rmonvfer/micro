@@ -35,7 +35,6 @@ pub fn parse(line: &str) -> Input<'_> {
         None => (rest, ""),
     };
 
-    
     if !is_command_name(name) {
         return Input::Prompt(trimmed);
     }

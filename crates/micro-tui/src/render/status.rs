@@ -55,7 +55,7 @@ pub struct Footer<'a> {
     pub session: Option<&'a str>,
     /// Tokens summed over every turn of the session.
     pub total: Usage,
-    
+
     pub last: Usage,
     pub context_window: u32,
     pub model: &'a str,
@@ -65,7 +65,7 @@ pub struct Footer<'a> {
     pub attachments: usize,
     /// What the session has cost so far, in dollars.
     pub cost: Option<f64>,
-    
+
     pub subscription: bool,
     /// Whether the conversation is summarized on its own once it fills the window.
     pub auto_compact: bool,
@@ -125,7 +125,7 @@ impl<'a> Footer<'a> {
         if let Some(session) = self.session.filter(|session| !session.is_empty()) {
             out.push_str(&format!(" • {session}"));
         }
-        
+
         if self.attachments > 0 {
             out.push_str(&match self.attachments {
                 1 => " • 1 image attached".to_string(),
@@ -213,7 +213,7 @@ impl<'a> Footer<'a> {
         if let Some(rate) = self.cache_hit_rate() {
             parts.push(format!("CH{rate:.1}%"));
         }
-        
+
         match (self.cost, self.subscription) {
             (Some(cost), _) if cost > 0.0 => parts.push(format!("${cost:.3}")),
             (_, true) => parts.push("(sub)".to_string()),
@@ -238,7 +238,7 @@ impl<'a> Footer<'a> {
             Some(percent) => format!("{percent:.1}%"),
             None => "?".to_string(),
         };
-        
+
         match self.auto_compact {
             true => format!("{share}/{window} (auto)"),
             false => format!("{share}/{window}"),
@@ -263,7 +263,7 @@ impl<'a> Footer<'a> {
             true => NO_MODEL,
             false => self.model,
         };
-        
+
         let model = match self.provider.filter(|provider| !provider.is_empty()) {
             Some(provider) => format!(
                 "({provider}) {}",
@@ -277,6 +277,19 @@ impl<'a> Footer<'a> {
             None => model,
         }
     }
+}
+
+/// The line above the editor while compaction runs.
+pub fn compaction_line(theme: &Theme, frame: &str) -> Line<'static> {
+    let indicator = match frame.is_empty() {
+        true => String::new(),
+        false => format!("{frame} "),
+    };
+    Line::from(vec![
+        Span::styled(indicator, Style::new().fg(theme.accent)),
+        Span::styled("Compacting context... ", Style::new().fg(theme.muted)),
+        Span::styled("(ctrl+c to cancel)", Style::new().fg(theme.dim)),
+    ])
 }
 
 /// The line above the editor while a turn runs.
@@ -342,7 +355,6 @@ pub fn shorten_home(path: &str) -> String {
     let home = home.to_string_lossy();
     let home = home.strip_suffix('/').unwrap_or(home.as_ref());
     match path.strip_prefix(home) {
-        
         Some(rest) if rest.is_empty() || rest.starts_with('/') => format!("~{rest}"),
         _ => path.to_string(),
     }
@@ -521,7 +533,6 @@ mod tests {
     #[test]
     fn the_cache_hit_rate_comes_from_the_last_turn() {
         let footer = Footer {
-            
             total: usage(20_000, 5_000, 90_000, 1_000),
             last: usage(200, 50, 800, 0),
             ..footer()
@@ -627,7 +638,6 @@ mod tests {
             );
         }
 
-        
         let text = rendered(&footer.rows(&Theme::dark(), 26)[1]);
         assert!(text.starts_with("↑1.2k"), "{text}");
         assert!(!text.contains("claude"), "{text}");
@@ -752,7 +762,6 @@ mod added_fields {
             .unwrap_or_default()
     }
 
-    
     #[test]
     fn an_ordinary_session_shows_context_cost_and_cache_hits_together() {
         let footer = Footer {
@@ -787,7 +796,6 @@ mod added_fields {
         assert!(row(&footer, 1).contains("$1.234"), "{}", row(&footer, 1));
     }
 
-    
     #[test]
     fn a_subscription_says_so_instead_of_a_cost() {
         let footer = Footer {
@@ -851,11 +859,10 @@ mod added_fields {
             ..base()
         };
         assert_eq!(talking.height(), HEIGHT + 1);
-        
+
         assert_eq!(row(&talking, 2), "first last");
     }
 
-    
     #[test]
     fn a_status_line_cannot_break_the_row() {
         let footer = Footer {

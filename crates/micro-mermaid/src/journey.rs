@@ -6,7 +6,6 @@ use crate::labels::{clean_label, strip_controls};
 use crate::types::Cls;
 use crate::width::string_width;
 
-
 const MAX_TASKS: usize = 64;
 
 /// Mermaid scores a journey out of five.
@@ -48,7 +47,6 @@ pub(crate) fn render_journey(src: &str) -> Option<Canvas> {
             continue;
         }
 
-        
         let mut parts = line.split(':').map(str::trim);
         let label = clean_label(parts.next()?);
         let score: usize = parts.next()?.trim().parse().ok()?;
@@ -85,7 +83,6 @@ pub(crate) fn render_journey(src: &str) -> Option<Canvas> {
 }
 
 fn draw(title: Option<&str>, rows: &[Row]) -> Canvas {
-    
     const INDENT: usize = 2;
 
     let widest_label = rows
@@ -123,7 +120,6 @@ fn draw(title: Option<&str>, rows: &[Row]) -> Canvas {
             Row::Task { label, score, .. } => {
                 draw_text(&mut canvas, label, INDENT, y, Cls::Text);
 
-                
                 let marks: String = (0..SCALE)
                     .map(|mark| match mark < *score {
                         true => '●',
@@ -179,7 +175,6 @@ mod tests {
         assert!(rows[0].contains("●●●●○"), "{rows:?}");
     }
 
-    
     #[test]
     fn what_is_not_a_journey_is_left_alone() {
         assert!(render_journey("graph TD\n  A --> B").is_none());
@@ -195,7 +190,6 @@ mod tests {
         );
     }
 
-    
     #[test]
     fn too_many_tasks_are_refused() {
         let mut source = String::from("journey\n");

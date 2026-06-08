@@ -24,7 +24,6 @@ use ratatui::text::Line;
 use ratatui::text::Span;
 use ratatui::Frame;
 
-
 const EDITOR_SHARE: f32 = 0.3;
 const MIN_EDITOR_ROWS: usize = 5;
 
@@ -51,13 +50,14 @@ const APP_NAME: &str = "micro";
 pub fn draw(frame: &mut Frame, app: &mut App) {
     let area = margin(frame.area(), app.settings().interface_padding);
     if area.width == 0 || area.height == 0 {
+        app.set_placements(Vec::new());
         return;
     }
     let theme = app.theme;
 
     let content_padding = app.settings().content_padding;
     let content_width = content_width(area.width, content_padding);
-    
+
     app.set_frame(content_width as usize, area.height);
     let chrome = chrome(app, &theme, area.width, area.height);
     let transcript_rows = area.height.saturating_sub(chrome.rows());
@@ -65,7 +65,6 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
 
     app.refresh_lines();
 
-    
     let opening = match app.lines().is_empty() && !app.settings().quiet_startup {
         true => match app.header_override() {
             Some(lines) => lines
@@ -82,7 +81,6 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         false => Vec::new(),
     };
 
-    
     let rows = chrome.stack(Some(area.height as usize)).allocation(0);
     let [transcript_area, _, activity_area, overlay_area, widgets_above_area, editor_area, widgets_below_area, menu_area, status_area] =
         Layout::vertical(rows.iter().map(|rows| Constraint::Length(*rows as u16))).areas(area);
@@ -101,6 +99,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         &theme,
         app.picker().is_none(),
     );
+    set_component_overlay_cursor(frame, overlay_area, app);
     draw_activity(frame, inset_by(activity_area, content_padding), app, &theme);
     draw_rows(
         frame,
@@ -110,7 +109,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         &theme,
         false,
     );
-    
+
     let level = app.thinking_color();
     match app.editor_component_id() {
         Some(_) => editor::draw_component(
@@ -118,6 +117,14 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             editor_area,
             inset_by(editor_area, content_padding),
             app.editor_component_lines(),
+            app.editor_component_cursor().map(|(row, byte)| {
+                let column = app
+                    .editor_component_lines()
+                    .get(row)
+                    .map(|line| text_width(&line[..byte]))
+                    .unwrap_or(0);
+                (row, column)
+            }),
             &theme,
             level,
         ),
@@ -150,16 +157,24 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     }
     draw_status(frame, inset_by(status_area, content_padding), app, &theme);
 
-    
     app.links().apply(frame.buffer_mut(), area);
-    
+
     let first_visible = app
         .lines()
         .len()
         .saturating_sub(transcript_rows as usize)
         .saturating_sub(app.scroll());
-    app.pictures()
-        .apply(frame.buffer_mut(), transcript_area, first_visible);
+    let shown = app
+        .lines()
+        .len()
+        .saturating_sub(first_visible)
+        .min(transcript_area.height as usize);
+    let top = transcript_area.y + (transcript_area.height as usize - shown) as u16;
+
+    let placements = app
+        .pictures()
+        .placements(transcript_area, first_visible, top);
+    app.set_placements(placements);
 }
 
 /// Columns left for content once both margins are taken off.
@@ -193,15 +208,12 @@ impl Chrome {
     fn stack(&self, height: Option<usize>) -> crate::layout::Stack {
         use crate::layout::{Child, Lines, Spacer, Stack};
         let stack = match height {
-            
             Some(height) => Stack::within(height).with(Child::flexible(Spacer(0), 1)),
             None => Stack::new(),
         };
         stack
-            
             .with(Child::content(Spacer(1)))
             .with(Child::content(Spacer(self.activity as usize)))
-            
             .with(Child::content(Lines(self.overlay.clone())))
             .with(Child::content(Lines(self.widgets_above.clone())))
             .with(Child::content(Spacer(self.editor as usize)))
@@ -229,14 +241,17 @@ pub fn interface_rows(app: &App, theme: &Theme, width: u16, height: u16) -> u16 
 fn chrome(app: &App, theme: &Theme, width: u16, height: u16) -> Chrome {
     let overlay = overlay_lines(app, theme, width as usize);
     let activity = activity_rows(app);
-    let widgets_above = widget_lines(app.widgets_above(), theme);
+    let mut widgets_above = queue_lines(app, theme, width as usize);
+    widgets_above.extend(widget_lines(app.widgets_above(), theme));
     let widgets_below = widget_lines(app.widgets_below(), theme);
-    
+
     let editor = match overlay.is_empty() {
         true => {
             let content_rows = match app.editor_component_id() {
                 Some(_) => app.editor_component_lines().len().max(1),
-                None => app.editor.height(width as usize),
+                None => app
+                    .editor
+                    .height(content_width(width, app.settings().content_padding) as usize),
             };
             content_rows.clamp(1, max_editor_rows(height)) as u16 + editor::RULES
         }
@@ -244,7 +259,6 @@ fn chrome(app: &App, theme: &Theme, width: u16, height: u16) -> Chrome {
     };
     let status = footer_height(app);
 
-    
     let held = 1
         + overlay.len() as u16
         + activity
@@ -268,7 +282,33 @@ fn chrome(app: &App, theme: &Theme, width: u16, height: u16) -> Chrome {
     }
 }
 
-/// An extension's widgets, laid out one line per row in the order they were set.
+fn queue_lines(app: &App, theme: &Theme, width: usize) -> Vec<Line<'static>> {
+    let queued = app.queued_messages();
+    if queued.is_empty() {
+        return Vec::new();
+    }
+
+    let mut lines = vec![Line::default()];
+    for message in queued {
+        let label = match message.kind {
+            crate::app::QueueKind::Steering => "Steering",
+            crate::app::QueueKind::FollowUp => "Follow-up",
+        };
+        lines.push(clip(
+            Line::styled(
+                format!("{label}: {}", message.text),
+                Style::new().fg(theme.dim),
+            ),
+            width,
+        ));
+    }
+    lines.push(Line::from(vec![Span::styled(
+        "↳ alt+up to edit all queued messages",
+        Style::new().fg(theme.dim),
+    )]));
+    lines
+}
+
 fn widget_lines(widgets: Vec<Vec<String>>, theme: &Theme) -> Vec<Line<'static>> {
     widgets
         .into_iter()
@@ -277,27 +317,25 @@ fn widget_lines(widgets: Vec<Vec<String>>, theme: &Theme) -> Vec<Line<'static>> 
         .collect()
 }
 
-
 fn overlay_lines(app: &App, theme: &Theme, width: usize) -> Vec<Line<'static>> {
-    
     let held = ROWS_BEHIND_OVERLAY + activity_rows(app) + footer_height(app) + 1;
     let budget = app.rows().saturating_sub(held).max(4) as usize;
 
     if let Some(prompt) = app.key_prompt() {
         return overlay::key_prompt_lines(prompt, theme, width);
     }
-    if let Some((title, text, items, selected, detail_open, scroll)) = app.inspection() {
-        return overlay::inspection_lines(
+    if let Some((title, _text, items, body, selected, detail_open, scroll)) = app.inspection() {
+        return overlay::inspection_lines(overlay::Inspection {
             title,
-            text,
             items,
+            body,
             selected,
             detail_open,
             scroll,
             theme,
             width,
             budget,
-        );
+        });
     }
     if let Some(lines) = app.component_overlay_lines() {
         return lines
@@ -312,6 +350,26 @@ fn overlay_lines(app: &App, theme: &Theme, width: usize) -> Vec<Line<'static>> {
     match app.picker() {
         Some(picker) => overlay::picker_lines(picker, theme, width, budget),
         None => Vec::new(),
+    }
+}
+
+/// Place the terminal cursor where an open custom component requested it.
+fn set_component_overlay_cursor(frame: &mut Frame, area: Rect, app: &App) {
+    let (Some(lines), Some((row, byte))) = (
+        app.component_overlay_lines(),
+        app.component_overlay_cursor(),
+    ) else {
+        return;
+    };
+    let column = lines
+        .get(row)
+        .map(|line| text_width(&line[..byte]))
+        .unwrap_or(0);
+    if row < area.height as usize {
+        frame.set_cursor_position((
+            area.x + (column as u16).min(area.width.saturating_sub(1)),
+            area.y + row as u16,
+        ));
     }
 }
 
@@ -355,14 +413,12 @@ fn draw_transcript(
         false => app.lines(),
     };
 
-    
     let first = rows
         .len()
         .saturating_sub(height)
         .saturating_sub(app.scroll());
     let shown = rows.len().saturating_sub(first).min(height);
 
-    
     let top = area.y + (height - shown) as u16;
     for (offset, line) in rows.iter().skip(first).take(height).enumerate() {
         frame
@@ -402,7 +458,6 @@ fn draw_scrollbar(
         return;
     }
 
-    
     let thumb = match overflows {
         true => (height * height / total).max(1),
         false => height,
@@ -418,7 +473,7 @@ fn draw_scrollbar(
         let (glyph, color) = match (offset >= at && offset < at + thumb, overflows) {
             (true, _) => ("│", theme.border_accent),
             (false, true) => ("│", theme.border_muted),
-            
+
             (false, false) => (" ", theme.border_muted),
         };
         frame.buffer_mut().set_string(
@@ -500,7 +555,6 @@ const ALL_HINTS: [(&str, &str); 19] = [
     ("drop files", "to attach"),
 ];
 
-
 fn intro(
     theme: &Theme,
     width: usize,
@@ -525,12 +579,10 @@ fn intro(
         dim,
     )];
 
-    
     let mut out = vec![Line::default()];
     out.extend(wrap_spans(&logo, width, 0));
 
     match expanded {
-        
         false => {
             out.extend(wrap_spans(&hints::hints(&HINTS, theme), width, 0));
             out.extend(wrap_spans(
@@ -580,7 +632,6 @@ fn resource_lines(
             0,
         ));
 
-        
         let dim = Style::new().fg(theme.dim);
         match expanded {
             false => out.extend(wrap_spans(
@@ -609,13 +660,16 @@ fn draw_activity(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
     if area.width == 0 || area.height == 0 || !app.is_running() || !app.working_visible() {
         return;
     }
-    let line = status::activity_line(
-        theme,
-        app.indicator_frame(),
-        app.elapsed(),
-        app.is_interrupting(),
-        &app.activity(),
-    );
+    let line = match app.is_compacting() {
+        true => status::compaction_line(theme, app.indicator_frame()),
+        false => status::activity_line(
+            theme,
+            app.indicator_frame(),
+            app.elapsed(),
+            app.is_interrupting(),
+            &app.activity(),
+        ),
+    };
     let line = match app.queued() {
         0 => line,
         count => {
@@ -627,7 +681,7 @@ fn draw_activity(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
             line
         }
     };
-    
+
     let row = area.y + u16::from(area.height > 1);
     frame.buffer_mut().set_line(area.x, row, &line, area.width);
 }
@@ -786,7 +840,6 @@ mod tests {
         }
     }
 
-    
     #[test]
     fn extension_widgets_are_drawn_where_they_were_placed() {
         let mut app = App::new(&[], TuiOptions::default());
@@ -896,7 +949,6 @@ mod tests {
             .collect()
     }
 
-    
     #[test]
     fn the_first_screen_names_what_loaded_and_opens_to_say_where_from() {
         let mut resources = crate::app::Resources::default();
@@ -939,7 +991,6 @@ mod tests {
             "every key: {opened}"
         );
 
-        
         app.handle(Action::ToggleFocused);
         terminal.draw(|frame| draw(frame, &mut app)).expect("draws");
         assert!(screen(&terminal).join("\n").contains("humanizer, shadcn"));
@@ -969,7 +1020,6 @@ mod tests {
                 .count()
         }
 
-        
         let mut app = App::new(&[], TuiOptions::default());
         app.transcript.push_user("a question");
         app.apply_event(AgentEvent::MessageDelta {
@@ -993,7 +1043,6 @@ mod tests {
             "on a screen of its own the rows go back to the conversation between turns"
         );
 
-        
         app.busy("thinking");
         let running = paint(&mut app, 40, 12);
         let rule = running
@@ -1027,7 +1076,6 @@ mod tests {
         );
     }
 
-    
     fn unpadded() -> TuiOptions {
         let mut options = TuiOptions::default();
         options.settings.interface_padding = 0;
@@ -1074,7 +1122,7 @@ mod tests {
             .iter()
             .position(|row| row.trim().starts_with("micro v"))
             .expect("the logo is drawn");
-        
+
         assert!(logo > 30, "the opening sits above the input, at row {logo}");
     }
 
@@ -1119,7 +1167,7 @@ mod tests {
     }
 
     #[test]
-    
+
     fn a_short_conversation_sits_above_the_input() {
         let mut app = App::new(&[], TuiOptions::default());
         app.transcript.push_user("hello");
@@ -1131,6 +1179,23 @@ mod tests {
             .position(|row| row.trim_start().starts_with("hello"))
             .expect("the prompt is drawn");
         assert!(prompt > 25, "prompt should remain near the input");
+    }
+
+    #[test]
+    fn a_wrapped_prompt_receives_all_of_its_rows() {
+        let mut app = App::new(&[], unpadded());
+        app.editor.insert_str("abcdefghijklmnopqrst");
+
+        let rows = paint(&mut app, 20, 12);
+
+        assert!(
+            rows.iter().any(|row| row.contains("abcdefghijklmnopqr")),
+            "the first wrapped row is visible: {rows:?}"
+        );
+        assert!(
+            rows.iter().any(|row| row.contains("st")),
+            "the final wrapped row is visible: {rows:?}"
+        );
     }
 
     #[test]
@@ -1147,7 +1212,7 @@ mod tests {
             24,
             "and fills it, with the input on the last rows"
         );
-        
+
         let footer = rows.len() - 2;
         assert!(
             rows[footer].trim().starts_with('~') || rows[footer].starts_with('/'),
@@ -1162,7 +1227,6 @@ mod tests {
         );
     }
 
-    
     #[test]
     fn every_message_is_reachable_by_scrolling() {
         let mut app = App::new(&[], TuiOptions::default());

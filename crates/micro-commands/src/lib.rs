@@ -19,10 +19,10 @@ pub use bill::UnknownAttempt;
 pub use outcome::CommandOutcome;
 pub use outcome::InspectionItem;
 pub use outcome::MessageKind;
-pub use outcome::RemoteAction;
 pub use outcome::Picker;
 pub use outcome::PickerItem;
 pub use outcome::PickerLayout;
+pub use outcome::RemoteAction;
 pub use outcome::ThemeChoice;
 pub use parse::parse;
 pub use parse::suggest;
@@ -168,6 +168,11 @@ static COMMANDS: &[Command] = &[
         description: "Save project trust decision for future sessions",
     },
     Command {
+        name: "sandbox",
+        argument: Some("[session|user|project]"),
+        description: "inspect and configure command access",
+    },
+    Command {
         name: "set",
         argument: Some("<setting> [value]"),
         description: "Change a setting, or show what it is",
@@ -254,7 +259,7 @@ pub fn find(name: &str) -> Option<&'static Command> {
 /// Commands whose name starts with `prefix`, for the menu shown while a user types.
 pub fn complete(prefix: &str) -> Vec<&'static Command> {
     let prefix = prefix.trim_start().trim_start_matches('/');
-    
+
     if prefix.contains(char::is_whitespace) {
         return Vec::new();
     }
@@ -282,7 +287,7 @@ pub struct CommandContext<'a> {
     pub message_count: usize,
     /// What the conversation has cost in tokens so far.
     pub usage: micro_types::Usage,
-    
+
     pub collapse_changelog: bool,
     /// The models a workspace put on its shortlist, as the patterns it named them by.
     pub scoped_models: &'a [String],
@@ -328,11 +333,14 @@ pub async fn run(
         "name" => session::name(argument, context).await,
         "skills" => skills(context).await,
         "settings" => settings(context),
+        "sandbox" => CommandOutcome::Sandbox {
+            argument: argument.map(str::to_string),
+        },
         "set" => set(argument),
         "trust" => trust(argument),
         "reload" => CommandOutcome::Reload,
         "share" => CommandOutcome::Share,
-        
+
         "remote" => CommandOutcome::RemoteControl {
             action: match argument.map(str::trim).unwrap_or_default() {
                 "pair" => RemoteAction::Pair { qr: false },
@@ -352,7 +360,7 @@ pub async fn run(
         "export" => CommandOutcome::Export {
             path: argument.map(str::to_string),
         },
-        
+
         "new" => CommandOutcome::Clear,
         "debug" => debug(context),
         "bill" => bill::command(argument, context).await,
@@ -465,8 +473,6 @@ fn theme(argument: Option<&str>) -> CommandOutcome {
                     PickerItem::new("auto", "follow the terminal", "/theme auto"),
                 ],
             )
-            
-            
             .columns(12, 32),
         );
     };
@@ -490,7 +496,7 @@ fn theme(argument: Option<&str>) -> CommandOutcome {
 /// What skills were found, and anything that stopped one loading.
 async fn skills(context: &CommandContext<'_>) -> CommandOutcome {
     let home = micro_dirs::config_dir().unwrap_or_default();
-    
+
     let trusted = !micro_config::requires_decision(context.workspace)
         || micro_config::TrustStore::load()
             .await
@@ -505,7 +511,6 @@ async fn skills(context: &CommandContext<'_>) -> CommandOutcome {
     .await;
 
     if found.skills.is_empty() && found.diagnostics.is_empty() {
-        
         return CommandOutcome::info(format!(
             "No skills. Put a SKILL.md in .micro/skills/, {}, or ~/.agents/skills/.",
             home.join("skills").display()
@@ -760,7 +765,6 @@ fn set(argument: Option<&str>) -> CommandOutcome {
     };
 
     let Some(value) = value else {
-        
         if let Some(choices) = settable(&config, name) {
             return CommandOutcome::Choose(Picker::new(name.to_string(), choices).titled());
         }
@@ -919,7 +923,11 @@ fn settable(config: &micro_config::Config, name: &str) -> Option<Vec<PickerItem>
         "sandbox" => {
             let now = policy_name(&now).to_string();
             vec![
-                ("read-only", "read anything, write nothing", now == "read-only"),
+                (
+                    "read-only",
+                    "read anything, write nothing",
+                    now == "read-only",
+                ),
                 (
                     "workspace-write",
                     "write inside this workspace only",
@@ -1069,7 +1077,6 @@ fn describe(config: &micro_config::Config, name: &str) -> Option<String> {
     Some(text)
 }
 
-
 fn assign(config: &mut micro_config::Config, name: &str, value: &str) -> Result<(), String> {
     let flag = || match value.to_ascii_lowercase().as_str() {
         "on" | "true" | "yes" | "1" => Ok(true),
@@ -1151,7 +1158,6 @@ fn assign(config: &mut micro_config::Config, name: &str, value: &str) -> Result<
             config.sandbox = Some(policy.into())
         }
         "budget" => {
-            
             let amount: f64 = value
                 .trim_start_matches('$')
                 .parse()
@@ -1339,7 +1345,6 @@ fn hotkeys_text() -> String {
     out.trim_end().to_string()
 }
 
-
 fn key_display(keys: &str) -> String {
     keys.split('/')
         .map(|combination| {
@@ -1401,7 +1406,6 @@ pub(crate) mod testing {
     use std::sync::atomic::AtomicU32;
     use std::sync::atomic::Ordering;
 
-    
     pub struct Harness {
         pub catalog: Catalog,
         pub auth: AuthStore,
@@ -1476,7 +1480,7 @@ mod tests {
 
         for command in commands() {
             assert!(!command.description.is_empty(), "/{}", command.name);
-            
+
             assert!(command
                 .name
                 .chars()
@@ -1537,7 +1541,6 @@ mod tests {
             tree_filter: Default::default(),
         };
 
-        
         let argument_for = |name: &str| match name {
             "import" => Some("nothing.jsonl"),
             "set" => Some("warnings"),
@@ -1552,7 +1555,6 @@ mod tests {
         };
 
         for command in commands() {
-            
             if matches!(command.name, "login" | "quit") {
                 continue;
             }
@@ -1620,7 +1622,7 @@ mod tests {
         assert!(assign(&mut config, "image_width_cells", "wide").is_err());
         assert!(assign(&mut config, "http_idle_timeout", "0").is_err());
         assert!(assign(&mut config, "double_escape", "sideways").is_err());
-        
+
         assert!(assign(&mut config, "transport", "websocket").is_err());
         assert!(assign(&mut config, "nothing_like_this", "on").is_err());
         assert_eq!(config, micro_config::Config::default(), "nothing stuck");
@@ -1666,7 +1668,6 @@ mod tests {
         }
     }
 
-    
     #[test]
     fn every_hotkey_row_names_a_key_that_is_bound() {
         let text = hotkeys_text();

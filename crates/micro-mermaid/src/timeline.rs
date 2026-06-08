@@ -6,7 +6,6 @@ use crate::labels::{clean_label, strip_controls};
 use crate::types::Cls;
 use crate::width::string_width;
 
-
 const MAX_PERIODS: usize = 64;
 
 /// Columns between the period and the spine, and between the spine and the events.
@@ -33,10 +32,9 @@ pub(crate) fn render_timeline(src: &str) -> Option<Canvas> {
             title = Some(clean_label(named.trim()));
             continue;
         }
-        
+
         let line = line.strip_prefix("section ").unwrap_or(line);
 
-        
         let mut parts = line
             .split(':')
             .map(str::trim)
@@ -72,7 +70,6 @@ fn draw(title: Option<&str>, periods: &[Period]) -> Canvas {
         .max()
         .unwrap_or(0);
 
-    
     let rows: usize = periods
         .iter()
         .map(|period| period.events.len().max(1))
@@ -94,7 +91,6 @@ fn draw(title: Option<&str>, periods: &[Period]) -> Canvas {
         draw_text(&mut canvas, &period.label, 0, y, Cls::Text);
 
         for row in 0..height {
-            
             let last = index + 1 == periods.len() && row + 1 == height;
             let branches = row == 0 || period.events.get(row).is_some();
             let glyph = match (last, branches) {
@@ -133,7 +129,7 @@ mod tests {
         assert_eq!(rows[0], "History");
         assert!(rows[1].starts_with("2020"), "{rows:?}");
         assert!(rows[1].contains("Started"), "{rows:?}");
-        
+
         assert!(rows[2].contains("Grew"), "{rows:?}");
         assert!(!rows[2].contains("2021"), "{rows:?}");
         assert!(
@@ -142,7 +138,6 @@ mod tests {
         );
     }
 
-    
     #[test]
     fn the_spine_runs_through_and_closes() {
         let rows = drawn("timeline\n  One : a\n  Two : b");
@@ -158,7 +153,6 @@ mod tests {
         assert_eq!(rows.len(), 2, "{rows:?}");
     }
 
-    
     #[test]
     fn what_is_not_a_timeline_is_left_alone() {
         assert!(render_timeline("graph TD\n  A --> B").is_none());
@@ -166,7 +160,6 @@ mod tests {
         assert!(render_timeline("timeline\n  title Only a title").is_none());
     }
 
-    
     #[test]
     fn too_many_periods_are_refused() {
         let mut source = String::from("timeline\n");

@@ -78,7 +78,6 @@ impl Rpc {
             self.dispatch(command, &mut output, &mut incoming).await?;
             output.flush().await?;
 
-            
             while let Some(prompt) = self.pending.first().cloned() {
                 self.pending.remove(0);
                 self.turn(prompt, &mut output, &mut incoming).await?;
@@ -129,7 +128,6 @@ impl Rpc {
                 self.turn(prompt, output, incoming).await?;
             }
 
-            
             Command::Steer {
                 message, images, ..
             }
@@ -143,7 +141,6 @@ impl Rpc {
             }
 
             Command::Abort { .. } => {
-                
                 self.pending.clear();
                 let _ = self.agent.steering().take_all();
                 self.answer(Response::ok(id, name), output).await?;
@@ -254,7 +251,7 @@ impl Rpc {
                 ..
             } => {
                 let result = self.bash(&command).await;
-                
+
                 if !exclude_from_context {
                     self.agent.record(Message::user(format!(
                         "<bash command=\"{command}\">\n{}\n</bash>",
@@ -276,7 +273,6 @@ impl Rpc {
                 .await?;
             }
 
-            
             Command::AbortBash { .. } => {
                 self.answer(Response::ok(id, name), output).await?;
             }
@@ -459,10 +455,9 @@ impl Rpc {
         let (sender, mut receiver) = tokio::sync::mpsc::unbounded_channel::<AgentEvent>();
         let mut deferred: Vec<String> = Vec::new();
         let mut aborted = false;
-        
+
         let steering = self.agent.steering();
 
-        
         {
             let turn = self.agent.run(prompt, &sender);
             tokio::pin!(turn);
@@ -483,7 +478,7 @@ impl Rpc {
                                 aborted = true;
                                 break;
                             }
-                            
+
                             Ok(Command::Steer { id, message, images }) => {
                                 steering.steer(build_prompt(&message, images));
                                 let answer = Response::ok(id.as_deref(), "steer");
@@ -496,16 +491,13 @@ impl Rpc {
                                 output.write_all(line(&answer).as_bytes()).await?;
                                 output.flush().await?;
                             }
-                            
+
                             _ => deferred.push(raw),
                         }
                     }
                     _ = &mut turn => break,
                 }
             }
-
-            
-            drop(turn);
         }
 
         while let Ok(event) = receiver.try_recv() {
@@ -514,7 +506,6 @@ impl Rpc {
         output.flush().await?;
 
         if aborted {
-            
             let _ = steering.take_all();
         }
 
@@ -533,7 +524,7 @@ impl Rpc {
             model: self.agent.model().id.clone(),
             provider: self.agent.model().provider.clone(),
             thinking_level: self.agent.model().thinking,
-            
+
             is_streaming: false,
             is_compacting: false,
             session_id: meta.id.clone(),
@@ -541,7 +532,7 @@ impl Rpc {
             session_name: (!meta.title.is_empty()).then(|| meta.title.clone()),
             auto_compaction_enabled: self.auto_compaction,
             message_count: self.agent.messages().len(),
-            
+
             pending_message_count: self.pending.len() + self.agent.steering().waiting(),
         }
     }
@@ -582,13 +573,12 @@ impl Rpc {
         *self.session.lock().await = started;
         self.agent.set_messages(Vec::new());
         self.pending.clear();
-        
+
         let _ = self.agent.steering().take_all();
         Ok(session_id)
     }
 
     async fn switch_session(&mut self, path: &str) -> Result<usize, String> {
-        
         let id = std::path::Path::new(path)
             .file_stem()
             .and_then(|stem| stem.to_str())

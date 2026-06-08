@@ -2,6 +2,7 @@
 
 use std::sync::Arc;
 use std::sync::Mutex;
+use std::sync::RwLock;
 use std::time::Duration;
 
 use micro_agent::Agent;
@@ -56,18 +57,16 @@ async fn a_plain_text_turn_emits_its_events_in_order() {
         events.names(),
         vec![
             "AgentStart",
-            
             "MessageStart",
             "MessageEnd",
             "TurnStart",
-            
             "MessageStart",
-            "MessageDelta", 
-            "MessageDelta", 
-            "MessageDelta", 
-            "MessageDelta", 
-            "MessageDelta", 
-            "MessageDelta", 
+            "MessageDelta",
+            "MessageDelta",
+            "MessageDelta",
+            "MessageDelta",
+            "MessageDelta",
+            "MessageDelta",
             "MessageEnd",
             "TurnEnd",
             "AgentEnd",
@@ -110,11 +109,9 @@ async fn a_tool_call_is_executed_and_its_result_feeds_the_next_request() {
 
     let (messages, events) = run_agent(&mut agent, Message::user("read a.txt")).await;
 
-    
     assert_eq!(read.call_count(), 1);
     assert_eq!(read.call(0), json!({ "path": "a.txt" }));
 
-    
     let Some(Message::ToolResult {
         tool_call_id,
         tool_name,
@@ -132,7 +129,6 @@ async fn a_tool_call_is_executed_and_its_result_feeds_the_next_request() {
     assert!(!is_error);
     assert_eq!(tool_result_text(&messages[2]), "hello");
 
-    
     assert_eq!(provider.call_count(), 2);
     let second = provider.call(1);
     assert_eq!(
@@ -147,6 +143,30 @@ async fn a_tool_call_is_executed_and_its_result_feeds_the_next_request() {
     assert!(second.unanswered_tool_calls().is_empty());
 
     assert_eq!(events.tool_ends(), vec![("call_1", "read", "hello", false)]);
+}
+
+#[tokio::test]
+async fn a_tool_removed_from_the_offered_set_cannot_be_executed() {
+    let provider = FakeProvider::builder()
+        .turn(Turn::new().with_tool_call("call_1", "write", json!({ "path": "a.txt" })))
+        .turn(Turn::text("done"))
+        .build();
+    let read = FakeTool::new("read");
+    let write = FakeTool::new("write");
+    let offered = Arc::new(RwLock::new(Some(vec![
+        "read".to_string(),
+        "write".to_string(),
+    ])));
+    let mut agent = agent(&provider, vec![Arc::new(read), Arc::new(write.clone())])
+        .with_offered_tools(offered.clone())
+        .with_hooks(Arc::new(WithdrawingTool::new(offered, "write")));
+
+    let (messages, events) = run_agent(&mut agent, Message::user("go")).await;
+
+    assert_eq!(provider.call(0).tool_names(), vec!["read", "write"]);
+    assert_eq!(write.call_count(), 0, "a hidden tool must not be runnable");
+    assert!(events.tool_ends()[0].3);
+    assert!(tool_result_text(&messages[2]).contains("tool not found: write"));
 }
 
 #[tokio::test]
@@ -187,7 +207,6 @@ async fn several_tool_calls_in_one_message_all_run_in_order() {
         ]
     );
 
-    
     let second = provider.call(1);
     let ids: Vec<&str> = second
         .tool_results()
@@ -221,7 +240,6 @@ async fn a_failing_tool_produces_an_error_result_and_the_loop_continues() {
     assert!(is_error, "a tool error must be flagged on the result");
     assert_eq!(tool_result_text(&messages[2]), "permission denied");
 
-    
     assert_eq!(provider.call_count(), 2);
     assert_eq!(
         provider.call(1).tool_results(),
@@ -249,7 +267,6 @@ async fn an_unknown_tool_produces_an_error_result_rather_than_a_panic() {
         "the result should name the missing tool, got {output:?}"
     );
 
-    
     assert_eq!(provider.call_count(), 2);
     let (_, _, _, result_is_error) = provider.call(1).tool_results()[0];
     assert!(result_is_error);
@@ -272,7 +289,6 @@ async fn a_length_stop_fails_every_tool_call_without_executing_it() {
 
     let (messages, events) = run_agent(&mut agent, Message::user("write two files")).await;
 
-    
     assert_eq!(
         write.call_count(),
         0,
@@ -289,7 +305,6 @@ async fn a_length_stop_fails_every_tool_call_without_executing_it() {
         );
     }
 
-    
     let second = provider.call(1);
     assert!(second.unanswered_tool_calls().is_empty());
     assert!(second.tool_results().iter().all(|(.., is_error)| *is_error));
@@ -346,6 +361,42 @@ async fn a_non_retryable_error_is_not_retried() {
 }
 
 #[tokio::test(start_paused = true)]
+async fn an_immediate_provider_error_starts_and_ends_the_assistant_message() {
+    let provider = FakeProvider::once(Turn::error("Fake returned 400: bad request"));
+    let mut agent = agent(&provider, Vec::new());
+
+    let (_, events) = run_agent(&mut agent, Message::user("hi")).await;
+
+    assert_eq!(events.count("MessageStart"), events.count("MessageEnd"));
+    let assistant_start = events
+        .iter()
+        .position(|event| {
+            matches!(
+                event,
+                micro_types::AgentEvent::MessageStart {
+                    message: Message::Assistant(_)
+                }
+            )
+        })
+        .expect("the assistant response must start");
+    let assistant_end = events
+        .iter()
+        .position(|event| {
+            matches!(
+                event,
+                micro_types::AgentEvent::MessageEnd {
+                    message: Message::Assistant(_)
+                }
+            )
+        })
+        .expect("the assistant response must end");
+    assert!(
+        assistant_start < assistant_end,
+        "the response lifecycle is ordered"
+    );
+}
+
+#[tokio::test(start_paused = true)]
 async fn retries_stop_at_the_attempt_cap() {
     let provider = FakeProvider::builder()
         .turns((0..6).map(|_| Turn::error("Fake returned 503: overloaded")))
@@ -372,7 +423,6 @@ async fn retries_stop_at_the_attempt_cap() {
 
 #[tokio::test(start_paused = true)]
 async fn a_stream_that_failed_after_emitting_text_is_not_retried() {
-    
     let provider = FakeProvider::builder()
         .turn(Turn::streamed_text(["partial"]).failing("Fake returned 429: slow down"))
         .turn(Turn::text("never reached"))
@@ -392,7 +442,6 @@ async fn a_stream_that_failed_after_emitting_text_is_not_retried() {
 
 #[tokio::test]
 async fn the_loop_runs_as_many_turns_as_the_model_asks_for() {
-    
     let provider = FakeProvider::builder()
         .turns((0..4).map(|turn| {
             Turn::new().with_tool_call(format!("call_{turn}"), "read", json!({ "n": turn }))
@@ -404,7 +453,7 @@ async fn the_loop_runs_as_many_turns_as_the_model_asks_for() {
     let (_, events) = run_agent(&mut agent, Message::user("keep going")).await;
 
     assert_eq!(read.call_count(), 4);
-    
+
     assert_eq!(provider.call_count(), 5);
     assert_eq!(
         events
@@ -434,13 +483,12 @@ async fn the_returned_messages_match_the_ones_reported_by_agent_end() {
         messages.iter().map(role_of).collect::<Vec<_>>(),
         vec!["user", "assistant", "tool_result", "assistant"]
     );
-    
+
     assert_eq!(agent.messages(), messages.as_slice());
 }
 
 #[tokio::test]
 async fn a_turn_that_only_emits_done_still_reports_message_end() {
-    
     let provider = FakeProvider::once(Turn::text("instant").without_deltas());
     let mut agent = agent(&provider, Vec::new());
 
@@ -450,10 +498,9 @@ async fn a_turn_that_only_emits_done_still_reports_message_end() {
     assert_eq!(events.assistant_message_ends().len(), 1);
     assert_eq!(events.assistant_message_ends()[0].text(), "instant");
     assert_eq!(messages.len(), 2);
-    
+
     assert_eq!(events.names().last(), Some(&"AgentSettled"));
 }
-
 
 #[tokio::test(start_paused = true)]
 
@@ -467,7 +514,7 @@ async fn a_retry_does_not_reopen_the_assistant_message() {
     let (_, events) = run_agent(&mut agent, Message::user("hi")).await;
 
     assert_eq!(events.retries().len(), 1);
-    
+
     assert_eq!(
         events.count("MessageStart"),
         2,
@@ -538,9 +585,7 @@ async fn the_tools_in_one_answer_run_together() {
     let hold = std::time::Duration::from_millis(200);
     let tools: Vec<Arc<dyn micro_tools::Tool>> = ["one", "two", "three"]
         .into_iter()
-        .map(|name| {
-            Arc::new(SlowTool::new(name, hold)) as Arc<dyn micro_tools::Tool>
-        })
+        .map(|name| Arc::new(SlowTool::new(name, hold)) as Arc<dyn micro_tools::Tool>)
         .collect();
 
     let provider = FakeProvider::builder()
@@ -563,7 +608,6 @@ async fn the_tools_in_one_answer_run_together() {
         "parallel tools took {took:?} with a {hold:?} delay",
     );
 
-    
     let answered: Vec<String> = messages
         .iter()
         .filter_map(|message| match message {
@@ -582,8 +626,10 @@ async fn tools_explicitly_marked_parallel_still_run_together() {
     let tools: Vec<Arc<dyn micro_tools::Tool>> = ["one", "two", "three"]
         .into_iter()
         .map(|name| {
-            Arc::new(SlowTool::new(name, hold).with_execution_mode(micro_types::ToolExecutionMode::Parallel))
-                as Arc<dyn micro_tools::Tool>
+            Arc::new(
+                SlowTool::new(name, hold)
+                    .with_execution_mode(micro_types::ToolExecutionMode::Parallel),
+            ) as Arc<dyn micro_tools::Tool>
         })
         .collect();
 
@@ -607,7 +653,6 @@ async fn tools_explicitly_marked_parallel_still_run_together() {
         "explicitly parallel tools took {took:?} with a {hold:?} delay",
     );
 }
-
 
 #[tokio::test]
 async fn a_sequential_tool_does_not_overlap_another() {
@@ -638,12 +683,7 @@ async fn a_sequential_tool_does_not_overlap_another() {
         "sequential tools completed too quickly: {took:?} with a {hold:?} delay",
     );
 
-    
-    let ends: Vec<&str> = events
-        .tool_ends()
-        .into_iter()
-        .map(|(id, ..)| id)
-        .collect();
+    let ends: Vec<&str> = events.tool_ends().into_iter().map(|(id, ..)| id).collect();
     assert_eq!(ends, vec!["c1", "c2", "c3"]);
 
     let answered: Vec<String> = messages
@@ -660,7 +700,7 @@ async fn a_sequential_tool_does_not_overlap_another() {
 #[tokio::test]
 async fn a_mixed_batch_runs_every_call_one_at_a_time_not_only_the_sequential_one() {
     let hold = std::time::Duration::from_millis(150);
-    
+
     let tools: Vec<Arc<dyn micro_tools::Tool>> = vec![
         Arc::new(SlowTool::new("one", hold)),
         Arc::new(SlowTool::new("two", hold).sequential()),
@@ -699,7 +739,7 @@ async fn a_failed_turn_still_reports_its_end() {
 
     let starts = events
         .iter()
-        .filter(|event| matches!(event, micro_types::AgentEvent::TurnStart { .. }))
+        .filter(|event| matches!(event, micro_types::AgentEvent::TurnStart))
         .count();
     let ends = events
         .iter()
@@ -720,13 +760,10 @@ async fn steering_reaches_the_run_that_is_already_going() {
         .turn(Turn::new().with_tool_call("c1", "slow", json!({})))
         .turn(Turn::text("done"))
         .build();
-    let tool: Arc<dyn micro_tools::Tool> = Arc::new(SlowTool::new(
-        "slow",
-        std::time::Duration::from_millis(150),
-    ));
+    let tool: Arc<dyn micro_tools::Tool> =
+        Arc::new(SlowTool::new("slow", std::time::Duration::from_millis(150)));
     let mut agent = agent(&provider, vec![tool]);
 
-    
     let steering = agent.steering();
     let steering_task = tokio::spawn(async move {
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
@@ -755,7 +792,6 @@ async fn steering_reaches_the_run_that_is_already_going() {
     );
 }
 
-
 #[tokio::test]
 async fn a_follow_up_continues_the_same_run() {
     let provider = FakeProvider::builder()
@@ -782,8 +818,37 @@ async fn a_follow_up_continues_the_same_run() {
     assert!(steering.is_empty(), "the queue was drained");
 }
 
-
 struct Deciding(micro_agent::ToolDecision);
+
+struct WithdrawingTool {
+    offered: Arc<RwLock<Option<Vec<String>>>>,
+    name: String,
+}
+
+impl WithdrawingTool {
+    fn new(offered: Arc<RwLock<Option<Vec<String>>>>, name: impl Into<String>) -> Self {
+        WithdrawingTool {
+            offered,
+            name: name.into(),
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl micro_agent::Hooks for WithdrawingTool {
+    async fn before_tool(
+        &self,
+        _id: &str,
+        _name: &str,
+        _arguments: &serde_json::Value,
+    ) -> micro_agent::ToolDecision {
+        let mut offered = self.offered.write().expect("offered tools lock");
+        if let Some(names) = offered.as_mut() {
+            names.retain(|name| name != &self.name);
+        }
+        micro_agent::ToolDecision::Proceed
+    }
+}
 
 #[async_trait::async_trait]
 impl micro_agent::Hooks for Deciding {
@@ -819,7 +884,6 @@ async fn a_hook_can_rewrite_a_call_before_it_runs() {
         "the tool was handed the rewritten arguments"
     );
 
-    
     let announced = events
         .events()
         .iter()
@@ -873,7 +937,6 @@ async fn a_hook_that_proceeds_changes_nothing() {
     assert_eq!(read.call(0), json!({ "path": "asked.txt" }));
 }
 
-
 #[tokio::test]
 async fn every_request_carries_the_credential_the_store_holds_now() {
     let root = std::env::temp_dir().join("micro-testkit-credential-per-request");
@@ -908,6 +971,47 @@ async fn every_request_carries_the_credential_the_store_holds_now() {
 
     assert_eq!(provider.call(0).api_key, "first");
     assert_eq!(provider.call(1).api_key, "second");
+}
+
+/// A credential the store cannot produce, with nothing in hand to fall back on, stops the turn
+/// where it stands. Sending an unauthenticated request only earns a complaint about the header,
+/// which tells nobody that the credential is what went wrong.
+#[tokio::test]
+async fn a_turn_with_no_credential_at_all_is_not_sent() {
+    let root = std::env::temp_dir().join("micro-testkit-credential-missing");
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).unwrap();
+
+    let store = Arc::new(micro_auth::AuthStore::open_at(root.join("auth.json")).unwrap());
+    let provider = FakeProvider::builder()
+        .turn(Turn::text("never asked"))
+        .build();
+    let mut agent = Agent::new(
+        Arc::new(provider.clone()),
+        Vec::new(),
+        model(),
+        micro_provider::ApiKey::Stored {
+            store,
+            provider: "github-copilot".into(),
+            resolved: String::new(),
+        },
+    );
+
+    let (messages, _) = run_agent(&mut agent, Message::user("go")).await;
+
+    assert!(provider.calls().is_empty(), "nothing was sent");
+    let said = messages
+        .iter()
+        .filter_map(|message| match message {
+            Message::Assistant(assistant) => assistant.error.clone(),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join(" ");
+    assert!(
+        said.contains("no credential for github-copilot"),
+        "the turn says what is missing: {said}"
+    );
 }
 
 /// A deferred tool is not described to the model and is still callable.
@@ -957,7 +1061,12 @@ impl Provider for PausedProvider {
         "paused"
     }
 
-    fn stream(&self, _model: Model, _context: Context, _api_key: String) -> UnboundedReceiver<StreamEvent> {
+    fn stream(
+        &self,
+        _model: Model,
+        _context: Context,
+        _api_key: String,
+    ) -> UnboundedReceiver<StreamEvent> {
         self.stream
             .lock()
             .expect("stream lock")
@@ -982,15 +1091,15 @@ async fn an_interrupted_turn_still_settles() {
     let (events_tx, mut events_rx) = tokio::sync::mpsc::unbounded_channel();
     let mut turn = Box::pin(agent.run(Message::user("go"), &events_tx));
 
-    
-    stream_tx.send(StreamEvent::Start).expect("the agent is still listening");
+    stream_tx
+        .send(StreamEvent::Start)
+        .expect("the agent is still listening");
 
     tokio::select! {
         _ = &mut turn => panic!("the turn should not be able to finish without more from the stream"),
         _ = tokio::time::sleep(Duration::from_millis(50)) => {}
     }
 
-    
     drop(turn);
 
     let mut settled = false;
@@ -1003,5 +1112,8 @@ async fn an_interrupted_turn_still_settles() {
         }
     }
     assert!(ended, "an interrupted turn should still report AgentEnd");
-    assert!(settled, "an interrupted turn should still report AgentSettled");
+    assert!(
+        settled,
+        "an interrupted turn should still report AgentSettled"
+    );
 }

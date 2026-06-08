@@ -6,7 +6,6 @@ use crate::labels::{clean_label, strip_controls};
 use crate::types::Cls;
 use crate::width::string_width;
 
-
 const MAX_SLICES: usize = 64;
 
 /// The widest a bar is drawn, so a chart stays inside a terminal without being told its width.
@@ -23,7 +22,7 @@ pub(crate) fn render_pie(src: &str) -> Option<Canvas> {
     let mut lines = src.lines().map(str::trim).filter(|line| !line.is_empty());
 
     let opening = lines.next()?;
-    
+
     let mut words = opening.split_whitespace();
     if words.next()? != "pie" {
         return None;
@@ -60,7 +59,7 @@ fn read_slice(line: &str) -> Option<Slice> {
     let (label, value) = line.rsplit_once(':')?;
     let label = label.trim().trim_matches('"').trim();
     let value: f64 = value.trim().parse().ok()?;
-    
+
     if label.is_empty() || !value.is_finite() || value < 0.0 {
         return None;
     }
@@ -80,7 +79,6 @@ fn draw(title: Option<&str>, slices: &[Slice]) -> Option<Canvas> {
         .map(|slice| slice.value)
         .fold(0.0_f64, f64::max);
 
-    
     let labels = slices
         .iter()
         .map(|slice| string_width(&slice.label))
@@ -117,7 +115,6 @@ fn draw(title: Option<&str>, slices: &[Slice]) -> Option<Canvas> {
         let y = row + top;
         draw_text(&mut canvas, &slice.label, 0, y, Cls::Text);
 
-        
         let filled = match widest > 0.0 {
             true => ((slice.value / widest) * BAR as f64).round() as usize,
             false => 0,
@@ -160,7 +157,6 @@ mod tests {
         assert!(rows[1].contains("75 (75.0%)"), "{rows:?}");
         assert!(rows[2].contains("25 (25.0%)"), "{rows:?}");
 
-        
         assert_eq!(rows[1].matches('█').count(), BAR);
         assert_eq!(
             rows[2].matches('█').count(),
@@ -185,7 +181,6 @@ mod tests {
         assert!(rows[0].starts_with("One "), "{rows:?}");
     }
 
-    
     #[test]
     fn what_is_not_a_pie_is_left_alone() {
         assert!(render_pie("graph TD\n A --> B").is_none());

@@ -4,10 +4,11 @@
 use crate::host::RegisteredTool;
 use std::collections::HashSet;
 
-
 pub fn prompt_section(tools: &[RegisteredTool], active: &[String]) -> Option<String> {
     let active: HashSet<&str> = active.iter().map(String::as_str).collect();
-    let offered = tools.iter().filter(|tool| active.contains(tool.name.as_str()));
+    let offered = tools
+        .iter()
+        .filter(|tool| active.contains(tool.name.as_str()));
 
     let mut snippets = Vec::new();
     let mut guidelines = Vec::new();
@@ -50,7 +51,6 @@ pub fn prompt_section(tools: &[RegisteredTool], active: &[String]) -> Option<Str
 mod tests {
     use super::*;
 
-    
     fn tool(json: serde_json::Value) -> RegisteredTool {
         serde_json::from_value(json).expect("a registered tool")
     }
@@ -85,7 +85,7 @@ mod tests {
                 "prompt_guidelines": ["Never roll back without a snapshot"],
             })),
         ];
-        
+
         let section = prompt_section(&tools, &["deploy".to_string()]).expect("a section");
         assert!(section.contains("Confirm the target environment before shipping"));
         assert!(!section.contains("Never roll back without a snapshot"));
@@ -94,7 +94,7 @@ mod tests {
     #[test]
     fn nothing_contributing_leaves_no_stray_heading() {
         let tools = vec![tool(serde_json::json!({ "name": "deploy" }))];
-        
+
         assert!(prompt_section(&tools, &[]).is_none());
         assert!(prompt_section(&[], &["deploy".to_string()]).is_none());
     }
@@ -121,8 +121,8 @@ mod tests {
                 "prompt_guidelines": ["Ask before touching production"],
             })),
         ];
-        let section =
-            prompt_section(&tools, &["deploy".to_string(), "rollback".to_string()]).expect("a section");
+        let section = prompt_section(&tools, &["deploy".to_string(), "rollback".to_string()])
+            .expect("a section");
         assert_eq!(section.matches("Ask before touching production").count(), 1);
     }
 

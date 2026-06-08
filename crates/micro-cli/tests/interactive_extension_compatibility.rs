@@ -1,5 +1,3 @@
-
-
 mod support;
 
 use std::path::Path;
@@ -36,7 +34,7 @@ struct InteractiveCheck {
 }
 
 const INTERACTIVE_CHECKS: &[InteractiveCheck] = &[
-    
+
     InteractiveCheck {
         name: "widget-placement",
         setup: &[],
@@ -69,7 +67,7 @@ const INTERACTIVE_CHECKS: &[InteractiveCheck] = &[
         probe: "NORMAL",
         means: "ctx.ui.setEditorComponent() replaced the built-in editor with one that draws a mode indicator",
     },
-    
+
     InteractiveCheck {
         name: "working-indicator",
         setup: &[],
@@ -94,7 +92,7 @@ const INTERACTIVE_CHECKS: &[InteractiveCheck] = &[
         probe: "micro-probe-7a31",
         means: "registerMessageRenderer's custom renderer drew the message pi.sendMessage() sent",
     },
-    
+
     InteractiveCheck {
         name: "status-line",
         setup: &["say hi\r"],
@@ -109,7 +107,6 @@ const INTERACTIVE_CHECKS: &[InteractiveCheck] = &[
 fn distinct_names_covered() -> std::collections::BTreeSet<&'static str> {
     INTERACTIVE_CHECKS.iter().map(|check| check.name).collect()
 }
-
 
 const NOT_COVERED: &[(&str, &str)] = &[
     (
@@ -165,7 +162,6 @@ const NOT_COVERED: &[(&str, &str)] = &[
     ),
 ];
 
-
 fn strip_ansi(raw: &[u8]) -> String {
     let mut out: Vec<u8> = Vec::with_capacity(raw.len());
     let mut i = 0;
@@ -173,7 +169,6 @@ fn strip_ansi(raw: &[u8]) -> String {
         if raw[i] == 0x1b && i + 1 < raw.len() {
             match raw[i + 1] {
                 b'[' => {
-                    
                     let mut j = i + 2;
                     while j < raw.len() && !(0x40..=0x7e).contains(&raw[j]) {
                         j += 1;
@@ -181,7 +176,6 @@ fn strip_ansi(raw: &[u8]) -> String {
                     i = (j + 1).min(raw.len());
                 }
                 b']' => {
-                    
                     let mut j = i + 2;
                     while j < raw.len()
                         && raw[j] != 0x07
@@ -207,7 +201,6 @@ fn strip_ansi(raw: &[u8]) -> String {
     String::from_utf8_lossy(&out).into_owned()
 }
 
-
 fn pty_command(fixture: &Fixture, micro_args: &[&str]) -> Command {
     let base = fixture.micro();
     let mut command = Command::new("python3");
@@ -231,7 +224,6 @@ fn pty_command(fixture: &Fixture, micro_args: &[&str]) -> Command {
     command
 }
 
-
 fn run_check(check: &InteractiveCheck) -> Result<(), String> {
     let api = FakeApi::start([Reply::text("hello from the fake provider")]);
     let fixture = Fixture::new(&api);
@@ -242,7 +234,12 @@ fn run_check(check: &InteractiveCheck) -> Result<(), String> {
     fixture.write(&format!(".micro/extensions/{}.ts", check.name), &content);
 
     let mut command = pty_command(&fixture, &["-m", "test"]);
-    let batches: Vec<&str> = check.setup.iter().chain(check.keys.iter()).copied().collect();
+    let batches: Vec<&str> = check
+        .setup
+        .iter()
+        .chain(check.keys.iter())
+        .copied()
+        .collect();
     command.env("KEYS", batches.join("~~"));
     command.env("WAIT", check.wait_secs.to_string());
     command.stdin(Stdio::null());
@@ -266,7 +263,6 @@ fn run_check(check: &InteractiveCheck) -> Result<(), String> {
         Err(format!("\"{}\" never reached the screen", check.probe))
     }
 }
-
 
 #[test]
 fn interactive_extensions_behave() {

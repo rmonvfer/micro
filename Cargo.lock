@@ -1017,6 +1017,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "fastrand"
+version = "2.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "da7c62ceae207dd37ea5b845da6a0696c799f85e97da1ab5b7910be3c1c80223"
+
+[[package]]
 name = "fdeflate"
 version = "0.3.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1124,6 +1130,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cb4cb245038516f5f85277875cdaa4f7d2c9a0fa0468de06ed190163b1581fcf"
 dependencies = [
  "percent-encoding",
+]
+
+[[package]]
+name = "fs2"
+version = "0.4.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9564fc758e15025b46aa6643b1b77d047d1a56a1aea6e01002ac0c7026876213"
+dependencies = [
+ "libc",
+ "winapi",
 ]
 
 [[package]]
@@ -2160,6 +2176,8 @@ dependencies = [
  "anyhow",
  "async-trait",
  "clap",
+ "fs2",
+ "futures",
  "libc",
  "micro-agent",
  "micro-auth",
@@ -2181,7 +2199,11 @@ dependencies = [
  "micro-tui",
  "micro-types",
  "reqwest",
+ "semver",
+ "serde",
  "serde_json",
+ "sha2",
+ "tempfile",
  "tokio",
 ]
 
@@ -2238,6 +2260,7 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "micro-models",
+ "micro-sandbox",
  "micro-tools",
  "micro-types",
  "serde",
@@ -2427,6 +2450,7 @@ dependencies = [
  "micro-models",
  "micro-session",
  "micro-types",
+ "rand 0.8.7",
  "ratatui",
  "serde_json",
  "tokio",
@@ -3857,6 +3881,19 @@ dependencies = [
  "thiserror 2.0.20",
  "walkdir",
  "yaml-rust",
+]
+
+[[package]]
+name = "tempfile"
+version = "3.27.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
+dependencies = [
+ "fastrand",
+ "getrandom 0.4.3",
+ "once_cell",
+ "rustix",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

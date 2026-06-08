@@ -1,5 +1,3 @@
-
-
 use crate::sse::read_sse;
 use crate::Provider;
 use crate::SseEvent;
@@ -61,7 +59,7 @@ pub enum Backend {
 pub struct Gemini {
     client: reqwest::Client,
     backend: Backend,
-    
+
     next_call: Arc<AtomicUsize>,
 }
 
@@ -116,16 +114,21 @@ impl Provider for Gemini {
         let client = self.client.clone();
         let backend = self.backend;
 
-        
         let counter = Arc::clone(&self.next_call);
         counter.fetch_max(tool_calls_so_far(&context.messages), Ordering::Relaxed);
 
         tokio::spawn(async move {
-            if let Err(message) =
-                run(
-                    client, backend, model, context, api_key, payload, counter, &sender,
-                )
-                .await
+            if let Err(message) = run(Run {
+                client,
+                backend,
+                model,
+                context,
+                api_key,
+                payload,
+                next_call: counter,
+                sender: &sender,
+            })
+            .await
             {
                 let _ = sender.send(StreamEvent::Error { message });
             }
@@ -169,7 +172,7 @@ fn tool_calls_so_far(messages: &[Message]) -> usize {
         .count()
 }
 
-async fn run(
+struct Run<'a> {
     client: reqwest::Client,
     backend: Backend,
     model: Model,
@@ -177,15 +180,27 @@ async fn run(
     api_key: String,
     payload: Value,
     next_call: Arc<AtomicUsize>,
-    sender: &UnboundedSender<StreamEvent>,
-) -> Result<(), String> {
+    sender: &'a UnboundedSender<StreamEvent>,
+}
+
+async fn run(request: Run<'_>) -> Result<(), String> {
+    let Run {
+        client,
+        backend,
+        model,
+        context,
+        api_key,
+        payload,
+        next_call,
+        sender,
+    } = request;
     let request = match backend {
         Backend::Google => client
             .post(endpoint(&model.base_url, &model.id))
             .header("x-goog-api-key", api_key),
         Backend::Vertex => {
             let account = crate::vertex::account(&model.base_url)?;
-            
+
             let token = crate::vertex::access_token(&client, &api_key).await?;
             client
                 .post(crate::vertex::endpoint(&account, &model.id))
@@ -290,7 +305,6 @@ impl Accumulator {
             return;
         };
 
-        
         if let Some(reason) = chunk
             .pointer("/promptFeedback/blockReason")
             .and_then(Value::as_str)
@@ -336,7 +350,7 @@ impl Accumulator {
     fn handle_part(&mut self, part: &Value, sender: &UnboundedSender<StreamEvent>) {
         if let Some(call) = part.get("functionCall").filter(|call| call.is_object()) {
             self.close_open(sender);
-            
+
             self.emit_tool_call(call, thought_signature(part), sender);
             return;
         }
@@ -348,7 +362,6 @@ impl Accumulator {
             return;
         }
 
-        
         let is_thought = part
             .get("thought")
             .and_then(Value::as_bool)
@@ -428,7 +441,6 @@ impl Accumulator {
             return;
         };
 
-        
         let id = call
             .get("id")
             .and_then(Value::as_str)
@@ -515,7 +527,6 @@ impl Accumulator {
         self.finished = true;
         self.close_open(sender);
 
-        
         let has_tool_calls = self
             .blocks
             .iter()
@@ -529,7 +540,6 @@ impl Accumulator {
         });
     }
 }
-
 
 fn map_finish_reason(reason: &str) -> StopReason {
     match reason.to_uppercase().as_str() {
@@ -569,7 +579,7 @@ pub(crate) fn build_payload(model: &Model, context: &Context) -> Result<Value, S
 
     if !context.tools.is_empty() {
         let supports_strict = supports_google_strict_tool_sampling(&model.id);
-        
+
         let mut any_strict = false;
         let declarations: Vec<Value> = context
             .tools
@@ -582,7 +592,7 @@ pub(crate) fn build_payload(model: &Model, context: &Context) -> Result<Value, S
                 let declaration = match strict {
                     Some(true) => {
                         any_strict = true;
-                        
+
                         let parameters =
                             crate::constrained_sampling::json_schema_tool_parameters(tool, strict)?;
                         json!({
@@ -662,7 +672,6 @@ fn content_parts(blocks: &[ContentBlock]) -> Vec<Value> {
     parts
 }
 
-
 fn assistant_parts(blocks: &[ContentBlock]) -> Vec<Value> {
     let mut parts = Vec::new();
 
@@ -698,7 +707,7 @@ fn assistant_parts(blocks: &[ContentBlock]) -> Vec<Value> {
                 "functionCall".into(),
                 json!({ "name": name, "args": arguments_object(arguments) }),
             );
-            
+
             if let Some(signature) = signature {
                 part.insert("thoughtSignature".into(), json!(signature));
             }
@@ -795,7 +804,7 @@ fn sanitize_schema(schema: &Value) -> Value {
                 .map(|(key, value)| (key.clone(), sanitize_below(key, value)))
                 .collect(),
         ),
-        
+
         other => other.clone(),
     }
 }
@@ -823,13 +832,11 @@ fn sanitize_below(key: &str, value: &Value) -> Value {
 
     if SCHEMA_VALUES.contains(&key) {
         return match value {
-            
             Value::Array(schemas) => Value::Array(schemas.iter().map(sanitize_schema).collect()),
             other => sanitize_schema(other),
         };
     }
 
-    
     value.clone()
 }
 
@@ -843,7 +850,6 @@ fn thinking_config(model: &Model) -> Value {
     };
 
     match lowest_level(&model.id) {
-        
         Some(_) => json!({ "thinkingLevel": level_for(model.thinking), "includeThoughts": true }),
         None => json!({ "thinkingBudget": budget, "includeThoughts": true }),
     }
@@ -875,7 +881,6 @@ fn gemini_major_version(id: &str) -> Option<u32> {
     let digits: String = rest.chars().take_while(char::is_ascii_digit).collect();
     digits.parse().ok()
 }
-
 
 fn supports_google_strict_tool_sampling(id: &str) -> bool {
     gemini_major_version(id).is_some_and(|version| version >= 3)
@@ -1007,7 +1012,7 @@ mod tests {
             "be brief"
         );
         assert_eq!(payload["generationConfig"]["maxOutputTokens"], 8_192);
-        
+
         assert_eq!(
             payload["generationConfig"]["thinkingConfig"]["thinkingBudget"],
             0
@@ -1112,7 +1117,6 @@ mod tests {
         );
     }
 
-    
     #[test]
     fn a_plain_tool_alongside_a_capable_model_is_unaffected() {
         let context = Context {
@@ -1159,7 +1163,6 @@ mod tests {
         );
     }
 
-    
     #[test]
     fn requiring_strict_sampling_on_a_model_that_predates_it_fails_the_request() {
         let context = Context {
@@ -1172,7 +1175,6 @@ mod tests {
         assert!(error.contains("\"grep\""), "got {error:?}");
     }
 
-    
     #[test]
     fn one_strict_tool_switches_the_whole_request_into_validated_mode() {
         let context = Context {
@@ -1193,7 +1195,7 @@ mod tests {
             payload["toolConfig"]["functionCallingConfig"]["mode"],
             "VALIDATED"
         );
-        
+
         assert_eq!(
             payload["tools"][0]["functionDeclarations"][0]["parameters"]["type"],
             "object"
@@ -1257,7 +1259,6 @@ mod tests {
         });
         let sanitized = sanitize_schema(&schema);
 
-        
         let property = &sanitized["properties"]["pattern"];
         assert_eq!(property["description"], "kept");
         assert!(property.get("pattern").is_none(), "the keyword survived");
@@ -1284,7 +1285,7 @@ mod tests {
             sanitized["properties"]["mode"]["enum"],
             json!(["pattern", "default", "title"])
         );
-        
+
         assert_eq!(
             sanitized["properties"]["mode"]["const"]["pattern"],
             "not a schema"
@@ -1314,7 +1315,6 @@ mod tests {
         assert_eq!(items["required"][0], "pattern");
     }
 
-    
     #[test]
     fn no_builtin_tool_requires_a_property_it_does_not_define() {
         fn check(schema: &Value, path: &str) {
@@ -1332,7 +1332,6 @@ mod tests {
                 }
             }
 
-            
             if let Some(properties) = object.get("properties").and_then(Value::as_object) {
                 for (name, nested) in properties {
                     check(nested, &format!("{path}.{name}"));
@@ -1607,7 +1606,6 @@ mod tests {
         ];
         assert_eq!(tool_calls_so_far(&history), 2);
 
-        
         let counter = Arc::new(AtomicUsize::new(0));
         counter.fetch_max(tool_calls_so_far(&history), Ordering::Relaxed);
         let events = drain_with(
@@ -1622,7 +1620,6 @@ mod tests {
 
     #[test]
     fn a_shrinking_history_does_not_pull_the_numbering_back() {
-        
         let counter = Arc::new(AtomicUsize::new(0));
         counter.fetch_max(9, Ordering::Relaxed);
         counter.fetch_max(2, Ordering::Relaxed);
@@ -1727,7 +1724,7 @@ mod tests {
         assert_eq!(parts[0]["functionCall"]["name"], "read");
         assert_eq!(parts[0]["functionCall"]["args"]["path"], "a.txt");
         assert_eq!(parts[0]["thoughtSignature"], "sig");
-        
+
         assert!(parts[0]["functionCall"].get("thoughtSignature").is_none());
     }
 
@@ -1759,7 +1756,6 @@ mod tests {
         let decoded: Message = serde_json::from_str(&encoded).unwrap();
         assert_eq!(decoded, message);
 
-        
         let Message::Assistant(decoded) = &decoded else {
             panic!("expected an assistant message");
         };
@@ -1913,7 +1909,6 @@ mod tests {
         }
     }
 
-    
     #[test]
     fn effort_is_spelled_the_way_each_model_takes_it() {
         let budgeted = thinking_config(&Model {

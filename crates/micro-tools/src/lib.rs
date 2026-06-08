@@ -1,16 +1,24 @@
 //! The tools the model can call, and the trait every tool implements.
 
+mod access;
 mod bash;
 mod deferred;
+mod docs;
 mod files;
 mod fuzzy;
 mod guard;
 mod mutations;
 mod search;
 
+pub use access::AccessApproval;
+pub use access::AccessApprover;
+pub use access::AccessCapability;
+pub use access::AccessRequest;
+pub use access::RequestSandboxAccess;
 pub use bash::Bash;
 pub use deferred::Deferred;
 pub use deferred::ToolSearch;
+pub use docs::MicroDocs;
 pub use files::Edit;
 pub use files::Ls;
 pub use files::MultiEdit;
@@ -60,7 +68,6 @@ pub trait Tool: Send + Sync {
         self.execute(arguments).await
     }
 
-    
     async fn execute_content(
         &self,
         arguments: &Value,
@@ -104,6 +111,7 @@ pub fn builtin_tools(root: impl Into<PathBuf>, guard: Guard) -> Vec<Arc<dyn Tool
         Arc::new(Ls::new(root.clone(), guard.clone())),
         Arc::new(Grep::new(root.clone(), guard.clone())),
         Arc::new(Find::new(root.clone(), guard.clone())),
+        Arc::new(MicroDocs::new()),
         Arc::new(Bash::new(root, guard)),
     ]
 }

@@ -6,7 +6,6 @@ use crate::labels::{clean_label, strip_controls};
 use crate::types::Cls;
 use crate::width::string_width;
 
-
 const MAX_NODES: usize = 128;
 
 /// Columns between one depth and the next, which is where the connectors are drawn.
@@ -28,7 +27,6 @@ pub(crate) fn render_mindmap(src: &str) -> Option<Canvas> {
         return None;
     }
 
-    
     let mut nodes: Vec<Node> = Vec::new();
     let mut indents: Vec<usize> = Vec::new();
     for line in lines {
@@ -38,7 +36,6 @@ pub(crate) fn render_mindmap(src: &str) -> Option<Canvas> {
             return None;
         }
 
-        
         while indents.last().is_some_and(|last| *last >= indent) {
             indents.pop();
         }
@@ -65,7 +62,6 @@ fn read_label(text: &str) -> Option<String> {
         return None;
     }
 
-    
     for (open, close) in [
         ("((", "))"),
         ("))", "(("),
@@ -106,26 +102,23 @@ fn draw(nodes: &[Node]) -> Canvas {
             continue;
         }
 
-        
         let parent = nodes[..index]
             .iter()
             .rposition(|above| above.depth < node.depth)
             .unwrap_or(0);
         let column = x - STEP + 1;
 
-        
         let more_below = nodes[index + 1..]
             .iter()
             .take_while(|below| below.depth >= node.depth)
             .any(|below| below.depth == node.depth);
 
-        
         for row in nodes[parent].row + 1..node.row {
             if canvas.ch[canvas.idx(column, row)] == " " {
                 draw_text(&mut canvas, "│", column, row, Cls::Edge);
             }
         }
-        
+
         let corner = match more_below {
             true => "├",
             false => "└",
@@ -172,7 +165,7 @@ mod tests {
     #[test]
     fn a_branch_reaches_back_to_its_parent() {
         let rows = drawn("mindmap\n  Root\n    One\n      Deep\n    Two");
-        
+
         let last = rows.last().expect("a row for Two");
         assert!(last.contains("Two"), "{rows:?}");
         assert!(rows[2].contains('│'), "the branch passes through: {rows:?}");
@@ -187,7 +180,6 @@ mod tests {
         assert_eq!(read_label("Just words").as_deref(), Some("Just words"));
     }
 
-    
     #[test]
     fn what_is_not_a_mindmap_is_left_alone() {
         assert!(render_mindmap("graph TD\n  A --> B").is_none());

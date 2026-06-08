@@ -1,5 +1,3 @@
-
-
 /// One frame: what kind of event it is, and the JSON it carried.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Frame {
@@ -40,13 +38,13 @@ impl Decoder {
             let total = u32::from_be_bytes(self.buffer[0..4].try_into().unwrap()) as usize;
             let headers_length = u32::from_be_bytes(self.buffer[4..8].try_into().unwrap()) as usize;
 
-            if total > MAX_FRAME || total < PRELUDE + TRAILER {
+            if !(PRELUDE + TRAILER..=MAX_FRAME).contains(&total) {
                 return Err(format!("event stream frame claims a length of {total}"));
             }
             if headers_length > total.saturating_sub(PRELUDE + TRAILER) {
                 return Err("event stream frame claims more headers than it holds".to_string());
             }
-            
+
             if self.buffer.len() < total {
                 break;
             }
@@ -89,19 +87,17 @@ fn read_headers(mut bytes: &[u8]) -> Result<Vec<(String, String)>, String> {
         let kind = bytes[1 + name_length];
         bytes = &bytes[1 + name_length + 1..];
 
-        
         let value_length = match kind {
-            
             0 | 1 => 0,
-            
+
             2 => 1,
-            
+
             3 => 2,
-            
+
             4 => 4,
-            
+
             5 | 8 => 8,
-            
+
             6 | 7 => {
                 if bytes.len() < 2 {
                     return Err("event stream header value ends part way through".to_string());
@@ -110,7 +106,7 @@ fn read_headers(mut bytes: &[u8]) -> Result<Vec<(String, String)>, String> {
                 bytes = &bytes[2..];
                 length
             }
-            
+
             9 => 16,
             other => return Err(format!("event stream header has an unknown type {other}")),
         };
@@ -140,7 +136,7 @@ mod tests {
         for (name, value) in [(":event-type", event_type), (":message-type", "event")] {
             headers.push(name.len() as u8);
             headers.extend_from_slice(name.as_bytes());
-            
+
             headers.push(7);
             headers.extend_from_slice(&(value.len() as u16).to_be_bytes());
             headers.extend_from_slice(value.as_bytes());
@@ -150,7 +146,7 @@ mod tests {
         let mut out = Vec::new();
         out.extend_from_slice(&total.to_be_bytes());
         out.extend_from_slice(&(headers.len() as u32).to_be_bytes());
-        
+
         out.extend_from_slice(&0u32.to_be_bytes());
         out.extend_from_slice(&headers);
         out.extend_from_slice(payload);
@@ -229,7 +225,6 @@ mod tests {
         assert_eq!(frames[0].message_type, "exception");
     }
 
-    
     #[test]
     fn a_nonsense_length_is_refused() {
         let mut bytes = Vec::new();
@@ -244,12 +239,12 @@ mod tests {
     #[test]
     fn headers_of_other_types_do_not_lose_the_walk() {
         let mut headers = Vec::new();
-        
+
         headers.push(11u8);
         headers.extend_from_slice(b":event-time");
         headers.push(8);
         headers.extend_from_slice(&0u64.to_be_bytes());
-        
+
         headers.push(11u8);
         headers.extend_from_slice(b":event-type");
         headers.push(7);

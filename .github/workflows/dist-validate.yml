@@ -1,0 +1,47 @@
+name: Distribution validation
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: [main]
+    paths:
+      - "Cargo.lock"
+      - "Cargo.toml"
+      - "crates/micro-cli/**"
+      - "scripts/install.sh"
+      - ".github/workflows/release.yml"
+      - ".github/workflows/dist-validate.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            target: darwin-arm64
+          - os: ubuntu-22.04
+            target: linux-x86_64
+          - os: ubuntu-22.04-arm
+            target: linux-arm64
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@1.97.1
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --release -p micro-cli
+      - name: Build and smoke test archive
+        shell: bash
+        run: |
+          mkdir -p dist/micro/bin
+          cp target/release/micro dist/micro/bin/micro
+          tar -czf "micro-${{ matrix.target }}.tar.gz" -C dist micro
+          root="$RUNNER_TEMP/micro-dist"
+          mkdir -p "$root"
+          tar -xzf "micro-${{ matrix.target }}.tar.gz" -C "$root"
+          "$root/micro/bin/micro" --help
+          "$root/micro/bin/micro" --version
+      - run: bash -n scripts/install.sh

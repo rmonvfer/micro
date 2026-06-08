@@ -66,16 +66,24 @@ impl Tool for ExtensionTool {
 
     /// A caller with nowhere to send progress still needs a result.
     async fn execute(&self, arguments: &Value) -> Result<String, String> {
-        self.execute_reporting(arguments, &Progress::default()).await
+        self.execute_reporting(arguments, &Progress::default())
+            .await
     }
 
-    async fn execute_reporting(&self, arguments: &Value, progress: &Progress) -> Result<String, String> {
+    async fn execute_reporting(
+        &self,
+        arguments: &Value,
+        progress: &Progress,
+    ) -> Result<String, String> {
         let content = self.execute_content(arguments, progress).await?;
         Ok(content.iter().map(ContentBlock::as_text).collect())
     }
 
-    
-    async fn execute_content(&self, arguments: &Value, progress: &Progress) -> Result<Vec<ContentBlock>, String> {
+    async fn execute_content(
+        &self,
+        arguments: &Value,
+        progress: &Progress,
+    ) -> Result<Vec<ContentBlock>, String> {
         self.host
             .call_tool(&self.definition.name, arguments, progress)
             .await
@@ -137,7 +145,7 @@ mod tests {
             ToolExecutionMode::from_wire(Some("sequential")),
             Some(ToolExecutionMode::Sequential)
         );
-        
+
         assert_eq!(ToolExecutionMode::from_wire(Some("eventually")), None);
     }
 }

@@ -22,8 +22,8 @@ const MAX_RULE: usize = 80;
 #[derive(Debug, Clone, PartialEq)]
 pub struct Block {
     pub spans: Vec<Span<'static>>,
-    /// A PNG for a graphical display block, drawn after its rows are laid out.
-    pub image: Option<String>,
+    /// A typeset picture for a graphical display block, drawn after its rows are laid out.
+    pub image: Option<crate::typeset::Math>,
     /// Columns to indent continuation rows by when this line wraps.
     pub indent: usize,
     /// Whether the line's background extends to the full width.
@@ -59,21 +59,21 @@ pub fn render_linked(
 ) -> Vec<Block> {
     let mut blocks = Vec::new();
     let mut fence: Option<Fence> = None;
-    
+
     let mut table: Option<Table> = None;
-    
+
     let mut maths: Option<Maths> = None;
-    
+
     let mut ordinal: Option<usize> = None;
 
     let lines: Vec<&str> = text.split('\n').collect();
     for (index, line) in lines.iter().enumerate() {
         let line = *line;
         let trimmed = line.trim_start();
-        
+
         let next = lines.get(index + 1).map(|next| next.trim_start());
         let followed_by_blank = next.is_none_or(|next| next.is_empty());
-        
+
         let continues = next.is_some_and(|next| quote(trimmed).is_some() && quote(next).is_some());
 
         if let Some(open) = &mut maths {
@@ -92,10 +92,8 @@ pub fn render_linked(
         }
 
         match &mut fence {
-            
             Some(open) if trimmed.starts_with(open.marker) => {
                 match open.diagram.take() {
-                    
                     Some(source) => blocks.extend(diagram_blocks(&source, theme, width)),
                     None => blocks.push(Block::plain(vec![Span::styled(
                         trimmed.to_string(),
@@ -113,20 +111,18 @@ pub fn render_linked(
             },
             None => match fence_marker(trimmed) {
                 Some(marker) => {
-                    
                     if let Some(open) = table.take() {
                         blocks.extend(open.render(theme, width, links));
                     }
                     let language = &trimmed[marker.len()..];
-                    
+
                     let diagram = (mermaid != crate::commands::Mermaid::Off
                         && language
-                            .trim()
                             .split_whitespace()
                             .next()
                             .is_some_and(|word| word.eq_ignore_ascii_case("mermaid")))
                     .then(Vec::new);
-                    
+
                     if diagram.is_none() {
                         blocks.push(Block::plain(vec![Span::styled(
                             trimmed.to_string(),
@@ -139,58 +135,49 @@ pub fn render_linked(
                         diagram,
                     });
                 }
-                None => {
-                    
-                    match table.take() {
-                        Some(open) => match open.take_line(trimmed) {
-                            Continued::Taken(open) => table = Some(open),
-                            Continued::Ended(open) => {
-                                blocks.extend(open.render(theme, width, links));
-                                let block =
-                                    block_for(line, trimmed, theme, width, links, &mut ordinal);
-                                let spaced = block.spaced_after;
-                                blocks.push(block);
-                                if spaced && !followed_by_blank && !continues {
-                                    blocks.push(Block::plain(Vec::new()));
-                                }
+                None => match table.take() {
+                    Some(open) => match open.take_line(trimmed) {
+                        Continued::Taken(open) => table = Some(open),
+                        Continued::Ended(open) => {
+                            blocks.extend(open.render(theme, width, links));
+                            let block = block_for(line, trimmed, theme, width, links, &mut ordinal);
+                            let spaced = block.spaced_after;
+                            blocks.push(block);
+                            if spaced && !followed_by_blank && !continues {
+                                blocks.push(Block::plain(Vec::new()));
                             }
-                        },
-                        None => match starts_table(trimmed) {
-                            Some(started) => table = Some(started),
-                            None => {
-                                let block =
-                                    block_for(line, trimmed, theme, width, links, &mut ordinal);
-                                let spaced = block.spaced_after;
-                                blocks.push(block);
-                                
-                                if spaced && !followed_by_blank && !continues {
-                                    blocks.push(Block::plain(Vec::new()));
-                                }
+                        }
+                    },
+                    None => match starts_table(trimmed) {
+                        Some(started) => table = Some(started),
+                        None => {
+                            let block = block_for(line, trimmed, theme, width, links, &mut ordinal);
+                            let spaced = block.spaced_after;
+                            blocks.push(block);
+
+                            if spaced && !followed_by_blank && !continues {
+                                blocks.push(Block::plain(Vec::new()));
                             }
-                        },
-                    }
-                }
+                        }
+                    },
+                },
             },
         }
     }
 
-    
     if let Some(open) = maths {
         blocks.extend(open.drawn(theme));
     }
 
-    
     if let Some(open) = table {
         blocks.extend(open.render(theme, width, links));
     }
 
-    
     if let Some(open) = fence {
         match open
             .diagram
             .filter(|_| mermaid == crate::commands::Mermaid::Streaming)
         {
-            
             Some(source) => blocks.extend(diagram_blocks(&source, theme, width)),
             None => blocks.push(Block::plain(vec![Span::styled(
                 open.marker.to_string(),
@@ -257,7 +244,6 @@ fn block_for(
     }
 
     if let Some((level, rest)) = heading(trimmed) {
-        
         let style = heading_style(level, theme);
         let mut spans = Vec::new();
         if level >= 3 {
@@ -338,7 +324,7 @@ fn quote(trimmed: &str) -> Option<&str> {
 fn bullet<'a>(line: &'a str, ordinal: &mut Option<usize>) -> Option<(String, &'a str)> {
     let leading = line.len() - line.trim_start().len();
     let trimmed = &line[leading..];
-    
+
     let depth = leading / 2;
     let padding = " ".repeat(depth * 4);
 
@@ -356,7 +342,7 @@ fn bullet<'a>(line: &'a str, ordinal: &mut Option<usize>) -> Option<(String, &'a
         for marker in [". ", ") "] {
             if let Some(rest) = after.strip_prefix(marker) {
                 let (task, rest) = task_marker(rest);
-                
+
                 let number = match ordinal {
                     Some(previous) => {
                         *previous += 1;
@@ -375,7 +361,6 @@ fn bullet<'a>(line: &'a str, ordinal: &mut Option<usize>) -> Option<(String, &'a
 
     None
 }
-
 
 fn task_marker(rest: &str) -> (String, &str) {
     for (source, rendered) in [("[ ] ", "[ ] "), ("[x] ", "[x] "), ("[X] ", "[x] ")] {
@@ -405,7 +390,6 @@ fn inline(text: &str, base: Style, theme: &Theme, links: &mut Links) -> Vec<Span
             }
         }
 
-        
         if matches!(characters[index], '$' | '\\') {
             if let Some((rendered, next)) = math(&characters, index) {
                 if !buffer.is_empty() {
@@ -429,7 +413,6 @@ fn inline(text: &str, base: Style, theme: &Theme, links: &mut Links) -> Vec<Span
         }
 
         let matched = match characters[index] {
-            
             '`' => marker(&characters, index, "`")
                 .map(|(content, next)| (content, next, Style::new().fg(theme.md_code))),
             '*' if characters.get(index + 1) == Some(&'*') => marker(&characters, index, "**")
@@ -438,7 +421,7 @@ fn inline(text: &str, base: Style, theme: &Theme, links: &mut Links) -> Vec<Span
                 .map(|(content, next)| (content, next, base.add_modifier(Modifier::BOLD))),
             '~' if characters.get(index + 1) == Some(&'~') => marker(&characters, index, "~~")
                 .map(|(content, next)| (content, next, base.add_modifier(Modifier::CROSSED_OUT))),
-            
+
             '*' => marker(&characters, index, "*")
                 .map(|(content, next)| (content, next, base.add_modifier(Modifier::ITALIC))),
             '_' => marker(&characters, index, "_")
@@ -476,7 +459,7 @@ fn autolink(
 ) -> Option<(Vec<Span<'static>>, usize)> {
     let end = find(characters, start + 1, '>')?;
     let href: String = characters[start + 1..end].iter().collect();
-    
+
     if !href.starts_with("http://") && !href.starts_with("https://") && !href.starts_with("mailto:")
     {
         return None;
@@ -511,7 +494,6 @@ fn link(
         return None;
     }
 
-    
     let style = links.mark(
         Style::new()
             .fg(theme.md_link)
@@ -519,9 +501,9 @@ fn link(
         &href,
     );
     let mut spans = inline(&text, style, theme, links);
-    
+
     let bare = href.strip_prefix("mailto:").unwrap_or(&href);
-    
+
     if !links.is_enabled() && text != href && text != bare {
         spans.push(Span::styled(
             format!(" ({href})"),
@@ -539,7 +521,7 @@ fn find(characters: &[char], from: usize, wanted: char) -> Option<usize> {
 /// A diagram, drawn if it can be and left as its source if it cannot.
 fn diagram_blocks(source: &[String], theme: &Theme, width: usize) -> Vec<Block> {
     let text = source.join("\n");
-    
+
     let art = micro_mermaid::render(&text)
         .filter(|art| art.width <= width)
         .unwrap_or_else(|| micro_mermaid::source_box(&text, width));
@@ -585,7 +567,7 @@ fn opens_maths(trimmed: &str) -> Option<Maths> {
         _ => return None,
     };
     let rest = trimmed[opener.len()..].trim();
-    
+
     if rest.ends_with(closer) && !rest.is_empty() {
         return Some(Maths {
             closer,
@@ -606,7 +588,7 @@ impl Maths {
     fn drawn(&self, theme: &Theme) -> Vec<Block> {
         let source = self.lines.join("\n");
         let style = theme.body();
-        if let Some(image) = crate::typeset::render_math(&source, theme.text, theme.status) {
+        if let Some(image) = crate::typeset::render_math(&source, theme.text) {
             return vec![
                 Block::plain(Vec::new()),
                 Block {
@@ -710,7 +692,6 @@ impl Table {
     /// Draw the table boxed, one row of cells per row of the table.
     fn render(self, theme: &Theme, width: usize, links: &mut Links) -> Vec<Block> {
         let Self::Building { cells } = self else {
-            
             let Table::Pending { header } = self else {
                 unreachable!()
             };
@@ -722,7 +703,6 @@ impl Table {
             return Vec::new();
         }
 
-        
         let overhead = 3 * columns + 1;
         let Some(for_cells) = width.checked_sub(overhead).filter(|room| *room >= columns) else {
             return cells
@@ -752,7 +732,7 @@ impl Table {
                 _ => theme.body(),
             };
             blocks.extend(row_blocks(row, &widths, style, theme, links, border));
-            
+
             if index + 1 < cells.len() {
                 blocks.push(rule("├─", "─┼─", "─┤"));
             }
@@ -834,7 +814,6 @@ fn column_widths(
         }
     }
 
-    
     let mut least: usize = smallest.iter().sum();
     if least > for_cells {
         let wanted: usize = smallest.iter().map(|width| width.saturating_sub(1)).sum();
@@ -880,7 +859,6 @@ fn column_widths(
         })
         .collect();
 
-    
     let mut leftover = for_cells.saturating_sub(widths.iter().sum::<usize>());
     while leftover > 0 {
         let mut grew = false;
@@ -909,11 +887,11 @@ fn math(characters: &[char], start: usize) -> Option<(String, usize)> {
 
     let (source, next) =
         marker(characters, start, opener).filter(|(source, _)| !source.is_empty())?;
-    
+
     if opener == "$" && !is_math(&source, characters.get(next)) {
         return None;
     }
-    
+
     let next = match closer == opener {
         true => next,
         false => {
@@ -926,7 +904,6 @@ fn math(characters: &[char], start: usize) -> Option<(String, usize)> {
     crate::latex::render(&source).map(|drawn| (drawn, next))
 }
 
-
 fn is_math(source: &str, after: Option<&char>) -> bool {
     if source.ends_with(char::is_whitespace) || source.contains('`') {
         return false;
@@ -934,7 +911,7 @@ fn is_math(source: &str, after: Option<&char>) -> bool {
     if after.is_some_and(char::is_ascii_digit) {
         return false;
     }
-    
+
     let shouted = !source.is_empty()
         && source
             .trim_end_matches(|c: char| !c.is_alphanumeric() && c != '_')
@@ -950,8 +927,7 @@ fn longest_word(cell: &str) -> usize {
         .map(text_width)
         .max()
         .unwrap_or(0)
-        .min(LONGEST)
-        .max(1)
+        .clamp(1, LONGEST)
 }
 
 /// The text delimited by `delimiter` starting at `start`, and the index past the closer.
@@ -972,7 +948,7 @@ fn marker(characters: &[char], start: usize, delimiter: &str) -> Option<(String,
 
 #[cfg(test)]
 mod tests {
-    
+
     #[test]
     fn a_mermaid_block_is_drawn_as_a_diagram() {
         let rows = drawn("```mermaid\ngraph TD\n  A[Read] --> B[Answer]\n```");
@@ -1009,7 +985,6 @@ mod tests {
         assert!(rows.iter().any(|row| row.contains("graph TD")), "{rows:?}");
     }
 
-    
     #[test]
     fn a_diagram_too_wide_to_draw_is_framed_as_its_source() {
         let rows = drawn_at(
@@ -1053,7 +1028,6 @@ mod tests {
         .collect()
     }
 
-    
     #[test]
     fn a_table_is_drawn_boxed() {
         let rows = drawn("| Model | Context |\n| --- | ---: |\n| opus | 200k |\n| gemini | 1M |");
@@ -1069,7 +1043,6 @@ mod tests {
         assert_eq!(rows[6], "└────────┴─────────┘");
     }
 
-    
     #[test]
     fn a_column_is_sized_by_what_is_drawn_not_what_was_typed() {
         let rows = drawn("| A | B |\n| --- | --- |\n| `xy` | z |");
@@ -1078,7 +1051,6 @@ mod tests {
         assert!(rows[3].contains("xy") && !rows[3].contains('`'));
     }
 
-    
     #[test]
     fn a_long_cell_wraps_inside_its_column() {
         let mut links = Links::default();
@@ -1239,7 +1211,6 @@ mod tests {
         let blocks = render("before\n```rust\nlet x = 1;\n```\nafter", &theme);
         assert_eq!(
             rendered(&blocks),
-            
             vec!["before", "```rust", "  let x = 1;", "```", "", "after"]
         );
         assert_eq!(
@@ -1257,7 +1228,7 @@ mod tests {
         let theme = theme();
         let blocks = render("```\nlet x = 1;\n```", &theme);
         assert_eq!(blocks[1].spans[0].style.fg, Some(theme.md_code_block));
-        
+
         assert_eq!(blocks[1].spans[0].style.bg, None);
         assert!(!blocks[1].filled);
     }
@@ -1275,10 +1246,7 @@ mod tests {
     fn an_unterminated_fence_still_styles_what_followed_it() {
         let theme = theme();
         let blocks = render("```\nstreaming code", &theme);
-        assert_eq!(
-            rendered(&blocks), 
-            vec!["```", "  streaming code", "```"]
-        );
+        assert_eq!(rendered(&blocks), vec!["```", "  streaming code", "```"]);
         assert_eq!(blocks[1].spans[0].style.fg, Some(theme.md_code_block));
     }
 
@@ -1456,7 +1424,6 @@ mod tests {
         assert_eq!(text_of(&blocks[0]), "─".repeat(20));
         assert_eq!(blocks[0].spans[0].style.fg, Some(theme.md_hr));
 
-        
         assert_eq!(
             text_of(
                 &render_linked(
@@ -1496,7 +1463,7 @@ mod tests {
     fn every_markdown_token_is_reachable() {
         let theme = theme();
         let source = "# One\n### Three\n- item\n> quote\n---\n```rs\ncode\n```\n`inline` [t](u)";
-        
+
         let used: Vec<_> = render_linked(
             source,
             &theme,

@@ -5,21 +5,18 @@ use serde::Serialize;
 use std::path::Path;
 use std::path::PathBuf;
 
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Source {
     /// A package on the npm registry.
     Npm {
-        
         spec: String,
         /// The package name, without a version.
         name: String,
-        
+
         version: Option<String>,
     },
     /// A repository to clone.
     Git {
-        
         url: String,
         /// Where it goes, as `host/owner/repo`.
         slug: String,
@@ -49,7 +46,7 @@ impl Source {
         if let Some(parsed) = git(source) {
             return Ok(parsed);
         }
-        
+
         Ok(Source::Local {
             path: source.to_string(),
         })
@@ -94,7 +91,6 @@ fn npm(spec: &str) -> Result<Source, String> {
         return Err("say which npm package to install".to_string());
     }
 
-    
     let after_scope = match spec.starts_with('@') {
         true => spec.find('/').map(|slash| slash + 1).unwrap_or(0),
         false => 0,
@@ -132,12 +128,10 @@ fn git(source: &str) -> Option<Source> {
     } else if let Some(rest) = stripped.strip_prefix("ssh://") {
         (format!("ssh://{rest}"), slug_of(strip_user(rest)))
     } else if stripped.contains('@') && stripped.contains(':') {
-        
         let after_user = stripped.split_once('@').map(|(_, rest)| rest)?;
         let (host, path) = after_user.split_once(':')?;
         (stripped.to_string(), slug_of(&format!("{host}/{path}")))
     } else if stripped.contains('/') && stripped.contains('.') {
-        
         (format!("https://{stripped}"), slug_of(stripped))
     } else {
         return None;
@@ -149,7 +143,6 @@ fn git(source: &str) -> Option<Source> {
         reference,
     })
 }
-
 
 fn slug_of(path: &str) -> String {
     path.trim_end_matches('/')
@@ -164,7 +157,6 @@ fn slug_of(path: &str) -> String {
 fn strip_user(rest: &str) -> &str {
     rest.split_once('@').map(|(_, rest)| rest).unwrap_or(rest)
 }
-
 
 fn is_local(source: &str) -> bool {
     source.starts_with("./")
@@ -194,16 +186,19 @@ pub async fn install(
 
     match source {
         Source::Npm { spec, .. } => {
-            
             let root = path
                 .ancestors()
-                .find(|ancestor| ancestor.file_name().is_some_and(|name| name == "node_modules"))
+                .find(|ancestor| {
+                    ancestor
+                        .file_name()
+                        .is_some_and(|name| name == "node_modules")
+                })
                 .and_then(Path::parent)
                 .ok_or("the install path has no root")?
                 .to_path_buf();
             std::fs::create_dir_all(&root)
                 .map_err(|error| format!("cannot use {}: {error}", root.display()))?;
-            
+
             let manifest = root.join("package.json");
             if !manifest.exists() {
                 std::fs::write(&manifest, "{\n  \"name\": \"micro-extensions\"\n}\n")
@@ -238,7 +233,7 @@ pub async fn install(
                     run(Path::new("git"), &["fetch", "origin", reference], &path).await?;
                     run(Path::new("git"), &["checkout", reference], &path).await?;
                 }
-                
+
                 ensure_declared_dependencies_installed(&path).await?;
             }
         }
@@ -246,7 +241,7 @@ pub async fn install(
             if !path.exists() {
                 return Err(format!("{} is not there", path.display()));
             }
-            
+
             if path.is_dir() {
                 ensure_declared_dependencies_installed(&path).await?;
             }
@@ -266,7 +261,6 @@ pub async fn install(
     })
 }
 
-
 async fn ensure_declared_dependencies_installed(directory: &Path) -> Result<(), String> {
     if !directory.join("package.json").exists() {
         return Ok(());
@@ -281,7 +275,6 @@ async fn ensure_declared_dependencies_installed(directory: &Path) -> Result<(), 
 pub fn remove(source: &Source, home: &Path, workspace: &Path, local: bool) -> Result<(), String> {
     let path = source.install_path(home, workspace, local);
     match source {
-        
         Source::Local { .. } => Ok(()),
         _ => match path.exists() {
             false => Ok(()),
@@ -511,7 +504,6 @@ mod tests {
             let status = std::process::Command::new("git")
                 .args(args)
                 .current_dir(&root)
-                
                 .env("GIT_AUTHOR_NAME", "test")
                 .env("GIT_AUTHOR_EMAIL", "test@example.invalid")
                 .env("GIT_COMMITTER_NAME", "test")
@@ -527,7 +519,6 @@ mod tests {
         root
     }
 
-    
     #[tokio::test]
     async fn a_git_source_gets_its_own_dependencies_installed() {
         if crate::host::which_bun().is_none() {
@@ -535,7 +526,8 @@ mod tests {
             return;
         }
         let repo = repo_with_a_dependency();
-        let scratch = std::env::temp_dir().join(format!("micro-packages-git-{}", std::process::id()));
+        let scratch =
+            std::env::temp_dir().join(format!("micro-packages-git-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&scratch);
         let home = scratch.join("home");
         let workspace = scratch.join("workspace");
@@ -568,7 +560,8 @@ mod tests {
             return;
         }
         let package = directory_with_a_dependency("local");
-        let scratch = std::env::temp_dir().join(format!("micro-packages-local-{}", std::process::id()));
+        let scratch =
+            std::env::temp_dir().join(format!("micro-packages-local-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&scratch);
         let home = scratch.join("home");
         let workspace = scratch.join("workspace");
@@ -591,7 +584,6 @@ mod tests {
         let _ = std::fs::remove_dir_all(&scratch);
     }
 
-    
     #[tokio::test]
     async fn a_local_source_with_nothing_to_install_is_unaffected() {
         let root = std::env::temp_dir().join(format!(

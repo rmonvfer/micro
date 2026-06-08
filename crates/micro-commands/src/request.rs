@@ -22,9 +22,10 @@ pub(crate) async fn command(
         Ok(turn) => turn,
         Err(error) => return CommandOutcome::error(format!("cannot read turn {turn}: {error}")),
     };
-    let verified = rebuilt.recorded_request_body.as_ref().is_some_and(|body| {
-        content_hash(body) == rebuilt.request_hash
-    });
+    let verified = rebuilt
+        .recorded_request_body
+        .as_ref()
+        .is_some_and(|body| content_hash(body) == rebuilt.request_hash);
     if rebuilt.recorded_request_body.is_some() && !verified {
         return CommandOutcome::error(format!(
             "stored request body for turn {turn} failed hash verification"
@@ -57,7 +58,11 @@ fn human_readable(turn: &micro_session::ReconstructedTurn, verified: bool) -> St
         turn.provider,
         turn.model_id,
         turn.request_hash,
-        if verified { "verified" } else { "not retained (legacy session)" },
+        if verified {
+            "verified"
+        } else {
+            "not retained (legacy session)"
+        },
     );
 
     if let Some(prompt) = &turn.system_prompt {
@@ -69,7 +74,11 @@ fn human_readable(turn: &micro_session::ReconstructedTurn, verified: bool) -> St
             offset = end;
         }
         if turn.prefix_spans.is_empty() {
-            out.push_str(&format!("{}\n{}\n\n", heading(&EventSource::SystemPrompt), prompt));
+            out.push_str(&format!(
+                "{}\n{}\n\n",
+                heading(&EventSource::SystemPrompt),
+                prompt
+            ));
         }
     }
     for tool in &turn.tools {
@@ -83,11 +92,18 @@ fn human_readable(turn: &micro_session::ReconstructedTurn, verified: bool) -> St
         let (label, content) = match message {
             Message::User { content, .. } => (heading(&EventSource::User), content),
             Message::Assistant(message) => (heading(&EventSource::Model), &message.content),
-            Message::ToolResult { tool_name, content, .. } => {
-                (format!("TOOL RESULT: {tool_name}  [tool_result:{tool_name}]"), content)
-            }
+            Message::ToolResult {
+                tool_name, content, ..
+            } => (
+                format!("TOOL RESULT: {tool_name}  [tool_result:{tool_name}]"),
+                content,
+            ),
         };
-        let text = content.iter().map(ContentBlock::as_text).collect::<Vec<_>>().join("\n");
+        let text = content
+            .iter()
+            .map(ContentBlock::as_text)
+            .collect::<Vec<_>>()
+            .join("\n");
         out.push_str(&format!("{label}\n{text}\n\n"));
     }
     out

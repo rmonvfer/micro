@@ -107,9 +107,12 @@ impl Tool for Bash {
         let command = required_str(arguments, "command")?;
         let timeout_ms = timeout_for(arguments)?;
 
-        
         let shell = shell();
-        let wrapped = self.guard.sandbox().wrap(
+        let sandbox = match self.guard.take_one_time_sandbox(&command) {
+            Some(granted) => granted,
+            None => self.guard.sandbox(),
+        };
+        let wrapped = sandbox.wrap(
             &shell.to_string_lossy(),
             ["-c".to_string(), command.clone()],
             &self.root,
@@ -119,12 +122,10 @@ impl Tool for Bash {
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
-            
             .kill_on_drop(true)
             .spawn()
             .map_err(|error| format!("cannot start command: {error}"))?;
 
-        
         let mut child = child;
         let stdout = child.stdout.take();
         let stderr = child.stderr.take();
@@ -137,7 +138,7 @@ impl Tool for Bash {
                 use tokio::io::AsyncBufReadExt as _;
                 let mut out = tokio::io::BufReader::new(stdout.unwrap()).lines();
                 let mut err = tokio::io::BufReader::new(stderr.unwrap()).lines();
-                
+
                 let (mut out_ended, mut err_ended) = (false, false);
                 while !(out_ended && err_ended) {
                     let line = tokio::select! {
@@ -179,7 +180,7 @@ impl Tool for Bash {
                     }
                 }
             }
-            
+
             None => {
                 let (_, status) = waiting.await;
                 status.map_err(|error| format!("command failed: {error}"))?
@@ -200,12 +201,10 @@ impl Tool for Bash {
             None => format!("terminated by signal\n{body}"),
         };
 
-        
         if !micro_sandbox::is_likely_denied(&status, &body) {
             return Err(failure);
         }
         if !confined {
-            
             self.guard.record("exec", command, true);
             return Err(failure);
         }
@@ -299,7 +298,7 @@ mod tests {
 
         assert!(seen.len() >= 2, "it reported as it went: {seen:?}");
         assert!(seen[0].contains("first"));
-        
+
         assert!(seen.last().unwrap().contains("first"));
         assert!(seen.last().unwrap().contains("third"));
         assert!(
@@ -399,7 +398,6 @@ mod sandboxed {
         );
     }
 
-    
     #[tokio::test]
     async fn read_only_refuses_a_write_to_the_workspace_itself() {
         let (_dir, workspace) = workspace("read-only");

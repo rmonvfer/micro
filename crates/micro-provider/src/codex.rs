@@ -1,5 +1,3 @@
-
-
 use crate::sse::read_sse;
 use crate::Provider;
 use crate::SseEvent;
@@ -27,7 +25,6 @@ const AUTH_CLAIM: &str = "https://api.openai.com/auth";
 /// How the answer comes back.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Transport {
-    
     #[default]
     Sse,
     /// Let the provider decide.
@@ -88,7 +85,6 @@ impl Codex {
         }
     }
 
-    
     pub fn platform() -> Self {
         Codex {
             client: crate::http_client(),
@@ -160,11 +156,17 @@ impl Provider for Codex {
         let provider = self.provider.clone();
 
         tokio::spawn(async move {
-            if let Err(message) =
-                run(
-                    client, backend, provider, model, context, api_key, payload, &sender,
-                )
-                .await
+            if let Err(message) = run(Run {
+                client,
+                backend,
+                provider,
+                model,
+                context,
+                api_key,
+                payload,
+                sender: &sender,
+            })
+            .await
             {
                 let _ = sender.send(StreamEvent::Error { message });
             }
@@ -187,7 +189,7 @@ impl Provider for Codex {
     }
 }
 
-async fn run(
+struct Run<'a> {
     client: reqwest::Client,
     backend: Backend,
     provider: String,
@@ -195,24 +197,34 @@ async fn run(
     context: Context,
     api_key: String,
     payload: Value,
-    sender: &UnboundedSender<StreamEvent>,
-) -> Result<(), String> {
+    sender: &'a UnboundedSender<StreamEvent>,
+}
+
+async fn run(request: Run<'_>) -> Result<(), String> {
+    let Run {
+        client,
+        backend,
+        provider,
+        model,
+        context,
+        api_key,
+        payload,
+        sender,
+    } = request;
     let service = provider.clone();
 
     let request = client
         .post(endpoint_for(backend, &model.base_url))
         .header("accept", "text/event-stream")
         .header("content-type", "application/json");
-    
+
     let request = match backend {
         Backend::Azure => request.header("api-key", &api_key),
         _ => request.header("authorization", format!("Bearer {api_key}")),
     };
 
-    
     let request = match backend {
         Backend::ChatGpt => {
-            
             let request_id = session_name(context.cache_key.as_deref());
             request
                 .header("chatgpt-account-id", account_id(&api_key)?)
@@ -222,16 +234,15 @@ async fn run(
                 .header("session-id", &request_id)
                 .header("x-client-request-id", request_id)
         }
-        
+
         Backend::Platform | Backend::Azure => request,
     };
 
-    
     let mut request = request;
     for (name, value) in &model.headers {
         request = request.header(name.as_str(), value.as_str());
     }
-    
+
     if crate::openai::is_copilot(&provider, &model.base_url) {
         request = request
             .header("x-initiator", crate::openai::initiator(&context.messages))
@@ -290,7 +301,6 @@ fn endpoint_for(backend: Backend, base_url: &str) -> String {
 
 /// Where an Azure resource answers.
 fn azure_endpoint(base_url: &str) -> String {
-    
     let named = std::env::var(AZURE_RESOURCE_ENV)
         .ok()
         .map(|resource| resource.trim().to_string())
@@ -441,7 +451,7 @@ const AZURE_RESOURCE_ENV: &str = "AZURE_OPENAI_RESOURCE_NAME";
 fn build_payload(backend: Backend, model: &Model, context: &Context) -> Result<Value, String> {
     let mut payload = json!({
         "model": model.id,
-        
+
         "store": false,
         "stream": true,
         "instructions": match context.system_prompt.as_deref() {
@@ -470,7 +480,7 @@ fn build_payload(backend: Backend, model: &Model, context: &Context) -> Result<V
                 "description": tool.description,
                 "parameters": parameters,
             });
-            
+
             if model.compat.supports_strict_mode {
                 described["strict"] = match strict {
                     Some(true) => Value::Bool(true),
@@ -486,11 +496,10 @@ fn build_payload(backend: Backend, model: &Model, context: &Context) -> Result<V
         payload["reasoning"] = json!({ "effort": effort, "summary": "auto" });
     }
 
-    
     if matches!(backend, Backend::Platform | Backend::Azure) {
         payload["max_output_tokens"] = json!(model.max_tokens.max(MIN_OUTPUT_TOKENS));
     }
-    
+
     if backend == Backend::Azure {
         payload["model"] = json!(azure_deployment(&model.id));
     }
@@ -641,7 +650,6 @@ impl Accumulator {
                 self.delta(&value, Kind::Thinking, sender);
             }
             "response.reasoning_summary_part.done" => {
-                
                 self.delta_text(&value, Kind::Thinking, "\n\n", sender);
             }
             "response.function_call_arguments.delta" => {
@@ -1004,7 +1012,6 @@ mod tests {
     use super::*;
     use micro_types::ToolDefinition;
 
-    
     fn token(claims: Value) -> String {
         let encode = |bytes: &[u8]| {
             const ALPHABET: &[u8] =
@@ -1080,7 +1087,6 @@ mod tests {
         );
     }
 
-    
     #[test]
     fn the_request_is_shaped_the_way_the_backend_takes_it() {
         let context = Context {
@@ -1104,7 +1110,7 @@ mod tests {
         assert_eq!(payload["input"][0]["content"][0]["type"], "input_text");
         assert_eq!(payload["tools"][0]["type"], "function");
         assert_eq!(payload["tools"][0]["name"], "read");
-        
+
         assert_eq!(payload["tools"][0]["strict"], Value::Null);
         assert!(payload.get("reasoning").is_none(), "effort was off");
     }
@@ -1143,7 +1149,6 @@ mod tests {
         );
     }
 
-    
     #[test]
     fn a_schema_that_cannot_be_strict_falls_back_to_null_rather_than_false() {
         let unstrictifiable = ToolDefinition {
@@ -1166,7 +1171,6 @@ mod tests {
         assert_eq!(payload["tools"][0]["strict"], Value::Null);
     }
 
-    
     #[test]
     fn an_unsupported_service_is_unaffected_by_a_tool_preferring_strict_sampling() {
         let original_parameters = json!({
@@ -1188,7 +1192,6 @@ mod tests {
         assert_eq!(payload["tools"][0]["parameters"], original_parameters);
     }
 
-    
     #[test]
     fn requiring_strict_sampling_on_an_unsupported_service_fails_the_request() {
         let mut unsupported = model();
@@ -1357,7 +1360,6 @@ mod tests {
         assert_eq!(arguments["path"], "src/main.rs");
     }
 
-    
     #[test]
     fn separate_output_items_stay_separate_blocks() {
         let events = drain(vec![
@@ -1426,12 +1428,12 @@ mod platform {
             endpoint_for(Backend::Platform, "https://api.openai.com/v1"),
             "https://api.openai.com/v1/responses"
         );
-        
+
         assert_eq!(
             endpoint_for(Backend::Platform, "https://api.openai.com/v1/responses"),
             "https://api.openai.com/v1/responses"
         );
-        
+
         assert!(
             endpoint_for(Backend::ChatGpt, "https://chatgpt.com/backend-api")
                 .ends_with("/codex/responses")
@@ -1473,7 +1475,6 @@ mod platform {
         );
     }
 
-    
     #[test]
     fn reasoning_is_replayed_on_both_backends() {
         for backend in [Backend::ChatGpt, Backend::Platform] {
@@ -1513,7 +1514,7 @@ mod azure {
             azure_endpoint("https://my-resource.openai.azure.com"),
             "https://my-resource.openai.azure.com/openai/v1/responses?api-version=v1"
         );
-        
+
         assert_eq!(
             azure_endpoint("https://my-resource.openai.azure.com/openai/v1"),
             "https://my-resource.openai.azure.com/openai/v1/responses?api-version=v1"
@@ -1527,11 +1528,9 @@ mod azure {
     /// A model reaches a deployment, and a resource may call its deployment anything.
     #[test]
     fn a_model_is_addressed_by_its_deployment() {
-        
         assert_eq!(azure_deployment("gpt-5.5"), "gpt-5.5");
     }
 
-    
     #[test]
     fn azure_is_told_apart_from_the_platform() {
         assert_eq!(Codex::azure().name(), AZURE_PROVIDER);

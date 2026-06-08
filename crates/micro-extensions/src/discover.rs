@@ -79,7 +79,6 @@ pub fn in_directory(directory: &Path) -> Vec<PathBuf> {
         return Vec::new();
     };
 
-    
     let mut names: Vec<PathBuf> = entries
         .filter_map(|entry| entry.ok())
         .map(|entry| entry.path())
@@ -121,7 +120,6 @@ pub fn package_name(directory: &Path) -> Option<String> {
 }
 
 pub fn entries_of(directory: &Path) -> Option<Vec<PathBuf>> {
-    
     let manifest_path = directory.join("package.json");
     if let Ok(raw) = std::fs::read_to_string(&manifest_path) {
         if let Ok(manifest) = serde_json::from_str::<Manifest>(&raw) {
@@ -275,7 +273,6 @@ mod tests {
         assert!(found[0].ends_with("local.ts"));
         assert!(found[1].ends_with("global.ts"));
 
-        
         let configured = vec![found[0].display().to_string()];
         assert_eq!(discover(&workspace, &home, &configured, true).len(), 2);
     }

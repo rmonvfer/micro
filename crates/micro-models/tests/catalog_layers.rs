@@ -67,7 +67,6 @@ fn the_three_layers_stack_in_order() {
         }}"#,
     );
 
-    
     let mut catalog = Catalog::load_from(&user_catalog).unwrap();
     assert_eq!(
         catalog.resolve("big").model().unwrap().qualified_id(),
@@ -78,7 +77,6 @@ fn the_three_layers_stack_in_order() {
         "Qwen3 Coder 30B"
     );
 
-    
     catalog.merge_listing(micro_models::parse_openrouter(OPENROUTER_LISTING).unwrap());
 
     let opus = catalog
@@ -125,7 +123,6 @@ fn a_copilot_listing_narrows_the_catalog_to_the_entitled_models() {
     catalog.merge_listing(listed.clone());
     catalog.retain_providers(&["github-copilot"]);
 
-    
     let entitled: Vec<&str> = listed.iter().map(|m| m.id.as_str()).collect();
     let usable: Vec<&str> = catalog
         .models()

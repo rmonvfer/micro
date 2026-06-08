@@ -2,7 +2,6 @@
 
 use std::collections::BTreeMap;
 
-
 const MAX_LINES: usize = 10;
 /// So is one longer than this many characters.
 const MAX_CHARS: usize = 1_000;
@@ -72,7 +71,7 @@ impl PasteStore {
             out.push_str(&rest[..found.start]);
             match self.get(found.id) {
                 Some(paste) => out.push_str(paste),
-                
+
                 None => out.push_str(&rest[found.start..found.end]),
             }
             rest = &rest[found.end..];
@@ -81,7 +80,6 @@ impl PasteStore {
         out
     }
 }
-
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Marker {
@@ -143,7 +141,6 @@ pub fn find_marker(text: &str) -> Option<Marker> {
     None
 }
 
-
 pub fn marker_ending_at(text: &str, index: usize) -> Option<Marker> {
     let mut from = 0;
     while let Some(marker) = find_marker(&text[from..]) {
@@ -200,7 +197,7 @@ pub fn marker_containing(text: &str, index: usize) -> Option<Marker> {
 /// Rewrite the numbers in markers after a paste was removed.
 pub fn renumber(text: &str, moved: &[(usize, usize)]) -> String {
     let mut out = text.to_string();
-    
+
     let mut moved = moved.to_vec();
     moved.sort_by_key(|(from, _)| *from);
     for (from, to) in moved {
@@ -219,7 +216,7 @@ fn parse_marker(text: &str) -> Option<(usize, usize)> {
     let id = digits.parse().ok()?;
     let after = &rest[digits.len()..];
     let close = after.find(']')?;
-    
+
     let body = &after[..close];
     let valid = body.is_empty()
         || (body.starts_with(" +") && body.ends_with(" lines"))

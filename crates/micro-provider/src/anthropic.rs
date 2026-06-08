@@ -165,7 +165,7 @@ async fn run(
             "anthropic-beta",
             betas(&api_key, &model, &context).join(","),
         );
-    
+
     let request = match scheme_for(&api_key) {
         AuthScheme::Subscription => request
             .header("authorization", format!("Bearer {api_key}"))
@@ -195,7 +195,6 @@ async fn run(
         .await
         .map_err(|error| format!("Anthropic stream failed: {error}"))?;
 
-    
     if !state.finished {
         let _ = sender.send(StreamEvent::Done {
             message: state.build(),
@@ -329,7 +328,6 @@ impl Accumulator {
                         let _ = sender.send(StreamEvent::ToolCallStart { index, id, name });
                     }
                     Some("redacted_thinking") => {
-                        
                         let data = read_str(block, "data");
                         if !data.is_empty() {
                             self.blocks.push(ContentBlock::RedactedThinking { data });
@@ -367,7 +365,6 @@ impl Accumulator {
                         });
                     }
                     (Some("signature_delta"), Some(OpenBlock::Thinking { signature, .. })) => {
-                        
                         signature.push_str(&read_str(delta, "signature"));
                     }
                     (Some("input_json_delta"), Some(OpenBlock::ToolCall { index, json, .. })) => {
@@ -446,7 +443,6 @@ impl Accumulator {
             }
 
             "error" => {
-                
                 self.finished = true;
                 let message = data
                     .pointer("/error/message")
@@ -487,7 +483,6 @@ fn normalize_tool_id(id: &str) -> String {
     sanitized.chars().take(40).collect()
 }
 
-
 fn is_oauth(api_key: &str) -> bool {
     api_key.starts_with(OAUTH_PREFIX)
 }
@@ -497,7 +492,7 @@ fn is_oauth(api_key: &str) -> bool {
 enum AuthScheme {
     /// A subscription token issued to Claude Code, sent as a bearer under that client's name.
     Subscription,
-    
+
     Bearer,
     /// A platform API key.
     ApiKey,
@@ -525,7 +520,7 @@ fn betas(api_key: &str, model: &Model, context: &Context) -> Vec<&'static str> {
         if !model.compat.supports_eager_tool_input_streaming {
             betas.push(FINE_GRAINED_TOOL_STREAMING_BETA);
         }
-        
+
         if model.thinking.budget_tokens().is_some() {
             betas.push(INTERLEAVED_THINKING_BETA);
         }
@@ -540,7 +535,6 @@ fn name_for(name: &str, subscription: bool) -> String {
         false => name.to_string(),
     }
 }
-
 
 fn effort_for(level: micro_types::ThinkingLevel) -> &'static str {
     match level {
@@ -565,7 +559,6 @@ pub(crate) fn build_payload(
     payload.insert("stream".into(), json!(true));
 
     match model.thinking.budget_tokens() {
-        
         Some(_) if model.compat.force_adaptive_thinking => {
             payload.insert(
                 "thinking".into(),
@@ -582,7 +575,7 @@ pub(crate) fn build_payload(
                 json!({ "type": "enabled", "budget_tokens": budget }),
             );
         }
-        
+
         None => {
             payload.insert("thinking".into(), json!({ "type": "disabled" }));
         }
@@ -604,7 +597,7 @@ pub(crate) fn build_payload(
                 tool,
                 model.compat.supports_strict_tools,
             )?;
-            
+
             let parameters =
                 crate::constrained_sampling::json_schema_tool_parameters(tool, strict)?;
             let mut described = json!({
@@ -612,8 +605,7 @@ pub(crate) fn build_payload(
                 "description": tool.description,
                 "input_schema": parameters,
             });
-            
-            
+
             if model.compat.supports_eager_tool_input_streaming {
                 described["eager_input_streaming"] = json!(true);
             }
@@ -695,7 +687,7 @@ fn encode_blocks(blocks: &[ContentBlock], subscription: bool) -> Vec<Value> {
                 let mut object = Map::new();
                 object.insert("type".into(), json!("thinking"));
                 object.insert("thinking".into(), json!(thinking));
-                
+
                 match signature {
                     Some(signature) => {
                         object.insert("signature".into(), json!(signature));
@@ -711,7 +703,7 @@ fn encode_blocks(blocks: &[ContentBlock], subscription: bool) -> Vec<Value> {
                 "type": "image",
                 "source": { "type": "base64", "media_type": mime_type, "data": data },
             })),
-            
+
             ContentBlock::ToolCall {
                 id,
                 name,
@@ -733,7 +725,6 @@ pub(crate) fn apply_cache_breakpoints(payload: &mut Value, on_tools: bool) {
     let cache_control = json!({ "type": "ephemeral" });
     let mut remaining = MAX_CACHE_BREAKPOINTS;
 
-    
     if on_tools {
         if let Some(tools) = payload.get_mut("tools").and_then(Value::as_array_mut) {
             if let Some(last) = tools.last_mut().and_then(Value::as_object_mut) {
@@ -766,7 +757,6 @@ pub(crate) fn apply_cache_breakpoints(payload: &mut Value, on_tools: bool) {
         .map(|(index, _)| index)
         .collect();
 
-    
     let targets = user_indices.iter().rev().take(2).rev().copied();
     for index in targets {
         if remaining == 0 {
@@ -893,7 +883,6 @@ mod tests {
         );
     }
 
-    
     #[test]
     fn requiring_strict_sampling_on_a_service_that_does_not_support_it_fails_the_request() {
         let model = Model::anthropic("claude-opus-5");
@@ -1017,7 +1006,7 @@ mod tests {
             false,
         )
         .unwrap();
-        
+
         assert_eq!(plain["thinking"]["type"], "disabled");
 
         let thinking = build_payload(
@@ -1100,7 +1089,7 @@ mod tests {
         );
 
         assert_eq!(declared_name("Read", &context.tools), "read");
-        
+
         assert_eq!(claude_code_name("compact"), "compact");
     }
 
@@ -1165,7 +1154,7 @@ mod auth_scheme {
     fn a_credential_is_presented_by_what_it_is() {
         assert_eq!(scheme_for("sk-ant-oat01-abc"), AuthScheme::Subscription);
         assert_eq!(scheme_for("sk-ant-api03-abc"), AuthScheme::ApiKey);
-        
+
         assert_eq!(scheme_for("glsa_abc123"), AuthScheme::Bearer);
         assert_eq!(scheme_for("eyJhbGciOi.payload.sig"), AuthScheme::Bearer);
     }

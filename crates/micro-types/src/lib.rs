@@ -1,5 +1,3 @@
-
-
 mod compat;
 mod events;
 mod ledger;
@@ -144,7 +142,6 @@ impl AssistantMessage {
             .collect()
     }
 
-    
     pub fn text(&self) -> String {
         self.content
             .iter()
@@ -197,7 +194,6 @@ impl Message {
         )
     }
 
-    
     pub fn tool_result_content(
         tool_call_id: impl Into<String>,
         tool_name: impl Into<String>,

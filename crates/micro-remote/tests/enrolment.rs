@@ -10,7 +10,9 @@ async fn relay_is_up() -> bool {
     matches!(
         tokio::time::timeout(
             Duration::from_millis(500),
-            reqwest::Client::new().post(format!("{RELAY}/pairings")).send(),
+            reqwest::Client::new()
+                .post(format!("{RELAY}/pairings"))
+                .send(),
         )
         .await,
         Ok(Ok(_))
@@ -47,7 +49,6 @@ async fn a_code_leaves_both_ends_holding_the_same_secret() {
         .await
         .expect("the relay takes the machine's half");
 
-    
     let typed = enrolment.code.written();
     assert_eq!(typed.len(), 9, "eight characters and the dash: {typed}");
 
@@ -70,7 +71,6 @@ async fn a_code_leaves_both_ends_holding_the_same_secret() {
     assert_eq!(pairing_id, enrolment.pairing_id());
 }
 
-
 #[tokio::test]
 async fn the_relay_is_never_told_the_secret() {
     if !relay_is_up().await {
@@ -83,7 +83,6 @@ async fn the_relay_is_never_told_the_secret() {
     let (pairing_id, machine_public) = claim(enrolment.code.as_str(), &phone).await.unwrap();
     let secret = phone.shared_secret(&machine_public, &pairing_id).unwrap();
 
-    
     let told = reqwest::Client::new()
         .get(format!("{RELAY}/enrol/await"))
         .query(&[("code", enrolment.code.as_str())])
@@ -100,7 +99,7 @@ async fn the_relay_is_never_told_the_secret() {
         "the relay is holding the secret: {told}"
     );
     assert!(!told.contains(&hex_of(&secret)));
-    
+
     assert!(told.contains(&phone.public()));
 }
 

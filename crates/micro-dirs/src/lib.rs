@@ -1,5 +1,3 @@
-//! Where micro keeps things.
-
 use std::path::PathBuf;
 
 /// The variable that names one directory for everything.
@@ -17,11 +15,9 @@ pub const DIR_NAME: &str = "micro";
 /// The single directory micro used before it had two, and still uses wherever one exists.
 pub const LEGACY_DIR_NAME: &str = ".micro";
 
-
 pub fn config_dir() -> Option<PathBuf> {
     Places::from_env().config_dir()
 }
-
 
 pub fn data_dir() -> Option<PathBuf> {
     Places::from_env().data_dir()
@@ -74,7 +70,6 @@ impl Places {
         self.home.as_ref().map(|home| home.join(LEGACY_DIR_NAME))
     }
 
-    
     fn under(&self, named: Option<&std::path::Path>, default: &[&str]) -> Option<PathBuf> {
         let base = match named.filter(|path| path.is_absolute()) {
             Some(named) => named.to_path_buf(),
@@ -143,7 +138,6 @@ mod tests {
         assert_eq!(places.data_dir(), Some(PathBuf::from("/opt/micro")));
     }
 
-    
     #[test]
     fn an_existing_micro_directory_keeps_holding_everything() {
         let home = scratch("legacy");
@@ -173,7 +167,10 @@ mod tests {
             ..places(&home)
         };
 
-        assert_eq!(places.config_dir(), Some(PathBuf::from("/srv/settings/micro")));
+        assert_eq!(
+            places.config_dir(),
+            Some(PathBuf::from("/srv/settings/micro"))
+        );
         assert_eq!(places.data_dir(), Some(PathBuf::from("/srv/state/micro")));
     }
 

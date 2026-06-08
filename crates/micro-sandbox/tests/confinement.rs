@@ -98,7 +98,6 @@ fn the_network_is_out_of_reach_when_the_policy_does_not_allow_it() {
     let (_dir, workspace) = workspace("network");
     let sandbox = sandbox(SandboxPolicy::workspace_write(), &workspace);
 
-    
     let (status, said) = run(&sandbox, "exec 3<>/dev/tcp/1.1.1.1/80");
     assert!(!status.success(), "{said}");
     assert!(is_likely_denied(&status, &said), "{said}");

@@ -134,7 +134,6 @@ fn authentication(api_key: &str) -> Result<Authentication, String> {
 
 /// Which region serves this account.
 pub(crate) fn region(base_url: &str) -> String {
-    
     if let Some(found) = region_in(base_url) {
         return found;
     }
@@ -164,13 +163,12 @@ fn region_in(base_url: &str) -> Option<String> {
     (!region.is_empty() && region != "amazonaws").then(|| region.to_string())
 }
 
-
 pub(crate) fn endpoint(base_url: &str, region: &str, model_id: &str) -> String {
     let root = match base_url.trim().trim_end_matches('/') {
         "" => format!("https://bedrock-runtime.{region}.amazonaws.com"),
         given => given.to_string(),
     };
-    
+
     let encoded = model_id.replace('/', "%2F");
     format!("{root}/model/{encoded}/converse-stream")
 }
@@ -285,7 +283,6 @@ pub(crate) fn build_payload(model: &Model, context: &Context) -> Result<Value, S
         "inferenceConfig": { "maxTokens": model.max_tokens },
     });
 
-    
     if let Some(system) = context
         .system_prompt
         .as_deref()
@@ -308,7 +305,7 @@ pub(crate) fn build_payload(model: &Model, context: &Context) -> Result<Value, S
                 "description": tool.description,
                 "inputSchema": { "json": parameters },
             });
-            
+
             if strict == Some(true) {
                 spec["strict"] = json!(true);
             }
@@ -521,7 +518,7 @@ impl Accumulator {
             content: self.blocks.clone(),
             provider: self.provider.clone(),
             model: self.model_id.clone(),
-            usage: self.usage.clone(),
+            usage: self.usage,
             stop_reason: self.stop_reason,
             error: None,
             timestamp: now_ms(),
@@ -574,7 +571,7 @@ mod tests {
             address,
             "https://bedrock-runtime.eu-west-1.amazonaws.com/model/anthropic.claude-opus-4-v1:0/converse-stream"
         );
-        
+
         assert!(endpoint("", "us-east-1", "vendor/model").contains("vendor%2Fmodel"));
     }
 
@@ -585,7 +582,7 @@ mod tests {
             region("https://bedrock-runtime.ap-southeast-2.amazonaws.com"),
             "ap-southeast-2"
         );
-        
+
         assert!(region_in("https://my-proxy.example.com").is_none());
     }
 
@@ -625,7 +622,6 @@ mod tests {
         assert_eq!(result["status"], "success");
     }
 
-    
     #[test]
     fn a_failed_tool_is_marked_as_one() {
         let context = Context {
@@ -719,7 +715,6 @@ mod tests {
         assert_eq!(spec["inputSchema"]["json"], original_parameters);
     }
 
-    
     #[test]
     fn requiring_strict_sampling_on_a_service_that_does_not_support_it_fails_the_request() {
         let context = Context {

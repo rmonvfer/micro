@@ -14,7 +14,6 @@ use std::sync::Arc;
 /// Characters per token.
 pub const CHARS_PER_TOKEN: usize = 4;
 
-
 const IMAGE_CHARS: usize = 4_800;
 
 /// Wraps the summary so it stays recognisable after a round trip through session storage.
@@ -132,7 +131,7 @@ pub struct Compacted {
     pub summary: String,
     /// What writing the summary cost, for whoever is accounting for the session.
     pub cost: CompactionCost,
-    
+
     pub replaced: usize,
     pub tokens_before: usize,
     pub tokens_after: usize,
@@ -206,7 +205,7 @@ pub fn find_cut(messages: &[Message], keep_recent_tokens: usize) -> usize {
 
     for index in (0..messages.len()).rev() {
         let estimate = estimate_message(&messages[index]);
-        
+
         if kept + estimate > keep_recent_tokens && orphans.is_empty() && cut < messages.len() {
             break;
         }
@@ -276,7 +275,7 @@ pub fn estimate_context_tokens(messages: &[Message]) -> usize {
         let Message::Assistant(assistant) = message else {
             continue;
         };
-        
+
         if matches!(
             assistant.stop_reason,
             StopReason::Error | StopReason::Aborted
@@ -300,7 +299,6 @@ fn content_chars(content: &[ContentBlock]) -> usize {
             ContentBlock::Thinking { thinking, .. } => thinking.len(),
             ContentBlock::RedactedThinking { data } => data.len(),
             ContentBlock::Image { .. } => IMAGE_CHARS,
-            
             ContentBlock::ToolCall {
                 name,
                 arguments,
@@ -502,7 +500,7 @@ mod tests {
     #[test]
     fn the_estimate_divides_characters_by_the_documented_ratio() {
         assert_eq!(estimate_message(&user(&"a".repeat(400))), 100);
-        
+
         assert_eq!(estimate_message(&user("abcde")), 2);
         assert_eq!(estimate_message(&user("")), 0);
     }
@@ -582,7 +580,7 @@ mod tests {
     #[test]
     fn compaction_triggers_on_a_fraction_of_the_window() {
         let compactor = Compactor::new(Canned("s"), CompactionConfig::default());
-        
+
         let messages = vec![user(&"a".repeat(4_000))];
 
         assert!(!compactor.should_compact(&messages, 2_000));
@@ -591,7 +589,6 @@ mod tests {
 
     #[test]
     fn the_trigger_fraction_is_configurable() {
-        
         let messages = vec![user(&"a".repeat(4_000))];
         let eager = Compactor::new(Canned("s"), CompactionConfig::new(0.04, 0.02).unwrap());
         let patient = Compactor::new(Canned("s"), CompactionConfig::new(0.9, 0.3).unwrap());
@@ -619,7 +616,6 @@ mod tests {
             assistant("done"),
         ];
 
-        
         let cut = find_cut(&messages, 1_005);
         assert_eq!(
             cut, 1,
@@ -717,7 +713,7 @@ mod tests {
         let summarized = compactor.summarizer.0.lock().unwrap().clone();
 
         assert_eq!(summarized, messages[..compacted.replaced]);
-        
+
         assert!(is_self_contained(&summarized));
         assert!(is_self_contained(&messages[compacted.replaced..]));
     }

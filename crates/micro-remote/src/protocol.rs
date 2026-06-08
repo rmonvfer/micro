@@ -58,7 +58,6 @@ pub enum PhonePayload {
     },
 }
 
-
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum PhoneCommand {
@@ -261,7 +260,6 @@ mod tests {
         );
     }
 
-    
     #[test]
     fn a_command_this_machine_does_not_know_still_parses() {
         let payload: PhonePayload = serde_json::from_str(
@@ -288,7 +286,7 @@ mod tests {
 
         assert_eq!(json["type"], "response");
         assert_eq!(json["sessionId"], "s1");
-        
+
         assert!(json.get("data").is_none());
         assert!(json.get("error").is_none());
     }

@@ -200,7 +200,6 @@ fn one_context_serializes_to_one_body_however_often_it_is_asked_for() {
     }
 }
 
-
 #[test]
 fn two_equal_contexts_serialize_to_equal_bodies() {
     for (api, provider, model) in protocols() {

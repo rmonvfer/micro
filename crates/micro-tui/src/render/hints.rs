@@ -71,7 +71,6 @@ mod tests {
 
     #[test]
     fn only_the_modifier_is_renamed() {
-        
         assert_eq!(key_text("salt"), "salt");
     }
 

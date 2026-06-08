@@ -7,7 +7,6 @@ fn plain(src: &str) -> Vec<String> {
     render(src).expect("drawn").plain
 }
 
-
 #[test]
 fn a_leaf_carries_its_value_and_a_parent_sums_its_children() {
     let src = "treemap-beta\ntitle Budget\n\"Category A\"\n  \"Item 1\": 10\n  \"Item 2\": 30";
@@ -23,7 +22,6 @@ fn a_leaf_carries_its_value_and_a_parent_sums_its_children() {
         "{text}"
     );
 }
-
 
 #[test]
 fn an_unparseable_treemap_renders_nothing() {

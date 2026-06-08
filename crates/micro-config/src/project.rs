@@ -15,12 +15,10 @@ pub const PROJECT_SETTINGS_FILE: &str = "settings.json";
 #[derive(Debug, Clone, Default, PartialEq, Deserialize)]
 #[serde(default)]
 pub struct ProjectConfig {
-    
     pub sandbox: Option<Value>,
 }
 
 impl ProjectConfig {
-    
     pub fn load(workspace: impl AsRef<Path>, trusted: bool) -> Result<ProjectConfig> {
         if !trusted {
             return Ok(ProjectConfig::default());
@@ -105,7 +103,6 @@ mod tests {
         );
     }
 
-    
     #[test]
     fn a_key_from_a_later_build_does_not_cost_the_rest_of_the_file() {
         let workspace = scratch("unknown-key");

@@ -21,7 +21,7 @@ pub enum NoticeLevel {
 pub struct AssistantEntry {
     pub text: String,
     pub thinking: String,
-    
+
     pub streaming: bool,
     pub error: Option<String>,
 }
@@ -43,7 +43,7 @@ pub struct ToolEntry {
     /// The renderResult counterpart to the pair above.
     pub result_component_id: Option<String>,
     pub result_lines: Option<Vec<String>>,
-    
+
     pub self_framed: bool,
 }
 
@@ -64,7 +64,7 @@ impl ToolEntry {
 #[derive(Debug, Clone, PartialEq)]
 pub enum Entry {
     User(String),
-    
+
     Bash {
         command: String,
         shared: bool,
@@ -74,7 +74,7 @@ pub enum Entry {
         data: String,
         mime_type: String,
     },
-    
+
     Compaction {
         summary: String,
         expanded: bool,
@@ -125,7 +125,6 @@ impl Transcript {
         transcript
     }
 
-    
     pub fn set_self_framed_tools(&mut self, names: HashSet<String>) {
         for entry in &mut self.entries {
             if let Entry::Tool(tool) = entry {
@@ -208,7 +207,6 @@ impl Transcript {
         true
     }
 
-    
     pub fn last_answer(&self) -> Option<String> {
         self.entries.iter().rev().find_map(|entry| match entry {
             Entry::Assistant(assistant) if !assistant.text.trim().is_empty() => {
@@ -227,7 +225,6 @@ impl Transcript {
         })
     }
 
-    
     pub fn set_all_expanded(&mut self, expanded: bool) {
         let mut changed = false;
         for entry in &mut self.entries {
@@ -243,7 +240,7 @@ impl Transcript {
         }
         if changed {
             self.version += 1;
-            
+
             self.touched(0);
         }
     }
@@ -284,7 +281,6 @@ impl Transcript {
         self.appended();
     }
 
-    
     pub fn push_image(&mut self, data: impl Into<String>, mime_type: impl Into<String>) {
         self.entries.push(Entry::Image {
             data: data.into(),
@@ -315,7 +311,6 @@ impl Transcript {
 
     /// Fold one agent event into the scrollback.
     pub fn apply(&mut self, event: &AgentEvent) {
-        
         if matches!(
             event,
             AgentEvent::AgentStart
@@ -327,7 +322,6 @@ impl Transcript {
         }
         self.version += 1;
         match event {
-            
             AgentEvent::MessageStart { message } => {
                 if matches!(message, Message::Assistant(_)) {
                     self.begin_assistant();
@@ -336,7 +330,7 @@ impl Transcript {
             AgentEvent::MessageDelta { event } => self.apply_delta(event),
             AgentEvent::MessageEnd { message } => match message {
                 Message::Assistant(assistant) => self.finish_assistant(assistant),
-                
+
                 Message::ToolResult {
                     tool_call_id,
                     content,
@@ -362,7 +356,7 @@ impl Transcript {
                     ..Default::default()
                 }));
             }
-            
+
             AgentEvent::ToolUpdate { id, name, output } => self.update_tool(id, name, output),
             AgentEvent::ToolEnd {
                 id,
@@ -381,7 +375,7 @@ impl Transcript {
                 ),
                 NoticeLevel::Warning,
             ),
-            
+
             AgentEvent::AgentStart
             | AgentEvent::TurnStart
             | AgentEvent::TurnEnd { .. }
@@ -467,7 +461,6 @@ impl Transcript {
         }
 
         if let Some(Entry::Assistant(entry)) = self.entries.get_mut(index) {
-            
             let text = message.text();
             if !text.is_empty() {
                 entry.text = text;
@@ -482,7 +475,6 @@ impl Transcript {
         self.drop_if_empty(index);
     }
 
-    
     fn answer_unfinished(&mut self, id: &str, output: &str, is_error: bool) {
         let Some(index) = self.tools.get(id).copied() else {
             return;
@@ -505,7 +497,7 @@ impl Transcript {
                     tool.output = Some(output.to_string());
                 }
             }
-            
+
             None => self.finish_tool(id, name, output, false),
         }
     }
@@ -576,7 +568,6 @@ impl Transcript {
         true
     }
 
-    
     pub fn tool_component_changed(&mut self, component_id: &str, lines: Vec<String>) -> bool {
         let Some(index) = self.entries.iter().position(|entry| match entry {
             Entry::Tool(tool) => {
@@ -609,7 +600,7 @@ impl Transcript {
         );
         if empty && index + 1 == self.entries.len() {
             self.entries.pop();
-            
+
             self.touched(index);
         }
     }
@@ -617,21 +608,12 @@ impl Transcript {
     fn push_message(&mut self, message: &Message) {
         match message {
             Message::User { content, .. } => {
-                for block in content {
-                    if let ContentBlock::Image { data, mime_type } = block {
-                        self.entries.push(Entry::Image {
-                            data: data.clone(),
-                            mime_type: mime_type.clone(),
-                        });
-                        self.version += 1;
-                        self.appended();
-                    }
-                }
+                self.push_images(content);
                 let text = text_of(content);
                 if text.is_empty() {
                     return;
                 }
-                
+
                 match summary_of(&text) {
                     Some(summary) => self.push_compaction(summary),
                     None => self.push_user(text),
@@ -660,9 +642,23 @@ impl Transcript {
                 content,
                 is_error,
                 ..
-            } => self.finish_tool(tool_call_id, tool_name, &text_of(content), *is_error),
+            } => {
+                self.finish_tool(tool_call_id, tool_name, &text_of(content), *is_error);
+                // A picture a tool produced is drawn below its card, where the reader looks for
+                // what the tool did.
+                self.push_images(content);
+            }
         }
         self.version += 1;
+    }
+
+    /// Draw every picture among these blocks, wherever they came from.
+    fn push_images(&mut self, content: &[ContentBlock]) {
+        for block in content {
+            if let ContentBlock::Image { data, mime_type } = block {
+                self.push_image(data.clone(), mime_type.clone());
+            }
+        }
     }
 }
 
@@ -785,7 +781,6 @@ mod tests {
         assert_eq!(transcript.model(), Some("claude-opus-5"));
     }
 
-    
     #[test]
     fn a_tool_started_after_naming_it_self_framed_is_tagged_from_the_start() {
         let mut transcript = Transcript::new();
@@ -965,6 +960,32 @@ mod tests {
         assert_eq!(transcript.total_usage().input, 20);
     }
 
+    /// A tool that hands back a picture has it drawn, below the card for the call that produced it.
+    #[test]
+    fn a_picture_a_tool_produced_is_shown() {
+        let messages = vec![
+            Message::Assistant(assistant("looking", vec![("call_1", "read")])),
+            Message::ToolResult {
+                tool_call_id: "call_1".into(),
+                tool_name: "read".into(),
+                content: vec![
+                    ContentBlock::text("Read image file [image/png]"),
+                    ContentBlock::Image {
+                        data: "iVBORw0KGgo=".into(),
+                        mime_type: "image/png".into(),
+                    },
+                ],
+                is_error: false,
+                timestamp: 0,
+            },
+        ];
+        let transcript = Transcript::from_messages(&messages);
+
+        assert!(
+            matches!(transcript.entries().last(), Some(Entry::Image { mime_type, .. }) if mime_type == "image/png")
+        );
+    }
+
     /// The agent settles calls an abandoned turn left open before the next turn starts.
     fn repair(id: &str, text: &str) -> AgentEvent {
         AgentEvent::MessageEnd {
@@ -1031,7 +1052,7 @@ mod tests {
             output: "done".into(),
             is_error: false,
         });
-        
+
         transcript.apply(&AgentEvent::MessageEnd {
             message: Message::tool_result("call_1", "bash", "done", false),
         });

@@ -1,5 +1,3 @@
-
-
 use crate::app::KeyPrompt;
 use crate::editor::Editor;
 use crate::picker::Picker;
@@ -29,22 +27,36 @@ const NARROW: usize = 40;
 /// A detail shorter than this says nothing, so it is left off.
 const MIN_DETAIL: usize = 10;
 
-pub fn inspection_lines(
-    title: &str,
-    text: &str,
-    items: &[InspectionItem],
-    selected: usize,
-    detail_open: bool,
-    scroll: usize,
-    theme: &Theme,
-    width: usize,
-    budget: usize,
-) -> Vec<Line<'static>> {
+pub struct Inspection<'a> {
+    pub title: &'a str,
+    pub items: &'a [InspectionItem],
+    pub body: &'a [Line<'static>],
+    pub selected: usize,
+    pub detail_open: bool,
+    pub scroll: usize,
+    pub theme: &'a Theme,
+    pub width: usize,
+    pub budget: usize,
+}
+
+pub fn inspection_lines(inspection: Inspection<'_>) -> Vec<Line<'static>> {
+    let Inspection {
+        title,
+        items,
+        body,
+        selected,
+        detail_open,
+        scroll,
+        theme,
+        width,
+        budget,
+    } = inspection;
+
     if detail_open {
         if let Some(item) = items.get(selected) {
             return inspection_text_lines(
                 &format!("{title} · {}", item.label),
-                &item.detail,
+                body,
                 scroll,
                 theme,
                 width,
@@ -56,7 +68,7 @@ pub fn inspection_lines(
     if items.is_empty() {
         return inspection_text_lines(
             title,
-            text,
+            body,
             scroll,
             theme,
             width,
@@ -65,23 +77,20 @@ pub fn inspection_lines(
         );
     }
 
-    let mut out = inspection_title(title, theme);
-    let summary_budget = (budget / 2).max(2);
-    for source in text.lines().take(summary_budget) {
-        out.extend(wrap_spans(
-            &[
-                Span::raw("  "),
-                Span::styled(source.to_string(), theme.body()),
-            ],
-            width,
-            2,
-        ));
+    let mut out = inspection_title(title, theme, width);
+    let tail = inspection_tail("↑↓ navigate · enter inspect · esc close", theme, width);
+    let summary_budget = budget
+        .saturating_sub(out.len() + tail.len() + usize::from(!body.is_empty()))
+        .min((budget / 3).max(1));
+    out.extend(body.iter().take(summary_budget).cloned());
+    if !body.is_empty() {
+        out.push(Line::default());
     }
-    out.push(Line::default());
 
-    let row_budget = budget.saturating_sub(out.len() + 1).max(1);
+    let tail = inspection_tail("↑↓ navigate · enter inspect · esc close", theme, width);
+    let row_budget = budget.saturating_sub(out.len() + tail.len()).max(1);
     let first = selected
-        .saturating_sub(row_budget.saturating_sub(1))
+        .saturating_sub(row_budget / 2)
         .min(items.len().saturating_sub(row_budget));
     for (index, item) in items.iter().enumerate().skip(first).take(row_budget) {
         let marker = if index == selected { "› " } else { "  " };
@@ -98,7 +107,7 @@ pub fn inspection_lines(
             width,
         ));
     }
-    out.push(hint("↑↓ navigate · enter inspect · esc close", theme));
+    out.extend(tail);
     out.truncate(budget.max(1));
     out.into_iter()
         .map(|line| tint(line, width, theme.surface))
@@ -107,36 +116,30 @@ pub fn inspection_lines(
 
 fn inspection_text_lines(
     title: &str,
-    text: &str,
+    body: &[Line<'static>],
     scroll: usize,
     theme: &Theme,
     width: usize,
     budget: usize,
     hint_text: &str,
 ) -> Vec<Line<'static>> {
-    let mut body = Vec::new();
-    for source in text.lines() {
-        body.extend(wrap_spans(
-            &[
-                Span::raw("  "),
-                Span::styled(source.to_string(), theme.body()),
-            ],
-            width,
-            2,
-        ));
-    }
-    let body_height = budget.saturating_sub(3).max(1);
+    let head = inspection_title(title, theme, width);
+    let tail = inspection_tail(hint_text, theme, width);
+    let body_height = budget.saturating_sub(head.len() + tail.len()).max(1);
     let first = scroll.min(body.len().saturating_sub(body_height));
-    let mut out = inspection_title(title, theme);
-    out.extend(body.into_iter().skip(first).take(body_height));
-    out.push(hint(hint_text, theme));
+    let mut out = head;
+    out.extend(body.iter().skip(first).take(body_height).cloned());
+    out.extend(tail);
+    out.truncate(budget.max(1));
     out.into_iter()
         .map(|line| tint(line, width, theme.surface))
         .collect()
 }
 
-fn inspection_title(title: &str, theme: &Theme) -> Vec<Line<'static>> {
+fn inspection_title(title: &str, theme: &Theme, width: usize) -> Vec<Line<'static>> {
     vec![
+        rule(theme, width),
+        Line::default(),
         Line::from(vec![
             Span::raw("  "),
             Span::styled(
@@ -148,19 +151,27 @@ fn inspection_title(title: &str, theme: &Theme) -> Vec<Line<'static>> {
     ]
 }
 
+fn inspection_tail(text: &str, theme: &Theme, width: usize) -> Vec<Line<'static>> {
+    vec![
+        Line::default(),
+        hint(text, theme),
+        Line::default(),
+        rule(theme, width),
+    ]
+}
+
 pub fn picker_lines(
     picker: &Picker,
     theme: &Theme,
     width: usize,
     max_rows: usize,
 ) -> Vec<Line<'static>> {
-    
     let mut head = vec![rule(theme, width)];
     let plain = !picker.searchable() && !picker.titled();
 
     if !plain {
         head.push(Line::default());
-        
+
         match picker.hint() {
             Some(saying) => head.push(Line::from(vec![
                 Span::raw("  "),
@@ -168,7 +179,7 @@ pub fn picker_lines(
             ])),
             None => head.push(title(picker, theme)),
         }
-        
+
         if picker.has_scopes() {
             head.push(scopes(picker, theme));
         }
@@ -186,7 +197,7 @@ pub fn picker_lines(
     if picker.titled() {
         tail.insert(1, hint("↑↓ navigate · enter select · esc cancel", theme));
     }
-    
+
     if let Some((text, ok)) = picker.status() {
         let style = match ok {
             true => Style::new().fg(theme.success),
@@ -199,7 +210,6 @@ pub fn picker_lines(
         );
     }
 
-    
     if let Some(note) = picker.selected_item().and_then(|item| item.note.clone()) {
         tail.insert(0, Line::default());
         tail.insert(
@@ -290,7 +300,6 @@ fn filter(picker: &Picker, theme: &Theme) -> Line<'static> {
     ])
 }
 
-
 fn rule(theme: &Theme, width: usize) -> Line<'static> {
     Line::from(vec![Span::styled(
         "─".repeat(width.max(1)),
@@ -320,14 +329,13 @@ fn row(
         false => Style::new().fg(theme.text),
     };
 
-    
     let available = width.saturating_sub(MARKER_WIDTH + 2);
-    
+
     let column = match width > NARROW {
         true => column,
         false => 0,
     };
-    
+
     let column = match column {
         0 => 0,
         asked => asked.min(available.saturating_sub(1).max(1)),
@@ -345,7 +353,7 @@ fn row(
     };
     let used = MARKER_WIDTH + text_width(&shown) + padding;
     let remaining = width.saturating_sub(used + 2);
-    
+
     let room = match column {
         0 => remaining > 0,
         _ => remaining > MIN_DETAIL,
@@ -394,7 +402,6 @@ pub fn key_prompt_lines(prompt: &KeyPrompt, theme: &Theme, width: usize) -> Vec<
         Span::styled("  > ", Style::new().fg(theme.accent)),
         Span::styled(
             match prompt.masked {
-                
                 true => "•".repeat(prompt.len().min(width.saturating_sub(6))),
                 false => crate::wrap::truncate(prompt.text(), width.saturating_sub(6)).to_string(),
             },
@@ -412,7 +419,6 @@ pub fn key_prompt_lines(prompt: &KeyPrompt, theme: &Theme, width: usize) -> Vec<
         .collect()
 }
 
-
 fn split_at_cursor(text: &str, column: usize) -> (String, Option<String>, String) {
     let mut seen = 0;
     for (index, grapheme) in text.grapheme_indices(true) {
@@ -428,7 +434,6 @@ fn split_at_cursor(text: &str, column: usize) -> (String, Option<String>, String
     }
     (text.to_string(), None, String::new())
 }
-
 
 pub fn extension_editor_lines(
     title: &str,
@@ -449,7 +454,6 @@ pub fn extension_editor_lines(
         Line::default(),
     ];
 
-    
     let body_height = budget.saturating_sub(4).max(1);
     let body_width = width.saturating_sub(indent).max(1);
     let layout = editor.layout(body_width);
@@ -538,7 +542,70 @@ mod tests {
         assert!(current.starts_with("→ "), "it opens on what is in use");
     }
 
-    
+    #[test]
+    fn an_inspection_keeps_the_pickers_top_and_bottom_padding() {
+        let body = vec![Line::styled("  summary", Theme::dark().body())];
+        let theme = Theme::dark();
+        let out = rendered(&inspection_lines(Inspection {
+            title: "Session bill",
+            items: &[],
+            body: &body,
+            selected: 0,
+            detail_open: false,
+            scroll: 0,
+            theme: &theme,
+            width: 60,
+            budget: 16,
+        }));
+
+        assert!(
+            out.first().is_some_and(|line| line.starts_with('─')),
+            "{out:?}"
+        );
+        assert_eq!(out[1], "", "space after the top rule: {out:?}");
+        assert_eq!(
+            out[out.len() - 2],
+            "",
+            "space before the bottom rule: {out:?}"
+        );
+        assert!(
+            out.last().is_some_and(|line| line.starts_with('─')),
+            "{out:?}"
+        );
+    }
+
+    #[test]
+    fn an_inspection_never_outgrows_its_budget_or_width() {
+        let body = (0..100)
+            .map(|index| Line::styled(format!("  line {index}"), Theme::dark().body()))
+            .collect::<Vec<_>>();
+        for width in 12..80 {
+            for rows in 4..20 {
+                let theme = Theme::dark();
+                let out = inspection_lines(Inspection {
+                    title: "Session bill",
+                    items: &[],
+                    body: &body,
+                    selected: 0,
+                    detail_open: false,
+                    scroll: 50,
+                    theme: &theme,
+                    width,
+                    budget: rows,
+                });
+                assert!(out.len() <= rows, "{} rows exceed {rows}", out.len());
+                for line in out {
+                    let drawn: usize = line
+                        .spans
+                        .iter()
+                        .map(|span| text_width(&span.content))
+                        .sum();
+                    assert!(drawn <= width, "{drawn} columns exceed {width}");
+                }
+            }
+        }
+    }
+
     #[test]
     fn a_short_settled_list_is_only_the_list() {
         let levels = Picker::new(Choices::new(
@@ -555,7 +622,6 @@ mod tests {
         assert!(out[3].starts_with('─'));
     }
 
-    
     #[test]
     fn a_shortlist_is_what_the_list_opens_on() {
         let all = vec![
@@ -645,7 +711,7 @@ mod tests {
         picker.push("gem");
         let out = rendered(&picker_lines(&picker, &Theme::dark(), 70, 20));
         assert!(out.iter().any(|line| line == "  > gem"), "{out:?}");
-        
+
         let line = filter(&picker, &Theme::dark());
         let cursor = line.spans.last().expect("a cursor cell");
         assert_eq!(cursor.content, " ");

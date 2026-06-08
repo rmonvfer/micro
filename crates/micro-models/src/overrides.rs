@@ -13,7 +13,6 @@ pub fn config_dir() -> Result<PathBuf> {
     micro_dirs::config_dir().ok_or(Error::NoHomeDir)
 }
 
-
 pub fn user_catalog_path() -> Result<PathBuf> {
     Ok(config_dir()?.join(USER_CATALOG_FILE))
 }
@@ -169,7 +168,6 @@ mod tests {
 
     #[test]
     fn an_unreadable_user_catalog_is_reported_with_its_path() {
-        
         let dir = TempDir::new();
         fs::create_dir_all(dir.path(USER_CATALOG_FILE)).unwrap();
         let error = Catalog::load_from(&dir.path(USER_CATALOG_FILE)).unwrap_err();
