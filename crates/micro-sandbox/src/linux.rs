@@ -1,4 +1,5 @@
 use crate::helper::SandboxRules;
+use crate::WritableRoot;
 use landlock::path_beneath_rules;
 use landlock::Access;
 use landlock::AccessFs;
@@ -23,6 +24,7 @@ use seccompiler::TargetArch;
 use std::collections::BTreeMap;
 use std::ffi::CString;
 use std::path::Path;
+use std::path::PathBuf;
 
 /// Confine the current thread to `rules`.
 pub(crate) fn apply(rules: &SandboxRules) -> Result<(), String> {
@@ -77,19 +79,8 @@ fn set_no_new_privs() -> Result<(), String> {
 /// Allow reading the whole filesystem, and writing only under the roots the policy grants, minus
 /// the paths it protects inside them.
 fn install_filesystem_rules(rules: &SandboxRules) -> Result<(), String> {
-    let writable: Vec<&Path> = rules
-        .writable_roots
-        .iter()
-        .map(|root| root.root.as_path())
-        .filter(|root| root.exists())
-        .collect();
-    let read_only: Vec<&Path> = rules
-        .writable_roots
-        .iter()
-        .flat_map(|root| root.read_only_subpaths.iter())
-        .map(|subpath| subpath.as_path())
-        .filter(|subpath| subpath.exists())
-        .collect();
+    let writable_paths = writable_paths(&rules.writable_roots);
+    let writable: Vec<&Path> = writable_paths.iter().map(PathBuf::as_path).collect();
 
     let readable: Option<Vec<&Path>> = rules.readable_roots.as_ref().map(|roots| {
         roots
@@ -98,7 +89,7 @@ fn install_filesystem_rules(rules: &SandboxRules) -> Result<(), String> {
             .filter(|root| root.exists())
             .collect()
     });
-    let status = restrict_current_thread(&writable, &read_only, readable.as_deref())
+    let status = restrict_current_thread(&writable, readable.as_deref())
         .map_err(|error| format!("the filesystem ruleset would not apply: {error}"))?;
     if status.ruleset == RulesetStatus::NotEnforced {
         return Err("this kernel does not enforce Landlock".to_string());
@@ -106,9 +97,47 @@ fn install_filesystem_rules(rules: &SandboxRules) -> Result<(), String> {
     Ok(())
 }
 
+/// Build Landlock write rules without granting a protected descendant through its parent.
+///
+/// Landlock access rules are additive: a writable workspace rule cannot be narrowed by a
+/// read-only rule for `.git`. Split a root only along directories that contain protected paths,
+/// so ordinary project subtrees remain writable while protected paths receive no write rule.
+fn writable_paths(roots: &[WritableRoot]) -> Vec<PathBuf> {
+    roots.iter().flat_map(writable_paths_for_root).collect()
+}
+
+fn writable_paths_for_root(root: &WritableRoot) -> Vec<PathBuf> {
+    writable_paths_below(&root.root, &root.read_only_subpaths)
+}
+
+fn writable_paths_below(path: &Path, protected: &[PathBuf]) -> Vec<PathBuf> {
+    if protected
+        .iter()
+        .any(|protected| path.starts_with(protected))
+    {
+        return Vec::new();
+    }
+    if !path.exists() {
+        return Vec::new();
+    }
+    if !protected
+        .iter()
+        .any(|protected| protected.starts_with(path))
+    {
+        return vec![path.to_path_buf()];
+    }
+
+    let Ok(entries) = std::fs::read_dir(path) else {
+        return Vec::new();
+    };
+    entries
+        .filter_map(Result::ok)
+        .flat_map(|entry| writable_paths_below(&entry.path(), protected))
+        .collect()
+}
+
 fn restrict_current_thread(
     writable: &[&Path],
-    read_only: &[&Path],
     readable: Option<&[&Path]>,
 ) -> Result<RestrictionStatus, RulesetError> {
     let abi = ABI::V5;
@@ -134,9 +163,6 @@ fn restrict_current_thread(
 
     if !writable.is_empty() {
         ruleset = ruleset.add_rules(path_beneath_rules(writable, access_rw))?;
-    }
-    if !read_only.is_empty() {
-        ruleset = ruleset.add_rules(path_beneath_rules(read_only, access_ro))?;
     }
 
     ruleset.restrict_self()
@@ -204,4 +230,59 @@ fn install_network_seccomp_filter() -> Result<(), String> {
     apply_filter(&program)
         .map_err(|error| format!("the network filter would not install: {error}"))?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::writable_paths_for_root;
+    use crate::WritableRoot;
+    use std::path::PathBuf;
+
+    #[test]
+    fn writable_paths_exclude_protected_directories() {
+        let directory =
+            std::env::temp_dir().join(format!("micro-sandbox-linux-rules-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&directory);
+        std::fs::create_dir_all(directory.join("src")).unwrap();
+        std::fs::create_dir_all(directory.join(".git")).unwrap();
+
+        let root = WritableRoot {
+            root: directory.clone(),
+            read_only_subpaths: vec![directory.join(".git")],
+        };
+        let writable = writable_paths_for_root(&root);
+
+        assert!(writable.contains(&directory.join("src")), "{writable:?}");
+        assert!(!writable.contains(&directory), "{writable:?}");
+        assert!(!writable.contains(&directory.join(".git")), "{writable:?}");
+
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn writable_paths_split_only_the_ancestor_of_a_protected_path() {
+        let directory = std::env::temp_dir().join(format!(
+            "micro-sandbox-linux-nested-rules-{}",
+            std::process::id()
+        ));
+        let source = directory.join("src");
+        let protected = directory.join("home/.micro-data");
+        std::fs::create_dir_all(&source).unwrap();
+        std::fs::create_dir_all(&protected).unwrap();
+        std::fs::create_dir_all(directory.join("home/notes")).unwrap();
+
+        let writable = writable_paths_for_root(&WritableRoot {
+            root: directory.clone(),
+            read_only_subpaths: vec![protected],
+        });
+
+        assert!(writable.contains(&source), "{writable:?}");
+        assert!(
+            writable.contains(&directory.join("home/notes")),
+            "{writable:?}"
+        );
+        assert!(!writable.iter().any(|path| path.ends_with(".micro-data")));
+
+        std::fs::remove_dir_all(directory).unwrap();
+    }
 }
