@@ -236,7 +236,6 @@ fn install_network_seccomp_filter() -> Result<(), String> {
 mod tests {
     use super::writable_paths_for_root;
     use crate::WritableRoot;
-    use std::path::PathBuf;
 
     #[test]
     fn writable_paths_exclude_protected_directories() {
