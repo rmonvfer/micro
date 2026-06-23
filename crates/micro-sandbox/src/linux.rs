@@ -1,5 +1,4 @@
 use crate::helper::SandboxRules;
-use crate::WritableRoot;
 use landlock::path_beneath_rules;
 use landlock::Access;
 use landlock::AccessFs;
@@ -23,17 +22,14 @@ use seccompiler::SeccompRule;
 use seccompiler::TargetArch;
 use std::collections::BTreeMap;
 use std::ffi::CString;
+use std::os::unix::ffi::OsStrExt;
 use std::path::Path;
-use std::path::PathBuf;
 
 /// Confine the current thread to `rules`.
 pub(crate) fn apply(rules: &SandboxRules) -> Result<(), String> {
     set_no_new_privs()?;
-
-    if !rules.allow_network {
-        install_network_seccomp_filter()?;
-    }
-
+    install_protected_mounts(rules)?;
+    install_seccomp_filter(rules.allow_network)?;
     install_filesystem_rules(rules)
 }
 
@@ -79,8 +75,12 @@ fn set_no_new_privs() -> Result<(), String> {
 /// Allow reading the whole filesystem, and writing only under the roots the policy grants, minus
 /// the paths it protects inside them.
 fn install_filesystem_rules(rules: &SandboxRules) -> Result<(), String> {
-    let writable_paths = writable_paths(&rules.writable_roots);
-    let writable: Vec<&Path> = writable_paths.iter().map(PathBuf::as_path).collect();
+    let writable: Vec<&Path> = rules
+        .writable_roots
+        .iter()
+        .map(|root| root.root.as_path())
+        .filter(|root| root.exists())
+        .collect();
 
     let readable: Option<Vec<&Path>> = rules.readable_roots.as_ref().map(|roots| {
         roots
@@ -97,43 +97,104 @@ fn install_filesystem_rules(rules: &SandboxRules) -> Result<(), String> {
     Ok(())
 }
 
-/// Build Landlock write rules without granting a protected descendant through its parent.
+/// Remount protected paths read-only in a private user and mount namespace.
 ///
-/// Landlock access rules are additive: a writable workspace rule cannot be narrowed by a
-/// read-only rule for `.git`. Split a root only along directories that contain protected paths,
-/// so ordinary project subtrees remain writable while protected paths receive no write rule.
-fn writable_paths(roots: &[WritableRoot]) -> Vec<PathBuf> {
-    roots.iter().flat_map(writable_paths_for_root).collect()
+/// Landlock grants are additive, so a writable workspace rule cannot subtract write access from
+/// `.git`. A read-only bind mount provides that subtraction without denying ordinary writes at
+/// the workspace root. The seccomp filter installed immediately afterwards prevents the command
+/// from changing this mount topology.
+fn install_protected_mounts(rules: &SandboxRules) -> Result<(), String> {
+    let protected: Vec<&Path> = rules
+        .writable_roots
+        .iter()
+        .flat_map(|root| root.read_only_subpaths.iter())
+        .map(|path| path.as_path())
+        .filter(|path| path.exists())
+        .collect();
+    if protected.is_empty() {
+        return Ok(());
+    }
+
+    let result = unsafe { libc::unshare(libc::CLONE_NEWUSER | libc::CLONE_NEWNS) };
+    if result != 0 {
+        return Err(format!(
+            "could not create an isolated mount namespace: {}",
+            std::io::Error::last_os_error()
+        ));
+    }
+    let _ = std::fs::write("/proc/self/setgroups", "deny");
+    let uid = unsafe { libc::getuid() };
+    let gid = unsafe { libc::getgid() };
+    std::fs::write("/proc/self/uid_map", format!("0 {uid} 1"))
+        .map_err(|error| format!("could not map the sandbox user: {error}"))?;
+    std::fs::write("/proc/self/gid_map", format!("0 {gid} 1"))
+        .map_err(|error| format!("could not map the sandbox group: {error}"))?;
+
+    mount_private_root()?;
+    for path in protected {
+        remount_read_only(path)?;
+    }
+    Ok(())
 }
 
-fn writable_paths_for_root(root: &WritableRoot) -> Vec<PathBuf> {
-    writable_paths_below(&root.root, &root.read_only_subpaths)
-}
-
-fn writable_paths_below(path: &Path, protected: &[PathBuf]) -> Vec<PathBuf> {
-    if protected
-        .iter()
-        .any(|protected| path.starts_with(protected))
-    {
-        return Vec::new();
-    }
-    if !path.exists() {
-        return Vec::new();
-    }
-    if !protected
-        .iter()
-        .any(|protected| protected.starts_with(path))
-    {
-        return vec![path.to_path_buf()];
-    }
-
-    let Ok(entries) = std::fs::read_dir(path) else {
-        return Vec::new();
+fn mount_private_root() -> Result<(), String> {
+    let root = CString::new("/").unwrap();
+    let result = unsafe {
+        libc::mount(
+            std::ptr::null(),
+            root.as_ptr(),
+            std::ptr::null(),
+            libc::MS_REC | libc::MS_PRIVATE,
+            std::ptr::null(),
+        )
     };
-    entries
-        .filter_map(Result::ok)
-        .flat_map(|entry| writable_paths_below(&entry.path(), protected))
-        .collect()
+    if result == 0 {
+        Ok(())
+    } else {
+        Err(format!(
+            "could not isolate mount propagation: {}",
+            std::io::Error::last_os_error()
+        ))
+    }
+}
+
+fn remount_read_only(path: &Path) -> Result<(), String> {
+    let path = CString::new(path.as_os_str().as_bytes())
+        .map_err(|_| format!("protected path contains a null byte: {}", path.display()))?;
+    let bind = unsafe {
+        libc::mount(
+            path.as_ptr(),
+            path.as_ptr(),
+            std::ptr::null(),
+            libc::MS_BIND | libc::MS_REC,
+            std::ptr::null(),
+        )
+    };
+    if bind != 0 {
+        return Err(format!(
+            "could not bind mount protected path {}: {}",
+            path.to_string_lossy(),
+            std::io::Error::last_os_error()
+        ));
+    }
+    let remount = unsafe {
+        libc::mount(
+            std::ptr::null(),
+            path.as_ptr(),
+            std::ptr::null(),
+            libc::MS_BIND | libc::MS_REMOUNT | libc::MS_RDONLY,
+            std::ptr::null(),
+        )
+    };
+    if remount == 0 {
+        Ok(())
+    } else {
+        Err(format!(
+            "could not make protected path {} read-only: {}",
+            path.to_string_lossy(),
+            std::io::Error::last_os_error()
+        ))
+    }
 }
 
 fn restrict_current_thread(
@@ -168,46 +229,52 @@ fn restrict_current_thread(
     ruleset.restrict_self()
 }
 
-/// Block the syscalls that reach off the machine, leaving Unix-domain sockets alone so local
-/// tooling keeps working.
-fn install_network_seccomp_filter() -> Result<(), String> {
+/// Prevent changes to the sandbox mount topology and, unless allowed, network access.
+fn install_seccomp_filter(allow_network: bool) -> Result<(), String> {
     let mut rules: BTreeMap<i64, Vec<SeccompRule>> = BTreeMap::new();
     let mut deny = |syscall: i64| {
         rules.insert(syscall, Vec::new());
     };
 
-    deny(libc::SYS_connect);
-    deny(libc::SYS_accept);
-    deny(libc::SYS_accept4);
-    deny(libc::SYS_bind);
-    deny(libc::SYS_listen);
-    deny(libc::SYS_getpeername);
-    deny(libc::SYS_getsockname);
-    deny(libc::SYS_shutdown);
-    deny(libc::SYS_sendto);
-    deny(libc::SYS_sendmmsg);
-    deny(libc::SYS_recvmmsg);
-    deny(libc::SYS_getsockopt);
-    deny(libc::SYS_setsockopt);
+    deny(libc::SYS_mount);
+    deny(libc::SYS_umount2);
+    deny(libc::SYS_unshare);
+    deny(libc::SYS_setns);
 
-    deny(libc::SYS_ptrace);
-    deny(libc::SYS_process_vm_readv);
-    deny(libc::SYS_process_vm_writev);
-    deny(libc::SYS_io_uring_setup);
-    deny(libc::SYS_io_uring_enter);
-    deny(libc::SYS_io_uring_register);
+    if !allow_network {
+        deny(libc::SYS_connect);
+        deny(libc::SYS_accept);
+        deny(libc::SYS_accept4);
+        deny(libc::SYS_bind);
+        deny(libc::SYS_listen);
+        deny(libc::SYS_getpeername);
+        deny(libc::SYS_getsockname);
+        deny(libc::SYS_shutdown);
+        deny(libc::SYS_sendto);
+        deny(libc::SYS_sendmmsg);
+        deny(libc::SYS_recvmmsg);
+        deny(libc::SYS_getsockopt);
+        deny(libc::SYS_setsockopt);
 
-    let domain_is_not_unix = SeccompCondition::new(
-        0,
-        SeccompCmpArgLen::Dword,
-        SeccompCmpOp::Ne,
-        libc::AF_UNIX as u64,
-    )
-    .map_err(|error| format!("the socket-domain condition would not build: {error}"))?;
-    let anything_but_unix = SeccompRule::new(vec![domain_is_not_unix])
-        .map_err(|error| format!("the socket rule would not build: {error}"))?;
-    rules.insert(libc::SYS_socket, vec![anything_but_unix.clone()]);
-    rules.insert(libc::SYS_socketpair, vec![anything_but_unix]);
+        deny(libc::SYS_ptrace);
+        deny(libc::SYS_process_vm_readv);
+        deny(libc::SYS_process_vm_writev);
+        deny(libc::SYS_io_uring_setup);
+        deny(libc::SYS_io_uring_enter);
+        deny(libc::SYS_io_uring_register);
+
+        let domain_is_not_unix = SeccompCondition::new(
+            0,
+            SeccompCmpArgLen::Dword,
+            SeccompCmpOp::Ne,
+            libc::AF_UNIX as u64,
+        )
+        .map_err(|error| format!("the socket-domain condition would not build: {error}"))?;
+        let anything_but_unix = SeccompRule::new(vec![domain_is_not_unix])
+            .map_err(|error| format!("the socket rule would not build: {error}"))?;
+        rules.insert(libc::SYS_socket, vec![anything_but_unix.clone()]);
+        rules.insert(libc::SYS_socketpair, vec![anything_but_unix]);
+    }
 
     let target = if cfg!(target_arch = "x86_64") {
         TargetArch::x86_64
@@ -230,58 +297,4 @@ fn install_network_seccomp_filter() -> Result<(), String> {
     apply_filter(&program)
         .map_err(|error| format!("the network filter would not install: {error}"))?;
     Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::writable_paths_for_root;
-    use crate::WritableRoot;
-
-    #[test]
-    fn writable_paths_exclude_protected_directories() {
-        let directory =
-            std::env::temp_dir().join(format!("micro-sandbox-linux-rules-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&directory);
-        std::fs::create_dir_all(directory.join("src")).unwrap();
-        std::fs::create_dir_all(directory.join(".git")).unwrap();
-
-        let root = WritableRoot {
-            root: directory.clone(),
-            read_only_subpaths: vec![directory.join(".git")],
-        };
-        let writable = writable_paths_for_root(&root);
-
-        assert!(writable.contains(&directory.join("src")), "{writable:?}");
-        assert!(!writable.contains(&directory), "{writable:?}");
-        assert!(!writable.contains(&directory.join(".git")), "{writable:?}");
-
-        std::fs::remove_dir_all(directory).unwrap();
-    }
-
-    #[test]
-    fn writable_paths_split_only_the_ancestor_of_a_protected_path() {
-        let directory = std::env::temp_dir().join(format!(
-            "micro-sandbox-linux-nested-rules-{}",
-            std::process::id()
-        ));
-        let source = directory.join("src");
-        let protected = directory.join("home/.micro-data");
-        std::fs::create_dir_all(&source).unwrap();
-        std::fs::create_dir_all(&protected).unwrap();
-        std::fs::create_dir_all(directory.join("home/notes")).unwrap();
-
-        let writable = writable_paths_for_root(&WritableRoot {
-            root: directory.clone(),
-            read_only_subpaths: vec![protected],
-        });
-
-        assert!(writable.contains(&source), "{writable:?}");
-        assert!(
-            writable.contains(&directory.join("home/notes")),
-            "{writable:?}"
-        );
-        assert!(!writable.iter().any(|path| path.ends_with(".micro-data")));
-
-        std::fs::remove_dir_all(directory).unwrap();
-    }
 }
