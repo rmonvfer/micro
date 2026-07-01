@@ -115,6 +115,8 @@ fn install_protected_mounts(rules: &SandboxRules) -> Result<(), String> {
         return Ok(());
     }
 
+    let uid = unsafe { libc::getuid() };
+    let gid = unsafe { libc::getgid() };
     let result = unsafe { libc::unshare(libc::CLONE_NEWUSER | libc::CLONE_NEWNS) };
     if result != 0 {
         return Err(format!(
@@ -123,8 +125,6 @@ fn install_protected_mounts(rules: &SandboxRules) -> Result<(), String> {
         ));
     }
     let _ = std::fs::write("/proc/self/setgroups", "deny");
-    let uid = unsafe { libc::getuid() };
-    let gid = unsafe { libc::getgid() };
     std::fs::write("/proc/self/uid_map", format!("0 {uid} 1"))
         .map_err(|error| format!("could not map the sandbox user: {error}"))?;
     std::fs::write("/proc/self/gid_map", format!("0 {gid} 1"))
