@@ -115,26 +115,116 @@ fn install_protected_mounts(rules: &SandboxRules) -> Result<(), String> {
         return Ok(());
     }
 
-    let uid = unsafe { libc::getuid() };
-    let gid = unsafe { libc::getgid() };
-    let result = unsafe { libc::unshare(libc::CLONE_NEWUSER | libc::CLONE_NEWNS) };
-    if result != 0 {
-        return Err(format!(
-            "could not create an isolated mount namespace: {}",
-            std::io::Error::last_os_error()
-        ));
-    }
-    let _ = std::fs::write("/proc/self/setgroups", "deny");
-    std::fs::write("/proc/self/uid_map", format!("0 {uid} 1"))
-        .map_err(|error| format!("could not map the sandbox user: {error}"))?;
-    std::fs::write("/proc/self/gid_map", format!("0 {gid} 1"))
-        .map_err(|error| format!("could not map the sandbox group: {error}"))?;
+    enter_mount_namespace()?;
 
     mount_private_root()?;
     for path in protected {
         remount_read_only(path)?;
     }
     Ok(())
+}
+
+/// Enter a user and mount namespace, letting the original parent map the child identity.
+///
+/// Linux permits an unprivileged parent to map a child it owns, but hardened kernels reject a
+/// process attempting to map itself after `unshare`. The parent waits for the command and exits
+/// with its status; only the mapped child returns to run the sandboxed command.
+fn enter_mount_namespace() -> Result<(), String> {
+    let uid = unsafe { libc::getuid() };
+    let gid = unsafe { libc::getgid() };
+    let mut ready = [0; 2];
+    let mut mapped = [0; 2];
+    if unsafe { libc::pipe(ready.as_mut_ptr()) } != 0
+        || unsafe { libc::pipe(mapped.as_mut_ptr()) } != 0
+    {
+        return Err(format!(
+            "could not create namespace pipes: {}",
+            std::io::Error::last_os_error()
+        ));
+    }
+
+    let pid = unsafe { libc::fork() };
+    if pid < 0 {
+        return Err(format!(
+            "could not fork sandbox helper: {}",
+            std::io::Error::last_os_error()
+        ));
+    }
+    if pid == 0 {
+        unsafe {
+            libc::close(ready[0]);
+            libc::close(mapped[1]);
+        }
+        let status = if unsafe { libc::unshare(libc::CLONE_NEWUSER | libc::CLONE_NEWNS) } == 0 {
+            0_i32
+        } else {
+            std::io::Error::last_os_error()
+                .raw_os_error()
+                .unwrap_or(libc::EPERM)
+        };
+        unsafe {
+            libc::write(
+                ready[1],
+                (&status as *const i32).cast(),
+                std::mem::size_of::<i32>(),
+            )
+        };
+        if status != 0 || unsafe { libc::read(mapped[0], ready.as_mut_ptr().cast(), 1) } != 1 {
+            std::process::exit(crate::helper::HELPER_FAILURE_EXIT_CODE);
+        }
+        unsafe {
+            libc::close(ready[1]);
+            libc::close(mapped[0]);
+        }
+        return Ok(());
+    }
+
+    unsafe {
+        libc::close(ready[1]);
+        libc::close(mapped[0]);
+    }
+    let mut status = 0_i32;
+    let read = unsafe {
+        libc::read(
+            ready[0],
+            (&mut status as *mut i32).cast(),
+            std::mem::size_of::<i32>(),
+        )
+    };
+    if read != std::mem::size_of::<i32>() as isize || status != 0 {
+        wait_for_child(pid);
+        return Err(format!(
+            "could not create an isolated mount namespace: {}",
+            std::io::Error::from_raw_os_error(status)
+        ));
+    }
+    let base = format!("/proc/{pid}");
+    let maps = std::fs::write(format!("{base}/setgroups"), "deny")
+        .and_then(|_| std::fs::write(format!("{base}/uid_map"), format!("0 {uid} 1")))
+        .and_then(|_| std::fs::write(format!("{base}/gid_map"), format!("0 {gid} 1")));
+    if let Err(error) = maps {
+        unsafe {
+            libc::close(mapped[1]);
+        }
+        wait_for_child(pid);
+        return Err(format!("could not map the sandbox user: {error}"));
+    }
+    unsafe { libc::write(mapped[1], [1_u8].as_ptr().cast(), 1) };
+    unsafe {
+        libc::close(ready[0]);
+        libc::close(mapped[1]);
+    }
+    std::process::exit(wait_for_child(pid));
+}
+
+fn wait_for_child(pid: libc::pid_t) -> i32 {
+    let mut status = 0;
+    unsafe { libc::waitpid(pid, &mut status, 0) };
+    if libc::WIFEXITED(status) {
+        libc::WEXITSTATUS(status)
+    } else {
+        crate::helper::HELPER_FAILURE_EXIT_CODE
+    }
 }
 
 fn mount_private_root() -> Result<(), String> {
