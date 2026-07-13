@@ -7,6 +7,8 @@ use micro_testkit::Turn;
 use micro_types::Model;
 use micro_types::ThinkingLevel;
 use serde_json::json;
+use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::io::AsyncBufReadExt as _;
@@ -14,6 +16,8 @@ use tokio::io::AsyncWriteExt as _;
 use tokio::sync::Mutex;
 
 struct SlowTool;
+
+static NEXT_WORKSPACE: AtomicUsize = AtomicUsize::new(0);
 
 #[async_trait::async_trait]
 impl micro_tools::Tool for SlowTool {
@@ -49,7 +53,11 @@ async fn rpc_with(
     provider: FakeProvider,
     tools: Vec<Arc<dyn micro_tools::Tool>>,
 ) -> (Rpc, std::path::PathBuf) {
-    let root = std::env::temp_dir().join(format!("micro-rpc-test-{}", std::process::id()));
+    let root = std::env::temp_dir().join(format!(
+        "micro-rpc-test-{}-{}",
+        std::process::id(),
+        NEXT_WORKSPACE.fetch_add(1, Ordering::Relaxed)
+    ));
     let _ = std::fs::remove_dir_all(&root);
     std::fs::create_dir_all(&root).unwrap();
 
