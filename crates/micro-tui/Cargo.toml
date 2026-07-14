@@ -1,0 +1,28 @@
+[package]
+name = "micro-tui"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+micro-agent = { workspace = true }
+micro-commands = { workspace = true }
+micro-policy = { workspace = true }
+micro-session = { workspace = true }
+micro-context = { workspace = true }
+micro-types = { workspace = true }
+
+anyhow = { workspace = true }
+async-trait = { workspace = true }
+crossterm = { workspace = true }
+futures = { workspace = true }
+ratatui = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+unicode-segmentation = "1"
+unicode-width = "0.2"
+
+# Reading the terminal's OSC 11 reply needs a timed read on the input descriptor, which
+# crossterm does not expose.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
