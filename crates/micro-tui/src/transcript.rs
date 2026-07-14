@@ -203,6 +203,16 @@ impl Transcript {
         self.version += 1;
     }
 
+    /// Show an image the user attached, which is drawn where it was attached rather than
+    /// alongside the answer it belongs to.
+    pub fn push_image(&mut self, data: impl Into<String>, mime_type: impl Into<String>) {
+        self.entries.push(Entry::Image {
+            data: data.into(),
+            mime_type: mime_type.into(),
+        });
+        self.version += 1;
+    }
+
     pub fn push_notice(&mut self, text: impl Into<String>, level: NoticeLevel) {
         self.entries.push(Entry::Notice {
             text: text.into(),
