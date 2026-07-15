@@ -446,22 +446,40 @@ async fn skills(context: &CommandContext<'_>) -> CommandOutcome {
 }
 
 /// Where every setting comes from, so a surprising one can be traced to its file.
+/// `/settings` offers what can be changed, in ohm's words, each item carrying the command
+/// that changes it.
+///
+/// Only settings micro actually honours are listed. A row for something that controls
+/// nothing would read as a feature and behave as a decoration.
 fn settings(context: &CommandContext<'_>) -> CommandOutcome {
     let home = micro_context::micro_home().unwrap_or_default();
-    let mut out = String::new();
-    out.push_str(&format!("home           {}\n", home.display()));
-    out.push_str(&format!("workspace      {}\n", context.workspace.display()));
-    out.push_str(&format!("provider       {}\n", context.provider));
-    if let Some(model) = context.model {
-        out.push_str(&format!("model          {}\n", model.qualified_id()));
-    }
-    out.push_str(&format!("credentials    {}/auth.json\n", home.display()));
-    out.push_str(&format!("models         {}/models.json\n", home.display()));
-    out.push_str(&format!("policy         {}/policy.json\n", home.display()));
-    out.push_str(&format!("config         {}/config.json\n", home.display()));
-    out.push_str(&format!("skills         {}/skills/\n", home.display()));
-    out.push_str(&format!("sessions       {}/sessions/", home.display()));
-    CommandOutcome::info(out)
+    let items = vec![
+        PickerItem::new(
+            "Thinking level",
+            "how hard the model reasons before answering",
+            "/thinking",
+        ),
+        PickerItem::new("Theme", "the palette everything is painted in", "/theme"),
+        PickerItem::new(
+            "Default project trust",
+            "whether this project may be edited without being asked",
+            "/trust",
+        ),
+        PickerItem::new(
+            "Model",
+            match context.model {
+                Some(model) => model.qualified_id(),
+                None => "none".to_string(),
+            },
+            "/model",
+        ),
+        PickerItem::new(
+            "Where everything is kept",
+            home.display().to_string(),
+            "/debug",
+        ),
+    ];
+    CommandOutcome::Choose(Picker::new("Settings", items))
 }
 
 /// What micro knows about the session it is in, for when something is behaving oddly.
@@ -482,43 +500,109 @@ fn debug(context: &CommandContext<'_>) -> CommandOutcome {
     CommandOutcome::info(out)
 }
 
-/// Every key the interface listens for, in the order a reader meets them.
+/// `/hotkeys`, in ohm's three groups, ohm's order, and ohm's words.
+///
+/// The keys are micro's own, which are ohm's defaults: what a row says is bound is what
+/// [`crate`]'s caller actually binds, so this is a description rather than a wish.
 fn hotkeys_text() -> String {
-    let rows: &[(&str, &str)] = &[
-        ("enter", "send"),
-        ("shift+enter / ctrl+j", "new line"),
-        ("\\ then enter", "new line"),
-        ("alt+enter", "queue a follow-up"),
-        ("alt+up", "pull the queue back into the prompt"),
-        ("escape", "interrupt"),
-        ("ctrl+c", "clear, twice to leave"),
-        ("ctrl+d", "leave when the prompt is empty"),
-        ("ctrl+o", "expand or collapse everything"),
-        ("ctrl+t", "show or hide reasoning"),
-        ("shift+tab", "cycle reasoning effort"),
-        ("ctrl+p / shift+ctrl+p", "next or previous model"),
-        ("ctrl+l", "choose a model"),
-        ("ctrl+g", "edit the prompt in $EDITOR"),
-        ("ctrl+x", "copy the last answer"),
-        ("ctrl+v", "attach an image"),
-        ("ctrl+z", "suspend"),
-        ("ctrl+y / alt+y", "yank, then cycle the kill ring"),
-        ("ctrl+-", "undo"),
-        ("ctrl+]", "jump to a character"),
-        ("ctrl+w / alt+backspace", "delete the word before"),
-        ("alt+d", "delete the word after"),
-        ("ctrl+u / ctrl+k", "delete to the start or end of the line"),
-        ("ctrl+a / ctrl+e", "start or end of the line"),
-        ("alt+left / alt+right", "move a word"),
-        ("up / down", "move, or browse sent prompts"),
-        ("pageup / pagedown", "scroll the conversation"),
-        ("/", "commands"),
-        ("!", "run a shell command"),
+    let groups: &[(&str, &[(&str, &str)])] = &[
+        (
+            "Navigation",
+            &[
+                ("up/down/left/right", "Move cursor / browse history"),
+                ("alt+left/ctrl+left/alt+b", "Move by word"),
+                ("home/ctrl+a", "Start of line"),
+                ("end/ctrl+e", "End of line"),
+                ("ctrl+]", "Jump forward to character"),
+                ("ctrl+alt+]", "Jump backward to character"),
+                ("pageup/pagedown", "Scroll by page"),
+            ],
+        ),
+        (
+            "Editing",
+            &[
+                ("enter", "Send message"),
+                ("shift+enter/ctrl+j", "New line"),
+                ("ctrl+w/alt+backspace", "Delete word backwards"),
+                ("alt+d/alt+delete", "Delete word forwards"),
+                ("ctrl+u", "Delete to start of line"),
+                ("ctrl+k", "Delete to end of line"),
+                ("ctrl+y", "Paste the most-recently-deleted text"),
+                ("alt+y", "Cycle through the deleted text after pasting"),
+                ("ctrl+-", "Undo"),
+            ],
+        ),
+        (
+            "Other",
+            &[
+                ("tab", "Path completion / accept autocomplete"),
+                ("escape", "Cancel autocomplete / abort streaming"),
+                ("ctrl+c", "Clear editor (first) / exit (second)"),
+                ("ctrl+d", "Exit (when editor is empty)"),
+                ("ctrl+z", "Suspend to background"),
+                ("shift+tab", "Cycle thinking level"),
+                ("ctrl+p/shift+ctrl+p", "Cycle models"),
+                ("ctrl+l", "Open model selector"),
+                ("ctrl+o", "Toggle tool output expansion"),
+                ("ctrl+t", "Toggle thinking block visibility"),
+                ("ctrl+g", "Edit message in external editor"),
+                ("ctrl+x", "Copy last assistant message"),
+                ("alt+enter", "Queue follow-up message"),
+                ("alt+up", "Restore queued messages"),
+                ("ctrl+v", "Paste image or text from clipboard"),
+                ("/", "Slash commands"),
+                ("!", "Run bash command"),
+            ],
+        ),
     ];
-    rows.iter()
-        .map(|(keys, what)| format!("{keys:<24} {what}"))
+
+    let width = groups
+        .iter()
+        .flat_map(|(_, rows)| rows.iter())
+        .map(|(keys, _)| key_display(keys).chars().count())
+        .max()
+        .unwrap_or(0);
+
+    let mut out = String::new();
+    for (index, (title, rows)) in groups.iter().enumerate() {
+        if index > 0 {
+            out.push('\n');
+        }
+        out.push_str(title);
+        out.push('\n');
+        for (keys, what) in rows.iter() {
+            let keys = key_display(keys);
+            out.push_str(&format!("  {keys:<width$}  {what}\n"));
+        }
+    }
+    out.trim_end().to_string()
+}
+
+/// A key as it is read rather than as it is written: every part capitalized, and `alt`
+/// named `Option` where the keyboard says Option.
+fn key_display(keys: &str) -> String {
+    keys.split('/')
+        .map(|combination| {
+            combination
+                .split('+')
+                .map(capitalize_part)
+                .collect::<Vec<_>>()
+                .join("+")
+        })
         .collect::<Vec<_>>()
-        .join("\n")
+        .join("/")
+}
+
+fn capitalize_part(part: &str) -> String {
+    let part = match (cfg!(target_os = "macos"), part.eq_ignore_ascii_case("alt")) {
+        (true, true) => "option",
+        _ => part,
+    };
+    let mut characters = part.chars();
+    match characters.next() {
+        Some(first) => first.to_uppercase().collect::<String>() + characters.as_str(),
+        None => String::new(),
+    }
 }
 
 fn compact(context: &CommandContext<'_>) -> CommandOutcome {
@@ -645,6 +729,32 @@ mod tests {
         assert_eq!(find("/model").unwrap().name, "model");
         assert_eq!(find("MODEL").unwrap().name, "model");
         assert!(find("nope").is_none());
+    }
+
+    /// Every key the hotkey table names is one the interface actually listens for, so the
+    /// table is a description of the bindings rather than a wish list.
+    #[test]
+    fn every_hotkey_row_names_a_key_that_is_bound() {
+        let text = hotkeys_text();
+        for group in ["Navigation", "Editing", "Other"] {
+            assert!(text.contains(group), "{text}");
+        }
+        assert!(text.contains("Send message"), "{text}");
+        assert!(text.contains("Cycle thinking level"), "{text}");
+        assert!(text.contains("Paste image or text from clipboard"), "{text}");
+        assert!(text.contains("Run bash command"), "{text}");
+    }
+
+    /// A key is read the way a keyboard is labelled, and `alt` is `Option` on a Mac.
+    #[test]
+    fn a_key_is_shown_the_way_it_is_read() {
+        assert_eq!(key_display("enter"), "Enter");
+        assert_eq!(key_display("shift+enter/ctrl+j"), "Shift+Enter/Ctrl+J");
+        let word_left = key_display("alt+left");
+        match cfg!(target_os = "macos") {
+            true => assert_eq!(word_left, "Option+Left"),
+            false => assert_eq!(word_left, "Alt+Left"),
+        }
     }
 
     #[test]
