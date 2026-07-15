@@ -407,7 +407,7 @@ impl App {
         let finished = self
             .key_prompt
             .as_ref()
-            .is_some_and(|prompt| prompt.done && !prompt.key.is_empty());
+            .is_some_and(|prompt| prompt.done && !prompt.is_empty());
         match finished {
             false => None,
             true => self
@@ -774,7 +774,10 @@ impl App {
     /// Enter. A menu takes it before the prompt does, so a completion is committed rather
     /// than a half-typed command being sent.
     fn submit(&mut self) -> Outcome {
-        if self.commit_completion() {
+        // Enter takes a completion only when there is something left to complete. A
+        // command typed out in full is a command the user meant to send, and swallowing
+        // that press to add a space would make every short command need two.
+        if self.completion_would_change_the_line() && self.commit_completion() {
             return Outcome::Handled;
         }
         // A trailing backslash means the line is being continued, not finished.
@@ -808,8 +811,19 @@ impl App {
         if self.commit_completion() {
             return Outcome::Handled;
         }
-        self.editor.insert_str("  ");
+        self.editor.insert_str("\t");
         Outcome::Handled
+    }
+
+    /// Whether committing would write anything the user has not already typed.
+    fn completion_would_change_the_line(&self) -> bool {
+        let Some(menu) = self.menu.as_ref() else {
+            return false;
+        };
+        match menu.commit() {
+            Some(completed) => completed.trim_end() != menu.prefix(),
+            None => false,
+        }
     }
 
     /// Take the highlighted completion, replacing what was typed toward it and leaving
@@ -896,10 +910,11 @@ impl App {
             Action::Cancel => self.approvals.answer(Choice::Deny),
             // A choice can be answered by its key without moving to it first, which is how
             // ohm lets an approval be answered in one press.
-            Action::Insert(text) => match Choice::from_key(&text) {
-                Some(choice) => self.approvals.answer(choice),
-                None => {}
-            },
+            Action::Insert(text) => {
+                if let Some(choice) = Choice::from_key(&text) {
+                    self.approvals.answer(choice);
+                }
+            }
             Action::Interrupt => {
                 self.approvals.answer(Choice::Deny);
                 return Outcome::Handled;
@@ -1054,5 +1069,486 @@ pub(crate) fn human_size(bytes: usize) -> String {
         0..=1023 => format!("{bytes} B"),
         1024..=1_048_575 => format!("{:.0} KB", bytes as f64 / 1024.0),
         _ => format!("{:.1} MB", bytes as f64 / 1_048_576.0),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::commands::Applied;
+    use micro_types::AssistantMessage;
+    use micro_types::StopReason;
+    use micro_types::Usage;
+
+    fn app() -> App {
+        App::new(&[], TuiOptions::default())
+    }
+
+    fn type_text(app: &mut App, text: &str) {
+        app.handle(Action::Insert(text.to_string()));
+    }
+
+    fn transcript_text(app: &mut App) -> String {
+        app.set_frame(60, 24);
+        app.refresh_lines();
+        app.lines()
+            .iter()
+            .flat_map(|line| line.spans.iter())
+            .map(|span| span.content.as_ref())
+            .collect()
+    }
+
+    #[test]
+    fn submitting_queues_the_prompt_and_empties_the_editor() {
+        let mut app = app();
+        type_text(&mut app, "explain this");
+        app.handle(Action::Submit);
+
+        assert!(app.editor.is_empty());
+        assert_eq!(app.take_submission().as_deref(), Some("explain this"));
+        assert_eq!(app.take_submission(), None);
+    }
+
+    #[test]
+    fn an_empty_prompt_submits_nothing() {
+        let mut app = app();
+        app.handle(Action::Submit);
+        type_text(&mut app, "   ");
+        app.handle(Action::Submit);
+        assert_eq!(app.take_submission(), None);
+    }
+
+    #[test]
+    fn a_slash_opens_the_command_menu_and_typing_narrows_it() {
+        let mut app = app();
+        type_text(&mut app, "/");
+        assert_eq!(
+            app.menu().map(|menu| menu.items().len()),
+            Some(micro_commands::commands().len())
+        );
+
+        type_text(&mut app, "c");
+        let names: Vec<String> = app
+            .menu()
+            .unwrap()
+            .items()
+            .iter()
+            .map(|item| item.value.clone())
+            .collect();
+        assert_eq!(
+            names,
+            vec!["clone", "changelog", "copy", "compact", "clear", "cwd"]
+        );
+    }
+
+    #[test]
+    fn the_menu_closes_on_escape_without_touching_the_prompt() {
+        let mut app = app();
+        type_text(&mut app, "/mo");
+        assert!(app.menu().is_some());
+
+        app.handle(Action::Cancel);
+        assert!(app.menu().is_none());
+        assert_eq!(app.editor.text(), "/mo", "the text is left as typed");
+    }
+
+    #[test]
+    fn the_arrows_move_the_menu_rather_than_the_prompt() {
+        let mut app = app();
+        type_text(&mut app, "/c");
+        assert_eq!(app.menu().unwrap().selected(), 0);
+
+        app.handle(Action::MoveDown);
+        assert_eq!(app.menu().unwrap().selected(), 1);
+        app.handle(Action::MoveUp);
+        assert_eq!(app.menu().unwrap().selected(), 0);
+        assert_eq!(app.scroll(), 0, "the transcript did not scroll");
+    }
+
+    #[test]
+    fn enter_takes_the_highlighted_command_instead_of_submitting() {
+        let mut app = app();
+        type_text(&mut app, "/c");
+        app.handle(Action::MoveDown);
+        app.handle(Action::Submit);
+
+        assert_eq!(
+            app.editor.text(),
+            "/changelog ",
+            "the second of the /c commands"
+        );
+        assert_eq!(app.queued(), 0, "committing is not submitting");
+        assert!(app.menu().is_none(), "the space closed the menu");
+    }
+
+    #[test]
+    fn tab_takes_the_highlighted_command_too() {
+        let mut app = app();
+        type_text(&mut app, "/mo");
+        app.handle(Action::Tab);
+        assert_eq!(app.editor.text(), "/model ");
+    }
+
+    #[test]
+    fn tab_indents_when_no_command_is_being_typed() {
+        let mut app = app();
+        type_text(&mut app, "plain");
+        app.handle(Action::Tab);
+        assert_eq!(app.editor.text(), "plain\t");
+    }
+
+    /// Committing replaces what was typed toward the command, not the whole prompt: an
+    /// argument already written stays where it is.
+    #[test]
+    fn committing_keeps_what_follows_the_cursor() {
+        let mut app = app();
+        type_text(&mut app, "/mo");
+        app.handle(Action::Tab);
+        assert_eq!(app.editor.text(), "/model ");
+    }
+
+    #[test]
+    fn a_command_that_matches_nothing_closes_the_menu_and_still_submits() {
+        let mut app = app();
+        type_text(&mut app, "/zzzz");
+        assert!(app.menu().is_none());
+
+        app.handle(Action::Submit);
+        assert_eq!(
+            app.take_submission().as_deref(),
+            Some("/zzzz"),
+            "dispatch decides it is unknown, not the menu"
+        );
+    }
+
+    #[test]
+    fn submitting_a_command_leaves_no_menu_behind() {
+        let mut app = app();
+        type_text(&mut app, "/help");
+        app.handle(Action::Submit);
+        assert!(app.menu().is_none());
+        assert_eq!(app.take_submission().as_deref(), Some("/help"));
+    }
+
+    fn app_choosing() -> App {
+        let mut app = app();
+        app.open_picker(micro_commands::Picker::new(
+            "Select a model",
+            vec![
+                micro_commands::PickerItem::new("opus-5", "200k", "/model opus-5"),
+                micro_commands::PickerItem::new("sonnet-5", "200k", "/model sonnet-5"),
+                micro_commands::PickerItem::new("gemini-2.5-pro", "1M", "/model gemini"),
+            ],
+        ));
+        app
+    }
+
+    #[test]
+    fn a_picker_filters_on_typing_rather_than_reaching_the_prompt() {
+        let mut app = app_choosing();
+        app.handle(Action::Insert("gem".into()));
+
+        assert_eq!(app.picker().unwrap().query(), "gem");
+        assert_eq!(app.picker().unwrap().matches().len(), 1);
+        assert!(app.editor.is_empty(), "typing did not reach the input");
+
+        app.handle(Action::Backspace);
+        assert_eq!(app.picker().unwrap().query(), "ge");
+    }
+
+    #[test]
+    fn choosing_queues_the_line_the_item_carries() {
+        let mut app = app_choosing();
+        app.handle(Action::MoveDown);
+        app.handle(Action::Submit);
+
+        assert!(app.picker().is_none());
+        assert_eq!(app.take_submission().as_deref(), Some("/model sonnet-5"));
+    }
+
+    #[test]
+    fn a_picker_is_dismissed_by_escape() {
+        let mut app = app_choosing();
+        app.handle(Action::Cancel);
+        assert!(app.picker().is_none());
+        assert_eq!(app.queued(), 0);
+    }
+
+    #[test]
+    fn a_key_prompt_collects_without_echoing_and_hands_the_key_over() {
+        let mut app = app();
+        app.open_key_prompt("anthropic".into(), vec!["ANTHROPIC_API_KEY".into()]);
+        app.handle(Action::Insert("sk-secret".into()));
+
+        assert!(app.editor.is_empty());
+        assert_eq!(app.key_prompt().unwrap().len(), 9);
+
+        app.handle(Action::Submit);
+        let (provider, key) = app.take_key_prompt().expect("a key was typed");
+        assert_eq!(provider, "anthropic");
+        assert_eq!(key, "sk-secret");
+        assert!(app.key_prompt().is_none());
+    }
+
+    #[test]
+    fn an_empty_key_prompt_hands_nothing_over() {
+        let mut app = app();
+        app.open_key_prompt("anthropic".into(), Vec::new());
+        app.handle(Action::Submit);
+        assert!(app.take_key_prompt().is_none());
+        assert!(app.key_prompt().is_some(), "it is still waiting");
+
+        app.handle(Action::Cancel);
+        assert!(app.key_prompt().is_none());
+    }
+
+    #[test]
+    fn a_replaced_conversation_rebuilds_the_scrollback() {
+        let mut app = app();
+        app.transcript.push_user("before");
+        assert!(transcript_text(&mut app).contains("before"));
+
+        app.apply_result(Applied::Conversation {
+            messages: Vec::new(),
+            note: Some("cleared".into()),
+        });
+
+        let text = transcript_text(&mut app);
+        assert!(!text.contains("before"), "the old conversation is gone");
+        assert!(text.contains("cleared"));
+    }
+
+    #[test]
+    fn a_note_from_the_host_leaves_the_conversation_alone() {
+        let mut app = app();
+        app.transcript.push_user("kept");
+        app.apply_result(Applied::note("now on claude-opus-5"));
+
+        let text = transcript_text(&mut app);
+        assert!(text.contains("kept"));
+        assert!(text.contains("now on claude-opus-5"));
+    }
+
+    /// An attached image rides in front of the text, which is the order every provider
+    /// expects, and is handed over exactly once.
+    #[test]
+    fn an_attached_image_goes_with_the_next_prompt() {
+        let mut app = app();
+        app.attachments.push(ContentBlock::Image {
+            data: "AAAA".into(),
+            mime_type: "image/png".into(),
+        });
+        assert_eq!(app.attachments(), 1);
+
+        let Message::User { content, .. } = app.begin_turn("what is this") else {
+            panic!("a prompt is a user message");
+        };
+        assert!(matches!(content[0], ContentBlock::Image { .. }));
+        assert_eq!(content[1].as_text(), "what is this");
+        assert_eq!(app.attachments(), 0, "handed over exactly once");
+
+        let Message::User { content, .. } = app.begin_turn("and this") else {
+            panic!("a prompt is a user message");
+        };
+        assert_eq!(content.len(), 1, "the image did not ride twice");
+    }
+
+    #[test]
+    fn a_prompt_is_remembered_and_can_be_recalled() {
+        let mut app = app();
+        app.begin_turn("the first thing asked");
+        app.handle(Action::MoveUp);
+        assert_eq!(app.editor.text(), "the first thing asked");
+    }
+
+    /// Ctrl+C clears a half-written prompt before it interrupts anything, which is what
+    /// makes it safe to press when nothing is running.
+    #[test]
+    fn interrupting_clears_the_prompt_before_it_stops_anything() {
+        let mut app = app();
+        type_text(&mut app, "half written");
+        assert_eq!(app.handle(Action::Interrupt), Outcome::Handled);
+        assert!(app.editor.is_empty());
+
+        assert_eq!(app.handle(Action::Interrupt), Outcome::Interrupt);
+    }
+
+    #[test]
+    fn interrupting_a_running_turn_marks_it_rather_than_clearing() {
+        let mut app = app();
+        app.busy("thinking");
+        assert_eq!(app.handle(Action::Interrupt), Outcome::Interrupt);
+        assert!(app.is_interrupting());
+        assert!(app.is_running(), "it has not stopped yet");
+
+        app.finish_turn(true);
+        assert!(!app.is_running());
+    }
+
+    #[test]
+    fn a_follow_up_queues_behind_the_turn_in_flight() {
+        let mut app = app();
+        app.busy("thinking");
+        type_text(&mut app, "and then this");
+        app.handle(Action::QueueFollowUp);
+
+        assert_eq!(app.queued(), 1);
+        assert!(app.editor.is_empty());
+        assert_eq!(app.take_submission().as_deref(), Some("and then this"));
+    }
+
+    #[test]
+    fn dequeue_pulls_the_last_queued_prompt_back_into_the_editor() {
+        let mut app = app();
+        type_text(&mut app, "first");
+        app.handle(Action::Submit);
+        type_text(&mut app, "second");
+        app.handle(Action::Submit);
+
+        app.handle(Action::Dequeue);
+        assert_eq!(app.editor.text(), "second");
+        assert_eq!(app.queued(), 1);
+    }
+
+    /// A line the interface asked for itself goes out before anything the user typed: it
+    /// is the answer to a key they just pressed.
+    #[test]
+    fn an_injected_line_goes_before_a_queued_prompt() {
+        let mut app = app();
+        type_text(&mut app, "typed");
+        app.handle(Action::Submit);
+        app.queue_line("/model");
+
+        assert_eq!(app.take_submission().as_deref(), Some("/model"));
+        assert_eq!(app.take_submission().as_deref(), Some("typed"));
+    }
+
+    #[test]
+    fn cycling_reasoning_effort_reports_the_new_level() {
+        let mut app = app();
+        assert_eq!(
+            app.handle(Action::CycleThinking),
+            Outcome::ThinkingChanged(ThinkingLevel::Low)
+        );
+        assert_eq!(app.thinking, ThinkingLevel::Low);
+        assert_eq!(thinking_name(app.thinking), "low");
+    }
+
+    #[test]
+    fn scrolling_stops_at_both_ends() {
+        let mut app = app();
+        for index in 0..40 {
+            app.transcript.push_user(format!("prompt number {index}"));
+        }
+        app.set_frame(60, 24);
+        app.set_viewport(10);
+        app.refresh_lines();
+
+        app.handle(Action::ScrollDown(5));
+        assert_eq!(app.scroll(), 0, "the end is as far forward as it goes");
+
+        for _ in 0..100 {
+            app.handle(Action::PageUp);
+        }
+        let furthest = app.lines().len() - 10;
+        assert_eq!(app.scroll(), furthest, "the start is as far back as it goes");
+    }
+
+    /// Someone reading back through the conversation stays where they are when an answer
+    /// arrives beneath them.
+    #[test]
+    fn arriving_content_does_not_move_what_is_being_read() {
+        let mut app = app();
+        for index in 0..40 {
+            app.transcript.push_user(format!("prompt number {index}"));
+        }
+        app.set_frame(60, 24);
+        app.set_viewport(10);
+        app.refresh_lines();
+        app.handle(Action::PageUp);
+
+        let reading = app.scroll();
+        let before: String = app.lines()[app.lines().len() - reading - 10]
+            .spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect();
+
+        app.transcript.push_user("something new");
+        app.refresh_lines();
+
+        let after: String = app.lines()[app.lines().len() - app.scroll() - 10]
+            .spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect();
+        assert_eq!(before, after, "the same line is still at the top");
+    }
+
+    #[test]
+    fn focus_moves_between_tool_results_and_opens_them() {
+        let mut app = app();
+        app.apply_event(AgentEvent::ToolStart {
+            id: "call_1".into(),
+            name: "read".into(),
+            arguments: serde_json::json!({ "path": "src/main.rs" }),
+        });
+        app.apply_event(AgentEvent::ToolEnd {
+            id: "call_1".into(),
+            name: "read".into(),
+            output: (0..40).map(|n| format!("line {n}\n")).collect(),
+            is_error: false,
+        });
+
+        assert_eq!(app.handle(Action::FocusNext), Outcome::Handled);
+        let focused = app.transcript.tool_positions()[0];
+        assert_eq!(app.focus, Some(focused));
+
+        app.handle(Action::ToggleFocused);
+        assert!(!app.transcript.any_collapsed(), "the result opened");
+    }
+
+    #[test]
+    fn the_conversation_state_counts_what_is_on_screen() {
+        let mut app = app();
+        app.transcript.push_user("one");
+        app.transcript.push_user("two");
+        assert_eq!(app.conversation_state().message_count, 2);
+    }
+
+    #[test]
+    fn copying_with_nothing_to_copy_says_so() {
+        let mut app = app();
+        app.copy_last_answer();
+        assert!(transcript_text(&mut app).contains("Nothing to copy yet."));
+    }
+
+    #[test]
+    fn the_last_answer_is_what_gets_copied() {
+        let mut app = app();
+        app.transcript = Transcript::from_messages(&[Message::Assistant(AssistantMessage {
+            content: vec![ContentBlock::text("the answer")],
+            provider: "openrouter".into(),
+            model: "gemini-3-pro".into(),
+            usage: Usage::default(),
+            stop_reason: StopReason::Stop,
+            error: None,
+            timestamp: 0,
+        })]);
+        assert_eq!(app.transcript.last_answer().as_deref(), Some("the answer"));
+    }
+
+    #[test]
+    fn a_bash_line_joins_the_conversation_where_it_was_run() {
+        let mut app = app();
+        app.push_bash("ls -la");
+        assert!(transcript_text(&mut app).contains("! ls -la"));
+    }
+
+    #[test]
+    fn a_byte_count_reads_as_a_size() {
+        assert_eq!(human_size(512), "512 B");
+        assert_eq!(human_size(2048), "2 KB");
+        assert_eq!(human_size(5 * 1_048_576), "5.0 MB");
     }
 }
