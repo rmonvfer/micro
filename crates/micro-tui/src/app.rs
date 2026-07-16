@@ -1545,6 +1545,224 @@ mod tests {
         assert!(transcript_text(&mut app).contains("! ls -la"));
     }
 
+    /// The arrow keys stop at the edge of the prompt rather than wrapping around it.
+    #[test]
+    fn the_arrow_keys_stop_at_the_edge_of_the_prompt() {
+        let mut app = app();
+        type_text(&mut app, "abc");
+        for _ in 0..10 {
+            app.handle(Action::MoveLeft);
+        }
+        assert_eq!(app.editor.cursor(), (0, 0));
+
+        for _ in 0..10 {
+            app.handle(Action::MoveRight);
+        }
+        assert_eq!(app.editor.cursor(), (0, 3));
+    }
+
+    /// Up at the top of a multi-line prompt moves through the rows before it reaches back
+    /// for what was sent earlier.
+    #[test]
+    fn moving_up_walks_the_prompt_before_the_history() {
+        let mut app = app();
+        app.set_frame(60, 24);
+        app.begin_turn("an earlier prompt");
+        type_text(&mut app, "second line");
+        app.handle(Action::Newline);
+        type_text(&mut app, "third line");
+
+        app.handle(Action::MoveUp);
+        assert!(
+            app.editor.text().contains("second line"),
+            "still in the prompt"
+        );
+        app.handle(Action::MoveUp);
+        app.handle(Action::MoveUp);
+        assert_eq!(app.editor.text(), "an earlier prompt");
+    }
+
+    /// A trailing backslash continues the line instead of sending it, which is how a
+    /// prompt gets a newline on a keyboard that cannot send shift+enter.
+    #[test]
+    fn a_trailing_backslash_continues_the_line() {
+        let mut app = app();
+        type_text(&mut app, "first\\");
+        app.handle(Action::Submit);
+
+        assert_eq!(app.take_submission(), None, "nothing was sent");
+        assert_eq!(app.editor.text(), "first\n");
+    }
+
+    #[test]
+    fn escape_backs_out_of_one_thing_at_a_time() {
+        let mut app = app();
+        for index in 0..40 {
+            app.transcript.push_user(format!("prompt number {index}"));
+        }
+        app.set_frame(60, 24);
+        app.set_viewport(10);
+        app.refresh_lines();
+
+        type_text(&mut app, "/mo");
+        app.handle(Action::Cancel);
+        assert!(app.menu().is_none(), "the menu goes first");
+
+        app.handle(Action::PageUp);
+        assert!(app.scroll() > 0);
+        app.handle(Action::Cancel);
+        assert_eq!(app.scroll(), 0, "then where the reader had scrolled to");
+    }
+
+    /// Jump-to-char takes the next key as a destination rather than as text.
+    #[test]
+    fn jump_to_char_moves_the_cursor_instead_of_typing() {
+        let mut app = app();
+        type_text(&mut app, "alpha beta");
+        app.handle(Action::MoveLineStart);
+
+        app.handle(Action::ArmJump { forward: true });
+        app.handle(Action::Insert("b".into()));
+
+        assert_eq!(app.editor.text(), "alpha beta", "the key was not typed");
+        assert_eq!(app.editor.cursor().1, 6, "the cursor moved to it");
+    }
+
+    /// An approval owns the keyboard while it is up: a key that would reach the prompt is
+    /// an answer instead.
+    #[test]
+    fn an_approval_takes_the_keyboard_while_it_is_open() {
+        let (approver, mut requests) = crate::approval::approval_channel();
+        let mut app = app();
+
+        let asking = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        asking.block_on(async {
+            let request = micro_policy::ApprovalRequest {
+                tool: "bash".into(),
+                subject: Some("rm -rf /".into()),
+                arguments: serde_json::json!({ "command": "rm -rf /" }),
+                reason: "the policy cannot vouch for this".into(),
+                key: "bash:rm -rf /".into(),
+            };
+            let answering =
+                tokio::spawn(async move { approver.approve(&request).await });
+            let pending = requests.recv().await.expect("a request");
+            app.ask_approval(pending);
+
+            assert!(app.overlay_is_open());
+            app.handle(Action::Insert("x".into()));
+            assert!(app.editor.is_empty(), "typing did not reach the prompt");
+
+            app.handle(Action::Cancel);
+            assert!(!app.overlay_is_open(), "answering closed it");
+            assert!(matches!(
+                answering.await.unwrap(),
+                micro_policy::Approval::Denied(_)
+            ));
+        });
+    }
+
+    /// An abandoned turn refuses every request it left behind, so nothing opens as a
+    /// prompt during the next one.
+    #[test]
+    fn an_interrupted_turn_refuses_what_it_left_behind() {
+        let (approver, mut requests) = crate::approval::approval_channel();
+        let mut app = app();
+        app.busy("thinking");
+
+        let asking = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        asking.block_on(async {
+            let request = micro_policy::ApprovalRequest {
+                tool: "write".into(),
+                subject: Some("src/main.rs".into()),
+                arguments: serde_json::json!({ "path": "src/main.rs" }),
+                reason: "the policy cannot vouch for this".into(),
+                key: "write:src/main.rs".into(),
+            };
+            let answering =
+                tokio::spawn(async move { approver.approve(&request).await });
+            let pending = requests.recv().await.expect("a request");
+            app.ask_approval(pending);
+
+            app.finish_turn(true);
+            assert!(!app.overlay_is_open(), "nothing is left asking");
+            assert!(matches!(
+                answering.await.unwrap(),
+                micro_policy::Approval::Denied(_)
+            ));
+        });
+    }
+
+    #[test]
+    fn the_theme_can_be_changed_without_touching_the_conversation() {
+        let mut app = app();
+        app.transcript.push_user("kept");
+        app.set_theme(Theme::light());
+
+        assert_eq!(app.theme.name, Theme::light().name);
+        assert!(transcript_text(&mut app).contains("kept"));
+    }
+
+    #[test]
+    fn the_model_label_follows_a_swap() {
+        let mut app = app();
+        app.set_model_label("google/gemini-3-pro".into());
+        assert_eq!(app.model_id(), "google/gemini-3-pro");
+    }
+
+    /// Reasoning is hidden until it is asked for, and asking rewraps the transcript.
+    #[test]
+    fn thinking_can_be_shown_and_hidden() {
+        let mut app = app();
+        assert!(!app.show_thinking);
+        app.handle(Action::ToggleThinking);
+        assert!(app.show_thinking);
+        app.handle(Action::ToggleThinking);
+        assert!(!app.show_thinking);
+    }
+
+    #[test]
+    fn a_streamed_answer_lands_in_the_transcript() {
+        let mut app = app();
+        app.apply_event(AgentEvent::MessageDelta {
+            event: micro_types::StreamEvent::TextDelta {
+                index: 0,
+                delta: "half an ".into(),
+            },
+        });
+        app.apply_event(AgentEvent::MessageDelta {
+            event: micro_types::StreamEvent::TextDelta {
+                index: 0,
+                delta: "answer".into(),
+            },
+        });
+        assert!(transcript_text(&mut app).contains("half an answer"));
+    }
+
+    /// Wrapping is the most expensive thing a frame does, so it is not redone when
+    /// nothing that affects it has changed.
+    #[test]
+    fn the_wrapped_transcript_is_kept_between_frames() {
+        let mut app = app();
+        app.transcript.push_user("something to wrap");
+        app.set_frame(60, 24);
+        app.refresh_lines();
+        let key = app.cache.key;
+
+        app.refresh_lines();
+        assert_eq!(app.cache.key, key, "nothing changed, so nothing rewrapped");
+
+        app.set_frame(40, 24);
+        app.refresh_lines();
+        assert_ne!(app.cache.key, key, "a new width wraps again");
+    }
+
     #[test]
     fn a_byte_count_reads_as_a_size() {
         assert_eq!(human_size(512), "512 B");
