@@ -312,7 +312,7 @@ pub async fn run(
             Some(path) => CommandOutcome::Import {
                 path: path.to_string(),
             },
-            None => CommandOutcome::error("say which file to import: /import <path>"),
+            None => CommandOutcome::error("Usage: /import <path.jsonl>"),
         },
         "hotkeys" => CommandOutcome::info(hotkeys_text()),
         "copy" => CommandOutcome::CopyLastAnswer,

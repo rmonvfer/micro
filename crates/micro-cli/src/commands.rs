@@ -103,7 +103,7 @@ impl CliCommands {
                 api_key: resolved.api_key,
                 context_window: model.context_window as usize,
             }),
-            note: Some(format!("Now using {}.", model.qualified_id())),
+            note: Some(format!("Model: {}", model.qualified_id())),
         }
     }
 
@@ -206,18 +206,14 @@ impl CliCommands {
         {
             Ok(imported) => imported,
             Err(error) => {
-                return Applied::error(format!("Cannot import {}: {error}", source.display()))
+                return Applied::error(format!("Failed to import session: {error}"))
             }
         };
 
-        let mut note = format!(
-            "Imported {} into session {}.",
-            source.display(),
-            imported.session.id()
-        );
+        let mut note = format!("Session imported from: {}", source.display());
         if imported.skipped_lines > 0 {
             note.push_str(&format!(
-                " {} line(s) could not be read and were left out.",
+                " ({} line(s) could not be read and were left out)",
                 imported.skipped_lines
             ));
         }
@@ -255,8 +251,8 @@ impl CliCommands {
         };
 
         match crate::share::publish(&title, &loaded.messages, &token).await {
-            Ok(url) => Applied::note(format!("Shared: {url}")),
-            Err(error) => Applied::error(format!("Could not share the session: {error}")),
+            Ok(url) => Applied::note(format!("Gist: {url}")),
+            Err(error) => Applied::error(format!("Failed to create gist: {error}")),
         }
     }
 
@@ -297,14 +293,13 @@ impl CliCommands {
             return Applied::error(format!("Could not save the decision: {error}"));
         }
 
-        let workspace = self.workspace.display();
-        match trusted {
-            true => Applied::note(format!(
-                "Trusted {workspace}. From the next run on, files inside it are edited \
-                 without asking. Shell commands are still asked about."
-            )),
-            false => Applied::note(format!("No longer trusting {workspace}.")),
-        }
+        Applied::note(format!(
+            "Saved trust decision: {}. Restart micro for this to take effect.",
+            match trusted {
+                true => "trusted",
+                false => "untrusted",
+            }
+        ))
     }
 
     /// Give the session a title of its own, in place of the derived one.
@@ -317,7 +312,7 @@ impl CliCommands {
 
     /// Copy the conversation up to a point into a session of its own, and carry on in the
     /// copy. The session it came from is left exactly as it was.
-    async fn fork(&mut self, session_id: &str, through_index: usize) -> Applied {
+    async fn fork(&mut self, session_id: &str, through_index: usize, whole: bool) -> Applied {
         let forked = match self.sessions.fork(session_id, through_index).await {
             Ok(forked) => forked,
             Err(error) => {
@@ -331,7 +326,13 @@ impl CliCommands {
 
         Applied::Conversation {
             messages,
-            note: Some(format!("Forked into session {}", self.session_id)),
+            note: Some(
+                match whole {
+                    true => "Cloned to new session",
+                    false => "Forked to new session",
+                }
+                .to_string(),
+            ),
         }
     }
 }
@@ -356,7 +357,8 @@ impl Commands for CliCommands {
             CommandOutcome::Fork {
                 session_id,
                 through_index,
-            } => self.fork(&session_id, through_index).await,
+                whole,
+            } => self.fork(&session_id, through_index, whole).await,
 
             // Branching happens in the session that is open, so the conversation the
             // interface holds is replaced by the branch that was chosen.
@@ -848,7 +850,10 @@ mod tests {
         let (mut host, root) = host("trust").await;
         let outcome = host.dispatch("/trust", state(0)).await.expect("a command");
         let text = note(&host.apply(outcome).await).to_string();
-        assert!(text.starts_with("Trusted "), "{text}");
+        assert_eq!(
+            text,
+            "Saved trust decision: trusted. Restart micro for this to take effect."
+        );
 
         let store = micro_policy::TrustStore::load_from(root.join("home"))
             .await
@@ -863,7 +868,10 @@ mod tests {
             .dispatch("/trust off", state(0))
             .await
             .expect("a command");
-        assert!(note(&host.apply(outcome).await).starts_with("No longer trusting "));
+        assert_eq!(
+            note(&host.apply(outcome).await),
+            "Saved trust decision: untrusted. Restart micro for this to take effect."
+        );
         let store = micro_policy::TrustStore::load_from(root.join("home"))
             .await
             .unwrap();

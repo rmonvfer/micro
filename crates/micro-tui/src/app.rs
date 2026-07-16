@@ -514,11 +514,11 @@ impl App {
     /// Put the last answer on the system clipboard.
     pub fn copy_last_answer(&mut self) {
         let Some(answer) = self.transcript.last_answer() else {
-            self.notice("Nothing to copy yet.", MessageKind::Error);
+            self.notice("No agent messages to copy yet.", MessageKind::Error);
             return;
         };
         match clipboard::write_text(&answer) {
-            true => self.notice("Copied last message to clipboard", MessageKind::Info),
+            true => self.notice("Copied last agent message to clipboard", MessageKind::Info),
             false => self.notice("No clipboard on this system.", MessageKind::Error),
         }
     }
@@ -1520,7 +1520,7 @@ mod tests {
     fn copying_with_nothing_to_copy_says_so() {
         let mut app = app();
         app.copy_last_answer();
-        assert!(transcript_text(&mut app).contains("Nothing to copy yet."));
+        assert!(transcript_text(&mut app).contains("No agent messages to copy yet."));
     }
 
     #[test]

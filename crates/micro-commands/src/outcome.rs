@@ -92,6 +92,9 @@ pub enum CommandOutcome {
     Fork {
         session_id: String,
         through_index: usize,
+        /// Set when the whole conversation is being copied rather than a point in it,
+        /// which is the difference between cloning and forking.
+        whole: bool,
     },
     /// Summarize the conversation so far and continue from the summary.
     Compact,
@@ -251,10 +254,12 @@ impl fmt::Debug for CommandOutcome {
             CommandOutcome::Fork {
                 session_id,
                 through_index,
+                whole,
             } => formatter
                 .debug_struct("Fork")
                 .field("session_id", session_id)
                 .field("through_index", through_index)
+                .field("whole", whole)
                 .finish(),
             CommandOutcome::Reload => formatter.write_str("Reload"),
             CommandOutcome::Import { path } => {

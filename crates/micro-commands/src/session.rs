@@ -82,6 +82,7 @@ pub(crate) fn fork(argument: Option<&str>, context: &CommandContext<'_>) -> Comm
     CommandOutcome::Fork {
         session_id: session_id.to_string(),
         through_index,
+        whole: false,
     }
 }
 
@@ -378,12 +379,13 @@ pub(crate) async fn clone(context: &CommandContext<'_>) -> CommandOutcome {
         Err(error) => return CommandOutcome::error(format!("cannot read the session: {error}")),
     };
     if loaded.messages.is_empty() {
-        return CommandOutcome::error("nothing to clone yet");
+        return CommandOutcome::info("Nothing to clone yet");
     }
 
     CommandOutcome::Fork {
         session_id: session_id.to_string(),
         through_index: loaded.messages.len() - 1,
+        whole: true,
     }
 }
 
@@ -535,6 +537,7 @@ mod tests {
         let CommandOutcome::Fork {
             session_id,
             through_index,
+            ..
         } = outcome
         else {
             panic!("expected a fork");
