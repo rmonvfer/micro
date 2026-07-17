@@ -1952,6 +1952,240 @@ mod tests {
         assert!(!transcript_text(&mut app).contains("Cache miss"));
     }
 
+    /// A credential is handed over only once enter has been pressed on it, so a key that
+    /// is still being typed is never sent anywhere.
+    #[test]
+    fn a_key_is_only_handed_over_once_it_is_finished() {
+        let mut app = app();
+        app.open_key_prompt("openrouter".into(), Vec::new());
+        app.handle(Action::Insert("sk-or".into()));
+        assert!(app.take_key_prompt().is_none(), "still being typed");
+
+        app.handle(Action::Backspace);
+        assert_eq!(app.key_prompt().unwrap().len(), 4);
+        app.handle(Action::Submit);
+        assert_eq!(
+            app.take_key_prompt(),
+            Some(("openrouter".to_string(), "sk-o".to_string()))
+        );
+    }
+
+    #[test]
+    fn queued_prompts_come_back_in_the_order_they_were_written() {
+        let mut app = app();
+        for line in ["first", "second", "third"] {
+            type_text(&mut app, line);
+            app.handle(Action::Submit);
+        }
+        assert_eq!(app.queued(), 3);
+        assert_eq!(app.take_submission().as_deref(), Some("first"));
+        assert_eq!(app.take_submission().as_deref(), Some("second"));
+        assert_eq!(app.take_submission().as_deref(), Some("third"));
+        assert_eq!(app.queued(), 0);
+    }
+
+    /// A conversation shorter than the screen has nowhere to scroll to.
+    #[test]
+    fn a_short_conversation_does_not_scroll() {
+        let mut app = app();
+        app.transcript.push_user("one line");
+        app.set_frame(60, 24);
+        app.set_viewport(20);
+        app.refresh_lines();
+
+        app.handle(Action::PageUp);
+        assert_eq!(app.scroll(), 0);
+    }
+
+    /// Making the window taller cannot leave the reader scrolled past the start.
+    #[test]
+    fn a_taller_window_pulls_the_reader_back_inside_the_conversation() {
+        let mut app = app();
+        for index in 0..30 {
+            app.transcript.push_user(format!("prompt number {index}"));
+        }
+        app.set_frame(60, 24);
+        app.set_viewport(5);
+        app.refresh_lines();
+        for _ in 0..50 {
+            app.handle(Action::PageUp);
+        }
+        assert!(app.scroll() > 0);
+
+        app.set_viewport(1000);
+        assert_eq!(app.scroll(), 0);
+    }
+
+    /// The menu belongs to what is being typed, so finishing the command word closes it.
+    #[test]
+    fn the_menu_closes_once_the_command_word_is_finished() {
+        let mut app = app();
+        type_text(&mut app, "/model");
+        assert!(app.menu().is_some());
+        type_text(&mut app, " ");
+        assert!(app.menu().is_none(), "an argument is not a command");
+    }
+
+    /// A menu only belongs to the first line: a slash further down is text.
+    #[test]
+    fn a_slash_on_a_later_line_is_not_a_command() {
+        let mut app = app();
+        type_text(&mut app, "look at");
+        app.handle(Action::Newline);
+        type_text(&mut app, "/etc/hosts");
+        assert!(app.menu().is_none());
+    }
+
+    #[test]
+    fn a_resize_makes_the_next_frame_wrap_again() {
+        let mut app = app();
+        app.transcript.push_user("something to wrap");
+        app.set_frame(60, 24);
+        app.refresh_lines();
+        assert!(app.cache.key.is_some());
+
+        app.handle(Action::Resize);
+        assert!(app.cache.key.is_none(), "the next frame rewraps");
+    }
+
+    #[test]
+    fn browsing_history_walks_back_through_what_was_sent() {
+        let mut app = app();
+        app.begin_turn("first thing");
+        app.begin_turn("second thing");
+
+        app.handle(Action::MoveUp);
+        assert_eq!(app.editor.text(), "second thing");
+        app.handle(Action::MoveUp);
+        assert_eq!(app.editor.text(), "first thing");
+        app.handle(Action::MoveDown);
+        assert_eq!(app.editor.text(), "second thing");
+    }
+
+    #[test]
+    fn the_conversation_is_written_out_where_it_was_asked_for() {
+        let mut app = app();
+        app.workspace = std::env::temp_dir().join(format!("micro-export-{}", std::process::id()));
+        std::fs::create_dir_all(&app.workspace).unwrap();
+        app.transcript.push_user("a question");
+
+        app.export(Some("conversation.md"));
+        let written = std::fs::read_to_string(app.workspace.join("conversation.md")).unwrap();
+        assert!(written.contains("## Prompt\n\na question"), "{written}");
+        assert!(transcript_text(&mut app).contains("Exported to"));
+    }
+
+    #[test]
+    fn an_export_that_cannot_be_written_says_so() {
+        let mut app = app();
+        app.workspace = std::path::PathBuf::from("/nowhere-that-exists");
+        app.export(Some("conversation.md"));
+        assert!(transcript_text(&mut app).contains("Could not export the conversation"));
+    }
+
+    /// Reasoning effort is marked on the input's rules, so each level has its own colour.
+    #[test]
+    fn every_reasoning_level_has_its_own_colour() {
+        let mut app = app();
+        let mut seen = Vec::new();
+        for _ in 0..4 {
+            seen.push(app.thinking_color());
+            app.handle(Action::CycleThinking);
+        }
+        assert_eq!(app.thinking, ThinkingLevel::Off, "four steps wraps around");
+
+        let mut unique = seen.clone();
+        unique.dedup();
+        assert_eq!(unique.len(), seen.len(), "no two levels look the same");
+    }
+
+    #[test]
+    fn a_turn_reports_that_it_is_running_and_what_it_is_doing() {
+        let mut app = app();
+        assert!(!app.is_running());
+        assert_eq!(app.activity(), "working");
+
+        app.begin_turn("do the thing");
+        assert!(app.is_running());
+        assert_eq!(app.activity(), "thinking");
+        assert!(!app.is_interrupting());
+
+        app.busy("compacting");
+        assert_eq!(app.activity(), "compacting");
+        app.idle();
+        assert!(!app.is_running());
+    }
+
+    /// An approval can be answered by its own key without moving to it first.
+    #[test]
+    fn an_approval_takes_the_answer_by_its_key() {
+        let (approver, mut requests) = crate::approval::approval_channel();
+        let mut app = app();
+
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(async {
+                let request = micro_policy::ApprovalRequest {
+                    tool: "read".into(),
+                    subject: Some("src/main.rs".into()),
+                    arguments: serde_json::json!({ "path": "src/main.rs" }),
+                    reason: "the policy cannot vouch for this".into(),
+                    key: "read:src/main.rs".into(),
+                };
+                let answering = tokio::spawn(async move { approver.approve(&request).await });
+                app.ask_approval(requests.recv().await.expect("a request"));
+
+                app.handle(Action::Insert("a".into()));
+                assert!(!app.overlay_is_open());
+                assert_eq!(answering.await.unwrap(), micro_policy::Approval::Session);
+            });
+    }
+
+    /// A prompt sent while the conversation is scrolled back brings the reader to the end,
+    /// since what they just asked is the thing worth watching.
+    #[test]
+    fn sending_a_prompt_returns_to_the_end_of_the_conversation() {
+        let mut app = app();
+        for index in 0..40 {
+            app.transcript.push_user(format!("prompt number {index}"));
+        }
+        app.set_frame(60, 24);
+        app.set_viewport(10);
+        app.refresh_lines();
+        app.handle(Action::PageUp);
+        assert!(app.scroll() > 0);
+
+        type_text(&mut app, "the next thing");
+        app.handle(Action::Submit);
+        assert_eq!(app.scroll(), 0);
+    }
+
+    #[test]
+    fn the_usage_a_command_is_told_about_is_what_the_answers_cost() {
+        let mut app = app();
+        app.transcript = Transcript::from_messages(&[Message::Assistant(AssistantMessage {
+            content: vec![ContentBlock::text("done")],
+            provider: "openrouter".into(),
+            model: "gemini-3-pro".into(),
+            usage: Usage {
+                input: 100,
+                output: 20,
+                cache_read: 5,
+                cache_write: 3,
+            },
+            stop_reason: StopReason::Stop,
+            error: None,
+            timestamp: 0,
+        })]);
+
+        let state = app.conversation_state();
+        assert_eq!(state.message_count, 1);
+        assert_eq!(state.usage.input, 100);
+        assert_eq!(state.usage.output, 20);
+    }
+
     #[test]
     fn a_byte_count_reads_as_a_size() {
         assert_eq!(human_size(512), "512 B");

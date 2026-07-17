@@ -25,6 +25,17 @@ pub fn token() -> Option<String> {
 
 /// Upload a conversation and return the address it can be read at.
 pub async fn publish(title: &str, conversation: &[Message], token: &str) -> Result<String, String> {
+    publish_to(GISTS_URL, title, conversation, token).await
+}
+
+/// Upload to a named endpoint. Split out from [`publish`] so the request itself can be
+/// exercised against a server that is not GitHub.
+async fn publish_to(
+    endpoint: &str,
+    title: &str,
+    conversation: &[Message],
+    token: &str,
+) -> Result<String, String> {
     let body = json!({
         "description": format!("micro session: {title}"),
         "public": false,
@@ -32,7 +43,7 @@ pub async fn publish(title: &str, conversation: &[Message], token: &str) -> Resu
     });
 
     let response = reqwest::Client::new()
-        .post(GISTS_URL)
+        .post(endpoint)
         .header("Accept", "application/vnd.github+json")
         .header("Authorization", format!("Bearer {token}"))
         .header("User-Agent", "micro")
@@ -168,5 +179,115 @@ mod tests {
         let odd = explain(500, "upstream fell over");
         assert!(odd.contains("500"), "{odd}");
         assert!(odd.contains("upstream fell over"), "{odd}");
+    }
+
+    /// One request, answered by a server of our own: the body GitHub would receive, and
+    /// the address that comes back.
+    #[tokio::test]
+    async fn a_conversation_is_uploaded_and_its_address_returned() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let endpoint = format!("http://{}/gists", listener.local_addr().unwrap());
+
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let request = read_request(&mut socket).await;
+            let answer = "{\"html_url\":\"https://gist.github.com/x/abc123\"}";
+            respond(&mut socket, 201, answer).await;
+            request
+        });
+
+        let url = publish_to(
+            &endpoint,
+            "counting",
+            &[Message::user("what does this do")],
+            "gho_test",
+        )
+        .await
+        .expect("published");
+
+        assert_eq!(url, "https://gist.github.com/x/abc123");
+
+        // Read back lowercased, since a header's case is the client's business.
+        let request = server.await.unwrap();
+        assert!(request.contains("post /gists"), "{request}");
+        assert!(request.contains("authorization: bearer gho_test"), "{request}");
+        assert!(request.contains("user-agent: micro"), "{request}");
+        // Secret, because a conversation holds whatever was being worked on.
+        assert!(request.contains("\"public\":false"), "{request}");
+        assert!(request.contains("conversation.md"), "{request}");
+        assert!(request.contains("what does this do"), "{request}");
+    }
+
+    #[tokio::test]
+    async fn a_refusal_from_the_server_is_reported_as_it_was_given() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let endpoint = format!("http://{}/gists", listener.local_addr().unwrap());
+
+        tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            read_request(&mut socket).await;
+            respond(&mut socket, 403, "{\"message\":\"Resource not accessible\"}").await;
+        });
+
+        let error = publish_to(&endpoint, "counting", &[Message::user("hello")], "gho_test")
+            .await
+            .expect_err("refused");
+        assert!(error.contains("`gist` scope"), "{error}");
+    }
+
+    /// A server that answers with something other than a gist is not a success.
+    #[tokio::test]
+    async fn an_answer_without_an_address_is_not_a_share() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let endpoint = format!("http://{}/gists", listener.local_addr().unwrap());
+
+        tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            read_request(&mut socket).await;
+            respond(&mut socket, 201, "{\"id\":\"abc123\"}").await;
+        });
+
+        let error = publish_to(&endpoint, "counting", &[Message::user("hello")], "gho_test")
+            .await
+            .expect_err("no address");
+        assert!(error.contains("did not say where it is"), "{error}");
+    }
+
+    /// Read a whole HTTP request: headers, then as many bytes as the length promised.
+    async fn read_request(socket: &mut tokio::net::TcpStream) -> String {
+        use tokio::io::AsyncReadExt as _;
+        let mut raw = Vec::new();
+        let mut chunk = [0_u8; 1024];
+        loop {
+            let read = socket.read(&mut chunk).await.unwrap();
+            if read == 0 {
+                break;
+            }
+            raw.extend_from_slice(&chunk[..read]);
+            let text = String::from_utf8_lossy(&raw).to_lowercase();
+            let Some(head) = text.find("\r\n\r\n") else {
+                continue;
+            };
+            let length: usize = text
+                .split("content-length:")
+                .nth(1)
+                .and_then(|rest| rest.split("\r\n").next())
+                .and_then(|value| value.trim().parse().ok())
+                .unwrap_or(0);
+            if raw.len() >= head + 4 + length {
+                break;
+            }
+        }
+        String::from_utf8_lossy(&raw).to_lowercase()
+    }
+
+    async fn respond(socket: &mut tokio::net::TcpStream, status: u16, body: &str) {
+        use tokio::io::AsyncWriteExt as _;
+        let response = format!(
+            "HTTP/1.1 {status} OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        socket.write_all(response.as_bytes()).await.unwrap();
+        socket.flush().await.unwrap();
     }
 }
