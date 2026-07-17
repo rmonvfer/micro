@@ -530,6 +530,7 @@ mod tests {
             session_id: Some("abc"),
             message_count: 5,
             usage: micro_types::Usage::default(),
+            collapse_changelog: false,
             ..harness.context()
         };
 
@@ -553,6 +554,7 @@ mod tests {
             session_id: Some("abc"),
             message_count: 5,
             usage: micro_types::Usage::default(),
+            collapse_changelog: false,
             ..harness.context()
         };
 
@@ -576,6 +578,7 @@ mod tests {
             session_id: Some("abc"),
             message_count: 3,
             usage: micro_types::Usage::default(),
+            collapse_changelog: false,
             ..harness.context()
         };
 

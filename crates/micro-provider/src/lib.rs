@@ -46,3 +46,26 @@ pub trait Provider: Send + Sync {
         api_key: String,
     ) -> UnboundedReceiver<StreamEvent>;
 }
+
+/// How long a request may go without producing anything before it is given up on.
+///
+/// A model that is thinking sends nothing for a while, so this is generous: it is there to
+/// notice a connection that has died, not to hurry an answer along.
+static IDLE_TIMEOUT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(120);
+
+/// Set the idle timeout every provider built from here on will use.
+pub fn set_idle_timeout(seconds: u64) {
+    IDLE_TIMEOUT.store(seconds.max(1), std::sync::atomic::Ordering::Relaxed);
+}
+
+pub fn idle_timeout() -> std::time::Duration {
+    std::time::Duration::from_secs(IDLE_TIMEOUT.load(std::sync::atomic::Ordering::Relaxed))
+}
+
+/// An HTTP client that gives up on a connection that has gone quiet.
+pub fn http_client() -> reqwest::Client {
+    reqwest::Client::builder()
+        .read_timeout(idle_timeout())
+        .build()
+        .unwrap_or_default()
+}

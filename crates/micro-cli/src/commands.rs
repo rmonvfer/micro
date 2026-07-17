@@ -36,6 +36,11 @@ pub struct CliCommands {
     /// Where micro keeps what it remembers between runs, which is where a trust decision
     /// is written.
     home: PathBuf,
+    /// Whether skills are announced to the model at all, so `/reload` rebuilds what the
+    /// run was built with rather than something else.
+    skills_enabled: bool,
+    /// Show only the newest entry when the changelog is asked for.
+    collapse_changelog: bool,
 }
 
 /// Everything a host is built from. Gathered into one value because a run assembles all
@@ -51,6 +56,8 @@ pub struct HostParts {
     pub session: Arc<Mutex<Session>>,
     pub session_id: String,
     pub home: PathBuf,
+    pub skills_enabled: bool,
+    pub collapse_changelog: bool,
 }
 
 impl CliCommands {
@@ -65,6 +72,8 @@ impl CliCommands {
             session: parts.session,
             session_id: parts.session_id,
             home: parts.home,
+            skills_enabled: parts.skills_enabled,
+            collapse_changelog: parts.collapse_changelog,
         }
     }
 
@@ -118,6 +127,7 @@ impl CliCommands {
             session_id: Some(&self.session_id),
             message_count: state.message_count,
             usage: state.usage,
+            collapse_changelog: self.collapse_changelog,
         }
     }
 
@@ -261,7 +271,7 @@ impl CliCommands {
     /// Only the standing instructions change. The conversation is left exactly as it is,
     /// because nothing that was said stopped being true.
     async fn reload(&self) -> Applied {
-        let context = crate::runtime::load_context(&self.workspace).await;
+        let context = crate::runtime::load_context(&self.workspace, self.skills_enabled).await;
 
         let mut note = format!(
             "Reloaded {} and {}.",
@@ -462,6 +472,8 @@ mod tests {
             session: Arc::new(Mutex::new(session)),
             session_id,
             home: root.join("home"),
+            skills_enabled: true,
+            collapse_changelog: false,
         });
         (host, root)
     }

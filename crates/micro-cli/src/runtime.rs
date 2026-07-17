@@ -95,9 +95,23 @@ fn default_model(catalog: &Catalog, provider: Option<&str>) -> Result<ModelDef> 
 }
 
 /// Build the agent, opening or resuming a session and wiring durable persistence.
-pub async fn build(root: &Path, selection: &Selection, resume: Option<&str>) -> Result<Runtime> {
+pub async fn build(
+    root: &Path,
+    selection: &Selection,
+    resume: Option<&str>,
+    settings: &micro_config::Settings,
+) -> Result<Runtime> {
+    // Set before any provider is built, since a client carries the timeout it was made
+    // with.
+    micro_provider::set_idle_timeout(settings.http_idle_timeout);
     let store = AuthStore::open().context("cannot open the credential store")?;
     let catalog = Catalog::load().unwrap_or_else(|_| Catalog::bundled());
+    // A workspace that has been given a shortlist may only use what is on it, so a model
+    // outside it cannot be reached by cycling or by a stale config.
+    let catalog = match settings.scoped_models.is_empty() {
+        true => catalog,
+        false => scoped(catalog, &settings.scoped_models),
+    };
     let model = pick_model(&catalog, selection)?;
 
     let provider_name = selection
@@ -141,9 +155,11 @@ pub async fn build(root: &Path, selection: &Selection, resume: Option<&str>) -> 
         ),
     };
 
-    let context = load_context(root).await;
-    for diagnostic in &context.diagnostics {
-        eprintln!("note: {diagnostic}");
+    let context = load_context(root, settings.skill_commands).await;
+    if !settings.quiet_startup {
+        for diagnostic in &context.diagnostics {
+            eprintln!("note: {diagnostic}");
+        }
     }
 
     // Every tool goes through the policy, so approval is enforced at the one place tools
@@ -154,7 +170,13 @@ pub async fn build(root: &Path, selection: &Selection, resume: Option<&str>) -> 
     // A project that was vouched for with `/trust` starts wider than the cautious
     // default, which is the whole point of having said so.
     let trust = micro_policy::TrustStore::load().await.unwrap_or_default();
-    policy.mode = trust.mode_for(root, selection.mode);
+    // A project nobody has decided about takes the standing answer, which is cautious
+    // unless the user has said otherwise.
+    let assumed = match (trust.decision(root).is_none(), settings.default_project_trust) {
+        (true, true) => micro_policy::Mode::Workspace,
+        _ => selection.mode,
+    };
+    policy.mode = trust.mode_for(root, assumed);
     let engine = Arc::new(micro_policy::PolicyEngine::new(
         policy,
         root.to_path_buf(),
@@ -173,6 +195,12 @@ pub async fn build(root: &Path, selection: &Selection, resume: Option<&str>) -> 
     .with_history(history.clone())
     .with_context_window(model.context_window as usize)
     .with_recorder(recorder);
+    // Compaction is what keeps a long conversation inside the window; turned off, the
+    // conversation is left to grow and the provider decides when it will not take more.
+    let agent = match settings.auto_compact {
+        true => agent,
+        false => agent.without_compaction(),
+    };
 
     let session_id = session.id().to_string();
     let session = Arc::new(Mutex::new(session));
@@ -186,6 +214,8 @@ pub async fn build(root: &Path, selection: &Selection, resume: Option<&str>) -> 
         session: Arc::clone(&session),
         session_id,
         home: micro_policy::micro_home().unwrap_or_default(),
+        skills_enabled: settings.skill_commands,
+        collapse_changelog: settings.collapse_changelog,
     });
 
     Ok(Runtime {
@@ -234,7 +264,7 @@ pub struct LoadedContext {
     pub diagnostics: Vec<String>,
 }
 
-pub async fn load_context(root: &Path) -> LoadedContext {
+pub async fn load_context(root: &Path, skills_enabled: bool) -> LoadedContext {
     let instructions = match InstructionLoader::from_env() {
         Ok(loader) => loader.load(root).await.unwrap_or_default(),
         Err(_) => Default::default(),
@@ -243,7 +273,10 @@ pub async fn load_context(root: &Path) -> LoadedContext {
     // Skills are announced by name and description only; the model reads a skill's file
     // when it decides one applies, which is what keeps a shelf of them out of the context.
     let home = micro_context::micro_home().unwrap_or_default();
-    let skills = micro_skills::discover(root, &home).await;
+    let skills = match skills_enabled {
+        true => micro_skills::discover(root, &home).await,
+        false => Default::default(),
+    };
 
     let mut system_prompt = BASE_PROMPT.to_string();
     if !instructions.text.trim().is_empty() {
@@ -270,5 +303,28 @@ pub async fn load_context(root: &Path) -> LoadedContext {
                 )
             })
             .collect(),
+    }
+}
+
+/// The catalog cut down to the models a workspace is allowed, matched by prefix so a
+/// shortlist can name a provider, a family, or one exact model.
+fn scoped(catalog: Catalog, allowed: &[String]) -> Catalog {
+    let kept: Vec<ModelDef> = catalog
+        .models()
+        .iter()
+        .filter(|model| {
+            allowed.iter().any(|pattern| {
+                model.qualified_id().starts_with(pattern.as_str())
+                    || model.id.starts_with(pattern.as_str())
+            })
+        })
+        .cloned()
+        .collect();
+
+    // A shortlist that matches nothing is a mistake worth surviving: the whole catalog is
+    // more useful than no models at all.
+    match kept.is_empty() {
+        true => catalog,
+        false => Catalog::from_models(kept),
     }
 }

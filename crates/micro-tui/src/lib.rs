@@ -53,6 +53,8 @@ pub use approval::ApprovalRequests;
 pub use commands::Applied;
 pub use commands::Commands;
 pub use commands::ConversationState;
+pub use commands::DoubleEscape;
+pub use commands::Preferences;
 pub use theme::Theme;
 
 use crate::app::App;
@@ -202,6 +204,32 @@ mod osc133 {
     pub const INPUT: &str = "\x1b]133;B\x07";
     /// The command was accepted; its output follows.
     pub const OUTPUT: &str = "\x1b]133;C\x07";
+}
+
+/// Progress, as a terminal that shows it in the tab or the dock expects to be told.
+///
+/// OSC 9;4 takes a state and a percentage. Indeterminate is what an answer is: there is
+/// no way to know how much of it is left until it arrives.
+mod osc94 {
+    pub const BUSY: &str = "\x1b]9;4;3;0\x07";
+    pub const DONE: &str = "\x1b]9;4;0;0\x07";
+}
+
+/// Say whether something is running, for a terminal that draws progress of its own.
+fn report_progress(enabled: bool, running: bool) {
+    if !enabled {
+        return;
+    }
+    use std::io::Write as _;
+    let mut out = std::io::stdout();
+    let _ = out.write_all(
+        match running {
+            true => osc94::BUSY,
+            false => osc94::DONE,
+        }
+        .as_bytes(),
+    );
+    let _ = out.flush();
 }
 
 /// Tell the terminal a prompt was submitted and its answer is about to arrive.
@@ -572,6 +600,8 @@ async fn run_turn(
     prompt: Message,
 ) -> Result<()> {
     let (sender, mut receiver) = unbounded_channel::<AgentEvent>();
+    let progress = app.settings().terminal_progress;
+    report_progress(progress, true);
     let mut approvals = approvals;
     let mut turn = Box::pin(agent.run(prompt, &sender));
     let mut ticker = tokio::time::interval(TICK);
@@ -640,6 +670,7 @@ async fn run_turn(
         }
     }
     app.finish_turn(aborted);
+    report_progress(progress, false);
     Ok(())
 }
 

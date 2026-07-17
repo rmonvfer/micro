@@ -1211,6 +1211,7 @@ dependencies = [
  "micro-agent",
  "micro-auth",
  "micro-commands",
+ "micro-config",
  "micro-context",
  "micro-models",
  "micro-policy",
@@ -1230,6 +1231,7 @@ name = "micro-commands"
 version = "0.1.0"
 dependencies = [
  "micro-auth",
+ "micro-config",
  "micro-context",
  "micro-models",
  "micro-provider",
@@ -1361,6 +1363,7 @@ dependencies = [
  "libc",
  "micro-agent",
  "micro-commands",
+ "micro-config",
  "micro-context",
  "micro-policy",
  "micro-session",

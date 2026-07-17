@@ -145,6 +145,12 @@ impl Catalog {
         Ok(catalog)
     }
 
+    /// A catalog holding exactly these models, for a caller that has already decided
+    /// which ones a workspace may use.
+    pub fn from_models(models: Vec<ModelDef>) -> Self {
+        Catalog { models }
+    }
+
     pub fn models(&self) -> &[ModelDef] {
         &self.models
     }

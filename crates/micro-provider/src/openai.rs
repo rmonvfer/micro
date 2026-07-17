@@ -110,7 +110,7 @@ impl OpenAi {
     fn with_flavor(flavor: &'static Flavor) -> Self {
         OpenAi {
             flavor,
-            client: reqwest::Client::new(),
+            client: crate::http_client(),
         }
     }
 

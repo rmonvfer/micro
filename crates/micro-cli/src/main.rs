@@ -163,6 +163,21 @@ async fn main() -> Result<()> {
     }
 
     let root = runtime::workspace(&cli.cwd)?;
+    // What a user settled once and left alone. A command-line argument still wins, which
+    // is what `resolve_from_env` layers for us.
+    let settings = micro_config::Config::load()
+        .and_then(|config| {
+            config.resolve_from_env(&micro_config::Overrides {
+                model: cli.model.clone(),
+                provider: cli.provider.clone(),
+                ..micro_config::Overrides::default()
+            })
+        })
+        .unwrap_or_else(|error| {
+            eprintln!("note: {error}; using defaults");
+            micro_config::Settings::default()
+        });
+
     // Each front end answers the policy its own way: the non-interactive path prompts on
     // the terminal, while the interface routes requests to a modal over the transcript.
     let (approver, approvals): (std::sync::Arc<dyn micro_policy::Approver>, _) = match cli.print {
@@ -174,8 +189,8 @@ async fn main() -> Result<()> {
     };
 
     let selection = Selection {
-        model: cli.model.clone(),
-        provider: cli.provider.clone(),
+        model: settings.model.clone(),
+        provider: settings.provider.clone(),
         thinking: cli.thinking,
         mode: cli.approve,
         approver,
@@ -187,7 +202,7 @@ async fn main() -> Result<()> {
         (None, false) => None,
     };
 
-    let built = runtime::build(&root, &selection, resume.as_deref()).await?;
+    let built = runtime::build(&root, &selection, resume.as_deref(), &settings).await?;
     let writer = runtime::persist(built.session, built.recorder);
     let prompt = cli.prompt.join(" ");
 
@@ -202,6 +217,7 @@ async fn main() -> Result<()> {
             model: built.model.qualified_id(),
             context_window: built.model.context_window,
             thinking: cli.thinking,
+            settings: micro_tui::Preferences::from(&settings),
             approvals,
             // Without this every submitted line goes to the model, `/help` included.
             commands: Some(Box::new(built.commands)),

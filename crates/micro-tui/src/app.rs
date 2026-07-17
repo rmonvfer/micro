@@ -16,6 +16,7 @@ use crate::clipboard;
 use crate::commands::Applied;
 use crate::commands::Commands;
 use crate::commands::ConversationState;
+use crate::commands::Preferences;
 use crate::editor::Editor;
 use crate::event::Action;
 use crate::menu::Menu;
@@ -57,6 +58,8 @@ pub struct TuiOptions {
     pub approvals: Option<crate::approval::ApprovalRequests>,
     /// How a slash command is run. Without this every submitted line goes to the model.
     pub commands: Option<Box<dyn Commands + 'static>>,
+    /// What the user settled in `/settings`.
+    pub settings: Preferences,
 }
 
 impl Default for TuiOptions {
@@ -69,6 +72,7 @@ impl Default for TuiOptions {
             theme: None,
             approvals: None,
             commands: None,
+            settings: Preferences::default(),
         }
     }
 }
@@ -203,8 +207,12 @@ pub struct App {
     cache: Cache,
     /// Set by jump-to-char: the next printable key moves the cursor to it.
     jump: Option<bool>,
+    /// Answers taken in so far, so a cache notice knows there was a cache to read.
+    answers: usize,
     hyperlinks: bool,
     images: Option<ImageProtocol>,
+    /// What the user settled in `/settings`, honoured wherever it applies.
+    settings: Preferences,
 }
 
 impl App {
@@ -216,7 +224,7 @@ impl App {
             editor: Editor::new(),
             approvals: ApprovalQueue::new(),
             theme: options.theme.unwrap_or_else(Theme::dark),
-            show_thinking: false,
+            show_thinking: !options.settings.hide_thinking,
             thinking: options.thinking,
             context_window: options.context_window,
             cwd: shorten_home(&workspace.display().to_string()),
@@ -238,9 +246,21 @@ impl App {
             rows: 24,
             cache: Cache::default(),
             jump: None,
+            answers: 0,
             hyperlinks: capabilities.hyperlinks,
-            images: capabilities.images,
+            // A terminal that can draw images still does not when the user would rather
+            // read the conversation without them.
+            images: match options.settings.show_images {
+                true => capabilities.images,
+                false => None,
+            },
+            settings: options.settings,
         }
+    }
+
+    /// What the user settled in `/settings`, for the parts of the frame drawn elsewhere.
+    pub fn settings(&self) -> &Preferences {
+        &self.settings
     }
 
     /// The model as the footer names it.
@@ -310,6 +330,11 @@ impl App {
 
     pub fn menu(&self) -> Option<&Menu> {
         self.menu.as_ref()
+    }
+
+    /// How many completions the menu may show at once.
+    pub fn menu_rows(&self) -> usize {
+        self.settings.autocomplete_max_items
     }
 
     pub fn picker(&self) -> Option<&Picker> {
@@ -384,6 +409,15 @@ impl App {
             MessageKind::Error => NoticeLevel::Error,
         };
         self.transcript.push_notice(text, level);
+    }
+
+    /// Say something that is worth knowing but not worth stopping for. Turned off, it is
+    /// not said at all rather than said quietly.
+    pub fn warn(&mut self, text: impl Into<String>) {
+        if !self.settings.warnings {
+            return;
+        }
+        self.transcript.push_notice(text, NoticeLevel::Warning);
     }
 
     /// Open a list for the user to choose from.
@@ -474,7 +508,29 @@ impl App {
 
     /// Take in something the agent reported.
     pub fn apply_event(&mut self, event: AgentEvent) {
+        let answers_before = self.answers;
         self.transcript.apply(&event);
+        if let AgentEvent::MessageEnd { .. } = &event {
+            self.answers = self.answers.saturating_add(1);
+            self.report_cache_miss(answers_before);
+        }
+    }
+
+    /// A turn that wrote the cache without reading any of it paid twice for a context it
+    /// already had. Only worth saying after the first answer, when there was a cache to
+    /// have read.
+    fn report_cache_miss(&mut self, answers_before: usize) {
+        if !self.settings.cache_miss_notices || answers_before == 0 {
+            return;
+        }
+        let usage = self.transcript.last_usage();
+        if usage.cache_write == 0 || usage.cache_read > 0 {
+            return;
+        }
+        self.warn(format!(
+            "Cache miss: {} tokens were written to the cache again",
+            usage.cache_write
+        ));
     }
 
     /// Take in what the host did with a command.
@@ -592,6 +648,8 @@ impl App {
                 from: 0,
                 hyperlinks: self.hyperlinks,
                 images: self.images,
+                image_width: self.settings.image_width_cells as usize,
+                resize_images: self.settings.auto_resize_images,
             },
         );
         // A reader who has scrolled back stays over the same lines when more arrive
@@ -800,10 +858,16 @@ impl App {
     fn queue_follow_up(&mut self) -> Outcome {
         let line = self.editor.take();
         self.menu = None;
-        if !line.trim().is_empty() {
-            self.pending.push_back(line);
+        if line.trim().is_empty() {
+            return Outcome::Handled;
         }
-        Outcome::Handled
+        self.pending.push_back(line);
+        // Set to interrupt, a follow-up is meant to replace what is running rather than
+        // to wait behind it, so the turn is stopped and the prompt goes next.
+        match self.settings.follow_up_interrupts && self.is_running() {
+            true => self.interrupt(),
+            false => Outcome::Handled,
+        }
     }
 
     /// Tab takes the highlighted completion; with nothing offering one it indents.
@@ -881,6 +945,15 @@ impl App {
         if self.scroll != 0 {
             self.scroll = 0;
             return Outcome::Handled;
+        }
+        // Nothing was open and nothing was scrolled, and the prompt is empty: this is the
+        // second escape, which is how ohm offers a way back to an earlier point.
+        if self.editor.is_empty() {
+            match self.settings.double_escape {
+                crate::commands::DoubleEscape::Tree => self.queue_line("/tree"),
+                crate::commands::DoubleEscape::Fork => self.queue_line("/fork"),
+                crate::commands::DoubleEscape::None => {}
+            }
         }
         Outcome::Handled
     }
@@ -1011,6 +1084,10 @@ impl App {
     }
 
     fn paste_image(&mut self) -> Outcome {
+        if self.settings.block_images {
+            self.notice("Images are turned off in /settings.", MessageKind::Error);
+            return Outcome::Handled;
+        }
         let Some(image) = clipboard::read_image() else {
             self.notice("No image on the clipboard.", MessageKind::Error);
             return Outcome::Handled;
@@ -1761,6 +1838,123 @@ mod tests {
         app.set_frame(40, 24);
         app.refresh_lines();
         assert_ne!(app.cache.key, key, "a new width wraps again");
+    }
+
+    fn app_with(settings: Preferences) -> App {
+        App::new(
+            &[],
+            TuiOptions {
+                settings,
+                ..TuiOptions::default()
+            },
+        )
+    }
+
+    /// Every preference the interface takes changes what it does, so a setting is a
+    /// setting rather than a row in a menu.
+    #[test]
+    fn hiding_thinking_starts_it_folded_away() {
+        assert!(!app_with(Preferences {
+            hide_thinking: true,
+            ..Preferences::default()
+        })
+        .show_thinking);
+
+        assert!(app_with(Preferences {
+            hide_thinking: false,
+            ..Preferences::default()
+        })
+        .show_thinking);
+    }
+
+    #[test]
+    fn blocking_images_refuses_to_attach_one() {
+        let mut app = app_with(Preferences {
+            block_images: true,
+            ..Preferences::default()
+        });
+        app.handle(Action::PasteImage);
+
+        assert_eq!(app.attachments(), 0);
+        assert!(transcript_text(&mut app).contains("Images are turned off in /settings."));
+    }
+
+    #[test]
+    fn turning_warnings_off_leaves_them_unsaid() {
+        let mut app = app_with(Preferences {
+            warnings: false,
+            ..Preferences::default()
+        });
+        app.warn("something worth knowing");
+        assert!(!transcript_text(&mut app).contains("something worth knowing"));
+
+        let mut app = app_with(Preferences {
+            warnings: true,
+            ..Preferences::default()
+        });
+        app.warn("something worth knowing");
+        assert!(transcript_text(&mut app).contains("something worth knowing"));
+    }
+
+    #[test]
+    fn a_second_escape_does_what_the_setting_says() {
+        let mut app = app_with(Preferences {
+            double_escape: crate::commands::DoubleEscape::Tree,
+            ..Preferences::default()
+        });
+        app.handle(Action::Cancel);
+        assert_eq!(app.take_submission().as_deref(), Some("/tree"));
+
+        let mut app = app_with(Preferences {
+            double_escape: crate::commands::DoubleEscape::None,
+            ..Preferences::default()
+        });
+        app.handle(Action::Cancel);
+        assert_eq!(app.take_submission(), None);
+    }
+
+    #[test]
+    fn a_follow_up_can_interrupt_instead_of_waiting() {
+        let mut app = app_with(Preferences {
+            follow_up_interrupts: true,
+            ..Preferences::default()
+        });
+        app.busy("thinking");
+        type_text(&mut app, "instead, do this");
+        assert_eq!(app.handle(Action::QueueFollowUp), Outcome::Interrupt);
+        assert!(app.is_interrupting());
+        assert_eq!(app.queued(), 1);
+    }
+
+    #[test]
+    fn the_menu_offers_as_many_rows_as_asked_for() {
+        let app = app_with(Preferences {
+            autocomplete_max_items: 3,
+            ..Preferences::default()
+        });
+        assert_eq!(app.menu_rows(), 3);
+    }
+
+    /// A terminal that can draw images still does not when the reader would rather it
+    /// did not.
+    #[test]
+    fn turning_images_off_stops_them_being_drawn() {
+        let app = app_with(Preferences {
+            show_images: false,
+            ..Preferences::default()
+        });
+        assert!(app.images.is_none());
+    }
+
+    #[test]
+    fn a_cache_miss_is_only_reported_when_asked_for() {
+        let mut app = app_with(Preferences {
+            cache_miss_notices: false,
+            ..Preferences::default()
+        });
+        app.answers = 1;
+        app.report_cache_miss(1);
+        assert!(!transcript_text(&mut app).contains("Cache miss"));
     }
 
     #[test]

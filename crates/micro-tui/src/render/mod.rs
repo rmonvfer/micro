@@ -33,8 +33,6 @@ use ratatui::text::Line;
 use ratatui::text::Span;
 use ratatui::Frame;
 
-/// Columns of breathing room on each side of the content.
-const PADDING: u16 = 1;
 /// Rows the input may grow to before it scrolls internally.
 const MAX_EDITOR_ROWS: usize = 10;
 /// The share of the screen an approval prompt may claim. It takes what its content needs up
@@ -55,7 +53,9 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     }
     let theme = app.theme;
 
-    let content_width = content_width(area.width);
+    let output_padding = app.settings().output_padding;
+    let editor_padding = app.settings().editor_padding;
+    let content_width = content_width(area.width, output_padding);
     // The frame is measured before anything is laid out against it: the transcript wraps to
     // this width, and a page of scrolling moves by the rows the region turns out to have.
     app.set_frame(content_width as usize, area.height);
@@ -67,7 +67,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
 
     // Before anything has happened there is no conversation, and the screen introduces
     // itself in the space one would have taken.
-    let opening = match app.lines().is_empty() {
+    let opening = match app.lines().is_empty() && !app.settings().quiet_startup {
         true => intro(&theme, content_width as usize),
         false => Vec::new(),
     };
@@ -88,27 +88,36 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     let menu = chrome.menu;
 
     draw_transcript(frame, transcript_area, app, &opening);
-    draw_rows(frame, overlay_area, inset(overlay_area), &overlay, &theme);
-    draw_activity(frame, inset(activity_area), app, &theme);
+    draw_rows(
+        frame,
+        overlay_area,
+        inset_by(overlay_area, output_padding),
+        &overlay,
+        &theme,
+    );
+    draw_activity(frame, inset_by(activity_area, output_padding), app, &theme);
     // An overlay has the keyboard while it is up, so the cursor belongs to it rather than to
     // an input the next keystroke will not reach.
     let level = app.thinking_color();
     editor::draw(
         frame,
         editor_area,
-        inset(editor_area),
+        inset_by(editor_area, editor_padding),
         &app.editor,
         &theme,
-        level,
-        !app.overlay_is_open(),
+        editor::Look {
+            level,
+            focused: !app.overlay_is_open(),
+            hardware_cursor: app.settings().show_hardware_cursor,
+        },
     );
     for (offset, line) in menu.iter().take(menu_area.height as usize).enumerate() {
-        let content = inset(menu_area);
+        let content = inset_by(menu_area, editor_padding);
         frame
             .buffer_mut()
             .set_line(content.x, content.y + offset as u16, line, content.width);
     }
-    draw_status(frame, inset(status_area), app, &theme);
+    draw_status(frame, inset_by(status_area, output_padding), app, &theme);
 
     // Last, once every line has been placed and its columns are settled: a hyperlink costs
     // no width, so it can only go on after everything that measures width has finished.
@@ -125,8 +134,8 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
 }
 
 /// Columns left for content once both margins are taken off.
-fn content_width(width: u16) -> u16 {
-    width.saturating_sub(PADDING * 2).max(1)
+fn content_width(width: u16, padding: u16) -> u16 {
+    width.saturating_sub(padding * 2).max(1)
 }
 
 /// Everything below the transcript, and how many rows it takes.
@@ -152,7 +161,7 @@ fn chrome(app: &App, theme: &Theme, width: u16) -> Chrome {
         overlay: overlay_lines(app, theme, width as usize),
         menu: app
             .menu()
-            .map(|menu| menu::lines(menu, theme, width as usize))
+            .map(|menu| menu::lines(menu, theme, width as usize, app.menu_rows()))
             .unwrap_or_default(),
         // The prompt's own rows, plus the rule above it and the rule below it.
         editor: app.editor.height(width as usize).clamp(1, MAX_EDITOR_ROWS) as u16 + editor::RULES,
@@ -373,11 +382,12 @@ fn draw_status(frame: &mut Frame, content: Rect, app: &App, theme: &Theme) {
 }
 
 /// Pull an area in by the horizontal padding.
-fn inset(area: Rect) -> Rect {
+/// Pull an area in by a chosen number of columns on each side.
+fn inset_by(area: Rect, padding: u16) -> Rect {
     Rect {
-        x: area.x + PADDING.min(area.width),
+        x: area.x + padding.min(area.width),
         y: area.y,
-        width: area.width.saturating_sub(PADDING * 2),
+        width: area.width.saturating_sub(padding * 2),
         height: area.height,
     }
 }
@@ -650,7 +660,7 @@ mod tests {
             width: 1,
             height: 1,
         };
-        let inner = inset(narrow);
+        let inner = inset_by(narrow, 1);
         assert_eq!(inner.width, 0);
         assert!(inner.x <= narrow.x + narrow.width);
     }
@@ -663,7 +673,7 @@ mod tests {
             width: 40,
             height: 5,
         };
-        let inner = inset(area);
+        let inner = inset_by(area, 1);
         assert_eq!(inner.x, 1);
         assert_eq!(inner.width, 38);
         assert_eq!(inner.height, 5);

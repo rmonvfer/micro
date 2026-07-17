@@ -166,6 +166,11 @@ static COMMANDS: &[Command] = &[
         description: "Save project trust decision for future sessions",
     },
     Command {
+        name: "set",
+        argument: Some("<setting> [value]"),
+        description: "Change a setting, or show what it is",
+    },
+    Command {
         name: "settings",
         argument: None,
         description: "show where every setting is read from",
@@ -264,6 +269,8 @@ pub struct CommandContext<'a> {
     pub message_count: usize,
     /// What the conversation has cost in tokens so far.
     pub usage: micro_types::Usage,
+    /// Show only the newest entry when the changelog is asked for.
+    pub collapse_changelog: bool,
 }
 
 /// Run a submitted line. `None` means it was ordinary text for the model.
@@ -304,10 +311,11 @@ pub async fn run(
         "name" => session::name(argument, context).await,
         "skills" => skills(context).await,
         "settings" => settings(context),
+        "set" => set(argument),
         "trust" => trust(argument),
         "reload" => CommandOutcome::Reload,
         "share" => CommandOutcome::Share,
-        "changelog" => CommandOutcome::info(CHANGELOG.trim()),
+        "changelog" => CommandOutcome::info(changelog(context.collapse_changelog)),
         "import" => match argument.map(str::trim).filter(|path| !path.is_empty()) {
             Some(path) => CommandOutcome::Import {
                 path: path.to_string(),
@@ -334,6 +342,31 @@ pub async fn run(
 
 /// What has changed in micro, shipped with the binary so `/changelog` works offline.
 const CHANGELOG: &str = include_str!("../../../CHANGELOG.md");
+
+/// The changelog, whole or folded to its newest entry.
+///
+/// An entry starts at a `## ` heading, so folding keeps the title and everything under the
+/// first one.
+fn changelog(collapse: bool) -> String {
+    let text = CHANGELOG.trim();
+    if !collapse {
+        return text.to_string();
+    }
+
+    let mut out = String::new();
+    let mut entries = 0;
+    for line in text.lines() {
+        if line.starts_with("## ") {
+            entries += 1;
+            if entries > 1 {
+                break;
+            }
+        }
+        out.push_str(line);
+        out.push('\n');
+    }
+    out.trim_end().to_string()
+}
 
 /// `/trust` vouches for the project, so a later run may edit inside it without asking
 /// about every file. `/trust off` takes it back.
@@ -449,22 +482,28 @@ async fn skills(context: &CommandContext<'_>) -> CommandOutcome {
 /// `/settings` offers what can be changed, in ohm's words, each item carrying the command
 /// that changes it.
 ///
-/// Only settings micro actually honours are listed. A row for something that controls
-/// nothing would read as a feature and behave as a decoration.
+/// Every row here is honoured somewhere: a setting that controlled nothing would read as a
+/// feature and behave as a decoration.
 fn settings(context: &CommandContext<'_>) -> CommandOutcome {
     let home = micro_context::micro_home().unwrap_or_default();
+    let file = home.join(micro_config::FILE_NAME);
+    let saved = micro_config::Config::load_from(&file).unwrap_or_default();
+    let now = saved
+        .resolve(&micro_config::Overrides::default(), |_| None)
+        .unwrap_or_default();
+
+    let on_off = |value: bool| match value {
+        true => "on",
+        false => "off",
+    };
+
     let items = vec![
         PickerItem::new(
             "Thinking level",
-            "how hard the model reasons before answering",
+            thinking_label(context),
             "/thinking",
         ),
-        PickerItem::new("Theme", "the palette everything is painted in", "/theme"),
-        PickerItem::new(
-            "Default project trust",
-            "whether this project may be edited without being asked",
-            "/trust",
-        ),
+        PickerItem::new("Theme", now.theme.clone(), "/theme"),
         PickerItem::new(
             "Model",
             match context.model {
@@ -474,12 +513,297 @@ fn settings(context: &CommandContext<'_>) -> CommandOutcome {
             "/model",
         ),
         PickerItem::new(
+            "Default project trust",
+            on_off(now.default_project_trust),
+            "/trust",
+        ),
+        PickerItem::new("Auto-compact", on_off(now.auto_compact), "/set auto_compact"),
+        PickerItem::new(
+            "Hide thinking",
+            on_off(now.hide_thinking),
+            "/set hide_thinking",
+        ),
+        PickerItem::new("Show images", on_off(now.show_images), "/set show_images"),
+        PickerItem::new(
+            "Image width",
+            format!("{} cells", now.image_width_cells),
+            "/set image_width_cells",
+        ),
+        PickerItem::new(
+            "Auto-resize images",
+            on_off(now.auto_resize_images),
+            "/set auto_resize_images",
+        ),
+        PickerItem::new("Block images", on_off(now.block_images), "/set block_images"),
+        PickerItem::new(
+            "Skill commands",
+            on_off(now.skill_commands),
+            "/set skill_commands",
+        ),
+        PickerItem::new(
+            "Editor padding",
+            now.editor_padding.to_string(),
+            "/set editor_padding",
+        ),
+        PickerItem::new(
+            "Output padding",
+            now.output_padding.to_string(),
+            "/set output_padding",
+        ),
+        PickerItem::new(
+            "Autocomplete max items",
+            now.autocomplete_max_items.to_string(),
+            "/set autocomplete_max_items",
+        ),
+        PickerItem::new(
+            "Show hardware cursor",
+            on_off(now.show_hardware_cursor),
+            "/set show_hardware_cursor",
+        ),
+        PickerItem::new(
+            "Terminal progress",
+            on_off(now.terminal_progress),
+            "/set terminal_progress",
+        ),
+        PickerItem::new(
+            "Quiet startup",
+            on_off(now.quiet_startup),
+            "/set quiet_startup",
+        ),
+        PickerItem::new(
+            "Collapse changelog",
+            on_off(now.collapse_changelog),
+            "/set collapse_changelog",
+        ),
+        PickerItem::new("Warnings", on_off(now.warnings), "/set warnings"),
+        PickerItem::new(
+            "Cache miss notices",
+            on_off(now.cache_miss_notices),
+            "/set cache_miss_notices",
+        ),
+        PickerItem::new(
+            "Double-escape action",
+            format!("{:?}", now.double_escape).to_lowercase(),
+            "/set double_escape",
+        ),
+        PickerItem::new(
+            "Follow-up mode",
+            format!("{:?}", now.follow_up_mode).to_lowercase(),
+            "/set follow_up_mode",
+        ),
+        PickerItem::new(
+            "HTTP idle timeout",
+            format!("{} seconds", now.http_idle_timeout),
+            "/set http_idle_timeout",
+        ),
+        PickerItem::new(
+            "Scoped models",
+            match now.scoped_models.is_empty() {
+                true => "the whole catalog".to_string(),
+                false => now.scoped_models.join(", "),
+            },
+            "/set scoped_models",
+        ),
+        PickerItem::new(
             "Where everything is kept",
             home.display().to_string(),
             "/debug",
         ),
     ];
     CommandOutcome::Choose(Picker::new("Settings", items))
+}
+
+/// `/set <name> [value]` changes one setting and remembers it. Without a value it says
+/// what the setting is now and what it may be.
+fn set(argument: Option<&str>) -> CommandOutcome {
+    let Some(argument) = argument.map(str::trim).filter(|text| !text.is_empty()) else {
+        return CommandOutcome::error("Usage: /set <setting> [value]");
+    };
+    let (name, value) = match argument.split_once(char::is_whitespace) {
+        Some((name, value)) => (name.trim(), Some(value.trim())),
+        None => (argument, None),
+    };
+
+    let path = match micro_config::default_path() {
+        Ok(path) => path,
+        Err(error) => return CommandOutcome::error(format!("Cannot find the settings: {error}")),
+    };
+    let mut config = match micro_config::Config::load_from(&path) {
+        Ok(config) => config,
+        Err(error) => return CommandOutcome::error(format!("Cannot read the settings: {error}")),
+    };
+
+    let Some(value) = value else {
+        return match describe(&config, name) {
+            Some(text) => CommandOutcome::info(text),
+            None => CommandOutcome::error(format!("There is no setting called `{name}`.")),
+        };
+    };
+
+    if let Err(message) = assign(&mut config, name, value) {
+        return CommandOutcome::error(message);
+    }
+    match config.save_to(&path) {
+        Ok(()) => CommandOutcome::info(format!("{name} is now {value}.")),
+        Err(error) => CommandOutcome::error(format!("Could not save the settings: {error}")),
+    }
+}
+
+/// One setting as it stands, and what it will take.
+fn describe(config: &micro_config::Config, name: &str) -> Option<String> {
+    let now = config
+        .resolve(&micro_config::Overrides::default(), |_| None)
+        .ok()?;
+    let text = match name {
+        "auto_compact" => format!("auto_compact is {} (on or off)", now.auto_compact),
+        "hide_thinking" => format!("hide_thinking is {} (on or off)", now.hide_thinking),
+        "show_images" => format!("show_images is {} (on or off)", now.show_images),
+        "image_width_cells" => format!("image_width_cells is {} (cells)", now.image_width_cells),
+        "auto_resize_images" => {
+            format!("auto_resize_images is {} (on or off)", now.auto_resize_images)
+        }
+        "block_images" => format!("block_images is {} (on or off)", now.block_images),
+        "skill_commands" => format!("skill_commands is {} (on or off)", now.skill_commands),
+        "editor_padding" => format!("editor_padding is {} (columns)", now.editor_padding),
+        "output_padding" => format!("output_padding is {} (columns)", now.output_padding),
+        "autocomplete_max_items" => format!(
+            "autocomplete_max_items is {} (rows)",
+            now.autocomplete_max_items
+        ),
+        "show_hardware_cursor" => format!(
+            "show_hardware_cursor is {} (on or off)",
+            now.show_hardware_cursor
+        ),
+        "terminal_progress" => {
+            format!("terminal_progress is {} (on or off)", now.terminal_progress)
+        }
+        "quiet_startup" => format!("quiet_startup is {} (on or off)", now.quiet_startup),
+        "collapse_changelog" => {
+            format!("collapse_changelog is {} (on or off)", now.collapse_changelog)
+        }
+        "warnings" => format!("warnings is {} (on or off)", now.warnings),
+        "cache_miss_notices" => {
+            format!("cache_miss_notices is {} (on or off)", now.cache_miss_notices)
+        }
+        "double_escape" => format!(
+            "double_escape is {} (tree, fork or none)",
+            format!("{:?}", now.double_escape).to_lowercase()
+        ),
+        "follow_up_mode" => format!(
+            "follow_up_mode is {} (queue or interrupt)",
+            format!("{:?}", now.follow_up_mode).to_lowercase()
+        ),
+        "default_project_trust" => format!(
+            "default_project_trust is {} (on or off)",
+            now.default_project_trust
+        ),
+        "http_idle_timeout" => {
+            format!("http_idle_timeout is {} (seconds)", now.http_idle_timeout)
+        }
+        "scoped_models" => format!(
+            "scoped_models is {} (a comma-separated list, or `all`)",
+            match now.scoped_models.is_empty() {
+                true => "all".to_string(),
+                false => now.scoped_models.join(","),
+            }
+        ),
+        _ => return None,
+    };
+    Some(text)
+}
+
+/// Put a value into the config, saying what went wrong rather than storing nonsense.
+fn assign(config: &mut micro_config::Config, name: &str, value: &str) -> Result<(), String> {
+    let flag = || match value.to_ascii_lowercase().as_str() {
+        "on" | "true" | "yes" | "1" => Ok(true),
+        "off" | "false" | "no" | "0" => Ok(false),
+        other => Err(format!("`{other}` is not on or off")),
+    };
+    let number = |limit: u64| -> Result<u64, String> {
+        let parsed: u64 = value
+            .parse()
+            .map_err(|_| format!("`{value}` is not a number"))?;
+        match parsed >= 1 && parsed <= limit {
+            true => Ok(parsed),
+            false => Err(format!("{value} is outside 1 to {limit}")),
+        }
+    };
+
+    match name {
+        "auto_compact" => config.auto_compact = Some(flag()?),
+        "hide_thinking" => config.hide_thinking = Some(flag()?),
+        "show_images" => config.show_images = Some(flag()?),
+        "image_width_cells" => config.image_width_cells = Some(number(500)? as u16),
+        "auto_resize_images" => config.auto_resize_images = Some(flag()?),
+        "block_images" => config.block_images = Some(flag()?),
+        "skill_commands" => config.skill_commands = Some(flag()?),
+        // Padding is allowed to be nothing, which is what ohm gives the input by default.
+        "editor_padding" => {
+            config.editor_padding = Some(
+                value
+                    .parse::<u16>()
+                    .map_err(|_| format!("`{value}` is not a number"))?
+                    .min(20),
+            )
+        }
+        "output_padding" => {
+            config.output_padding = Some(
+                value
+                    .parse::<u16>()
+                    .map_err(|_| format!("`{value}` is not a number"))?
+                    .min(20),
+            )
+        }
+        "autocomplete_max_items" => {
+            config.autocomplete_max_items = Some(number(50)? as usize)
+        }
+        "show_hardware_cursor" => config.show_hardware_cursor = Some(flag()?),
+        "terminal_progress" => config.terminal_progress = Some(flag()?),
+        "quiet_startup" => config.quiet_startup = Some(flag()?),
+        "collapse_changelog" => config.collapse_changelog = Some(flag()?),
+        "warnings" => config.warnings = Some(flag()?),
+        "cache_miss_notices" => config.cache_miss_notices = Some(flag()?),
+        "double_escape" => {
+            config.double_escape = Some(match value.to_ascii_lowercase().as_str() {
+                "tree" => micro_config::DoubleEscape::Tree,
+                "fork" => micro_config::DoubleEscape::Fork,
+                "none" => micro_config::DoubleEscape::None,
+                other => return Err(format!("`{other}` is not tree, fork or none")),
+            })
+        }
+        "follow_up_mode" => {
+            config.follow_up_mode = Some(match value.to_ascii_lowercase().as_str() {
+                "queue" => micro_config::FollowUpMode::Queue,
+                "interrupt" => micro_config::FollowUpMode::Interrupt,
+                other => return Err(format!("`{other}` is not queue or interrupt")),
+            })
+        }
+        "default_project_trust" => config.default_project_trust = Some(flag()?),
+        "http_idle_timeout" => config.http_idle_timeout = Some(number(3600)?),
+        "scoped_models" => {
+            config.scoped_models = Some(match value.eq_ignore_ascii_case("all") {
+                true => Vec::new(),
+                false => value
+                    .split(',')
+                    .map(str::trim)
+                    .filter(|part| !part.is_empty())
+                    .map(str::to_string)
+                    .collect(),
+            })
+        }
+        other => return Err(format!("There is no setting called `{other}`.")),
+    }
+    Ok(())
+}
+
+/// The reasoning effort in force, as a user reads it.
+fn thinking_label(context: &CommandContext<'_>) -> String {
+    let _ = context;
+    micro_config::Config::load()
+        .ok()
+        .and_then(|config| config.thinking)
+        .map(|level| format!("{level:?}").to_lowercase())
+        .unwrap_or_else(|| "off".to_string())
 }
 
 /// What micro knows about the session it is in, for when something is behaving oddly.
@@ -680,6 +1004,7 @@ pub(crate) mod testing {
                 session_id: None,
                 message_count: 0,
                 usage: micro_types::Usage::default(),
+            collapse_changelog: false,
             }
         }
     }
@@ -729,6 +1054,103 @@ mod tests {
         assert_eq!(find("/model").unwrap().name, "model");
         assert_eq!(find("MODEL").unwrap().name, "model");
         assert!(find("nope").is_none());
+    }
+
+    /// Every setting `/settings` offers can be set, and every value it refuses is a value
+    /// nothing downstream would have honoured.
+    #[test]
+    fn every_offered_setting_can_be_set() {
+        let mut config = micro_config::Config::default();
+        for (name, value) in [
+            ("auto_compact", "off"),
+            ("hide_thinking", "off"),
+            ("show_images", "off"),
+            ("image_width_cells", "80"),
+            ("auto_resize_images", "off"),
+            ("block_images", "on"),
+            ("skill_commands", "off"),
+            ("editor_padding", "2"),
+            ("output_padding", "0"),
+            ("autocomplete_max_items", "12"),
+            ("show_hardware_cursor", "on"),
+            ("terminal_progress", "off"),
+            ("quiet_startup", "on"),
+            ("collapse_changelog", "on"),
+            ("warnings", "off"),
+            ("cache_miss_notices", "on"),
+            ("double_escape", "fork"),
+            ("follow_up_mode", "interrupt"),
+            ("default_project_trust", "on"),
+            ("http_idle_timeout", "300"),
+            ("scoped_models", "anthropic/, google/gemini-3-pro"),
+        ] {
+            assign(&mut config, name, value).unwrap_or_else(|error| panic!("{name}: {error}"));
+            assert!(describe(&config, name).is_some(), "{name} cannot be read");
+        }
+
+        let now = config
+            .resolve(&micro_config::Overrides::default(), |_| None)
+            .unwrap();
+        assert!(!now.auto_compact);
+        assert_eq!(now.image_width_cells, 80);
+        assert_eq!(now.autocomplete_max_items, 12);
+        assert_eq!(now.http_idle_timeout, 300);
+        assert_eq!(now.double_escape, micro_config::DoubleEscape::Fork);
+        assert_eq!(
+            now.follow_up_mode,
+            micro_config::FollowUpMode::Interrupt
+        );
+        assert_eq!(now.scoped_models, vec!["anthropic/", "google/gemini-3-pro"]);
+        assert_eq!(now.output_padding, 0);
+    }
+
+    #[test]
+    fn a_value_a_setting_cannot_take_is_refused() {
+        let mut config = micro_config::Config::default();
+        assert!(assign(&mut config, "auto_compact", "maybe").is_err());
+        assert!(assign(&mut config, "image_width_cells", "wide").is_err());
+        assert!(assign(&mut config, "http_idle_timeout", "0").is_err());
+        assert!(assign(&mut config, "double_escape", "sideways").is_err());
+        assert!(assign(&mut config, "nothing_like_this", "on").is_err());
+        assert_eq!(config, micro_config::Config::default(), "nothing stuck");
+    }
+
+    /// Every row `/settings` offers dispatches to a command that exists.
+    #[test]
+    fn every_settings_row_dispatches_somewhere_real() {
+        let catalog = Catalog::bundled();
+        let auth = AuthStore::open_at(
+            std::env::temp_dir().join(format!("micro-settings-{}.json", std::process::id())),
+        )
+        .unwrap();
+        let sessions = SessionStore::new(std::env::temp_dir().join("micro-settings-sessions"));
+        let workspace = std::env::temp_dir();
+        let context = CommandContext {
+            catalog: &catalog,
+            auth: &auth,
+            sessions: &sessions,
+            workspace: &workspace,
+            provider: "anthropic",
+            model: None,
+            session_id: None,
+            message_count: 0,
+            usage: micro_types::Usage::default(),
+            collapse_changelog: false,
+        };
+
+        let CommandOutcome::Choose(picker) = settings(&context) else {
+            panic!("settings offers a choice");
+        };
+        assert!(picker.items.len() >= 20, "{}", picker.items.len());
+        for item in &picker.items {
+            let name = item
+                .command
+                .trim_start_matches('/')
+                .split_whitespace()
+                .next()
+                .expect("a command");
+            assert!(find(name).is_some(), "/{name} is not a command");
+        }
     }
 
     /// Every key the hotkey table names is one the interface actually listens for, so the
@@ -865,6 +1287,7 @@ mod tests {
         let context = CommandContext {
             message_count: 4,
             usage: micro_types::Usage::default(),
+            collapse_changelog: false,
             ..harness.context()
         };
         assert!(matches!(
