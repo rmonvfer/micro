@@ -605,6 +605,11 @@ fn settings(context: &CommandContext<'_>) -> CommandOutcome {
             "/set scoped_models",
         ),
         PickerItem::new(
+            "Anthropic extra usage",
+            on_off(now.anthropic_extra_usage),
+            "/set anthropic_extra_usage",
+        ),
+        PickerItem::new(
             "Where everything is kept",
             home.display().to_string(),
             "/debug",
@@ -700,6 +705,10 @@ fn describe(config: &micro_config::Config, name: &str) -> Option<String> {
         "http_idle_timeout" => {
             format!("http_idle_timeout is {} (seconds)", now.http_idle_timeout)
         }
+        "anthropic_extra_usage" => format!(
+            "anthropic_extra_usage is {} (on or off)",
+            now.anthropic_extra_usage
+        ),
         "scoped_models" => format!(
             "scoped_models is {} (a comma-separated list, or `all`)",
             match now.scoped_models.is_empty() {
@@ -780,6 +789,7 @@ fn assign(config: &mut micro_config::Config, name: &str, value: &str) -> Result<
         }
         "default_project_trust" => config.default_project_trust = Some(flag()?),
         "http_idle_timeout" => config.http_idle_timeout = Some(number(3600)?),
+        "anthropic_extra_usage" => config.anthropic_extra_usage = Some(flag()?),
         "scoped_models" => {
             config.scoped_models = Some(match value.eq_ignore_ascii_case("all") {
                 true => Vec::new(),

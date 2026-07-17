@@ -216,6 +216,7 @@ pub async fn build(
         home: micro_policy::micro_home().unwrap_or_default(),
         skills_enabled: settings.skill_commands,
         collapse_changelog: settings.collapse_changelog,
+        anthropic_extra_usage: settings.anthropic_extra_usage,
     });
 
     Ok(Runtime {

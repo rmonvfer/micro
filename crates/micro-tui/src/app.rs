@@ -404,20 +404,21 @@ impl App {
 
     /// Put a line of the interface's own into the conversation.
     pub fn notice(&mut self, text: impl Into<String>, kind: MessageKind) {
+        // A warning nobody wants to see is not shown at all, rather than shown quietly.
+        if matches!(kind, MessageKind::Warning) && !self.settings.warnings {
+            return;
+        }
         let level = match kind {
             MessageKind::Info => NoticeLevel::Info,
+            MessageKind::Warning => NoticeLevel::Warning,
             MessageKind::Error => NoticeLevel::Error,
         };
         self.transcript.push_notice(text, level);
     }
 
-    /// Say something that is worth knowing but not worth stopping for. Turned off, it is
-    /// not said at all rather than said quietly.
+    /// Say something that is worth knowing but not worth stopping for.
     pub fn warn(&mut self, text: impl Into<String>) {
-        if !self.settings.warnings {
-            return;
-        }
-        self.transcript.push_notice(text, NoticeLevel::Warning);
+        self.notice(text, MessageKind::Warning);
     }
 
     /// Open a list for the user to choose from.
@@ -540,13 +541,7 @@ impl App {
             // Both of these need the agent, which this type does not hold. They are
             // intercepted by the caller before reaching here.
             Applied::Model { .. } | Applied::SystemPrompt { .. } => {}
-            Applied::Note { text, error } => self.notice(
-                text,
-                match error {
-                    true => MessageKind::Error,
-                    false => MessageKind::Info,
-                },
-            ),
+            Applied::Note { text, kind } => self.notice(text, kind),
             Applied::Conversation { messages, note } => {
                 // The conversation is the host's to define; the scrollback is rebuilt from
                 // whatever it says the conversation now is.

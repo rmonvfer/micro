@@ -25,7 +25,10 @@ pub enum Applied {
     #[default]
     Nothing,
     /// Say this, and leave the conversation alone.
-    Note { text: String, error: bool },
+    Note {
+        text: String,
+        kind: micro_commands::MessageKind,
+    },
     /// The conversation is now this. The scrollback is rebuilt from it, which is what
     /// clearing, resuming, forking and compacting all look like from here.
     Conversation {
@@ -50,15 +53,34 @@ impl Applied {
     pub fn note(text: impl Into<String>) -> Self {
         Applied::Note {
             text: text.into(),
-            error: false,
+            kind: micro_commands::MessageKind::Info,
+        }
+    }
+
+    /// Worth knowing, but nothing failed.
+    pub fn warning(text: impl Into<String>) -> Self {
+        Applied::Note {
+            text: text.into(),
+            kind: micro_commands::MessageKind::Warning,
         }
     }
 
     pub fn error(text: impl Into<String>) -> Self {
         Applied::Note {
             text: text.into(),
-            error: true,
+            kind: micro_commands::MessageKind::Error,
         }
+    }
+
+    /// Whether this reports a failure, for a caller that only cares about that.
+    pub fn is_error(&self) -> bool {
+        matches!(
+            self,
+            Applied::Note {
+                kind: micro_commands::MessageKind::Error,
+                ..
+            }
+        )
     }
 }
 
@@ -90,13 +112,25 @@ mod tests {
             Applied::note("switched"),
             Applied::Note {
                 text: "switched".into(),
-                error: false,
+                kind: micro_commands::MessageKind::Info,
             }
         );
         assert!(matches!(
             Applied::error("nope"),
-            Applied::Note { error: true, .. }
+            Applied::Note {
+                kind: micro_commands::MessageKind::Error,
+                ..
+            }
         ));
+        assert!(matches!(
+            Applied::warning("mind this"),
+            Applied::Note {
+                kind: micro_commands::MessageKind::Warning,
+                ..
+            }
+        ));
+        assert!(Applied::error("nope").is_error());
+        assert!(!Applied::warning("mind this").is_error());
         assert_eq!(Applied::default(), Applied::Nothing);
     }
 }

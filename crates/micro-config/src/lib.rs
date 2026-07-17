@@ -200,6 +200,9 @@ pub struct Config {
     /// Models this workspace may use, when it should not have the whole catalog.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub scoped_models: Option<Vec<String>>,
+    /// Warn that Anthropic subscription auth bills per token in a third-party harness.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub anthropic_extra_usage: Option<bool>,
 
     /// Keys written by a version that knew more than this one.
     #[serde(flatten)]
@@ -250,6 +253,7 @@ pub struct Settings {
     pub default_project_trust: bool,
     pub http_idle_timeout: u64,
     pub scoped_models: Vec<String>,
+    pub anthropic_extra_usage: bool,
 }
 
 /// The widest an image is drawn when nothing says otherwise.
@@ -293,6 +297,7 @@ impl Default for Settings {
             default_project_trust: false,
             http_idle_timeout: DEFAULT_HTTP_IDLE_TIMEOUT,
             scoped_models: Vec::new(),
+            anthropic_extra_usage: true,
         }
     }
 }
@@ -453,6 +458,9 @@ impl Config {
                 .unwrap_or(defaults.http_idle_timeout)
                 .max(1),
             scoped_models: self.scoped_models.clone().unwrap_or(defaults.scoped_models),
+            anthropic_extra_usage: self
+                .anthropic_extra_usage
+                .unwrap_or(defaults.anthropic_extra_usage),
         })
     }
 
@@ -491,6 +499,7 @@ impl Config {
             default_project_trust: take(&mut fields, "default_project_trust", path)?,
             http_idle_timeout: take(&mut fields, "http_idle_timeout", path)?,
             scoped_models: take(&mut fields, "scoped_models", path)?,
+            anthropic_extra_usage: take(&mut fields, "anthropic_extra_usage", path)?,
             extra: fields,
         };
         Ok(config)

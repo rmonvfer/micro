@@ -10,6 +10,8 @@ use std::fmt;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MessageKind {
     Info,
+    /// Worth knowing, but nothing failed.
+    Warning,
     Error,
 }
 
@@ -107,6 +109,13 @@ impl CommandOutcome {
     pub fn info(text: impl Into<String>) -> Self {
         CommandOutcome::Message {
             kind: MessageKind::Info,
+            text: text.into(),
+        }
+    }
+
+    pub fn warning(text: impl Into<String>) -> Self {
+        CommandOutcome::Message {
+            kind: MessageKind::Warning,
             text: text.into(),
         }
     }
