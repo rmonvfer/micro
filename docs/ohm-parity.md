@@ -26,77 +26,83 @@ overridable by config. Substitute `micro` wherever a literal app name appears.
 
 ---
 
-## 1. Gap inventory
+## 1. Where micro stands against ohm
 
-### 1.1 The one structural difference that governs everything else
+### 1.1 The render model, and why it differs on purpose
 
-ohm is **not** a fixed-viewport application. `packages/tui/src/tui.ts` renders the entire
-document — header, every message ever sent, the editor, the footer — into one array of lines
-and writes it to the terminal with differential updates. Content that grows past the terminal
-height flows into the terminal's own scrollback. There is no internal scroll model, no
-scroll offset for the transcript, and no `PageUp` handler for history: the terminal scrolls,
-the mouse wheel scrolls, and the user's terminal search works on the transcript.
+ohm renders the whole document — every message ever sent, the editor, the footer — into one
+array of lines and writes it to the terminal with differential updates, so finished content
+flows into the terminal's own scrollback. There is no internal scroll offset.
 
-micro is the opposite: `render/mod.rs` lays out a fixed frame, `scroll.rs` owns a scroll
-offset, and the transcript is clipped to `transcript_area.height`.
+micro takes the alternate screen and lays out a fixed frame: the conversation occupies the
+rows above the input, the input is pinned to the bottom, and `App` owns a scroll offset that
+the wheel and the page keys move. This is a deliberate divergence, asked for directly, and
+the upstream ohm the request referred to has the same shape. Everything below is written
+against that model.
 
-This is the single largest gap and it is a prerequisite for the rest. In ratatui the
-equivalent is `Viewport::Inline` plus `Terminal::insert_before` — finished transcript blocks
-get pushed into scrollback, and only the live tail (streaming message, editor, footer) is
-redrawn. Marked in §9 as the first item, and as partially reproducible.
+### 1.2 Component by component
 
-### 1.2 Component-by-component
+What ohm has, where micro's equivalent lives, and whether they agree.
 
-Columns: what ohm has, where it lives, where micro's equivalent lives, and the verdict.
+| Area | micro | Verdict |
+|---|---|---|
+| Render model | `render/mod.rs`, scroll owned by `app.rs` | **Different on purpose.** §1.1 |
+| Theme | `theme/mod.rs` — the full token set, JSON-loadable, user themes, light and dark | **Matches** |
+| Horizontal padding | `output_padding` and `editor_padding`, ohm's defaults (1 and 0) | **Matches** |
+| Startup screen | `render/mod.rs` `intro()` — logo, hints, onboarding line, hidden by `quiet_startup` | **Matches** |
+| User message | `render/transcript.rs` — full-width `user_message_bg` band | **Matches** |
+| Assistant message | `render/transcript.rs`, markdown through `markdown/` | **Matches** |
+| Thinking block | folded by default, shown with `ctrl+t`, `hide_thinking` decides the opening state | **Matches** |
+| Tool execution | `tools.rs` + `render/tool.rs` — banded, coloured by pending/success/error | **Matches** |
+| Bash (user `!`) | `lib.rs` `run_bash` + `App::push_bash`; output joins the conversation | **Matches** |
+| Diff | `diff.rs` + `render/tool.rs` — line numbers, intra-line highlighting, elision | **Matches** |
+| Compaction summary | `transcript::Entry::Compaction`, folded until asked for | **Matches** |
+| Notice lines | `render/transcript.rs` — no glyph; `Warning: ` and `Error: ` prefixes as ohm writes them | **Matches** |
+| Editor | `editor.rs` with `editor/kill_ring.rs`, `undo.rs`, `paste.rs` | **Matches.** §6 |
+| Editor frame | rules above and below, coloured by reasoning effort | **Matches** |
+| Autocomplete | `menu.rs` + `fuzzy.rs`, sized by `autocomplete_max_items` | **Matches** for slash commands; ohm also completes `@` paths |
+| Selectors | `picker.rs` drives model, session, tree, settings, thinking, theme and trust | **Matches** in function; ohm draws each as its own component |
+| Approval prompt | `approval.rs` + `render/approval.rs` | **micro-only.** ohm has no in-TUI approval of this shape |
+| Status indicator | `render/status.rs` `activity_line` — braille spinner, two reserved rows | **Matches** |
+| Footer | `render/status.rs` `Footer` — cwd, usage, context share, model, effort, attachments | **Matches** |
+| Keybinding hints | `render/hints.rs` — dim keys, muted description, `option` on macOS | **Matches** |
+| Images | `render/pictures.rs` + `images.rs` — kitty and iTerm2, sized by `image_width_cells` | **Matches** |
+| OSC 133 shell zones | `lib.rs` `osc133` | **Matches** |
+| OSC 9;4 progress | `lib.rs` `report_progress`, behind `terminal_progress` | **Matches** |
+| Hyperlinks | `render/links.rs` — OSC 8, applied after layout | **Matches** |
+| Focus / result picking | `ctrl+↑/↓` picks a result, `ctrl+o` toggles it or everything | **micro-only.** ohm's `ctrl+o` is global |
 
-| Area | ohm | micro | Verdict |
-|---|---|---|---|
-| Render model | `packages/tui/src/tui.ts` (append + diff into scrollback) | `src/render/mod.rs`, `src/scroll.rs` (fixed viewport) | **Different.** §1.1 |
-| Theme | `theme/dark.json`, `theme/light.json`, `theme/theme.ts` — 50 named tokens, JSON-loadable, user themes, live file watch, truecolor→256 downsampling | `src/theme.rs` — 10 fields, two hardcoded palettes, `MICRO_THEME` env var | **Different.** micro has ~20% of the token set. §3 |
-| Horizontal padding | Per component (`paddingX`, usually 1); borders and background bands run edge to edge | Global `PADDING = 1` inset in `render/mod.rs` | **Close.** Text insets match; see §4.1 |
-| Startup header | `interactive-mode.ts:764` `ExpandableText` — logo, keybinding hints, onboarding, collapsible with `ctrl+o` | `render/mod.rs:164` `intro()` — 4 lines, only while transcript is empty | **Different.** ohm's header is permanent and expandable |
-| User message | `components/user-message.ts` — full-width `userMessageBg` band, markdown body | `render/transcript.rs:77` `push_user` — `› ` prefix, `muted` text, no band | **Different** |
-| Assistant message | `components/assistant-message.ts` — markdown, no background, leading blank line | `render/transcript.rs:117` `push_markdown` | **Close**; markdown fidelity differs (§5.2) |
-| Thinking block | `assistant-message.ts:104` — full italic markdown in `thinkingText`, or one static `Thinking...` label when hidden | `render/transcript.rs:90` `push_thinking` — `✻ ` marker, collapsed to latest line | **Different.** ohm has no `✻`, and its collapsed form is a fixed label, not a live tail |
-| Tool execution | `components/tool-execution.ts` + per-tool `renderCall`/`renderResult` in `core/tools/*.ts` — background-banded box, colour = pending/success/error | `src/tools.rs` + `render/tool.rs` — `⏺ ` marker line, no band | **Different** |
-| Bash (user `!`) | `components/bash-execution.ts` — horizontal rules above/below, `$ cmd` header, live streaming output, 20-line preview | none | **Missing in micro** |
-| Diff | `components/diff.ts` + `core/tools/edit-diff.ts` — `+NNN`/`-NNN`/` NNN` with line numbers, word-level inverse highlighting, `...` elision | `src/diff.rs`, `render/tool.rs` `Row::Added/Removed/Context/Divider` — no line numbers, no intra-line highlight | **Different** |
-| Compaction summary | `components/compaction-summary-message.ts` | none | **Missing in micro** |
-| Branch summary | `components/branch-summary-message.ts` | none | **Missing in micro** |
-| Skill invocation | `components/skill-invocation-message.ts` | none | **Missing in micro** |
-| Custom message / entry | `components/custom-message.ts`, `custom-entry.ts` (extension-rendered) | none | **Missing in micro**; only needed if micro grows extensions |
-| Notice lines | ad hoc `Text(theme.fg("dim"/"warning"/"error", …), 1, 0)` from `interactive-mode.ts` | `render/transcript.rs:150` `push_notice` with `· `/`⟳ `/`✗ ` markers | **Different.** ohm uses no marker glyph |
-| Editor | `packages/tui/src/components/editor.ts` (2333 lines) — 21 bindings, kill ring, undo, history, paste markers, jump-to-char, sticky column, autocomplete | `src/editor.rs` (642 lines) + `src/event.rs` | **Large gap.** §6 |
-| Editor frame | Horizontal rule above and below, colour encodes thinking level or bash mode; scroll indicators in the rules | Tinted band, `surface` background, placeholder text | **Different** |
-| Autocomplete | `packages/tui/src/autocomplete.ts`, `fuzzy.ts`, `SelectList` — slash commands, `@` file fuzzy search via `fd`, path completion, `#` and extension triggers | `src/menu.rs`, `src/fuzzy.rs` — slash commands only | **Partial.** `fuzzy.rs` is a faithful port; §2 |
-| Selectors/dialogs | 14 components: model, session, theme, settings, thinking, login, oauth, tree, trust, config, scoped-models, extension selector/input/editor, first-time-setup, user-message-selector, show-images | `src/approval.rs` + `render/approval.rs` only | **Missing in micro** |
-| Approval prompt | none (ohm uses per-tool policy without an in-TUI prompt of this shape) | `render/approval.rs` | **micro-only.** Keep it; style it to ohm's dialog pattern (§7.1) |
-| Status indicator | `components/status-indicator.ts` — 4 kinds (working/retry/compaction/branch-summary), braille spinner @ 80 ms, always 2 rows | `render/status.rs` `activity_line` — 1 row, only while running | **Different.** §8 |
-| Footer | `components/footer.ts` — 2–3 lines: cwd+branch+session, then usage stats + right-aligned model | `render/status.rs` `status_line` — 1 line, `status` background tint | **Different.** §8 |
-| Keybinding hints | `components/keybinding-hints.ts` — `dim(keys) + muted(" description")`, `alt`→`option` on macOS | none | **Missing in micro** |
-| Countdown timer | `components/countdown-timer.ts` | none | **Missing in micro** |
-| Images | `packages/tui/src/terminal-image.ts` — kitty/iterm inline images, sixel fallback | none | **Missing in micro.** Low priority |
-| OSC 133 shell zones | `user-message.ts:53`, `assistant-message.ts:78` | none | **Missing in micro.** Trivial to add |
-| Hyperlinks | OSC 8 on file paths and markdown links | none | **Missing in micro** |
-| Focus / result picking | none — ohm expands *all* tool output at once with `ctrl+o` | `ctrl+↑/↓` picks a result, `ctrl+o` toggles it | **micro-only.** ohm's `ctrl+o` is global. §9 flags this as a deliberate decision point |
-| Mouse wheel | terminal-native (ohm never leaves the normal buffer) | `event.rs` `WHEEL_LINES = 3` | **micro-only**, obsolete once §1.1 lands |
+### 1.3 Commands
 
-### 1.3 Where agent47 disagrees with ohm
+ohm registers 21 slash commands plus a hidden `/debug`. micro has all of them, with ohm's
+descriptions and ohm's user-visible strings:
 
-Recorded because these are places a previous porter drifted.
+`/settings` `/model` `/export` `/import` `/share` `/copy` `/name` `/session` `/changelog`
+`/hotkeys` `/fork` `/clone` `/tree` `/trust` `/login` `/logout` `/new` `/compact` `/resume`
+`/reload` `/quit` `/debug`
 
-- `agent47-tui/src/main/kotlin/.../theme/Theme.kt` sets `muted = #9e9e9e` and `dim = #7a7a7a`.
-  ohm's dark theme is `muted = #808080` (`gray`) and `dim = #666666` (`dimGray`). **ohm wins.**
-  micro's `theme.rs` copied agent47's values (`dim` = rgb(122,122,122) = `#7a7a7a`,
-  `muted` = rgb(158,158,158) = `#9e9e9e`) — both are wrong against ohm.
-- agent47 caps the editor at 8 rows (`layout/TuiLayout.kt` `min(8, …)`); ohm uses
-  `max(5, floor(terminalRows * 0.3))`. **ohm wins.**
-- agent47 comments `statusBarBg` as "ohm footer has no background fill" — correct, and micro's
-  `theme.status` tint on the footer is a deviation.
-- agent47's `accent = #8abeb7`, `success = #b5bd68`, `error = #cc6666`, `warning = #ffff00`,
-  `userMessageBg = #343541` all match ohm exactly. micro's `warning` (rgb 222,174,96) does not.
+micro adds `/help`, `/provider`, `/auth`, `/sessions`, `/thinking`, `/theme`, `/skills`,
+`/clear`, `/cwd` and `/set`. Each is either a synonym for something ohm reaches another way
+or a way to set something ohm only exposes through its settings menu.
 
----
+`every_registered_command_answers` in `micro-commands` runs every registered command and
+fails if one is listed but not wired up.
+
+### 1.4 Settings
+
+ohm's settings menu offers 25 rows. micro honours 23 of them, and `/settings` lists only
+what is honoured: a row that changed nothing would read as a feature and behave as a
+decoration. `/set <name> [value]` writes any of them; `micro-config` stores them in
+`config.json`.
+
+Two are not implemented, and neither is unfinished work:
+
+- **`transport`** — ohm chooses between its own SSE and websocket clients. The APIs micro
+  talks to serve chat completions over SSE only, so there is no second transport to choose.
+  A row with two values that behave identically would be a menu that lies.
+- **`installTelemetry`** — sends a version ping after an update. micro reports nothing about
+  its user anywhere, and adding outbound reporting is a decision for whoever runs it rather
+  than a parity detail.
 
 ## 2. Autocomplete and the slash-command menu
 
@@ -390,13 +396,12 @@ The six background tokens are `selectedBg`, `userMessageBg`, `customMessageBg`,
 `#f8f8f8` / `#ffffff` / `#fffae6` light) are for HTML transcript export only and do not affect
 the TUI.
 
-### 3.2 What micro must change
+### 3.2 How micro holds them
 
-`crates/micro-tui/src/theme.rs` should become a 50-token struct loaded from JSON with these
-exact defaults. Minimum viable step: keep the struct but fix the values that are simply wrong —
-`dim` → `#666666`, `muted` → `#808080`, `warning` → `#ffff00`, and add the background tokens.
-`Color::Reset` for body text is fine only if `text` is `""`; ohm's dark theme sets it to
-`#d4d4d4`, so body text is explicitly coloured.
+`crates/micro-tui/src/theme/` declares the token set once, in a macro, so the struct fields,
+the wire names and the lookup cannot drift apart. The values above are its defaults, the
+light palette sits beside them, and `theme/custom.rs` loads a user's JSON by the same names.
+Body text is coloured explicitly rather than left to the terminal, as ohm colours it.
 
 ---
 
@@ -571,8 +576,7 @@ explicit `Spacer(1)`, added by the caller in `interactive-mode.ts:3144 addMessag
 - The first rendered line is prefixed with OSC 133 `A` (`\x1b]133;A\x07`) and the last with
   `B` then `C`, marking a shell prompt zone so terminals can jump between prompts.
 
-micro currently draws `› ` + `muted` text and no band. Replacing that with the band is the
-highest-visibility single change in the whole document.
+`render/transcript.rs` draws the same band, at the same inset, tinted to the full width.
 
 ### 5.2 Assistant message
 
@@ -1272,91 +1276,29 @@ session's own accounting, which survives compaction; micro recomputes it from th
 
 ---
 
-## 9. Prioritised implementation checklist
+## 9. What is left
 
-Ordered by visual return per unit of work. Items 1–8 get most of the way to "this looks like
-ohm"; 9 onward close the remaining gaps.
+Two of ohm's settings have no counterpart here, for reasons that are not scheduling:
 
-**Tier 1 — the look, cheap**
+- **`transport`** chooses between ohm's own SSE and websocket clients. OpenRouter, GitHub
+  Copilot, Google Gemini and Anthropic serve chat completions over SSE, so there is no
+  second transport to point the setting at.
+- **`installTelemetry`** sends a version ping after an update. micro reports nothing about
+  whoever runs it, and that is a decision for them rather than a parity detail.
 
-1. **Replace `theme.rs` with ohm's 50 tokens.** Transcribe §3.1 verbatim, including the light
-   palette, and route every existing `theme.dim` / `theme.muted` / `theme.warning` use through
-   the corrected values. Everything below depends on these names existing. Add JSON loading and
-   the `vars` indirection afterwards; the hardcoded structs are enough to start.
-2. **User messages get the `userMessageBg` band.** Drop the `› ` prefix. `Box`-equivalent:
-   one blank tinted row, body at 1-column inset, one blank tinted row, tint to full width.
-   Single biggest recognisability win.
-3. **Tool blocks get the pending/success/error band.** Same box shape, background switching on
-   state. Drop the `⏺ ` marker; the header becomes `bold(toolTitle, name)` + `accent(path)`.
-4. **The editor gets rules instead of a tint.** A `─`-filled line above and below in
-   `borderMuted`, and colour them by thinking level / bash mode once those exist. Remove the
-   `surface` band and the placeholder text — ohm shows an empty line with a cursor.
-5. **Footer: two lines, no background.** Line 1 cwd + branch + session; line 2 cumulative
-   usage + right-aligned model + thinking level. Drop the `status` tint.
+Two more differences are deliberate and described where they arise: micro takes the
+alternate screen and scrolls internally (§1.1), and `ctrl+↑/↓` picks a single tool result
+where ohm's `ctrl+o` only ever expands everything (§1.2).
 
-**Tier 2 — behaviour that is felt immediately**
+Everything else ohm does, micro does, in ohm's words.
 
-6. **Autocomplete parity (§2).** Pre-select the best match; make Enter on a slash command
-   commit *and* submit; render the menu with the `→ `/`  ` prefix, the 12–32 column name
-   column, `accent` for the whole selected row, `muted` descriptions, and the `  (i/n)` scroll
-   row. `fuzzy.rs` is already correct.
-7. **Diff with line numbers and intra-line highlighting (§5.5).** `+NNN` / `-NNN` / ` NNN`,
-   4 lines of context, `...` elision, word-level reverse video on single-line changes.
-8. **`ctrl+o` becomes global.** Every collapsible thing expands at once. Decide explicitly
-   whether to keep micro's `ctrl+↑/↓` focus model as an addition — it has no ohm counterpart,
-   and the `ctrl+o` affordance text (`… +N lines  ctrl+o`) currently appears only on the
-   focused result, which ohm never does.
+### Awkward in ratatui, and how it is handled here
 
-**Tier 3 — the structural change**
-
-9. **Move to a scrollback-native render model (§1.1).** ratatui `Viewport::Inline` plus
-   `Terminal::insert_before`: completed transcript entries are pushed into the terminal's
-   scrollback and never redrawn; the live region is the streaming message, the status rows, the
-   editor, and the footer. Delete `scroll.rs` and the mouse-wheel handling once this lands.
-   This is a day of work and it changes every other file, so it should come after Tier 1 has
-   settled the visual vocabulary.
-
-**Tier 4 — editor depth (§6)**
-
-10. Kill ring with accumulation and `ctrl+y` / `alt+y`.
-11. Undo stack with fish-style coalescing on `ctrl+-`.
-12. Prompt history on `up`/`down` at the buffer edges, 100 entries, draft preservation.
-13. Large-paste markers (`[paste #1 +123 lines]`) with atomic-segment semantics.
-14. `Intl.Segmenter`-equivalent word motion with the punctuation-boundary rule
-    (`unicode-segmentation`'s `unicode_words` plus ohm's `PUNCTUATION_REGEX` set).
-15. Sticky-column vertical motion per the table in §6.7. micro has a simpler sticky column
-    already; the table adds the "target too short" cases.
-16. Backslash-Enter newline escape, jump-to-char (`ctrl+]`), page motion at 30% of the
-    terminal height, and the `max(5, rows*0.3)` editor height cap (currently a flat 10).
-
-**Tier 5 — missing surfaces**
-
-17. Startup header, collapsible on `ctrl+o`, with the exact hint list in §4.4.
-18. Status indicators: `Working...` in `muted` with an `accent` spinner on an 80 ms timer,
-    always two rows, plus the retry/compaction/branch-summary variants.
-19. Bash execution blocks for `!` and `!!` prompts (§5.4).
-20. Markdown gaps: links (with OSC 8), tables, task lists, nested and ordered lists, `*`/`_`
-    emphasis, strikethrough, printed code fences, `─`×80 rules, syntax highlighting.
-21. Selectors: model, theme, settings, thinking, session, trust, login — each following the
-    §7.1 skeleton. Restyle the approval prompt to match while you are there.
-22. Compaction, branch-summary, and skill blocks (§5.7–5.9), if micro grows those features.
-23. OSC 133 prompt zones on user and assistant messages — four escape sequences, and terminal
-     prompt-jumping starts working.
-
-### What cannot be reproduced as-is in ratatui
-
-- **Nothing here is impossible**, but two things are awkward:
-  - **The append-and-diff render model.** ratatui's `Terminal` owns a buffer and repaints it.
-    `Viewport::Inline` + `insert_before` gets the same user-visible result — history in the
-    terminal's scrollback, a live region at the bottom — but the mechanism is different, so a
-    line-for-line port of `tui.ts` is not the right move. Rebuild the behaviour, not the code.
-  - **`chalk.inverse` nesting inside a coloured line.** ratatui expresses this as
-    `Modifier::REVERSED` on a `Span`, which is equivalent; the only cost is that ohm's diff
-    renderer returns a single ANSI-laden string, so micro needs the intra-line diff to produce
-    spans instead. Straightforward, just not a copy.
-- **Inline images** (kitty/iterm graphics protocols) sit outside ratatui's cell model entirely.
-  They can be emitted by writing escape sequences past the buffer and reserving rows, which is
-  what ohm does, but it fights the framework. Lowest priority; listed last for that reason.
-- **Live theme file watching** and **user-supplied JSON themes** are pure plumbing and carry no
-  ratatui difficulty — they are only listed late because nothing visual depends on them until
-  §3 lands.
+- **Inline images** sit outside the cell model. They are emitted as escape sequences after
+  layout, with rows reserved ahead of them, which is what ohm does too — see
+  `render/pictures.rs`.
+- **Hyperlinks** cost no columns, so OSC 8 goes on after every column is settled rather than
+  during wrapping. `render/links.rs` carries the link index through wrapping in a sentinel
+  style so a wrapped link stays one link.
+- **Intra-line diff highlighting** is `Modifier::REVERSED` on a span rather than a nested
+  ANSI string, which is equivalent and easier to measure.

@@ -1066,6 +1066,76 @@ mod tests {
         assert!(find("nope").is_none());
     }
 
+    /// Every registered command answers when it is run, and none of them panic on the
+    /// way. A command that is listed but not wired up would otherwise only be found by a
+    /// user typing it.
+    #[tokio::test]
+    async fn every_registered_command_answers() {
+        let root = std::env::temp_dir().join(format!("micro-every-command-{}", std::process::id()));
+        let workspace = root.join("workspace");
+        std::fs::create_dir_all(&workspace).unwrap();
+
+        let catalog = Catalog::bundled();
+        let auth = AuthStore::open_at(root.join("auth.json")).unwrap();
+        let sessions = SessionStore::new(root.join("sessions"));
+        let mut session = sessions
+            .create(&workspace, "anthropic/claude-opus-5")
+            .await
+            .unwrap();
+        session
+            .append(&micro_types::Message::user("something was said"))
+            .await
+            .unwrap();
+        let session_id = session.id().to_string();
+        let model = catalog
+            .resolve("anthropic/claude-opus-5")
+            .model()
+            .expect("the bundled catalog carries this model")
+            .clone();
+
+        let context = CommandContext {
+            catalog: &catalog,
+            auth: &auth,
+            sessions: &sessions,
+            workspace: &workspace,
+            provider: "anthropic",
+            model: Some(&model),
+            session_id: Some(&session_id),
+            message_count: 1,
+            usage: micro_types::Usage::default(),
+            collapse_changelog: false,
+        };
+
+        // An argument each command will accept, for the ones that need one. A command that
+        // takes none is run bare.
+        let argument_for = |name: &str| match name {
+            "import" => Some("nothing.jsonl"),
+            "set" => Some("warnings"),
+            "name" => Some("a name"),
+            "tree" => Some("1"),
+            "fork" => Some("0"),
+            "thinking" => Some("low"),
+            "theme" => Some("dark"),
+            "trust" => Some("off"),
+            "model" | "provider" | "login" | "logout" | "resume" | "export" => None,
+            _ => None,
+        };
+
+        for command in commands() {
+            // Sign-in reaches the network, and quitting says nothing worth asserting.
+            if matches!(command.name, "login" | "quit") {
+                continue;
+            }
+            let argument = argument_for(command.name);
+            let outcome = run(command, argument, &context).await;
+            assert!(
+                !format!("{outcome:?}").contains("is not wired up"),
+                "/{} is listed but not wired up",
+                command.name
+            );
+        }
+    }
+
     /// Every setting `/settings` offers can be set, and every value it refuses is a value
     /// nothing downstream would have honoured.
     #[test]
