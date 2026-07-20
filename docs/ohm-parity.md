@@ -97,9 +97,12 @@ decoration. `/set <name> [value]` writes any of them; `micro-config` stores them
 
 Two are not implemented, and neither is unfinished work:
 
-- **`transport`** — ohm chooses between its own SSE and websocket clients. The APIs micro
-  talks to serve chat completions over SSE only, so there is no second transport to choose.
-  A row with two values that behave identically would be a menu that lies.
+- **`transport`** — this belongs to one provider rather than to the app. ohm reads it in
+  `packages/ai/src/api/openai-codex-responses.ts`, where the websocket alternative connects
+  to `https://chatgpt.com/backend-api`, the ChatGPT Codex backend reached with a ChatGPT
+  subscription. micro's providers are OpenRouter, GitHub Copilot, Google Gemini and
+  Anthropic, none of which offer a second transport for chat completions. The setting
+  arrives with that provider, if that provider is ever wanted.
 - **`installTelemetry`** — sends a version ping after an update. micro reports nothing about
   its user anywhere, and adding outbound reporting is a decision for whoever runs it rather
   than a parity detail.
@@ -1280,9 +1283,10 @@ session's own accounting, which survives compaction; micro recomputes it from th
 
 Two of ohm's settings have no counterpart here, for reasons that are not scheduling:
 
-- **`transport`** chooses between ohm's own SSE and websocket clients. OpenRouter, GitHub
-  Copilot, Google Gemini and Anthropic serve chat completions over SSE, so there is no
-  second transport to point the setting at.
+- **`transport`** is an option on ohm's `openai-codex-responses` provider, whose websocket
+  alternative connects to `https://chatgpt.com/backend-api`. micro does not ship that
+  provider, and the four it does ship offer no second transport. The setting belongs with
+  the provider, and would arrive with it.
 - **`installTelemetry`** sends a version ping after an update. micro reports nothing about
   whoever runs it, and that is a decision for them rather than a parity detail.
 
