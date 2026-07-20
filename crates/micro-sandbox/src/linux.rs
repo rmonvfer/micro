@@ -117,7 +117,6 @@ fn install_protected_mounts(rules: &SandboxRules) -> Result<(), String> {
 
     enter_mount_namespace()?;
 
-    mount_private_root()?;
     for path in protected {
         remount_read_only(path)?;
     }
@@ -224,27 +223,6 @@ fn wait_for_child(pid: libc::pid_t) -> i32 {
         libc::WEXITSTATUS(status)
     } else {
         crate::helper::HELPER_FAILURE_EXIT_CODE
-    }
-}
-
-fn mount_private_root() -> Result<(), String> {
-    let root = CString::new("/").unwrap();
-    let result = unsafe {
-        libc::mount(
-            std::ptr::null(),
-            root.as_ptr(),
-            std::ptr::null(),
-            libc::MS_REC | libc::MS_PRIVATE,
-            std::ptr::null(),
-        )
-    };
-    if result == 0 {
-        Ok(())
-    } else {
-        Err(format!(
-            "could not isolate mount propagation: {}",
-            std::io::Error::last_os_error()
-        ))
     }
 }
 
