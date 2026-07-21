@@ -4,6 +4,7 @@
 //! [`registry`] is the way in for a caller that picks a provider at runtime.
 
 mod anthropic;
+mod codex;
 mod gemini;
 mod json;
 mod openai;
@@ -11,6 +12,8 @@ mod registry;
 mod sse;
 
 pub use anthropic::Anthropic;
+pub use codex::Codex;
+pub use codex::Transport;
 pub use gemini::Gemini;
 pub use openai::OpenAi;
 pub use registry::known_providers;

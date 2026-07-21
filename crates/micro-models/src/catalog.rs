@@ -7,7 +7,13 @@ use crate::error::{Error, Result};
 
 /// Providers are listed in this order wherever the catalog is presented as a
 /// whole. Anything unlisted sorts after these, alphabetically.
-const PROVIDER_ORDER: &[&str] = &["openrouter", "github-copilot", "google", "anthropic"];
+const PROVIDER_ORDER: &[&str] = &[
+    "openrouter",
+    "github-copilot",
+    "google",
+    "anthropic",
+    "openai-codex",
+];
 
 /// The wire protocol a model speaks. A single provider often serves several —
 /// GitHub Copilot answers Claude models over the Anthropic Messages shape and
@@ -528,7 +534,13 @@ mod tests {
         let catalog = Catalog::bundled();
         assert_eq!(
             catalog.providers(),
-            vec!["openrouter", "github-copilot", "google", "anthropic"]
+            vec![
+                "openrouter",
+                "github-copilot",
+                "google",
+                "anthropic",
+                "openai-codex"
+            ]
         );
     }
 

@@ -605,6 +605,11 @@ fn settings(context: &CommandContext<'_>) -> CommandOutcome {
             "/set scoped_models",
         ),
         PickerItem::new(
+            "Transport",
+            format!("{} (ChatGPT Codex)", now.transport),
+            "/set transport",
+        ),
+        PickerItem::new(
             "Anthropic extra usage",
             on_off(now.anthropic_extra_usage),
             "/set anthropic_extra_usage",
@@ -705,6 +710,10 @@ fn describe(config: &micro_config::Config, name: &str) -> Option<String> {
         "http_idle_timeout" => {
             format!("http_idle_timeout is {} (seconds)", now.http_idle_timeout)
         }
+        "transport" => format!(
+            "transport is {} (sse or auto; the ChatGPT Codex backend)",
+            now.transport
+        ),
         "anthropic_extra_usage" => format!(
             "anthropic_extra_usage is {} (on or off)",
             now.anthropic_extra_usage
@@ -790,6 +799,12 @@ fn assign(config: &mut micro_config::Config, name: &str, value: &str) -> Result<
         "default_project_trust" => config.default_project_trust = Some(flag()?),
         "http_idle_timeout" => config.http_idle_timeout = Some(number(3600)?),
         "anthropic_extra_usage" => config.anthropic_extra_usage = Some(flag()?),
+        "transport" => {
+            let chosen = micro_provider::Transport::named(value).ok_or_else(|| {
+                format!("micro speaks sse, not `{value}`; the Codex backend is reached over SSE")
+            })?;
+            config.transport = Some(chosen.name().to_string());
+        }
         "scoped_models" => {
             config.scoped_models = Some(match value.eq_ignore_ascii_case("all") {
                 true => Vec::new(),
@@ -1163,6 +1178,7 @@ mod tests {
             ("default_project_trust", "on"),
             ("http_idle_timeout", "300"),
             ("scoped_models", "anthropic/, google/gemini-3-pro"),
+            ("transport", "auto"),
         ] {
             assign(&mut config, name, value).unwrap_or_else(|error| panic!("{name}: {error}"));
             assert!(describe(&config, name).is_some(), "{name} cannot be read");
@@ -1182,6 +1198,7 @@ mod tests {
         );
         assert_eq!(now.scoped_models, vec!["anthropic/", "google/gemini-3-pro"]);
         assert_eq!(now.output_padding, 0);
+        assert_eq!(now.transport, "auto");
     }
 
     #[test]
@@ -1191,6 +1208,8 @@ mod tests {
         assert!(assign(&mut config, "image_width_cells", "wide").is_err());
         assert!(assign(&mut config, "http_idle_timeout", "0").is_err());
         assert!(assign(&mut config, "double_escape", "sideways").is_err());
+        // A transport micro cannot speak is refused rather than stored and ignored.
+        assert!(assign(&mut config, "transport", "websocket").is_err());
         assert!(assign(&mut config, "nothing_like_this", "on").is_err());
         assert_eq!(config, micro_config::Config::default(), "nothing stuck");
     }

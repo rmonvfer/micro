@@ -5,6 +5,7 @@
 //! where each one lives and what talks to it.
 
 use crate::Anthropic;
+use crate::Codex;
 use crate::Gemini;
 use crate::OpenAi;
 use crate::Provider;
@@ -40,6 +41,7 @@ impl ProviderInfo {
             "openrouter" => Arc::new(OpenAi::openrouter()),
             "github-copilot" => Arc::new(OpenAi::copilot()),
             "gemini" => Arc::new(Gemini::new()),
+            "openai-codex" => Arc::new(Codex::new()),
             _ => Arc::new(OpenAi::new()),
         }
     }
@@ -97,6 +99,13 @@ static REGISTRY: &[ProviderInfo] = &[
         base_url: crate::openai::OPENAI_BASE_URL,
         auth: AuthMethod::ApiKey,
         max_tokens: 32_000,
+    },
+    ProviderInfo {
+        id: "openai-codex",
+        label: "ChatGPT Codex",
+        base_url: crate::codex::CODEX_BASE_URL,
+        auth: AuthMethod::ApiKey,
+        max_tokens: 128_000,
     },
 ];
 

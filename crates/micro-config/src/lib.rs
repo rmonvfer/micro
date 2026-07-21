@@ -203,6 +203,9 @@ pub struct Config {
     /// Warn that Anthropic subscription auth bills per token in a third-party harness.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub anthropic_extra_usage: Option<bool>,
+    /// How the ChatGPT Codex backend should answer: `sse`, or `auto` to let it decide.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub transport: Option<String>,
 
     /// Keys written by a version that knew more than this one.
     #[serde(flatten)]
@@ -254,6 +257,7 @@ pub struct Settings {
     pub http_idle_timeout: u64,
     pub scoped_models: Vec<String>,
     pub anthropic_extra_usage: bool,
+    pub transport: String,
 }
 
 /// The widest an image is drawn when nothing says otherwise.
@@ -265,6 +269,8 @@ pub const DEFAULT_PADDING: u16 = 1;
 pub const DEFAULT_AUTOCOMPLETE_MAX_ITEMS: usize = 5;
 /// How long a request may go without producing anything before it is given up on.
 pub const DEFAULT_HTTP_IDLE_TIMEOUT: u64 = 120;
+/// How the Codex backend answers when nothing says otherwise.
+pub const DEFAULT_TRANSPORT: &str = "sse";
 
 impl Default for Settings {
     fn default() -> Self {
@@ -298,6 +304,7 @@ impl Default for Settings {
             http_idle_timeout: DEFAULT_HTTP_IDLE_TIMEOUT,
             scoped_models: Vec::new(),
             anthropic_extra_usage: true,
+            transport: DEFAULT_TRANSPORT.to_string(),
         }
     }
 }
@@ -461,6 +468,7 @@ impl Config {
             anthropic_extra_usage: self
                 .anthropic_extra_usage
                 .unwrap_or(defaults.anthropic_extra_usage),
+            transport: self.transport.clone().unwrap_or(defaults.transport),
         })
     }
 
@@ -500,6 +508,7 @@ impl Config {
             http_idle_timeout: take(&mut fields, "http_idle_timeout", path)?,
             scoped_models: take(&mut fields, "scoped_models", path)?,
             anthropic_extra_usage: take(&mut fields, "anthropic_extra_usage", path)?,
+            transport: take(&mut fields, "transport", path)?,
             extra: fields,
         };
         Ok(config)

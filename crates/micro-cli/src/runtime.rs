@@ -118,7 +118,7 @@ pub async fn build(
         .provider
         .clone()
         .unwrap_or_else(|| model.provider.clone());
-    let resolved = micro_provider::resolve(&store, &provider_name)
+    let mut resolved = micro_provider::resolve(&store, &provider_name)
         .await
         .with_context(|| {
             format!(
@@ -135,6 +135,13 @@ pub async fn build(
             "the credential for `{provider_name}` is empty. Run `micro auth login \
              {provider_name}` to replace it."
         ));
+    }
+
+    // The Codex backend is the one provider with a choice about how it answers, so it is
+    // built with what the user chose rather than with the default.
+    if micro_auth::canonical_provider(&provider_name) == "openai-codex" {
+        let transport = micro_provider::Transport::named(&settings.transport).unwrap_or_default();
+        resolved.client = std::sync::Arc::new(micro_provider::Codex::new().with_transport(transport));
     }
 
     let sessions = SessionStore::from_env().context("cannot open the session store")?;
