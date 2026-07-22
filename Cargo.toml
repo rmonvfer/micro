@@ -5,6 +5,7 @@ members = [
     "crates/micro-config",
     "crates/micro-auth",
     "crates/micro-provider",
+    "crates/micro-extensions",
     "crates/micro-rpc",
     "crates/micro-models",
     "crates/micro-tools",
@@ -29,6 +30,7 @@ micro-types = { path = "crates/micro-types" }
 micro-auth = { path = "crates/micro-auth" }
 micro-config = { path = "crates/micro-config" }
 micro-provider = { path = "crates/micro-provider" }
+micro-extensions = { path = "crates/micro-extensions" }
 micro-rpc = { path = "crates/micro-rpc" }
 micro-models = { path = "crates/micro-models" }
 micro-tools = { path = "crates/micro-tools" }

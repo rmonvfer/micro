@@ -1213,6 +1213,7 @@ dependencies = [
  "micro-commands",
  "micro-config",
  "micro-context",
+ "micro-extensions",
  "micro-models",
  "micro-policy",
  "micro-provider",
@@ -1264,6 +1265,18 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror 2.0.20",
+ "tokio",
+]
+
+[[package]]
+name = "micro-extensions"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "micro-tools",
+ "micro-types",
+ "serde",
+ "serde_json",
  "tokio",
 ]
 

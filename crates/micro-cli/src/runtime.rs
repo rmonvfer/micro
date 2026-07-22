@@ -46,6 +46,8 @@ pub struct Runtime {
     /// How the interface runs slash commands. Built here because this is where the
     /// catalog, the credentials and the session store already are.
     pub commands: CliCommands,
+    /// The extension host, when there was anything to load and a runtime to load it.
+    pub extensions: Option<Arc<tokio::sync::Mutex<micro_extensions::Host>>>,
 }
 
 /// Resolve a model from the catalog, reporting candidates rather than guessing when the
@@ -189,7 +191,22 @@ pub async fn build(
         root.to_path_buf(),
         Arc::clone(&selection.approver),
     ));
-    let tools = micro_policy::gated_tools(micro_tools::builtin_tools(root.to_path_buf()), engine);
+    // Extensions are loaded before the tools are gated, so what they register goes
+    // through the same policy as everything built in.
+    let extensions = load_extensions(root, settings).await;
+    let mut tools = micro_tools::builtin_tools(root.to_path_buf());
+    if let Some(host) = extensions.as_ref() {
+        let registered = host.lock().await.tools();
+        for tool in registered {
+            tools.push(Arc::new(micro_extensions::ExtensionTool::new(
+                tool.name,
+                tool.description,
+                tool.parameters,
+                Arc::clone(host),
+            )));
+        }
+    }
+    let tools = micro_policy::gated_tools(tools, engine);
 
     let (recorder, receiver) = tokio::sync::mpsc::unbounded_channel();
     let agent = Agent::new(
@@ -228,6 +245,7 @@ pub async fn build(
 
     Ok(Runtime {
         agent,
+        extensions,
         session,
         history,
         model,
@@ -334,5 +352,37 @@ fn scoped(catalog: Catalog, allowed: &[String]) -> Catalog {
     match kept.is_empty() {
         true => catalog,
         false => Catalog::from_models(kept),
+    }
+}
+
+/// Start the extension host, if there is anything to load.
+///
+/// Nothing here is fatal. An extension that will not load is named on stderr and the run
+/// carries on without it, and a missing Bun means no extensions rather than no micro.
+async fn load_extensions(
+    root: &Path,
+    settings: &micro_config::Settings,
+) -> Option<Arc<tokio::sync::Mutex<micro_extensions::Host>>> {
+    let home = micro_policy::micro_home().unwrap_or_default();
+    let paths = micro_extensions::discover(root, &home, &settings.extensions);
+    if paths.is_empty() {
+        return None;
+    }
+
+    match micro_extensions::Host::start(&home, &paths).await {
+        Ok(host) => {
+            if !settings.quiet_startup {
+                for failure in &host.loaded().errors {
+                    eprintln!("note: {} was not loaded: {}", failure.path, failure.error);
+                }
+            }
+            Some(Arc::new(tokio::sync::Mutex::new(host)))
+        }
+        Err(error) => {
+            if !settings.quiet_startup {
+                eprintln!("note: extensions were not loaded: {error}");
+            }
+            None
+        }
     }
 }

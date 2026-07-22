@@ -4,6 +4,7 @@
 mod support;
 
 use serde_json::json;
+use micro_extensions::which_bun;
 use support::offered_tools;
 use support::path_of;
 use support::tool_results;
@@ -765,5 +766,111 @@ fn rpc_refuses_a_model_it_does_not_have() {
             .contains("nothing-like-this"),
         "{}",
         lines[0]
+    );
+}
+
+/// An extension in the project registers a tool, the model calls it, and what it returned
+/// reaches the answer — through a real Bun process, with no configuration anywhere.
+#[test]
+fn an_extension_tool_is_offered_to_the_model_and_runs() {
+    if which_bun().is_none() {
+        return;
+    }
+    let api = FakeApi::start([
+        Reply::tool_call("call_1", "project_greeting", json!({ "who": "world" })),
+        Reply::text("the extension said it"),
+    ]);
+    let fixture = Fixture::new(&api);
+    fixture.write(
+        ".micro/extensions/greeter.ts",
+        r#"
+export default (micro) => {
+    micro.registerTool({
+        name: "project_greeting",
+        description: "Return the project's own greeting",
+        parameters: { type: "object", properties: { who: { type: "string" } } },
+        execute: async (args) => `hello ${args.who}, from an extension`,
+    });
+};
+"#,
+    );
+
+    // Approval is given up front: an extension's tool is third-party code, so without
+    // this the policy asks, and nothing is there to answer.
+    let output = fixture.print(&["-m", "test", "--approve", "unrestricted", "greet the world"]);
+    assert!(output.status.success(), "{}", output.stderr);
+
+    // The model was offered the extension's tool by name.
+    let request = api.request(0);
+    let tools = request["tools"].as_array().expect("tools were sent");
+    assert!(
+        tools.iter().any(|tool| tool["function"]["name"] == "project_greeting"),
+        "the extension's tool was offered: {tools:#?}"
+    );
+
+    // And what the extension returned went back to the model as the result.
+    let second = api.request(1);
+    let messages = second["messages"].as_array().expect("a conversation");
+    let carried = messages.iter().any(|message| {
+        message["content"]
+            .as_str()
+            .is_some_and(|text| text.contains("hello world, from an extension"))
+    });
+    assert!(carried, "the extension's answer reached the model: {messages:#?}");
+}
+
+/// An extension's tool goes through the same policy as everything built in, so an
+/// unattended run refuses it rather than running someone else's code unasked.
+#[test]
+fn an_extension_tool_is_gated_like_every_other_tool() {
+    if which_bun().is_none() {
+        return;
+    }
+    let api = FakeApi::start([
+        Reply::tool_call("call_1", "project_greeting", json!({ "who": "world" })),
+        Reply::text("it was refused"),
+    ]);
+    let fixture = Fixture::new(&api);
+    fixture.write(
+        ".micro/extensions/greeter.ts",
+        r#"
+export default (micro) => {
+    micro.registerTool({
+        name: "project_greeting",
+        description: "Return the project's own greeting",
+        execute: async () => "this should not have run",
+    });
+};
+"#,
+    );
+
+    let output = fixture.print(&["-m", "test", "greet the world"]);
+    assert!(output.status.success(), "{}", output.stderr);
+
+    let messages = api.request(1);
+    let refused = messages["messages"]
+        .as_array()
+        .expect("a conversation")
+        .iter()
+        .any(|message| {
+            message["content"]
+                .as_str()
+                .is_some_and(|text| text.contains("Refused by the workspace policy"))
+        });
+    assert!(refused, "the call was refused: {messages:#?}");
+}
+
+/// A project with no extensions starts exactly as it did before, and says nothing about it.
+#[test]
+fn a_project_without_extensions_says_nothing_about_them() {
+    let api = FakeApi::start([Reply::text("fine")]);
+    let fixture = Fixture::new(&api);
+
+    let output = fixture.print(&["-m", "test", "say something"]);
+    assert!(output.status.success(), "{}", output.stderr);
+    assert!(
+        !output.stderr.contains("extension"),
+        "nothing to say: {}",
+        output.stderr
     );
 }

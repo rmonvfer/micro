@@ -213,6 +213,18 @@ async fn main() -> Result<()> {
     };
 
     let built = runtime::build(&root, &selection, resume.as_deref(), &settings).await?;
+    // Extensions are told the session has begun, and told again when it ends, which is
+    // where one that holds anything open gets to let go of it.
+    let extensions = built.extensions.clone();
+    if let Some(host) = extensions.as_ref() {
+        let started = serde_json::json!({
+            "session_id": built.session.lock().await.id(),
+            "workspace": root.display().to_string(),
+            "model": built.model.qualified_id(),
+        });
+        let _ = host.lock().await.notify("session_start", started).await;
+    }
+
     let session = std::sync::Arc::clone(&built.session);
     let writer = runtime::persist(built.session, built.recorder);
     let prompt = cli.prompt.join(" ");
@@ -232,6 +244,7 @@ async fn main() -> Result<()> {
         // closes. Letting go of the mode first is what ends it.
         drop(rpc);
         let _ = writer.await;
+        shut_down_extensions(extensions).await;
         return outcome;
     }
 
@@ -262,5 +275,22 @@ async fn main() -> Result<()> {
     // The agent has been dropped by now, which closes the recorder and ends the writer.
     // Waiting for it guarantees every message reached the log before the process exits.
     let _ = writer.await;
+    shut_down_extensions(extensions).await;
     result
+}
+
+/// Let the extension host go, once nothing else needs it.
+///
+/// The host holds someone else's code in another process; leaving it running would
+/// outlive the session that started it.
+async fn shut_down_extensions(
+    extensions: Option<std::sync::Arc<tokio::sync::Mutex<micro_extensions::Host>>>,
+) {
+    let Some(host) = extensions else {
+        return;
+    };
+    // Only the last holder can shut it down, and by here nothing else should hold it.
+    if let Ok(host) = std::sync::Arc::try_unwrap(host) {
+        host.into_inner().shutdown().await;
+    }
 }
