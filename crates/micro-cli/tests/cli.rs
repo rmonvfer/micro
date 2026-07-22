@@ -657,3 +657,113 @@ fn an_empty_stored_credential_fails_before_any_request() {
         "a request went out despite there being no credential to sign it with"
     );
 }
+
+/// The headless protocol answers each command, echoes the id it was given, and ends when
+/// stdin closes.
+#[test]
+fn rpc_answers_every_command_it_is_given() {
+    let api = FakeApi::start([]);
+    let fixture = Fixture::new(&api);
+
+    let lines = fixture.rpc(&[
+        r#"{"type":"get_state","id":"1"}"#,
+        r#"{"type":"get_commands","id":"2"}"#,
+        r#"{"type":"get_available_models","id":"3"}"#,
+        r#"{"type":"bash","command":"echo hello","id":"4"}"#,
+        r#"{"type":"set_session_name","name":"the good one","id":"5"}"#,
+        r#"{"type":"get_session_stats","id":"6"}"#,
+    ]);
+
+    assert_eq!(lines.len(), 6, "{lines:#?}");
+    for (index, line) in lines.iter().enumerate() {
+        assert_eq!(line["type"], "response");
+        assert_eq!(line["id"], (index + 1).to_string());
+        assert_eq!(line["success"], true, "{line}");
+    }
+
+    assert_eq!(lines[0]["data"]["message_count"], 0);
+    assert!(lines[0]["data"]["session_id"].is_string());
+    assert!(
+        lines[1]["data"]["commands"]
+            .as_array()
+            .expect("a list of commands")
+            .len()
+            >= 20
+    );
+    assert!(!lines[2]["data"]["models"].as_array().unwrap().is_empty());
+    assert_eq!(lines[3]["data"]["output"], "hello");
+    assert_eq!(lines[3]["data"]["exit_code"], 0);
+    assert_eq!(lines[5]["data"]["title"], "the good one");
+}
+
+/// A line that is not a command is reported rather than ignored, and the stream carries on.
+#[test]
+fn rpc_reports_a_line_it_cannot_read_and_keeps_going() {
+    let api = FakeApi::start([]);
+    let fixture = Fixture::new(&api);
+
+    let lines = fixture.rpc(&["not json at all", r#"{"type":"get_state","id":"after"}"#]);
+
+    assert_eq!(lines.len(), 2);
+    assert_eq!(lines[0]["success"], false);
+    assert!(
+        lines[0]["error"]
+            .as_str()
+            .expect("a reason")
+            .contains("unreadable"),
+        "{}",
+        lines[0]
+    );
+    assert_eq!(lines[1]["id"], "after");
+    assert_eq!(lines[1]["success"], true);
+}
+
+/// A prompt streams the agent's own events, then the answer, all on the same stream.
+#[test]
+fn rpc_streams_a_turn_as_it_happens() {
+    let api = FakeApi::start([Reply::text("an answer from the model")]);
+    let fixture = Fixture::new(&api);
+
+    let lines = fixture.rpc(&[r#"{"type":"prompt","message":"ask something","id":"turn"}"#]);
+
+    // The command is acknowledged before the turn runs, so a caller knows it started.
+    assert_eq!(lines[0]["type"], "response");
+    assert_eq!(lines[0]["command"], "prompt");
+    assert_eq!(lines[0]["success"], true);
+
+    let kinds: Vec<&str> = lines
+        .iter()
+        .skip(1)
+        .filter_map(|line| line["type"].as_str())
+        .collect();
+    assert!(kinds.contains(&"turn_start"), "{kinds:?}");
+    assert!(kinds.contains(&"message_end"), "{kinds:?}");
+
+    let answered = lines.iter().any(|line| {
+        serde_json::to_string(line)
+            .unwrap_or_default()
+            .contains("an answer from the model")
+    });
+    assert!(answered, "the answer reached the stream: {lines:#?}");
+}
+
+/// A model the catalog does not have is refused by name rather than silently kept.
+#[test]
+fn rpc_refuses_a_model_it_does_not_have() {
+    let api = FakeApi::start([]);
+    let fixture = Fixture::new(&api);
+
+    let lines = fixture.rpc(&[
+        r#"{"type":"set_model","provider":"openrouter","model_id":"nothing-like-this","id":"1"}"#,
+    ]);
+
+    assert_eq!(lines[0]["success"], false);
+    assert!(
+        lines[0]["error"]
+            .as_str()
+            .unwrap()
+            .contains("nothing-like-this"),
+        "{}",
+        lines[0]
+    );
+}

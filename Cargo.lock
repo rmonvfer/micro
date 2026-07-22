@@ -1216,6 +1216,7 @@ dependencies = [
  "micro-models",
  "micro-policy",
  "micro-provider",
+ "micro-rpc",
  "micro-session",
  "micro-skills",
  "micro-tools",
@@ -1303,6 +1304,20 @@ dependencies = [
  "reqwest",
  "serde_json",
  "thiserror 2.0.20",
+ "tokio",
+]
+
+[[package]]
+name = "micro-rpc"
+version = "0.1.0"
+dependencies = [
+ "micro-agent",
+ "micro-commands",
+ "micro-models",
+ "micro-session",
+ "micro-types",
+ "serde",
+ "serde_json",
  "tokio",
 ]
 

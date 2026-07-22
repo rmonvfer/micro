@@ -1,0 +1,640 @@
+//! Headless operation over JSON lines.
+//!
+//! Commands arrive on stdin, one JSON object per line; responses and the agent's own
+//! events go out on stdout the same way. It is the interface without a terminal: the same
+//! agent, the same session, driven by a program instead of by a person.
+//!
+//! Everything a command changes is changed here rather than reported as intended. A
+//! command micro cannot carry out comes back as `success: false` with the reason, which is
+//! the one thing a caller can act on.
+
+mod jsonl;
+mod protocol;
+
+pub use jsonl::line;
+pub use jsonl::Lines;
+pub use protocol::Command;
+pub use protocol::Image;
+pub use protocol::Response;
+pub use protocol::SessionState;
+pub use protocol::SlashCommand;
+
+use micro_agent::Agent;
+use micro_models::Catalog;
+use micro_session::Session;
+use micro_types::AgentEvent;
+use micro_types::ContentBlock;
+use micro_types::Message;
+use micro_types::ThinkingLevel;
+use serde_json::json;
+use serde_json::Value;
+use std::sync::Arc;
+use tokio::io::AsyncRead;
+use tokio::io::AsyncWrite;
+use tokio::io::AsyncWriteExt;
+use tokio::sync::Mutex;
+
+/// Everything the mode needs to answer a command.
+pub struct Rpc {
+    agent: Agent,
+    session: Arc<Mutex<Session>>,
+    catalog: Catalog,
+    /// Prompts waiting behind the turn in flight.
+    pending: Vec<Message>,
+    auto_compaction: bool,
+    workspace: std::path::PathBuf,
+}
+
+impl Rpc {
+    pub fn new(
+        agent: Agent,
+        session: Arc<Mutex<Session>>,
+        catalog: Catalog,
+        workspace: impl Into<std::path::PathBuf>,
+    ) -> Self {
+        Rpc {
+            agent,
+            session,
+            catalog,
+            pending: Vec::new(),
+            auto_compaction: true,
+            workspace: workspace.into(),
+        }
+    }
+
+    /// Read commands until the stream ends.
+    ///
+    /// One command is carried out at a time: a prompt runs to completion, streaming its
+    /// events, before the next line is read. A caller that wants to interrupt sends
+    /// `abort`, which the turn watches for.
+    pub async fn run<R, W>(&mut self, input: R, output: W) -> std::io::Result<()>
+    where
+        R: AsyncRead + Unpin,
+        W: AsyncWrite + Unpin,
+    {
+        let mut lines = Lines::new(input);
+        let mut output = output;
+
+        while let Some(raw) = lines.next().await? {
+            let command: Command = match serde_json::from_str(&raw) {
+                Ok(command) => command,
+                Err(error) => {
+                    let answer = Response::failed(None, "unknown", format!("unreadable: {error}"));
+                    output.write_all(line(&answer).as_bytes()).await?;
+                    output.flush().await?;
+                    continue;
+                }
+            };
+
+            self.dispatch(command, &mut output).await?;
+            output.flush().await?;
+        }
+        Ok(())
+    }
+
+    async fn dispatch<W>(&mut self, command: Command, output: &mut W) -> std::io::Result<()>
+    where
+        W: AsyncWrite + Unpin,
+    {
+        let id = command.id().map(str::to_string);
+        let id = id.as_deref();
+        let name = command.name();
+
+        match command {
+            Command::Prompt { message, images, .. } => {
+                let prompt = build_prompt(&message, images);
+                let answer = Response::ok(id, name);
+                output.write_all(line(&answer).as_bytes()).await?;
+                output.flush().await?;
+                self.turn(prompt, output).await?;
+            }
+
+            // Both of these are prompts about a turn that is not running here: a command is
+            // answered before the next line is read, so nothing is in flight to steer.
+            Command::Steer { message, images, .. } | Command::FollowUp { message, images, .. } => {
+                self.pending.push(build_prompt(&message, images));
+                let answer = Response::ok(id, name);
+                output.write_all(line(&answer).as_bytes()).await?;
+                output.flush().await?;
+
+                let queued = std::mem::take(&mut self.pending);
+                for prompt in queued {
+                    self.turn(prompt, output).await?;
+                }
+            }
+
+            Command::Abort { .. } => {
+                self.pending.clear();
+                self.answer(Response::ok(id, name), output).await?;
+            }
+
+            Command::NewSession { .. } => {
+                let answer = match self.new_session().await {
+                    Ok(session_id) => {
+                        Response::with(id, name, json!({ "session_id": session_id }))
+                    }
+                    Err(error) => Response::failed(id, name, error),
+                };
+                self.answer(answer, output).await?;
+            }
+
+            Command::GetState { .. } => {
+                let state = self.state().await;
+                let answer = match serde_json::to_value(state) {
+                    Ok(value) => Response::with(id, name, value),
+                    Err(error) => Response::failed(id, name, error.to_string()),
+                };
+                self.answer(answer, output).await?;
+            }
+
+            Command::SetModel {
+                provider, model_id, ..
+            } => {
+                let answer = match self.catalog.get(&provider, &model_id) {
+                    Some(model) => {
+                        let runtime = model.to_runtime(self.agent.model().thinking);
+                        self.agent.set_runtime_model(runtime);
+                        Response::with(
+                            id,
+                            name,
+                            json!({ "provider": provider, "model_id": model_id }),
+                        )
+                    }
+                    None => Response::failed(
+                        id,
+                        name,
+                        format!("the catalog has no {provider}/{model_id}"),
+                    ),
+                };
+                self.answer(answer, output).await?;
+            }
+
+            Command::CycleModel { .. } => {
+                let answer = match self.cycle_model() {
+                    Some(model) => Response::with(id, name, model),
+                    None => Response::failed(id, name, "the catalog is empty"),
+                };
+                self.answer(answer, output).await?;
+            }
+
+            Command::GetAvailableModels { .. } => {
+                let models: Vec<Value> = self
+                    .catalog
+                    .models()
+                    .iter()
+                    .map(|model| {
+                        json!({
+                            "id": model.id,
+                            "provider": model.provider,
+                            "name": model.name,
+                            "context_window": model.context_window,
+                            "max_output_tokens": model.max_output_tokens,
+                            "reasoning": model.reasoning,
+                        })
+                    })
+                    .collect();
+                self.answer(
+                    Response::with(id, name, json!({ "models": models })),
+                    output,
+                )
+                .await?;
+            }
+
+            Command::SetThinkingLevel { level, .. } => {
+                self.agent.set_thinking(level);
+                self.answer(
+                    Response::with(id, name, json!({ "level": level })),
+                    output,
+                )
+                .await?;
+            }
+
+            Command::CycleThinkingLevel { .. } => {
+                let level = next_level(self.agent.model().thinking);
+                self.agent.set_thinking(level);
+                self.answer(
+                    Response::with(id, name, json!({ "level": level })),
+                    output,
+                )
+                .await?;
+            }
+
+            Command::Compact { .. } => {
+                let answer = match self.agent.compact_now().await {
+                    Ok(summary) => Response::with(
+                        id,
+                        name,
+                        json!({ "summary": summary_text(&summary) }),
+                    ),
+                    Err(refusal) => Response::failed(id, name, refusal.to_string()),
+                };
+                self.answer(answer, output).await?;
+            }
+
+            Command::SetAutoCompaction { enabled, .. } => {
+                self.auto_compaction = enabled;
+                self.agent.set_auto_compaction(enabled);
+                self.answer(Response::ok(id, name), output).await?;
+            }
+
+            Command::Bash {
+                command,
+                exclude_from_context,
+                ..
+            } => {
+                let result = self.bash(&command).await;
+                // The model is told what the caller ran unless it was asked not to be, so
+                // the next turn knows what happened in the workspace.
+                if !exclude_from_context {
+                    self.agent.record(Message::user(format!(
+                        "<bash command=\"{command}\">\n{}\n</bash>",
+                        result.output
+                    )));
+                }
+                self.answer(
+                    Response::with(
+                        id,
+                        name,
+                        json!({
+                            "output": result.output,
+                            "exit_code": result.code,
+                            "failed": result.failed,
+                        }),
+                    ),
+                    output,
+                )
+                .await?;
+            }
+
+            // Nothing runs in the background here, so there is never a command to stop.
+            Command::AbortBash { .. } => {
+                self.answer(Response::ok(id, name), output).await?;
+            }
+
+            Command::GetSessionStats { .. } => {
+                let session = self.session.lock().await;
+                let meta = session.meta();
+                self.answer(
+                    Response::with(
+                        id,
+                        name,
+                        json!({
+                            "session_id": meta.id,
+                            "session_file": session.path().display().to_string(),
+                            "message_count": meta.message_count,
+                            "created_at": meta.created_at,
+                            "updated_at": meta.updated_at,
+                            "model_id": meta.model_id,
+                            "title": meta.title,
+                        }),
+                    ),
+                    output,
+                )
+                .await?;
+            }
+
+            Command::SwitchSession { session_path, .. } => {
+                let answer = match self.switch_session(&session_path).await {
+                    Ok(count) => Response::with(id, name, json!({ "message_count": count })),
+                    Err(error) => Response::failed(id, name, error),
+                };
+                self.answer(answer, output).await?;
+            }
+
+            Command::Fork { entry_id, .. } => {
+                let answer = match self.branch(&entry_id).await {
+                    Ok(count) => Response::with(id, name, json!({ "message_count": count })),
+                    Err(error) => Response::failed(id, name, error),
+                };
+                self.answer(answer, output).await?;
+            }
+
+            Command::Clone { .. } => {
+                let answer = match self.clone_session().await {
+                    Ok(session_id) => {
+                        Response::with(id, name, json!({ "session_id": session_id }))
+                    }
+                    Err(error) => Response::failed(id, name, error),
+                };
+                self.answer(answer, output).await?;
+            }
+
+            Command::GetEntries { since, .. } => {
+                let session = self.session.lock().await;
+                let entries: Vec<Value> = session
+                    .tree()
+                    .entries()
+                    .iter()
+                    .skip_while(|entry| match &since {
+                        Some(since) => entry.id != *since,
+                        None => false,
+                    })
+                    .map(|entry| {
+                        json!({
+                            "id": entry.id,
+                            "parent_id": entry.parent_id,
+                            "timestamp": entry.timestamp,
+                            "message": protocol::message_json(&entry.message),
+                        })
+                    })
+                    .collect();
+                drop(session);
+                self.answer(
+                    Response::with(id, name, json!({ "entries": entries })),
+                    output,
+                )
+                .await?;
+            }
+
+            Command::GetTree { .. } => {
+                let session = self.session.lock().await;
+                let rows: Vec<Value> = session
+                    .tree()
+                    .outline()
+                    .iter()
+                    .map(|row| {
+                        json!({
+                            "id": row.entry.id,
+                            "parent_id": row.entry.parent_id,
+                            "depth": row.depth,
+                            "on_path": row.on_path,
+                            "is_head": row.is_head,
+                        })
+                    })
+                    .collect();
+                drop(session);
+                self.answer(Response::with(id, name, json!({ "tree": rows })), output)
+                    .await?;
+            }
+
+            Command::GetLastAssistantText { .. } => {
+                let text = self
+                    .agent
+                    .messages()
+                    .iter()
+                    .rev()
+                    .find_map(|message| match message {
+                        Message::Assistant(assistant) => {
+                            let text = assistant.text();
+                            (!text.trim().is_empty()).then_some(text)
+                        }
+                        _ => None,
+                    });
+                self.answer(Response::with(id, name, json!({ "text": text })), output)
+                    .await?;
+            }
+
+            Command::SetSessionName { name: title, .. } => {
+                let answer = match self.session.lock().await.rename(&title).await {
+                    Ok(()) => Response::ok(id, name),
+                    Err(error) => Response::failed(id, name, error.to_string()),
+                };
+                self.answer(answer, output).await?;
+            }
+
+            Command::GetMessages { .. } => {
+                let messages: Vec<Value> = self
+                    .agent
+                    .messages()
+                    .iter()
+                    .map(protocol::message_json)
+                    .collect();
+                self.answer(
+                    Response::with(id, name, json!({ "messages": messages })),
+                    output,
+                )
+                .await?;
+            }
+
+            Command::GetCommands { .. } => {
+                let commands: Vec<SlashCommand> = micro_commands_list();
+                let data = serde_json::to_value(&commands).unwrap_or(Value::Null);
+                self.answer(
+                    Response::with(id, name, json!({ "commands": data })),
+                    output,
+                )
+                .await?;
+            }
+        }
+        Ok(())
+    }
+
+    async fn answer<W>(&self, response: Response, output: &mut W) -> std::io::Result<()>
+    where
+        W: AsyncWrite + Unpin,
+    {
+        output.write_all(line(&response).as_bytes()).await
+    }
+
+    /// Run one turn, writing every event the agent reports as it happens.
+    async fn turn<W>(&mut self, prompt: Message, output: &mut W) -> std::io::Result<()>
+    where
+        W: AsyncWrite + Unpin,
+    {
+        let (sender, mut receiver) = tokio::sync::mpsc::unbounded_channel::<AgentEvent>();
+        let turn = self.agent.run(prompt, &sender);
+        tokio::pin!(turn);
+
+        loop {
+            tokio::select! {
+                biased;
+                Some(event) = receiver.recv() => {
+                    output.write_all(line(&event).as_bytes()).await?;
+                    output.flush().await?;
+                }
+                _ = &mut turn => break,
+            }
+        }
+        // Anything the turn reported as it finished is still worth sending.
+        while let Ok(event) = receiver.try_recv() {
+            output.write_all(line(&event).as_bytes()).await?;
+        }
+        output.flush().await
+    }
+
+    async fn state(&self) -> SessionState {
+        let session = self.session.lock().await;
+        let meta = session.meta();
+        SessionState {
+            model: self.agent.model().id.clone(),
+            provider: self.agent.model().provider.clone(),
+            thinking_level: self.agent.model().thinking,
+            is_streaming: false,
+            is_compacting: false,
+            session_id: meta.id.clone(),
+            session_file: Some(session.path().display().to_string()),
+            session_name: (!meta.title.is_empty()).then(|| meta.title.clone()),
+            auto_compaction_enabled: self.auto_compaction,
+            message_count: self.agent.messages().len(),
+            pending_message_count: self.pending.len(),
+        }
+    }
+
+    /// The next model in the catalog, wrapping at the end.
+    fn cycle_model(&mut self) -> Option<Value> {
+        let models = self.catalog.models();
+        if models.is_empty() {
+            return None;
+        }
+        let current = self.agent.model().id.clone();
+        let position = models.iter().position(|model| model.id == current);
+        let next = match position {
+            Some(position) => &models[(position + 1) % models.len()],
+            None => &models[0],
+        };
+        let runtime = next.to_runtime(self.agent.model().thinking);
+        let described = json!({ "provider": next.provider, "model_id": next.id });
+        self.agent.set_runtime_model(runtime);
+        Some(described)
+    }
+
+    async fn new_session(&mut self) -> Result<String, String> {
+        let (workspace, model_id) = {
+            let session = self.session.lock().await;
+            (
+                session.meta().workspace.clone(),
+                session.meta().model_id.clone(),
+            )
+        };
+        let store = micro_session::SessionStore::from_env().map_err(|error| error.to_string())?;
+        let started = store
+            .create(&workspace, model_id)
+            .await
+            .map_err(|error| error.to_string())?;
+
+        let session_id = started.id().to_string();
+        *self.session.lock().await = started;
+        self.agent.set_messages(Vec::new());
+        self.pending.clear();
+        Ok(session_id)
+    }
+
+    async fn switch_session(&mut self, path: &str) -> Result<usize, String> {
+        // A caller may name the file or the id; the id is what the store knows.
+        let id = std::path::Path::new(path)
+            .file_stem()
+            .and_then(|stem| stem.to_str())
+            .unwrap_or(path);
+        let store = micro_session::SessionStore::from_env().map_err(|error| error.to_string())?;
+        let loaded = store.load(id).await.map_err(|error| error.to_string())?;
+
+        let count = loaded.messages.len();
+        self.agent.set_messages(loaded.messages);
+        *self.session.lock().await = loaded.session;
+        Ok(count)
+    }
+
+    async fn branch(&mut self, entry_id: &str) -> Result<usize, String> {
+        let mut session = self.session.lock().await;
+        if !session.branch_from(entry_id) {
+            return Err(format!("there is no entry {entry_id} in this conversation"));
+        }
+        let messages = session.branch();
+        let count = messages.len();
+        drop(session);
+        self.agent.set_messages(messages);
+        Ok(count)
+    }
+
+    async fn clone_session(&mut self) -> Result<String, String> {
+        let (id, count) = {
+            let session = self.session.lock().await;
+            (session.id().to_string(), session.branch().len())
+        };
+        if count == 0 {
+            return Err("nothing to clone yet".to_string());
+        }
+
+        let store = micro_session::SessionStore::from_env().map_err(|error| error.to_string())?;
+        let cloned = store
+            .fork(&id, count - 1)
+            .await
+            .map_err(|error| error.to_string())?;
+
+        let session_id = cloned.id().to_string();
+        *self.session.lock().await = cloned;
+        Ok(session_id)
+    }
+
+    async fn bash(&self, command: &str) -> BashResult {
+        let finished = tokio::process::Command::new("sh")
+            .arg("-c")
+            .arg(command)
+            .current_dir(&self.workspace)
+            .stdin(std::process::Stdio::null())
+            .output()
+            .await;
+
+        match finished {
+            Ok(result) => {
+                let mut text = String::from_utf8_lossy(&result.stdout).into_owned();
+                let errors = String::from_utf8_lossy(&result.stderr);
+                if !errors.is_empty() {
+                    if !text.is_empty() && !text.ends_with('\n') {
+                        text.push('\n');
+                    }
+                    text.push_str(&errors);
+                }
+                BashResult {
+                    output: text.trim_end().to_string(),
+                    code: result.status.code().unwrap_or(-1),
+                    failed: !result.status.success(),
+                }
+            }
+            Err(error) => BashResult {
+                output: format!("cannot run the command: {error}"),
+                code: -1,
+                failed: true,
+            },
+        }
+    }
+}
+
+struct BashResult {
+    output: String,
+    code: i32,
+    failed: bool,
+}
+
+/// Every command a caller may invoke through a prompt.
+fn micro_commands_list() -> Vec<SlashCommand> {
+    micro_commands::commands()
+        .iter()
+        .map(|command| SlashCommand {
+            name: command.name.to_string(),
+            description: command.description.to_string(),
+            source: "builtin".to_string(),
+        })
+        .collect()
+}
+
+fn build_prompt(message: &str, images: Vec<Image>) -> Message {
+    let mut content: Vec<ContentBlock> = images.into_iter().map(ContentBlock::from).collect();
+    content.push(ContentBlock::text(message));
+    Message::User {
+        content,
+        timestamp: micro_types::now_ms(),
+    }
+}
+
+/// What a compaction summary says, for a caller that wants to show it.
+fn summary_text(message: &Message) -> String {
+    match message {
+        Message::Assistant(assistant) => assistant.text(),
+        Message::User { content, .. } => content
+            .iter()
+            .map(ContentBlock::as_text)
+            .collect::<Vec<_>>()
+            .join(""),
+        Message::ToolResult { .. } => String::new(),
+    }
+}
+
+fn next_level(level: ThinkingLevel) -> ThinkingLevel {
+    match level {
+        ThinkingLevel::Off => ThinkingLevel::Low,
+        ThinkingLevel::Low => ThinkingLevel::Medium,
+        ThinkingLevel::Medium => ThinkingLevel::High,
+        ThinkingLevel::High => ThinkingLevel::Off,
+    }
+}

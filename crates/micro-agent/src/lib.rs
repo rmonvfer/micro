@@ -166,6 +166,28 @@ impl Agent {
         self
     }
 
+    /// Turn compaction on or off while the agent is running, which is what a headless
+    /// caller does when it would rather manage the window itself.
+    pub fn set_auto_compaction(&mut self, enabled: bool) {
+        self.compaction = match enabled {
+            true => Some(self.compaction.unwrap_or_default()),
+            false => None,
+        };
+    }
+
+    /// Run a different model through the provider already in hand.
+    ///
+    /// Only for a model the current provider serves: a model somewhere else needs a client
+    /// and a credential, which is [`Agent::set_model`].
+    pub fn set_runtime_model(&mut self, model: Model) {
+        self.model = model;
+        self.summarizer = Arc::new(ProviderSummarizer::new(
+            self.provider.clone(),
+            self.model.clone(),
+            self.api_key.clone(),
+        ));
+    }
+
     /// Summarize with something other than the model the agent is running, which is how a
     /// caller routes summaries to a cheaper model.
     pub fn with_summarizer(mut self, summarizer: Arc<dyn Summarizer>) -> Self {

@@ -29,6 +29,10 @@ struct Cli {
     #[arg(short = 'p', long)]
     print: bool,
 
+    /// Take commands as JSON lines on stdin and answer on stdout, with no interface.
+    #[arg(long, conflicts_with = "print")]
+    rpc: bool,
+
     /// Model to use: an id, a provider-qualified id, a unique prefix, or an alias.
     #[arg(short, long, env = "MICRO_MODEL")]
     model: Option<String>,
@@ -180,9 +184,15 @@ async fn main() -> Result<()> {
 
     // Each front end answers the policy its own way: the non-interactive path prompts on
     // the terminal, while the interface routes requests to a modal over the transcript.
-    let (approver, approvals): (std::sync::Arc<dyn micro_policy::Approver>, _) = match cli.print {
-        true => (std::sync::Arc::new(approver::TerminalApprover), None),
-        false => {
+    let (approver, approvals): (std::sync::Arc<dyn micro_policy::Approver>, _) = match (
+        cli.print, cli.rpc,
+    ) {
+        // Nobody is at a terminal to answer in RPC mode, so a call the policy cannot
+        // decide is refused rather than left waiting for an answer that cannot come.
+        (_, true) => (std::sync::Arc::new(micro_policy::DenyEverything), None),
+        // With `--print` the user is at the terminal, and is asked there.
+        (true, false) => (std::sync::Arc::new(approver::TerminalApprover), None),
+        (false, false) => {
             let (approver, requests) = micro_tui::approval_channel();
             (approver, Some(requests))
         }
@@ -203,8 +213,27 @@ async fn main() -> Result<()> {
     };
 
     let built = runtime::build(&root, &selection, resume.as_deref(), &settings).await?;
+    let session = std::sync::Arc::clone(&built.session);
     let writer = runtime::persist(built.session, built.recorder);
     let prompt = cli.prompt.join(" ");
+
+    if cli.rpc {
+        let mut rpc = micro_rpc::Rpc::new(
+            built.agent,
+            session,
+            micro_models::Catalog::load().unwrap_or_else(|_| micro_models::Catalog::bundled()),
+            root.clone(),
+        );
+        let outcome = rpc
+            .run(tokio::io::stdin(), tokio::io::stdout())
+            .await
+            .map_err(anyhow::Error::from);
+        // The agent lives inside the mode, and the writer runs until the agent's recorder
+        // closes. Letting go of the mode first is what ends it.
+        drop(rpc);
+        let _ = writer.await;
+        return outcome;
+    }
 
     let result = if cli.print {
         if prompt.trim().is_empty() {

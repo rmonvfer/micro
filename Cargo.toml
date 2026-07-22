@@ -5,6 +5,7 @@ members = [
     "crates/micro-config",
     "crates/micro-auth",
     "crates/micro-provider",
+    "crates/micro-rpc",
     "crates/micro-models",
     "crates/micro-tools",
     "crates/micro-session",
@@ -28,6 +29,7 @@ micro-types = { path = "crates/micro-types" }
 micro-auth = { path = "crates/micro-auth" }
 micro-config = { path = "crates/micro-config" }
 micro-provider = { path = "crates/micro-provider" }
+micro-rpc = { path = "crates/micro-rpc" }
 micro-models = { path = "crates/micro-models" }
 micro-tools = { path = "crates/micro-tools" }
 micro-session = { path = "crates/micro-session" }
@@ -49,7 +51,7 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "str
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "fs", "io-util", "sync", "time", "signal", "net"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "fs", "io-util", "sync", "time", "signal", "net", "io-std"] }
 
 [profile.release]
 opt-level = "z"

@@ -1,5 +1,6 @@
 use crate::AssistantMessage;
 use crate::Message;
+use serde::Serialize;
 use serde_json::Value;
 
 /// What a provider emits while a response streams in.
@@ -7,7 +8,8 @@ use serde_json::Value;
 /// Events carry deltas rather than a rebuilt partial message. Consumers that need the
 /// message so far accumulate it themselves, which keeps a provider from cloning the
 /// whole message on every token.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
 pub enum StreamEvent {
     /// The response has begun; no content has arrived yet.
     Start,
@@ -60,7 +62,8 @@ pub enum StreamEvent {
 }
 
 /// What the agent loop emits to whatever is driving it — a TUI, a headless CLI, or a test.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
 pub enum AgentEvent {
     AgentStart,
     TurnStart,

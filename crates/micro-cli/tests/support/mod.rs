@@ -418,6 +418,47 @@ impl Fixture {
         command
     }
 
+    /// Drive the headless protocol: write these command lines to stdin, and take back
+    /// every line that came out.
+    pub fn rpc(&self, commands: &[&str]) -> Vec<Value> {
+        use std::process::Stdio;
+
+        let mut command = self.micro();
+        command.arg("--rpc");
+        // The fixture's own model, so the run reaches the fake provider and not a real one.
+        command.args(["-m", "test"]);
+        command.stdin(Stdio::piped());
+        command.stdout(Stdio::piped());
+        command.stderr(Stdio::piped());
+
+        let mut child = command.spawn().expect("micro --rpc starts");
+        {
+            let stdin = child.stdin.as_mut().expect("stdin is piped");
+            for line in commands {
+                writeln!(stdin, "{line}").expect("a command is written");
+            }
+        }
+        // Closing stdin is what ends the mode; without it the child waits for more.
+        drop(child.stdin.take());
+
+        let finished = child.wait_with_output().expect("micro --rpc finishes");
+        if finished.stdout.is_empty() {
+            panic!(
+                "micro --rpc said nothing; it exited {} with: {}",
+                finished.status,
+                String::from_utf8_lossy(&finished.stderr).trim()
+            );
+        }
+        String::from_utf8_lossy(&finished.stdout)
+            .lines()
+            .filter(|line| !line.trim().is_empty())
+            .map(|line| {
+                serde_json::from_str(line)
+                    .unwrap_or_else(|error| panic!("unreadable line {line}: {error}"))
+            })
+            .collect()
+    }
+
     /// Run one prompt to completion with `--print`, with stdin closed so nothing can be
     /// mistaken for an approval.
     pub fn print(&self, arguments: &[&str]) -> Output {
