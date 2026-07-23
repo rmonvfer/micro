@@ -120,12 +120,14 @@ pub enum FromHost {
 
 /// A running host.
 pub struct Host {
-    child: Child,
-    stdin: ChildStdin,
+    child: Mutex<Child>,
+    /// Behind its own lock, held only while a line is written. Nothing waits for an answer
+    /// while holding it, so a call can never block the answer it is waiting for.
+    stdin: Mutex<ChildStdin>,
     /// Answers waiting to be matched to the request that asked for them.
     pending: Arc<Mutex<HashMap<String, oneshot::Sender<Value>>>>,
-    /// What the host said that micro has to act on.
-    incoming: tokio::sync::mpsc::UnboundedReceiver<FromHost>,
+    /// What the host said that micro has to act on, until somebody takes it.
+    incoming: Mutex<Option<tokio::sync::mpsc::UnboundedReceiver<FromHost>>>,
     loaded: Loaded,
     next_id: std::sync::atomic::AtomicU64,
 }
@@ -188,10 +190,10 @@ impl Host {
             .map_err(|_| "the extension host stopped while loading".to_string())?;
 
         Ok(Host {
-            child,
-            stdin,
+            child: Mutex::new(child),
+            stdin: Mutex::new(stdin),
             pending,
-            incoming,
+            incoming: Mutex::new(Some(incoming)),
             loaded,
             next_id: std::sync::atomic::AtomicU64::new(0),
         })
@@ -220,22 +222,22 @@ impl Host {
     }
 
     /// Tell the extensions something happened. Nothing is waited for.
-    pub async fn notify(&mut self, event: &str, payload: Value) -> Result<(), String> {
+    pub async fn notify(&self, event: &str, payload: Value) -> Result<(), String> {
         write_line(
-            &mut self.stdin,
+            &mut *self.stdin.lock().await,
             &serde_json::json!({ "type": "event", "event": event, "payload": payload }),
         )
         .await
     }
 
     /// Run one of their tools and wait for what it returns.
-    pub async fn call_tool(&mut self, name: &str, arguments: &Value) -> Result<String, String> {
+    pub async fn call_tool(&self, name: &str, arguments: &Value) -> Result<String, String> {
         let id = self.claim_id();
         let (sender, receiver) = oneshot::channel();
         self.pending.lock().await.insert(id.clone(), sender);
 
         write_line(
-            &mut self.stdin,
+            &mut *self.stdin.lock().await,
             &serde_json::json!({
                 "type": "tool_call",
                 "id": id,
@@ -261,13 +263,13 @@ impl Host {
     }
 
     /// Run one of their commands.
-    pub async fn call_command(&mut self, name: &str, args: &str) -> Result<Value, String> {
+    pub async fn call_command(&self, name: &str, args: &str) -> Result<Value, String> {
         let id = self.claim_id();
         let (sender, receiver) = oneshot::channel();
         self.pending.lock().await.insert(id.clone(), sender);
 
         write_line(
-            &mut self.stdin,
+            &mut *self.stdin.lock().await,
             &serde_json::json!({ "type": "command", "id": id, "name": name, "args": args }),
         )
         .await?;
@@ -284,33 +286,37 @@ impl Host {
     }
 
     /// Answer something the host asked for.
-    pub async fn answer(&mut self, id: &str, payload: Value) -> Result<(), String> {
+    pub async fn answer(&self, id: &str, payload: Value) -> Result<(), String> {
         let mut message = serde_json::json!({ "type": "answer", "id": id });
         if let (Some(object), Some(extra)) = (message.as_object_mut(), payload.as_object()) {
             for (key, value) in extra {
                 object.insert(key.clone(), value.clone());
             }
         }
-        write_line(&mut self.stdin, &message).await
+        write_line(&mut *self.stdin.lock().await, &message).await
     }
 
-    /// The next thing the host wants micro to do, if anything is waiting.
-    pub fn try_next(&mut self) -> Option<FromHost> {
-        self.incoming.try_recv().ok()
-    }
-
-    /// Wait for the next thing the host wants micro to do.
-    pub async fn next(&mut self) -> Option<FromHost> {
-        self.incoming.recv().await
+    /// Take the stream of things the host wants micro to do.
+    ///
+    /// Handed over rather than read through the host, because waiting for the next one
+    /// would otherwise hold the host's lock for as long as nothing was asked — and
+    /// nothing could be answered while it was held.
+    pub async fn take_asks(&self) -> Option<tokio::sync::mpsc::UnboundedReceiver<FromHost>> {
+        self.incoming.lock().await.take()
     }
 
     /// Tell the extensions the session is over, and let the process go.
-    pub async fn shutdown(mut self) {
-        let _ = write_line(&mut self.stdin, &serde_json::json!({ "type": "shutdown" })).await;
+    pub async fn shutdown(self) {
+        let _ = write_line(
+            &mut *self.stdin.lock().await,
+            &serde_json::json!({ "type": "shutdown" }),
+        )
+        .await;
         // A host that will not leave on its own is stopped: it is someone else's code, and
         // a session should not be held open by it.
-        let _ = tokio::time::timeout(std::time::Duration::from_secs(2), self.child.wait()).await;
-        let _ = self.child.kill().await;
+        let mut child = self.child.lock().await;
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(2), child.wait()).await;
+        let _ = child.kill().await;
     }
 
     fn claim_id(&self) -> String {
@@ -546,7 +552,7 @@ export default (micro) => {
         )
         .unwrap();
 
-        let mut host = Host::start(&root, std::slice::from_ref(&extension))
+        let host = Host::start(&root, std::slice::from_ref(&extension))
             .await
             .expect("the host starts");
 
@@ -599,7 +605,7 @@ export default (micro) => {
         )
         .unwrap();
 
-        let mut host = Host::start(&root, &[extension]).await.expect("the host starts");
+        let host = Host::start(&root, &[extension]).await.expect("the host starts");
 
         let error = host
             .call_tool("explode", &serde_json::json!({}))
@@ -653,7 +659,7 @@ export default (micro) => {
         let extension = root.join("empty.ts");
         std::fs::write(&extension, "export default () => {};").unwrap();
 
-        let mut host = Host::start(&root, &[extension]).await.expect("the host starts");
+        let host = Host::start(&root, &[extension]).await.expect("the host starts");
         let error = host
             .call_tool("nothing-like-this", &serde_json::json!({}))
             .await

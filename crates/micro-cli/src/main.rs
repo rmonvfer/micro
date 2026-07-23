@@ -4,6 +4,7 @@
 mod approver;
 mod commands;
 mod headless;
+mod extensions;
 mod runtime;
 mod share;
 mod subcommands;
@@ -240,7 +241,7 @@ async fn main() -> Result<()> {
         (None, false) => None,
     };
 
-    let built = runtime::build(&root, &selection, resume.as_deref(), &settings).await?;
+    let mut built = runtime::build(&root, &selection, resume.as_deref(), &settings).await?;
     // Extensions are told the session has begun, and told again when it ends, which is
     // where one that holds anything open gets to let go of it.
     let extensions = built.extensions.clone();
@@ -250,7 +251,14 @@ async fn main() -> Result<()> {
             "workspace": root.display().to_string(),
             "model": built.model.qualified_id(),
         });
-        let _ = host.lock().await.notify("session_start", started).await;
+        let _ = host.notify("session_start", started).await;
+    }
+
+    if let Some(host) = extensions.as_ref() {
+        tokio::spawn(extensions::serve(
+            std::sync::Arc::clone(host),
+            root.clone(),
+        ));
     }
 
     let session = std::sync::Arc::clone(&built.session);
@@ -280,7 +288,18 @@ async fn main() -> Result<()> {
         if prompt.trim().is_empty() {
             anyhow::bail!("--print needs a prompt");
         }
-        headless::run(built.agent, Message::user(prompt), cli.quiet).await
+        // A slash command is run rather than sent: it is an instruction to micro, and
+        // handing it to the model would answer a question nobody asked.
+        match run_command_headlessly(&mut built.commands, &prompt).await {
+            Some(said) => {
+                println!("{said}");
+                // The agent is what holds the recorder open, and nothing ran a turn, so
+                // it is let go here: the writer below waits for that channel to close.
+                drop(built.agent);
+                Ok(())
+            }
+            None => headless::run(built.agent, Message::user(prompt), cli.quiet).await,
+        }
     } else {
         let options = micro_tui::TuiOptions {
             cwd: root.clone(),
@@ -312,13 +331,45 @@ async fn main() -> Result<()> {
 /// The host holds someone else's code in another process; leaving it running would
 /// outlive the session that started it.
 async fn shut_down_extensions(
-    extensions: Option<std::sync::Arc<tokio::sync::Mutex<micro_extensions::Host>>>,
+    extensions: Option<std::sync::Arc<micro_extensions::Host>>,
 ) {
     let Some(host) = extensions else {
         return;
     };
     // Only the last holder can shut it down, and by here nothing else should hold it.
     if let Ok(host) = std::sync::Arc::try_unwrap(host) {
-        host.into_inner().shutdown().await;
+        host.shutdown().await;
+    }
+}
+
+/// Run a slash command with nobody watching, and say what it printed.
+///
+/// `None` means the line was not a command, and belongs to the model. Only commands whose
+/// whole answer is text can run here: anything that would open a picker or change the
+/// running conversation needs an interface to change.
+async fn run_command_headlessly(
+    commands: &mut commands::CliCommands,
+    line: &str,
+) -> Option<String> {
+    use micro_tui::Commands as _;
+
+    let line = line.trim();
+    if !line.starts_with('/') {
+        return None;
+    }
+
+    let state = micro_tui::ConversationState {
+        message_count: 0,
+        usage: micro_types::Usage::default(),
+    };
+    let outcome = commands.dispatch(line, state).await?;
+    if let Some(text) = outcome.text() {
+        return Some(text.to_string());
+    }
+
+    match commands.apply(outcome).await {
+        micro_tui::Applied::Note { text, .. } => Some(text),
+        micro_tui::Applied::Conversation { note, .. } => note,
+        other => Some(format!("{other:?}")),
     }
 }

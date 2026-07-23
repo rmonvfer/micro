@@ -41,6 +41,8 @@ pub struct CliCommands {
     skills_enabled: bool,
     /// Show only the newest entry when the changelog is asked for.
     collapse_changelog: bool,
+    /// The extension host, so a command an extension registered can be run.
+    extensions: Option<Arc<micro_extensions::Host>>,
     /// Warn that a subscription credential bills per token here. Said once a run, as ohm
     /// says it: repeating it every model swap would train the reader to skip it.
     anthropic_extra_usage: bool,
@@ -63,6 +65,7 @@ pub struct HostParts {
     pub skills_enabled: bool,
     pub collapse_changelog: bool,
     pub anthropic_extra_usage: bool,
+    pub extensions: Option<Arc<micro_extensions::Host>>,
 }
 
 impl CliCommands {
@@ -79,6 +82,7 @@ impl CliCommands {
             home: parts.home,
             skills_enabled: parts.skills_enabled,
             collapse_changelog: parts.collapse_changelog,
+            extensions: parts.extensions,
             anthropic_extra_usage: parts.anthropic_extra_usage,
             warned_about_extra_usage: false,
         }
@@ -316,6 +320,31 @@ impl CliCommands {
         }
     }
 
+    /// Run a command an extension registered, if this line names one.
+    ///
+    /// What the extension returns is shown as it comes back: a string is the answer, and
+    /// anything else is described rather than dropped.
+    async fn extension_command(&mut self, line: &str) -> Option<CommandOutcome> {
+        let trimmed = line.trim();
+        let rest = trimmed.strip_prefix('/')?;
+        let (name, arguments) = match rest.split_once(char::is_whitespace) {
+            Some((name, arguments)) => (name, arguments.trim()),
+            None => (rest, ""),
+        };
+
+        let host = self.extensions.clone()?;
+        if !host.commands().iter().any(|command| command.name == name) {
+            return None;
+        }
+
+        Some(match host.call_command(name, arguments).await {
+            Ok(serde_json::Value::Null) => CommandOutcome::info(format!("/{name} ran.")),
+            Ok(serde_json::Value::String(said)) => CommandOutcome::info(said),
+            Ok(other) => CommandOutcome::info(other.to_string()),
+            Err(error) => CommandOutcome::error(error),
+        })
+    }
+
     /// Remember what was decided about this project.
     ///
     /// The decision is read when a run starts, so it takes effect from the next one: the
@@ -377,6 +406,11 @@ impl CliCommands {
 #[async_trait]
 impl Commands for CliCommands {
     async fn dispatch(&mut self, line: &str, state: ConversationState) -> Option<CommandOutcome> {
+        // An extension's command is tried first, so a name it registered is its own rather
+        // than falling through to an unknown-command message.
+        if let Some(outcome) = self.extension_command(line).await {
+            return Some(outcome);
+        }
         micro_commands::dispatch(line, &self.context(state)).await
     }
 
@@ -511,6 +545,7 @@ mod tests {
             home: root.join("home"),
             skills_enabled: true,
             collapse_changelog: false,
+            extensions: None,
             anthropic_extra_usage: true,
         });
         (host, root)

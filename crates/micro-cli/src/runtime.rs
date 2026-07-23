@@ -47,7 +47,7 @@ pub struct Runtime {
     /// catalog, the credentials and the session store already are.
     pub commands: CliCommands,
     /// The extension host, when there was anything to load and a runtime to load it.
-    pub extensions: Option<Arc<tokio::sync::Mutex<micro_extensions::Host>>>,
+    pub extensions: Option<Arc<micro_extensions::Host>>,
 }
 
 /// Resolve a model from the catalog, reporting candidates rather than guessing when the
@@ -196,7 +196,7 @@ pub async fn build(
     let extensions = load_extensions(root, settings).await;
     let mut tools = micro_tools::builtin_tools(root.to_path_buf());
     if let Some(host) = extensions.as_ref() {
-        let registered = host.lock().await.tools();
+        let registered = host.tools();
         for tool in registered {
             tools.push(Arc::new(micro_extensions::ExtensionTool::new(
                 tool.name,
@@ -248,6 +248,7 @@ pub async fn build(
         home: micro_policy::micro_home().unwrap_or_default(),
         skills_enabled: settings.skill_commands,
         collapse_changelog: settings.collapse_changelog,
+        extensions: extensions.clone(),
         anthropic_extra_usage: settings.anthropic_extra_usage,
     });
 
@@ -370,7 +371,7 @@ fn scoped(catalog: Catalog, allowed: &[String]) -> Catalog {
 async fn load_extensions(
     root: &Path,
     settings: &micro_config::Settings,
-) -> Option<Arc<tokio::sync::Mutex<micro_extensions::Host>>> {
+) -> Option<Arc<micro_extensions::Host>> {
     let home = micro_policy::micro_home().unwrap_or_default();
     // A configured entry is a source rather than a path: `npm:thing` is installed
     // somewhere of micro's choosing, and that is where it is loaded from.
@@ -397,7 +398,7 @@ async fn load_extensions(
                     eprintln!("note: {} was not loaded: {}", failure.path, failure.error);
                 }
             }
-            Some(Arc::new(tokio::sync::Mutex::new(host)))
+            Some(Arc::new(host))
         }
         Err(error) => {
             if !settings.quiet_startup {
@@ -414,14 +415,14 @@ async fn load_extensions(
 /// nothing up. What they change they change by asking, which is its own path.
 async fn forward_events(
     mut watched: tokio::sync::mpsc::UnboundedReceiver<micro_types::AgentEvent>,
-    host: Arc<tokio::sync::Mutex<micro_extensions::Host>>,
+    host: Arc<micro_extensions::Host>,
 ) {
     while let Some(event) = watched.recv().await {
         let Some(name) = micro_extensions::name_of(&event) else {
             continue;
         };
         let payload = micro_extensions::payload_of(&event);
-        if host.lock().await.notify(name, payload).await.is_err() {
+        if host.notify(name, payload).await.is_err() {
             // The host has gone; there is nobody left to tell.
             return;
         }

@@ -9,12 +9,11 @@ use micro_tools::Tool;
 use micro_types::ToolDefinition;
 use serde_json::Value;
 use std::sync::Arc;
-use tokio::sync::Mutex;
 
 /// A tool an extension registered.
 pub struct ExtensionTool {
     definition: ToolDefinition,
-    host: Arc<Mutex<Host>>,
+    host: Arc<Host>,
 }
 
 impl ExtensionTool {
@@ -22,7 +21,7 @@ impl ExtensionTool {
         name: impl Into<String>,
         description: impl Into<String>,
         parameters: Value,
-        host: Arc<Mutex<Host>>,
+        host: Arc<Host>,
     ) -> Self {
         ExtensionTool {
             definition: definition_for(name, description, parameters),
@@ -57,11 +56,7 @@ impl Tool for ExtensionTool {
     }
 
     async fn execute(&self, arguments: &Value) -> Result<String, String> {
-        self.host
-            .lock()
-            .await
-            .call_tool(&self.definition.name, arguments)
-            .await
+        self.host.call_tool(&self.definition.name, arguments).await
     }
 }
 

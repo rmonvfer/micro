@@ -346,7 +346,10 @@ for await (const chunk of Bun.stdin.stream()) {
 		const line = buffer.slice(0, newline).replace(/\r$/, "");
 		buffer = buffer.slice(newline + 1);
 		if (line.trim().length > 0) {
-			await handle(line);
+			// Not awaited: a command may ask micro something and wait for the answer, and
+			// the answer arrives on this same stream. Waiting here would mean nothing
+			// could ever be read while anything was waiting.
+			void handle(line);
 		}
 	}
 }

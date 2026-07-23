@@ -1003,3 +1003,77 @@ export default (micro) => {{
     assert!(heard.contains("\"toolName\":\"read\""), "{heard}");
     assert!(heard.contains("notes.txt"), "{heard}");
 }
+
+/// A command an extension registered is typed like any other, and what it returns is what
+/// the user sees.
+#[test]
+fn an_extension_command_is_a_slash_command() {
+    if which_bun().is_none() {
+        return;
+    }
+    let api = FakeApi::start([]);
+    let fixture = Fixture::new(&api);
+    fixture.write(
+        ".micro/extensions/commands.ts",
+        r#"
+export default (micro) => {
+    micro.registerCommand("shout", {
+        description: "shout back",
+        handler: async (args) => `SHOUTING: ${args.toUpperCase()}`,
+    });
+};
+"#,
+    );
+
+    let lines = fixture.rpc(&[r#"{"type":"get_commands","id":"1"}"#]);
+    let commands = lines[0]["data"]["commands"]
+        .as_array()
+        .expect("a list of commands");
+    // The built-in list is what `get_commands` reports; the extension's own is reached by
+    // typing it, which is what the next assertion covers.
+    assert!(!commands.is_empty());
+
+    let output = fixture.print(&["-m", "test", "/shout hello there"]);
+    assert!(output.status.success(), "{}", output.stderr);
+    assert!(
+        output.stdout.contains("SHOUTING: HELLO THERE"),
+        "the extension answered: {}",
+        output.stdout
+    );
+}
+
+/// An extension can run a program, and gets back what it printed.
+#[test]
+fn an_extension_can_run_a_command_and_read_its_output() {
+    if which_bun().is_none() {
+        return;
+    }
+    let api = FakeApi::start([]);
+    let fixture = Fixture::new(&api);
+    let log = fixture.workspace().join("exec.log");
+    fixture.write(
+        ".micro/extensions/runner.ts",
+        &format!(
+            r#"
+import {{ writeFileSync }} from "node:fs";
+export default (micro) => {{
+    micro.registerCommand("probe", {{
+        handler: async () => {{
+            const result = await micro.exec("echo", ["from an extension"]);
+            writeFileSync({log:?}, JSON.stringify(result));
+            return `exit ${{result.code}}`;
+        }},
+    }});
+}};
+"#,
+            log = log.display().to_string()
+        ),
+    );
+
+    let output = fixture.print(&["-m", "test", "/probe"]);
+    assert!(output.status.success(), "{}", output.stderr);
+    assert!(output.stdout.contains("exit 0"), "{}", output.stdout);
+
+    let ran = std::fs::read_to_string(&log).expect("the extension wrote what it got");
+    assert!(ran.contains("from an extension"), "{ran}");
+}
