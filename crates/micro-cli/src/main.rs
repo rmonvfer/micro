@@ -81,6 +81,25 @@ enum Command {
         #[arg(long)]
         live: bool,
     },
+    /// Install an extension package.
+    Install {
+        /// npm:name, a repository URL, or a path.
+        source: String,
+        /// Install into this project rather than for every project.
+        #[arg(short, long)]
+        local: bool,
+    },
+    /// Remove an installed extension package.
+    #[command(alias = "uninstall")]
+    Remove {
+        /// The source it was installed from.
+        source: String,
+        /// Remove it from this project rather than from every project.
+        #[arg(short, long)]
+        local: bool,
+    },
+    /// List the extension packages that are installed.
+    List,
     /// Inspect saved sessions.
     Sessions {
         #[command(subcommand)]
@@ -153,6 +172,15 @@ async fn main() -> Result<()> {
         Some(Command::Models { query, live }) => {
             return subcommands::models(query.as_deref(), *live).await
         }
+        Some(Command::Install { source, local }) => {
+            let root = runtime::workspace(&cli.cwd)?;
+            return subcommands::install(source, *local, &root).await;
+        }
+        Some(Command::Remove { source, local }) => {
+            let root = runtime::workspace(&cli.cwd)?;
+            return subcommands::remove(source, *local, &root).await;
+        }
+        Some(Command::List) => return subcommands::list_packages().await,
         Some(Command::Sessions { action }) => {
             // Sessions are recorded against the resolved workspace, so listing has to use
             // the same one rather than wherever the shell happens to be.

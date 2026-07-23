@@ -8,6 +8,7 @@ use micro_auth::LoginFlow;
 use micro_models::Catalog;
 use micro_session::SessionStore;
 use std::io::BufRead as _;
+use std::path::Path;
 use std::io::Write as _;
 
 pub async fn auth_status() -> Result<()> {
@@ -170,4 +171,99 @@ pub async fn latest_session(workspace: &std::path::Path) -> Result<String> {
         .next()
         .map(|meta| meta.id)
         .ok_or_else(|| anyhow::anyhow!("no session to continue in this workspace"))
+}
+
+/// `micro install <source>` — fetch a package and remember it.
+///
+/// The source is written into the settings, so the next run loads it without being told
+/// again. A package that will not fetch leaves the settings alone.
+pub async fn install(source: &str, local: bool, workspace: &Path) -> Result<()> {
+    let parsed = micro_extensions::Source::parse(source).map_err(anyhow::Error::msg)?;
+    let home = micro_policy::micro_home()?;
+
+    println!("Installing {}...", parsed.canonical());
+    let installed = micro_extensions::install(&parsed, &home, workspace, local)
+        .await
+        .map_err(anyhow::Error::msg)?;
+
+    remember(&installed.source, true)?;
+    println!("Installed {} to {}", installed.source, installed.path.display());
+
+    // What it registered is worth seeing now rather than at the next start.
+    match micro_extensions::Host::start(&home, std::slice::from_ref(&installed.path)).await {
+        Ok(host) => {
+            for extension in &host.loaded().extensions {
+                for tool in &extension.tools {
+                    println!("  tool     {}", tool.name);
+                }
+                for command in &extension.commands {
+                    println!("  command  /{}", command.name);
+                }
+            }
+            for failure in &host.loaded().errors {
+                println!("  warning  {} did not load: {}", failure.path, failure.error);
+            }
+            host.shutdown().await;
+        }
+        Err(error) => println!("  note     {error}"),
+    }
+    Ok(())
+}
+
+/// `micro remove <source>` — take a package away and forget it.
+pub async fn remove(source: &str, local: bool, workspace: &Path) -> Result<()> {
+    let parsed = micro_extensions::Source::parse(source).map_err(anyhow::Error::msg)?;
+    let home = micro_policy::micro_home()?;
+
+    micro_extensions::remove(&parsed, &home, workspace, local).map_err(anyhow::Error::msg)?;
+    let forgotten = remember(&parsed.canonical(), false)?;
+
+    match forgotten {
+        true => println!("Removed {}.", parsed.canonical()),
+        false => println!("{} was not installed.", parsed.canonical()),
+    }
+    Ok(())
+}
+
+/// `micro list` — what is installed, and whether it is still there.
+pub async fn list_packages() -> Result<()> {
+    let path = micro_config::default_path()?;
+    let config = micro_config::Config::load_from(&path)?;
+    let sources = config.extensions.clone().unwrap_or_default();
+
+    if sources.is_empty() {
+        println!("No extension packages installed.");
+        return Ok(());
+    }
+
+    let home = micro_policy::micro_home()?;
+    let workspace = std::env::current_dir().unwrap_or_default();
+    for source in sources {
+        let parsed = micro_extensions::Source::parse(&source).map_err(anyhow::Error::msg)?;
+        let path = parsed.install_path(&home, &workspace, false);
+        let state = match path.exists() {
+            true => "installed",
+            false => "missing",
+        };
+        println!("{source:<40} {state:<10} {}", path.display());
+    }
+    Ok(())
+}
+
+/// Add a source to the settings, or take it out. Says whether anything changed.
+fn remember(source: &str, keep: bool) -> Result<bool> {
+    let path = micro_config::default_path()?;
+    let mut config = micro_config::Config::load_from(&path)?;
+    let mut sources = config.extensions.clone().unwrap_or_default();
+
+    let held = sources.iter().any(|held| held == source);
+    match (keep, held) {
+        (true, true) | (false, false) => return Ok(false),
+        (true, false) => sources.push(source.to_string()),
+        (false, true) => sources.retain(|held| held != source),
+    }
+
+    config.extensions = Some(sources);
+    config.save_to(&path)?;
+    Ok(true)
 }

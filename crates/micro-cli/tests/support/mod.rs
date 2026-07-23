@@ -459,6 +459,13 @@ impl Fixture {
             .collect()
     }
 
+    /// Run the binary with these arguments and take back what it printed.
+    pub fn micro_run(&self, arguments: &[&str]) -> Output {
+        let mut command = self.micro();
+        command.args(arguments);
+        Output::run(&mut command)
+    }
+
     /// Run one prompt to completion with `--print`, with stdin closed so nothing can be
     /// mistaken for an approval.
     pub fn print(&self, arguments: &[&str]) -> Output {

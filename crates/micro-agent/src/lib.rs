@@ -82,6 +82,8 @@ pub struct Agent {
     system_prompt: Option<String>,
     messages: Vec<Message>,
     recorder: Option<UnboundedSender<Message>>,
+    /// Anything else watching the events this run produces.
+    observer: Option<UnboundedSender<AgentEvent>>,
     summarizer: Arc<dyn Summarizer>,
     compaction: Option<CompactionConfig>,
     context_window: usize,
@@ -109,6 +111,7 @@ impl Agent {
             system_prompt: None,
             messages: Vec::new(),
             recorder: None,
+            observer: None,
             summarizer,
             compaction: Some(CompactionConfig::default()),
             context_window: DEFAULT_CONTEXT_WINDOW,
@@ -202,6 +205,16 @@ impl Agent {
         self
     }
 
+    /// Send every event to `observer` as well as to whoever asked for the turn.
+    ///
+    /// One turn has one caller — a terminal, a headless mode — and that caller owns the
+    /// events. Anything else that needs to see them, extensions among them, watches from
+    /// here rather than intercepting the caller's channel.
+    pub fn with_observer(mut self, observer: UnboundedSender<AgentEvent>) -> Self {
+        self.observer = Some(observer);
+        self
+    }
+
     /// Seed the conversation with prior history, for resuming a saved session.
     pub fn with_history(mut self, history: Vec<Message>) -> Self {
         self.messages = history;
@@ -262,6 +275,14 @@ impl Agent {
         self.messages.push(message);
     }
 
+    /// Both places an event goes, as one thing to send to.
+    fn fan<'a>(&self, events: &'a UnboundedSender<AgentEvent>) -> Fan<'a> {
+        Fan {
+            primary: events,
+            observer: self.observer.clone(),
+        }
+    }
+
     /// Append to the conversation, reporting the message to the recorder if one is set.
     fn commit(&mut self, message: Message, produced: &mut Vec<Message>) {
         if let Some(recorder) = &self.recorder {
@@ -288,6 +309,7 @@ impl Agent {
         prompt: Message,
         events: &UnboundedSender<AgentEvent>,
     ) -> Vec<Message> {
+        let events = &self.fan(events);
         let mut produced = Vec::new();
 
         // A turn abandoned partway — Ctrl+C during a tool, or a crash — leaves an assistant
@@ -300,26 +322,26 @@ impl Agent {
             if let Some(recorder) = &self.recorder {
                 let _ = recorder.send(repair.clone());
             }
-            let _ = events.send(AgentEvent::MessageStart {
+            events.send(AgentEvent::MessageStart {
                 message: repair.clone(),
             });
-            let _ = events.send(AgentEvent::MessageEnd {
+            events.send(AgentEvent::MessageEnd {
                 message: repair.clone(),
             });
             produced.push(repair);
         }
 
-        let _ = events.send(AgentEvent::AgentStart);
-        let _ = events.send(AgentEvent::MessageStart {
+        events.send(AgentEvent::AgentStart);
+        events.send(AgentEvent::MessageStart {
             message: prompt.clone(),
         });
-        let _ = events.send(AgentEvent::MessageEnd {
+        events.send(AgentEvent::MessageEnd {
             message: prompt.clone(),
         });
         self.commit(prompt, &mut produced);
 
         loop {
-            let _ = events.send(AgentEvent::TurnStart);
+            events.send(AgentEvent::TurnStart);
             self.compact_if_needed(events).await;
 
             let assistant = self.stream_once(events).await;
@@ -347,7 +369,7 @@ impl Agent {
             let truncated = assistant.stop_reason == StopReason::Length;
 
             for (id, name, arguments) in calls {
-                let _ = events.send(AgentEvent::ToolStart {
+                events.send(AgentEvent::ToolStart {
                     id: id.clone(),
                     name: name.clone(),
                     arguments: arguments.clone(),
@@ -372,7 +394,7 @@ impl Agent {
                     }
                 };
 
-                let _ = events.send(AgentEvent::ToolEnd {
+                events.send(AgentEvent::ToolEnd {
                     id: id.clone(),
                     name: name.clone(),
                     output: output.clone(),
@@ -380,17 +402,17 @@ impl Agent {
                 });
 
                 let result = Message::tool_result(id, name, output, is_error);
-                let _ = events.send(AgentEvent::MessageStart {
+                events.send(AgentEvent::MessageStart {
                     message: result.clone(),
                 });
-                let _ = events.send(AgentEvent::MessageEnd {
+                events.send(AgentEvent::MessageEnd {
                     message: result.clone(),
                 });
                 self.commit(result, &mut produced);
             }
         }
 
-        let _ = events.send(AgentEvent::AgentEnd {
+        events.send(AgentEvent::AgentEnd {
             messages: produced.clone(),
         });
         produced
@@ -402,7 +424,7 @@ impl Agent {
     /// Only the live conversation is rewritten. The run's own output and the recorder keep
     /// every message verbatim, so what gets persisted stays a full transcript and
     /// compaction stays a property of this process's context rather than of the session.
-    async fn compact_if_needed(&mut self, events: &UnboundedSender<AgentEvent>) {
+    async fn compact_if_needed(&mut self, events: &Fan<'_>) {
         let Some(config) = self.compaction else {
             return;
         };
@@ -424,15 +446,15 @@ impl Agent {
         // The summary joins the conversation like any other message, so it is announced
         // like one; `micro_context::is_summary` tells a renderer to draw it as a
         // compaction marker rather than as something the user typed.
-        let _ = events.send(AgentEvent::MessageStart {
+        events.send(AgentEvent::MessageStart {
             message: summary.clone(),
         });
-        let _ = events.send(AgentEvent::MessageEnd { message: summary });
+        events.send(AgentEvent::MessageEnd { message: summary });
     }
 
     /// Issue one model request, forwarding stream events and retrying transient failures
     /// that happen before any content is shown.
-    async fn stream_once(&self, events: &UnboundedSender<AgentEvent>) -> AssistantMessage {
+    async fn stream_once(&self, events: &Fan<'_>) -> AssistantMessage {
         let context = Context {
             system_prompt: self.system_prompt.clone(),
             messages: self.messages.clone(),
@@ -466,7 +488,7 @@ impl Agent {
                     other => {
                         if !started {
                             started = true;
-                            let _ = events.send(AgentEvent::MessageStart {
+                            events.send(AgentEvent::MessageStart {
                                 message: Message::Assistant(
                                     self.empty_assistant(StopReason::Stop, None),
                                 ),
@@ -478,7 +500,7 @@ impl Agent {
                         ) {
                             emitted_content = true;
                         }
-                        let _ = events.send(AgentEvent::MessageDelta { event: other });
+                        events.send(AgentEvent::MessageDelta { event: other });
                     }
                 }
             }
@@ -488,7 +510,7 @@ impl Agent {
 
             match result {
                 Ok(message) => {
-                    let _ = events.send(AgentEvent::MessageEnd {
+                    events.send(AgentEvent::MessageEnd {
                         message: Message::Assistant(message.clone()),
                     });
                     return message;
@@ -499,7 +521,7 @@ impl Agent {
 
                     if retryable {
                         let delay_ms = retry_delay_ms(attempt);
-                        let _ = events.send(AgentEvent::Retry {
+                        events.send(AgentEvent::Retry {
                             attempt,
                             max_attempts: MAX_ATTEMPTS,
                             delay_ms,
@@ -509,7 +531,7 @@ impl Agent {
                     }
 
                     let message = self.empty_assistant(StopReason::Error, Some(error));
-                    let _ = events.send(AgentEvent::MessageEnd {
+                    events.send(AgentEvent::MessageEnd {
                         message: Message::Assistant(message.clone()),
                     });
                     return message;
@@ -820,5 +842,23 @@ impl fmt::Display for CompactionRefusal {
             }
             CompactionRefusal::Failed(message) => write!(formatter, "Compaction failed: {message}"),
         }
+    }
+}
+
+/// Where an event goes: to whoever asked for the turn, and to anything watching.
+///
+/// A watcher that has gone away is not an error — the turn is the caller's, and it carries
+/// on whether or not anybody else is still listening.
+struct Fan<'a> {
+    primary: &'a UnboundedSender<AgentEvent>,
+    observer: Option<UnboundedSender<AgentEvent>>,
+}
+
+impl Fan<'_> {
+    fn send(&self, event: AgentEvent) {
+        if let Some(observer) = &self.observer {
+            let _ = observer.send(event.clone());
+        }
+        let _ = self.primary.send(event);
     }
 }

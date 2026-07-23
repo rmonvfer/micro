@@ -209,6 +209,9 @@ pub async fn build(
     let tools = micro_policy::gated_tools(tools, engine);
 
     let (recorder, receiver) = tokio::sync::mpsc::unbounded_channel();
+    // Extensions watch the run rather than sitting in the middle of it: the events go to
+    // whoever asked for the turn, and a copy comes here.
+    let (watching, watched) = tokio::sync::mpsc::unbounded_channel();
     let agent = Agent::new(
         Arc::clone(&resolved.client),
         tools,
@@ -218,13 +221,18 @@ pub async fn build(
     .with_system_prompt(context.system_prompt)
     .with_history(history.clone())
     .with_context_window(model.context_window as usize)
-    .with_recorder(recorder);
+    .with_recorder(recorder)
+    .with_observer(watching);
     // Compaction is what keeps a long conversation inside the window; turned off, the
     // conversation is left to grow and the provider decides when it will not take more.
     let agent = match settings.auto_compact {
         true => agent,
         false => agent.without_compaction(),
     };
+
+    if let Some(host) = extensions.as_ref() {
+        tokio::spawn(forward_events(watched, Arc::clone(host)));
+    }
 
     let session_id = session.id().to_string();
     let session = Arc::new(Mutex::new(session));
@@ -364,7 +372,20 @@ async fn load_extensions(
     settings: &micro_config::Settings,
 ) -> Option<Arc<tokio::sync::Mutex<micro_extensions::Host>>> {
     let home = micro_policy::micro_home().unwrap_or_default();
-    let paths = micro_extensions::discover(root, &home, &settings.extensions);
+    // A configured entry is a source rather than a path: `npm:thing` is installed
+    // somewhere of micro's choosing, and that is where it is loaded from.
+    let configured: Vec<String> = settings
+        .extensions
+        .iter()
+        .map(|source| match micro_extensions::Source::parse(source) {
+            Ok(parsed) => parsed
+                .install_path(&home, root, false)
+                .display()
+                .to_string(),
+            Err(_) => source.clone(),
+        })
+        .collect();
+    let paths = micro_extensions::discover(root, &home, &configured);
     if paths.is_empty() {
         return None;
     }
@@ -383,6 +404,26 @@ async fn load_extensions(
                 eprintln!("note: extensions were not loaded: {error}");
             }
             None
+        }
+    }
+}
+
+/// Tell the extensions what the agent is doing, for as long as the run lasts.
+///
+/// Nothing waits on them: an extension that is slow, or that has stopped listening, holds
+/// nothing up. What they change they change by asking, which is its own path.
+async fn forward_events(
+    mut watched: tokio::sync::mpsc::UnboundedReceiver<micro_types::AgentEvent>,
+    host: Arc<tokio::sync::Mutex<micro_extensions::Host>>,
+) {
+    while let Some(event) = watched.recv().await {
+        let Some(name) = micro_extensions::name_of(&event) else {
+            continue;
+        };
+        let payload = micro_extensions::payload_of(&event);
+        if host.lock().await.notify(name, payload).await.is_err() {
+            // The host has gone; there is nobody left to tell.
+            return;
         }
     }
 }

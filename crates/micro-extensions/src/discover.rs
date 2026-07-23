@@ -17,10 +17,30 @@ use std::path::PathBuf;
 pub const PROJECT_DIR: &str = ".micro/extensions";
 
 /// What a `package.json` says about the extensions it carries.
+///
+/// A package written for ohm declares its entries under `ohm` or `pi`. Those are read as
+/// well as micro's own, so a package published for either loads here without being
+/// repackaged.
 #[derive(Debug, Clone, Default, Deserialize)]
 struct Manifest {
     #[serde(default)]
     micro: Option<ManifestSection>,
+    #[serde(default)]
+    ohm: Option<ManifestSection>,
+    #[serde(default)]
+    pi: Option<ManifestSection>,
+}
+
+impl Manifest {
+    /// The entries it declares, under whichever name it declared them.
+    fn extensions(self) -> Vec<String> {
+        for section in [self.micro, self.ohm, self.pi].into_iter().flatten() {
+            if !section.extensions.is_empty() {
+                return section.extensions;
+            }
+        }
+        Vec::new()
+    }
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -101,9 +121,7 @@ fn entries_of(directory: &Path) -> Option<Vec<PathBuf>> {
     if let Ok(raw) = std::fs::read_to_string(&manifest_path) {
         if let Ok(manifest) = serde_json::from_str::<Manifest>(&raw) {
             let declared: Vec<PathBuf> = manifest
-                .micro
-                .unwrap_or_default()
-                .extensions
+                .extensions()
                 .iter()
                 .map(|entry| directory.join(entry))
                 .filter(|path| path.exists())
@@ -182,6 +200,30 @@ mod tests {
         let found = in_directory(&root);
         assert_eq!(found.len(), 1, "the helper is not loaded: {found:?}");
         assert!(found[0].ends_with("index.ts"));
+    }
+
+    /// A package published for ohm declares its entries under its own name, and loads
+    /// here without being repackaged.
+    #[test]
+    fn a_package_written_for_ohm_still_loads() {
+        let root = scratch("ohm-manifest");
+        write(
+            &root.join("adapter/package.json"),
+            r#"{ "name": "ohm-mcp-adapter", "ohm": { "extensions": ["dist/index.js"] } }"#,
+        );
+        write(&root.join("adapter/dist/index.js"), "export default () => {}");
+
+        let found = in_directory(&root);
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert!(found[0].ends_with("dist/index.js"));
+
+        let root = scratch("pi-manifest");
+        write(
+            &root.join("adapter/package.json"),
+            r#"{ "name": "pi-mcp-adapter", "pi": { "extensions": ["index.ts"] } }"#,
+        );
+        write(&root.join("adapter/index.ts"), "export default () => {}");
+        assert_eq!(in_directory(&root).len(), 1);
     }
 
     /// A manifest is the only way to load something other than an index, which is what

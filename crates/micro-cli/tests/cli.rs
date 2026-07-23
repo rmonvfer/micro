@@ -874,3 +874,132 @@ fn a_project_without_extensions_says_nothing_about_them() {
         output.stderr
     );
 }
+
+/// A package installed from a path is remembered, and its tool is offered on the next run
+/// without anything else being said.
+#[test]
+fn an_installed_package_is_loaded_on_the_next_run() {
+    if which_bun().is_none() {
+        return;
+    }
+    let api = FakeApi::start([Reply::text("fine")]);
+    let fixture = Fixture::new(&api);
+
+    // A package the way one arrives from npm: a manifest naming its entry point.
+    fixture.write(
+        "package/package.json",
+        r#"{ "name": "micro-demo", "pi": { "extensions": ["index.ts"] } }"#,
+    );
+    fixture.write(
+        "package/index.ts",
+        r#"
+export default (micro) => {
+    micro.registerTool({
+        name: "demo_from_package",
+        description: "A tool that arrived in a package",
+        execute: async () => "the package tool ran",
+    });
+};
+"#,
+    );
+
+    let installed = fixture.micro_run(&["install", &path_of(&fixture, "package")]);
+    assert!(installed.status.success(), "{}", installed.stderr);
+    assert!(
+        installed.stdout.contains("demo_from_package"),
+        "the install says what it registered: {}",
+        installed.stdout
+    );
+
+    // Nothing else is configured: the next run finds it through the settings alone.
+    let output = fixture.print(&["-m", "test", "say something"]);
+    assert!(output.status.success(), "{}", output.stderr);
+
+    let request = api.request(0);
+    let tools = request["tools"].as_array().expect("tools were sent");
+    assert!(
+        tools.iter().any(|tool| tool["function"]["name"] == "demo_from_package"),
+        "the installed package's tool was offered: {tools:#?}"
+    );
+}
+
+/// A source that names nothing installable is refused before anything is written down.
+#[test]
+fn installing_something_that_is_not_there_changes_nothing() {
+    let api = FakeApi::start([]);
+    let fixture = Fixture::new(&api);
+
+    let installed = fixture.micro_run(&["install", "/nowhere-at-all"]);
+    assert!(!installed.status.success());
+    assert!(
+        !fixture.home().join("config.json").exists()
+            || !std::fs::read_to_string(fixture.home().join("config.json"))
+                .unwrap_or_default()
+                .contains("nowhere-at-all"),
+        "nothing was remembered"
+    );
+}
+
+/// An extension is told what the agent is doing as it happens, under the names ohm uses.
+#[test]
+fn an_extension_hears_the_lifecycle_events() {
+    if which_bun().is_none() {
+        return;
+    }
+    let api = FakeApi::start([
+        Reply::tool_call("call_1", "read", json!({ "path": "notes.txt" })),
+        Reply::text("done"),
+    ]);
+    let fixture = Fixture::new(&api);
+    fixture.write("notes.txt", "the file's contents");
+
+    // The extension writes down every event it hears, so the test can read them back.
+    let log = fixture.workspace().join("events.log");
+    fixture.write(
+        ".micro/extensions/listener.ts",
+        &format!(
+            r#"
+import {{ appendFileSync }} from "node:fs";
+const log = {log:?};
+export default (micro) => {{
+    for (const event of [
+        "session_start",
+        "agent_start",
+        "turn_start",
+        "message_start",
+        "message_end",
+        "tool_execution_start",
+        "tool_execution_end",
+        "agent_end",
+    ]) {{
+        micro.on(event, (payload) => {{
+            appendFileSync(log, `${{event}} ${{JSON.stringify(payload).slice(0, 120)}}\n`);
+        }});
+    }}
+}};
+"#,
+            log = log.display().to_string()
+        ),
+    );
+
+    let output = fixture.print(&["-m", "test", "--approve", "unrestricted", "read the notes"]);
+    assert!(output.status.success(), "{}", output.stderr);
+
+    let heard = std::fs::read_to_string(&log).unwrap_or_default();
+    for event in [
+        "session_start",
+        "agent_start",
+        "turn_start",
+        "message_start",
+        "message_end",
+        "tool_execution_start",
+        "tool_execution_end",
+        "agent_end",
+    ] {
+        assert!(heard.contains(event), "{event} was heard: {heard}");
+    }
+
+    // And the events carry what happened, not just that it happened.
+    assert!(heard.contains("\"toolName\":\"read\""), "{heard}");
+    assert!(heard.contains("notes.txt"), "{heard}");
+}

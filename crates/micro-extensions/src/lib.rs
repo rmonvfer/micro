@@ -7,6 +7,8 @@
 
 mod discover;
 mod host;
+mod events;
+mod packages;
 mod tool;
 
 pub use discover::discover;
@@ -23,4 +25,10 @@ pub use host::RegisteredCommand;
 pub use host::RegisteredFlag;
 pub use host::RegisteredShortcut;
 pub use host::RegisteredTool;
+pub use events::name_of;
+pub use events::payload_of;
+pub use packages::install;
+pub use packages::remove;
+pub use packages::Installed;
+pub use packages::Source;
 pub use tool::ExtensionTool;
