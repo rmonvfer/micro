@@ -19,7 +19,7 @@ The file tools resolve paths against the workspace selected by `-C` or the curre
 
 Reading a PNG, JPEG, GIF, WebP, or BMP hands the picture to the model rather than the bytes, and draws it in the transcript on the terminals that can show one. That is how the agent puts an image in front of you: it reads it.
 
-`bash` runs under the selected [command sandbox](sandbox.md). Under the default policy, commands may read outside the workspace but may only write inside it. `.git`, `.micro`, and micro's own data remain read-only.
+`bash` runs under the selected [command sandbox](sandbox.md). Under the default policy, commands may read outside the workspace but may only write inside it. Protected paths remain read-only for built-in file tools and macOS shell commands; Linux shell commands enforce the workspace boundary but not protected descendants.
 
 Tool output longer than 30,000 characters is truncated in the middle before it is returned to the model.
 

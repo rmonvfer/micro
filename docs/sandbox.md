@@ -10,9 +10,9 @@ The sandbox restricts commands and file operations performed on behalf of the mo
 | `workspace-write` | allowed       | workspace only | blocked by default |
 | `full`            | allowed       | unrestricted   | unrestricted       |
 
-Under `workspace-write`, `.git`, `.micro`, and micro's own configuration and data directories remain read-only even when they are inside the workspace.
+Under `workspace-write`, built-in file operations keep `.git`, `.micro`, and micro's own configuration and data directories read-only even when they are inside the workspace. The macOS command sandbox enforces the same protected subpaths for shell commands. Linux Landlock confines shell-command writes to the workspace but cannot subtract protected descendants from a writable parent.
 
-Because `.git` is protected, agent-run commands cannot commit under the default policy. Run the commit yourself or explicitly use `full` for that session.
+On macOS, agent-run commands cannot commit under the default policy because `.git` is protected. On Linux, use `read-only` when shell commands must not modify repository metadata.
 
 There is no default writable exception for `/tmp` or `$TMPDIR`. Configure a writable root when a toolchain needs one.
 
@@ -116,6 +116,7 @@ The parent process resolves paths and policy. The helper does not reinterpret th
 
 - Windows command confinement is not implemented.
 - Landlock can only apply path rules to entries that already exist. In-process file checks still protect reserved paths that do not yet exist.
+- Linux Landlock rules are additive. Under `workspace-write`, shell commands can modify protected paths inside the workspace; built-in file tools still reject those writes.
 - A non-zero command result is not always distinguishable from an OS-level denial. micro uses platform signals and known error text to classify it for reporting; the kernel or file-tool check remains the authority on whether the operation was allowed.
 
 Use `micro sandbox try` on the target platform when policy behavior is part of a deployment or CI requirement.

@@ -67,7 +67,7 @@ micro treats the current directory as the workspace. Use `-C` to select another 
 micro -C /path/to/project "run the tests and summarize the failures"
 ```
 
-The default sandbox policy allows writes inside the workspace, blocks network access, and keeps `.git` and `.micro` read-only. See [Security model](security.md) before changing the policy.
+The default sandbox policy allows writes inside the workspace and blocks network access. Built-in file tools keep `.git` and `.micro` read-only; command-level protected-path enforcement is platform-specific. See [Security model](security.md) before changing the policy.
 
 ## Run without the interface
 

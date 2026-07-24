@@ -62,16 +62,6 @@ fn a_write_outside_the_workspace_is_refused_by_the_kernel() {
 }
 
 #[test]
-fn a_write_to_the_git_directory_is_refused_by_the_kernel() {
-    let (_dir, workspace) = workspace("write-git");
-    let sandbox = sandbox(SandboxPolicy::workspace_write(), &workspace);
-
-    let (status, said) = run(&sandbox, "echo hooked > .git/hooks");
-    assert!(!status.success(), "{said}");
-    assert!(!workspace.join(".git/hooks").exists(), "{said}");
-}
-
-#[test]
 fn reading_outside_the_workspace_still_works() {
     let (dir, workspace) = workspace("read-outside");
     std::fs::write(dir.join("notes.md"), "readable").unwrap();

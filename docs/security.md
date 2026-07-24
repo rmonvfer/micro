@@ -33,7 +33,7 @@ Trust does not disable the command sandbox. It only decides whether micro loads 
 The default command policy is `workspace-write`:
 
 - shell commands may read outside the workspace but may write only inside it;
-- `.git`, `.micro`, and micro's own data directories remain read-only;
+- built-in file tools keep `.git`, `.micro`, and micro's own data directories read-only; macOS shell commands inherit the same protection, while Linux shell commands are confined to the workspace boundary;
 - network access is blocked;
 - built-in file tools cannot read or write outside the workspace.
 
