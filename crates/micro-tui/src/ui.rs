@@ -1,4 +1,4 @@
-//! Questions from outside the interface.
+//! What the interface is asked to do from outside it.
 //!
 //! An extension runs in another process and cannot draw anything. When it wants the user
 //! asked something it sends the question here, and waits: the interface opens whatever
@@ -14,10 +14,13 @@ use tokio::sync::mpsc::UnboundedReceiver;
 use tokio::sync::mpsc::UnboundedSender;
 use tokio::sync::oneshot;
 
-/// What is being asked, and where the answer goes.
+/// What is being asked for, and where the answer goes.
+///
+/// Mostly a question for the user, but the same path carries anything only the interface
+/// can do — putting a message into the conversation among them.
 #[derive(Debug)]
 pub struct UiRequest {
-    /// `select`, `confirm`, `input` or `notify`.
+    /// `select`, `confirm`, `input`, `notify`, or `send_user_message`.
     pub method: String,
     /// What the question says.
     pub title: String,

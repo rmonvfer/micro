@@ -449,6 +449,14 @@ impl App {
     /// the extension is told something rather than left waiting.
     pub fn ask_question(&mut self, request: crate::ui::UiRequest) {
         match request.method.as_str() {
+            // Not a question: a message an extension wants said, which goes into the
+            // conversation as though the user had written it.
+            "send_user_message" => {
+                let mut request = request;
+                self.queue_line(request.title.clone());
+                request.answer(serde_json::json!({ "queued": true }));
+                return;
+            }
             "notify" => {
                 let mut request = request;
                 self.notice(request.title.clone(), MessageKind::Info);

@@ -34,7 +34,9 @@ pub async fn serve(host: Arc<Host>, workspace: PathBuf, asker: Option<micro_tui:
                 }
             }
             // An action is carried out where it belongs; nothing goes back.
-            FromHost::Action { action, payload } => carry_out(&action, &payload),
+            FromHost::Action { action, payload } => {
+                carry_out(&action, &payload, asker.as_ref()).await
+            }
             FromHost::Ui { id, payload } => {
                 let answer = show(&payload, asker.as_ref()).await;
                 if let Some(id) = id {
@@ -97,15 +99,43 @@ async fn exec(payload: &Value, workspace: &PathBuf) -> Value {
 }
 
 /// Something an extension asked to have done.
-fn carry_out(action: &str, payload: &Value) {
+///
+/// Anything that reaches the conversation goes through the interface, because the
+/// conversation is the interface's: it holds the agent and decides when a turn runs.
+async fn carry_out(action: &str, payload: &Value, asker: Option<&micro_tui::UiAsker>) {
     match action {
-        // These reach the conversation, which belongs to whoever is driving the run. Until
-        // that path exists they are reported rather than silently dropped.
-        "send_user_message" | "send_message" | "set_session_name" | "set_thinking_level" => {
-            eprintln!(
-                "note: an extension asked to {action}, which micro cannot do from here yet"
-            );
-            let _ = payload;
+        "send_user_message" => {
+            let content = payload
+                .get("content")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string();
+            if content.trim().is_empty() {
+                return;
+            }
+            match asker {
+                Some(asker) => {
+                    asker
+                        .ask("send_user_message", content, None, Vec::new())
+                        .await;
+                }
+                // Headless, there is no conversation to put it into.
+                None => eprintln!("note: an extension tried to send a message with no session"),
+            }
+        }
+        // A custom message is one an extension draws itself, which needs a renderer it
+        // registered. Until there is one, saying it plainly is better than dropping it.
+        "send_message" => {
+            let said = payload
+                .get("message")
+                .and_then(|message| message.get("content"))
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            if !said.trim().is_empty() {
+                if let Some(asker) = asker {
+                    asker.ask("notify", said, None, Vec::new()).await;
+                }
+            }
         }
         other => eprintln!("note: an extension asked for `{other}`, which micro does not know"),
     }
@@ -228,6 +258,33 @@ mod tests {
     async fn a_request_micro_does_not_know_is_answered_rather_than_ignored() {
         let answer = answer("fly", &json!({}), &std::env::temp_dir()).await;
         assert!(answer["error"].as_str().unwrap().contains("fly"));
+    }
+
+    /// A message an extension sends goes into the conversation through the interface.
+    #[tokio::test]
+    async fn a_message_from_an_extension_reaches_the_conversation() {
+        let (asker, mut requests) = micro_tui::ui_channel();
+        let sending = tokio::spawn(async move {
+            carry_out(
+                "send_user_message",
+                &json!({ "content": "look at the tests" }),
+                Some(&asker),
+            )
+            .await
+        });
+
+        let mut request = requests.recv().await.expect("a message");
+        assert_eq!(request.method, "send_user_message");
+        assert_eq!(request.title, "look at the tests");
+        request.answer(json!({ "queued": true }));
+        sending.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn an_empty_message_is_not_sent_at_all() {
+        let (asker, mut requests) = micro_tui::ui_channel();
+        carry_out("send_user_message", &json!({ "content": "   " }), Some(&asker)).await;
+        assert!(requests.try_recv().is_none());
     }
 
     /// A headless run has nobody to ask, and says so rather than choosing for them.
