@@ -38,6 +38,7 @@ mod menu;
 mod picker;
 mod render;
 mod tools;
+pub mod ui;
 mod wrap;
 
 // The pieces the interface is assembled from. They hold no terminal state, so a caller that
@@ -56,6 +57,10 @@ pub use commands::ConversationState;
 pub use commands::DoubleEscape;
 pub use commands::Preferences;
 pub use theme::Theme;
+pub use ui::ui_channel;
+pub use ui::UiAsker;
+pub use ui::UiRequest;
+pub use ui::UiRequests;
 
 use crate::app::App;
 use crate::app::Outcome;
@@ -131,6 +136,7 @@ async fn drive(
     mut options: TuiOptions,
 ) -> Result<()> {
     let mut approvals = options.approvals.take();
+    let mut questions = options.questions.take();
     let mut commands = options.commands.take();
     let mut app = App::new(history, options);
     let mut input = EventStream::new();
@@ -155,14 +161,24 @@ async fn drive(
             continue;
         }
 
+        // A question waiting while nothing else is happening is shown now, so an extension
+        // that asks between turns is not left until the next keystroke.
+        if let Some(question) = questions.as_mut().and_then(|questions| questions.try_recv()) {
+            app.ask_question(question);
+            continue;
+        }
+
         match app.take_submission() {
             Some(line) => {
                 submit(
-                    screen,
-                    &mut app,
-                    agent,
-                    &mut input,
-                    approvals.as_mut(),
+                    Turn {
+                        screen,
+                        app: &mut app,
+                        agent,
+                        input: &mut input,
+                        approvals: approvals.as_mut(),
+                        questions: &mut questions,
+                    },
                     commands.as_deref_mut(),
                     line,
                 )
@@ -303,15 +319,30 @@ fn external_editor(screen: &mut Screen, app: &mut App) -> Result<()> {
 ///
 /// Whether it is a command comes from dispatching it, never from the leading slash, so a
 /// prompt that happens to start with a path still reaches the model.
+/// Everything a turn needs besides the line: the terminal, the state, the agent, and the
+/// two places something can arrive from while it runs.
+struct Turn<'a> {
+    screen: &'a mut Screen,
+    app: &'a mut App,
+    agent: &'a mut Agent,
+    input: &'a mut EventStream,
+    approvals: Option<&'a mut ApprovalRequests>,
+    questions: &'a mut Option<crate::ui::UiRequests>,
+}
+
 async fn submit(
-    screen: &mut Screen,
-    app: &mut App,
-    agent: &mut Agent,
-    input: &mut EventStream,
-    approvals: Option<&mut ApprovalRequests>,
+    turn: Turn<'_>,
     commands: Option<&mut (dyn Commands + 'static)>,
     line: String,
 ) -> Result<()> {
+    let Turn {
+        screen,
+        app,
+        agent,
+        input,
+        approvals,
+        questions,
+    } = turn;
     // `!` runs a command here instead of asking the model to run one. Its output still
     // joins the conversation, so the model knows what the user just did.
     if let Some(command) = line.strip_prefix('!') {
@@ -321,7 +352,7 @@ async fn submit(
     let Some(commands) = commands else {
         mark_prompt_submitted();
         let prompt = app.begin_turn(&line);
-        return run_turn(screen, app, agent, input, approvals, prompt).await;
+        return run_turn(screen, app, agent, input, approvals, questions, prompt).await;
     };
 
     let state = app.conversation_state();
@@ -336,7 +367,7 @@ async fn submit(
         Some(None) => {
             mark_prompt_submitted();
             let prompt = app.begin_turn(&line);
-            run_turn(screen, app, agent, input, approvals, prompt).await
+            run_turn(screen, app, agent, input, approvals, questions, prompt).await
         }
         Some(Some(outcome)) => apply_outcome(screen, app, agent, input, commands, outcome).await,
     }
@@ -597,6 +628,7 @@ async fn run_turn(
     agent: &mut Agent,
     input: &mut EventStream,
     approvals: Option<&mut ApprovalRequests>,
+    questions: &mut Option<crate::ui::UiRequests>,
     prompt: Message,
 ) -> Result<()> {
     let (sender, mut receiver) = unbounded_channel::<AgentEvent>();
@@ -644,6 +676,7 @@ async fn run_turn(
                 }
             },
             Some(pending) = next_approval(&mut approvals) => app.ask_approval(pending),
+            Some(question) = next_question(questions) => app.ask_question(question),
             Some(event) = receiver.recv() => {
                 app.apply_event(event);
                 while let Ok(next) = receiver.try_recv() {
@@ -672,6 +705,15 @@ async fn run_turn(
     app.finish_turn(aborted);
     report_progress(progress, false);
     Ok(())
+}
+
+/// The next question from an extension. Inert when nothing can ask, for the same reason as
+/// [`next_approval`].
+async fn next_question(requests: &mut Option<crate::ui::UiRequests>) -> Option<crate::ui::UiRequest> {
+    match requests {
+        Some(requests) => requests.recv().await,
+        None => std::future::pending().await,
+    }
 }
 
 /// The next approval request. With nothing able to ask, this never resolves, which leaves

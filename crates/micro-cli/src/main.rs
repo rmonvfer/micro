@@ -213,6 +213,15 @@ async fn main() -> Result<()> {
 
     // Each front end answers the policy its own way: the non-interactive path prompts on
     // the terminal, while the interface routes requests to a modal over the transcript.
+    // Extensions ask their questions through the interface, when there is one.
+    let (asker, questions) = match cli.print || cli.rpc {
+        true => (None, None),
+        false => {
+            let (asker, requests) = micro_tui::ui_channel();
+            (Some(asker), Some(requests))
+        }
+    };
+
     let (approver, approvals): (std::sync::Arc<dyn micro_policy::Approver>, _) = match (
         cli.print, cli.rpc,
     ) {
@@ -258,6 +267,7 @@ async fn main() -> Result<()> {
         tokio::spawn(extensions::serve(
             std::sync::Arc::clone(host),
             root.clone(),
+            asker.clone(),
         ));
     }
 
@@ -308,6 +318,7 @@ async fn main() -> Result<()> {
             thinking: cli.thinking,
             settings: micro_tui::Preferences::from(&settings),
             approvals,
+            questions,
             // Without this every submitted line goes to the model, `/help` included.
             commands: Some(Box::new(built.commands)),
             ..micro_tui::TuiOptions::default()

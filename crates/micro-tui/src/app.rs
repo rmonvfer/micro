@@ -56,6 +56,8 @@ pub struct TuiOptions {
     pub theme: Option<Theme>,
     /// Where tool calls come to be approved, when anything is gating them.
     pub approvals: Option<crate::approval::ApprovalRequests>,
+    /// Where questions from extensions arrive, when anything can ask them.
+    pub questions: Option<crate::ui::UiRequests>,
     /// How a slash command is run. Without this every submitted line goes to the model.
     pub commands: Option<Box<dyn Commands + 'static>>,
     /// What the user settled in `/settings`.
@@ -71,6 +73,7 @@ impl Default for TuiOptions {
             thinking: ThinkingLevel::Off,
             theme: None,
             approvals: None,
+            questions: None,
             commands: None,
             settings: Preferences::default(),
         }
@@ -104,12 +107,17 @@ pub enum Outcome {
 /// never drawn, never kept in the prompt's history, and never submitted to the model.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct KeyPrompt {
+    /// What is being asked for, which is the provider when a credential is wanted and the
+    /// question itself when an extension is asking.
     pub provider: String,
     /// The variables that would supply the key instead, worth naming while asking.
     pub env_names: Vec<String>,
     key: String,
     /// Set when the user pressed enter, so the loop can collect it.
     done: bool,
+    /// Whether what is typed is drawn back. A credential never is; an answer to a question
+    /// always is, or the person cannot see what they are writing.
+    pub masked: bool,
 }
 
 impl KeyPrompt {
@@ -122,6 +130,11 @@ impl KeyPrompt {
         self.key.is_empty()
     }
 
+    /// What has been typed, for a prompt that is not asking for a secret.
+    pub fn text(&self) -> &str {
+        &self.key
+    }
+
     /// A prompt with a key already in it, for a renderer's tests. The key is private
     /// everywhere else, so there is no other way to build one part-typed.
     #[cfg(test)]
@@ -131,6 +144,7 @@ impl KeyPrompt {
             env_names,
             key: key.to_string(),
             done: false,
+            masked: true,
         }
     }
 }
@@ -193,6 +207,8 @@ pub struct App {
     menu: Option<Menu>,
     picker: Option<Picker>,
     key_prompt: Option<KeyPrompt>,
+    /// A question an extension asked, waiting for whatever overlay is showing it.
+    question: Option<crate::ui::UiRequest>,
     /// Images taken off the clipboard, riding with the next prompt.
     attachments: Vec<ContentBlock>,
     /// The tool result the reader has selected, as an index into the transcript.
@@ -238,6 +254,7 @@ impl App {
             menu: None,
             picker: None,
             key_prompt: None,
+            question: None,
             attachments: Vec::new(),
             focus: None,
             scroll: 0,
@@ -426,6 +443,42 @@ impl App {
         self.picker = Some(Picker::new(choices));
     }
 
+    /// Show a question an extension asked, in whatever suits it.
+    ///
+    /// The question is held until it is answered or closed, so however the overlay ends,
+    /// the extension is told something rather than left waiting.
+    pub fn ask_question(&mut self, request: crate::ui::UiRequest) {
+        match request.method.as_str() {
+            "notify" => {
+                let mut request = request;
+                self.notice(request.title.clone(), MessageKind::Info);
+                request.answer(serde_json::json!({}));
+                return;
+            }
+            "select" => {
+                let items = request
+                    .options
+                    .iter()
+                    .map(|option| {
+                        micro_commands::PickerItem::new(option.clone(), String::new(), option.clone())
+                    })
+                    .collect();
+                self.open_picker(micro_commands::Picker::new(request.title.clone(), items));
+            }
+            "confirm" => {
+                let detail = request.detail.clone().unwrap_or_default();
+                let items = vec![
+                    micro_commands::PickerItem::new("Yes", detail.clone(), "yes"),
+                    micro_commands::PickerItem::new("No", detail, "no"),
+                ];
+                self.open_picker(micro_commands::Picker::new(request.title.clone(), items));
+            }
+            // Anything else is asked in words.
+            _ => self.open_input(request.title.clone(), request.detail.clone()),
+        }
+        self.question = Some(request);
+    }
+
     /// Ask for a credential. What is typed is held apart from the prompt, so it is never
     /// drawn, never remembered, and never sent anywhere but the credential store.
     pub fn open_key_prompt(&mut self, provider: String, env_names: Vec<String>) {
@@ -434,6 +487,21 @@ impl App {
             env_names,
             key: String::new(),
             done: false,
+            masked: true,
+        });
+    }
+
+    /// Ask the user something in words, and show what they type.
+    ///
+    /// The same overlay as a credential prompt, drawn plainly: an extension asking a
+    /// question is not asking for a secret.
+    pub fn open_input(&mut self, question: String, placeholder: Option<String>) {
+        self.key_prompt = Some(KeyPrompt {
+            provider: question,
+            env_names: placeholder.into_iter().collect(),
+            key: String::new(),
+            done: false,
+            masked: false,
         });
     }
 
@@ -1004,9 +1072,21 @@ impl App {
             Action::Backspace => {
                 prompt.key.pop();
             }
-            Action::Submit => prompt.done = true,
+            Action::Submit => {
+                prompt.done = true;
+                let said = prompt.text().to_string();
+                // A question asked in words is answered here; a credential is collected by
+                // the loop, which is what `take_key_prompt` is for.
+                if let Some(mut question) = self.question.take() {
+                    self.key_prompt = None;
+                    question.answer(serde_json::json!({ "value": said }));
+                }
+            }
             Action::Cancel | Action::Interrupt => {
                 self.key_prompt = None;
+                if let Some(mut question) = self.question.take() {
+                    question.cancel();
+                }
             }
             Action::Quit => return Outcome::Quit,
             _ => {}
@@ -1026,11 +1106,31 @@ impl App {
             Action::Submit => {
                 let chosen = picker.commit();
                 self.picker = None;
-                if let Some(line) = chosen {
-                    self.queue_line(line);
+                match self.question.take() {
+                    // The chosen item carries the answer, not a command to run.
+                    Some(mut question) => {
+                        let answer = match (question.method.as_str(), chosen.as_deref()) {
+                            ("confirm", Some(said)) => {
+                                serde_json::json!({ "confirmed": said == "yes" })
+                            }
+                            (_, Some(said)) => serde_json::json!({ "value": said }),
+                            (_, None) => serde_json::json!({ "cancelled": true }),
+                        };
+                        question.answer(answer);
+                    }
+                    None => {
+                        if let Some(line) = chosen {
+                            self.queue_line(line);
+                        }
+                    }
                 }
             }
-            Action::Cancel | Action::Interrupt => self.picker = None,
+            Action::Cancel | Action::Interrupt => {
+                self.picker = None;
+                if let Some(mut question) = self.question.take() {
+                    question.cancel();
+                }
+            }
             Action::Quit => return Outcome::Quit,
             _ => {}
         }

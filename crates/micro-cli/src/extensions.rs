@@ -16,7 +16,7 @@ use std::sync::Arc;
 ///
 /// The stream of asks is taken out of the host first: waiting on it through the host would
 /// hold its lock, and then nothing could be answered while nothing was being asked.
-pub async fn serve(host: Arc<Host>, workspace: PathBuf) {
+pub async fn serve(host: Arc<Host>, workspace: PathBuf, asker: Option<micro_tui::UiAsker>) {
     let Some(mut asks) = host.take_asks().await else {
         return;
     };
@@ -36,7 +36,7 @@ pub async fn serve(host: Arc<Host>, workspace: PathBuf) {
             // An action is carried out where it belongs; nothing goes back.
             FromHost::Action { action, payload } => carry_out(&action, &payload),
             FromHost::Ui { id, payload } => {
-                let answer = show(&payload);
+                let answer = show(&payload, asker.as_ref()).await;
                 if let Some(id) = id {
                     if host.answer(&id, answer).await.is_err() {
                         return;
@@ -112,24 +112,77 @@ fn carry_out(action: &str, payload: &Value) {
 }
 
 /// Show the user what an extension wants shown, and say what came back.
-fn show(payload: &Value) -> Value {
+///
+/// With no interface to ask through — a headless run — a question is cancelled rather than
+/// answered with something nobody chose.
+async fn show(payload: &Value, asker: Option<&micro_tui::UiAsker>) -> Value {
     let method = payload
         .get("method")
         .and_then(Value::as_str)
         .unwrap_or_default();
+    let text = |name: &str| {
+        payload
+            .get(name)
+            .and_then(Value::as_str)
+            .map(str::to_string)
+    };
+
+    let Some(asker) = asker else {
+        return match method {
+            "notify" => {
+                if let Some(message) = text("message") {
+                    eprintln!("{message}");
+                }
+                json!({})
+            }
+            _ => json!({ "cancelled": true }),
+        };
+    };
 
     match method {
         "notify" => {
-            let message = payload
-                .get("message")
-                .and_then(Value::as_str)
-                .unwrap_or_default();
-            eprintln!("{message}");
-            json!({})
+            asker
+                .ask("notify", text("message").unwrap_or_default(), None, Vec::new())
+                .await
         }
-        // Asking a question needs somebody to answer it, and out here there is nobody.
-        // Cancelling is the honest answer rather than a made-up one.
-        _ => json!({ "cancelled": true }),
+        "select" => {
+            let options = payload
+                .get("options")
+                .and_then(Value::as_array)
+                .map(|values| {
+                    values
+                        .iter()
+                        .filter_map(Value::as_str)
+                        .map(str::to_string)
+                        .collect()
+                })
+                .unwrap_or_default();
+            asker
+                .ask("select", text("title").unwrap_or_default(), None, options)
+                .await
+        }
+        "confirm" => {
+            asker
+                .ask(
+                    "confirm",
+                    text("title").unwrap_or_default(),
+                    text("message"),
+                    Vec::new(),
+                )
+                .await
+        }
+        "input" => {
+            asker
+                .ask(
+                    "input",
+                    text("title").unwrap_or_default(),
+                    text("placeholder"),
+                    Vec::new(),
+                )
+                .await
+        }
+        // Anything else has nowhere to be shown, and saying so beats pretending.
+        other => json!({ "cancelled": true, "error": format!("micro cannot show `{other}`") }),
     }
 }
 
@@ -177,9 +230,31 @@ mod tests {
         assert!(answer["error"].as_str().unwrap().contains("fly"));
     }
 
-    #[test]
-    fn a_question_nobody_can_answer_comes_back_cancelled() {
-        let answer = show(&json!({ "method": "select", "title": "pick", "options": ["a"] }));
+    /// A headless run has nobody to ask, and says so rather than choosing for them.
+    #[tokio::test]
+    async fn a_question_with_no_interface_comes_back_cancelled() {
+        let answer = show(&json!({ "method": "select", "title": "pick", "options": ["a"] }), None).await;
         assert_eq!(answer["cancelled"], true);
+    }
+
+    /// With an interface, the question reaches it and the answer comes back.
+    #[tokio::test]
+    async fn a_question_reaches_the_interface() {
+        let (asker, mut requests) = micro_tui::ui_channel();
+        let showing = tokio::spawn(async move {
+            show(
+                &json!({ "method": "select", "title": "pick one", "options": ["a", "b"] }),
+                Some(&asker),
+            )
+            .await
+        });
+
+        let mut request = requests.recv().await.expect("a question");
+        assert_eq!(request.method, "select");
+        assert_eq!(request.title, "pick one");
+        assert_eq!(request.options, vec!["a", "b"]);
+        request.answer(json!({ "value": "b" }));
+
+        assert_eq!(showing.await.unwrap()["value"], "b");
     }
 }

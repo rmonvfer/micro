@@ -150,26 +150,28 @@ fn row(
 
 /// The prompt for a credential. What is typed is never drawn back.
 pub fn key_prompt_lines(prompt: &KeyPrompt, theme: &Theme, width: usize) -> Vec<Line<'static>> {
+    let title = match prompt.masked {
+        true => format!("sign in to {}", prompt.provider),
+        false => prompt.provider.clone(),
+    };
     let mut out = vec![Line::from(vec![
         Span::raw("  "),
         Span::styled(
-            format!("sign in to {}", prompt.provider),
+            title,
             Style::new().fg(theme.accent).add_modifier(Modifier::BOLD),
         ),
     ])];
 
     if !prompt.env_names.is_empty() {
+        let note = match prompt.masked {
+            true => format!(
+                "paste an API key, or leave this and set {}",
+                prompt.env_names.join(" or ")
+            ),
+            false => prompt.env_names.join(" "),
+        };
         out.extend(wrap_spans(
-            &[
-                Span::raw("  "),
-                Span::styled(
-                    format!(
-                        "paste an API key, or leave this and set {}",
-                        prompt.env_names.join(" or ")
-                    ),
-                    theme.dimmed(),
-                ),
-            ],
+            &[Span::raw("  "), Span::styled(note, theme.dimmed())],
             width,
             2,
         ));
@@ -179,7 +181,11 @@ pub fn key_prompt_lines(prompt: &KeyPrompt, theme: &Theme, width: usize) -> Vec<
     out.push(Line::from(vec![
         Span::styled("  > ", Style::new().fg(theme.accent)),
         Span::styled(
-            "•".repeat(prompt.len().min(width.saturating_sub(6))),
+            match prompt.masked {
+                // A credential is never drawn back, however much of it has been typed.
+                true => "•".repeat(prompt.len().min(width.saturating_sub(6))),
+                false => crate::wrap::truncate(prompt.text(), width.saturating_sub(6)).to_string(),
+            },
             Style::new().fg(theme.text),
         ),
         Span::styled(
