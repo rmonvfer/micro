@@ -1077,3 +1077,55 @@ export default (micro) => {{
     let ran = std::fs::read_to_string(&log).expect("the extension wrote what it got");
     assert!(ran.contains("from an extension"), "{ran}");
 }
+
+/// An extension can declare a provider, and a model it declared is one micro will run.
+#[test]
+fn an_extension_can_declare_a_provider_micro_then_uses() {
+    if which_bun().is_none() {
+        return;
+    }
+    let api = FakeApi::start([Reply::text("answered through the declared provider")]);
+    let fixture = Fixture::new(&api);
+    fixture.write(
+        ".micro/extensions/provider.ts",
+        &format!(
+            r#"
+export default (micro) => {{
+    micro.registerProvider("my-proxy", {{
+        name: "My Proxy",
+        baseUrl: {base:?},
+        api: "openai-completions",
+        apiKey: "sk-declared",
+        models: [{{
+            id: "proxied-model",
+            name: "Proxied Model",
+            contextWindow: 128000,
+            maxTokens: 8192,
+            cost: {{ input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }},
+        }}],
+    }});
+}};
+"#,
+            base = api.base_url()
+        ),
+    );
+
+    let output = fixture.print(&["-m", "proxied-model", "say something"]);
+    assert!(output.status.success(), "{}", output.stderr);
+    assert!(
+        output.stdout.contains("answered through the declared provider"),
+        "{}",
+        output.stdout
+    );
+
+    // The request went to the declared endpoint with the declared credential.
+    assert_eq!(api.request_count(), 1);
+    let headers = api.headers(0);
+    let authorization = headers
+        .get("authorization")
+        .expect("the request carried a credential");
+    assert!(
+        authorization.contains("sk-declared"),
+        "the declared key was used: {authorization}"
+    );
+}

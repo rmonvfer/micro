@@ -159,6 +159,20 @@ pub async fn resolve(store: &AuthStore, name: &str) -> Result<ResolvedProvider, 
     })
 }
 
+/// A client that speaks one wire protocol, for a provider the registry does not know.
+///
+/// An extension may declare a provider of its own; what matters then is not who serves it
+/// but which shape the request takes.
+pub fn client_for(api: micro_models::WireApi) -> Arc<dyn Provider> {
+    match api {
+        micro_models::WireApi::AnthropicMessages => Arc::new(Anthropic::new()),
+        micro_models::WireApi::GoogleGenerativeAi => Arc::new(Gemini::new()),
+        micro_models::WireApi::OpenaiResponses | micro_models::WireApi::OpenaiCompletions => {
+            Arc::new(OpenAi::new())
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -48,6 +48,16 @@ pub struct Registered {
     pub shortcuts: Vec<RegisteredShortcut>,
     #[serde(default)]
     pub events: Vec<String>,
+    #[serde(default)]
+    pub providers: Vec<RegisteredProvider>,
+}
+
+/// A provider an extension declared, or one it changed.
+#[derive(Debug, Clone, Deserialize)]
+pub struct RegisteredProvider {
+    pub name: String,
+    /// The provider as ohm's `registerProvider` describes it.
+    pub config: Value,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -209,6 +219,15 @@ impl Host {
             .extensions
             .iter()
             .flat_map(|extension| extension.tools.iter().cloned())
+            .collect()
+    }
+
+    /// Every provider they declared.
+    pub fn providers(&self) -> Vec<RegisteredProvider> {
+        self.loaded
+            .extensions
+            .iter()
+            .flat_map(|extension| extension.providers.iter().cloned())
             .collect()
     }
 

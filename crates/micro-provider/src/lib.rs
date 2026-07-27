@@ -16,6 +16,7 @@ pub use codex::Codex;
 pub use codex::Transport;
 pub use gemini::Gemini;
 pub use openai::OpenAi;
+pub use registry::client_for;
 pub use registry::known_providers;
 pub use registry::model_for;
 pub use registry::provider_by_name;

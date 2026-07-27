@@ -6,6 +6,7 @@ license.workspace = true
 
 [dependencies]
 micro-auth = { workspace = true }
+micro-models = { workspace = true }
 micro-types = { workspace = true }
 
 async-trait = { workspace = true }

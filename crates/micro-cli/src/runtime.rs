@@ -34,6 +34,13 @@ pub struct Selection {
     pub approver: Arc<dyn micro_policy::Approver>,
 }
 
+/// The two things a run needs from a provider: something to talk to it with, and the
+/// credential to talk with. Where they came from stops mattering here.
+struct Resolved {
+    client: std::sync::Arc<dyn micro_provider::Provider>,
+    api_key: String,
+}
+
 /// Everything a run needs, resolved and ready.
 pub struct Runtime {
     pub agent: Agent,
@@ -107,7 +114,13 @@ pub async fn build(
     // with.
     micro_provider::set_idle_timeout(settings.http_idle_timeout);
     let store = AuthStore::open().context("cannot open the credential store")?;
-    let catalog = Catalog::load().unwrap_or_else(|_| Catalog::bundled());
+    let mut catalog = Catalog::load().unwrap_or_else(|_| Catalog::bundled());
+
+    // Extensions are loaded before a model is picked, because one of them may be what
+    // serves it: a provider an extension declares is in the catalog by the time the
+    // catalog is read.
+    let extensions = load_extensions(root, settings).await;
+    let declared = apply_declared_providers(&mut catalog, extensions.as_deref(), settings);
     // A workspace that has been given a shortlist may only use what is on it, so a model
     // outside it cannot be reached by cycling or by a stale config.
     let catalog = match settings.scoped_models.is_empty() {
@@ -120,14 +133,35 @@ pub async fn build(
         .provider
         .clone()
         .unwrap_or_else(|| model.provider.clone());
-    let mut resolved = micro_provider::resolve(&store, &provider_name)
-        .await
-        .with_context(|| {
-            format!(
-                "no usable credential for `{provider_name}`. Run `micro auth login \
-                 {provider_name}`."
-            )
-        })?;
+    // A provider an extension declared is not in the registry, and does not need to be:
+    // it brought its own endpoint and its own credential, and the model says which wire
+    // protocol to speak.
+    let mut resolved = match micro_provider::resolve(&store, &provider_name).await {
+        Ok(resolved) => Resolved {
+            client: resolved.client,
+            api_key: resolved.api_key,
+        },
+        Err(error) => match declared.get(&provider_name) {
+            Some(key) => Resolved {
+                client: micro_provider::client_for(model.api),
+                api_key: key.clone(),
+            },
+            None => {
+                return Err(anyhow::Error::new(error).context(format!(
+                    "no usable credential for `{provider_name}`. Run `micro auth login \
+                     {provider_name}`."
+                )))
+            }
+        },
+    };
+
+    // A credential the store did not have may still have been declared alongside the
+    // provider, which is where an extension puts one.
+    if resolved.api_key.trim().is_empty() {
+        if let Some(key) = declared.get(&provider_name) {
+            resolved.api_key = key.clone();
+        }
+    }
 
     // A stored credential can be present and still be empty, which every provider reports
     // as a missing authentication header rather than as a bad key. Catching it here says
@@ -191,9 +225,7 @@ pub async fn build(
         root.to_path_buf(),
         Arc::clone(&selection.approver),
     ));
-    // Extensions are loaded before the tools are gated, so what they register goes
-    // through the same policy as everything built in.
-    let extensions = load_extensions(root, settings).await;
+    // What extensions registered goes through the same policy as everything built in.
     let mut tools = micro_tools::builtin_tools(root.to_path_buf());
     if let Some(host) = extensions.as_ref() {
         let registered = host.tools();
@@ -427,4 +459,43 @@ async fn forward_events(
             return;
         }
     }
+}
+
+/// Merge every provider the extensions declared into the catalog, and collect the
+/// credentials they brought with them.
+///
+/// A declaration that cannot be read is reported and skipped: one bad provider should not
+/// take the catalog down with it.
+fn apply_declared_providers(
+    catalog: &mut Catalog,
+    extensions: Option<&micro_extensions::Host>,
+    settings: &micro_config::Settings,
+) -> std::collections::BTreeMap<String, String> {
+    let mut keys = std::collections::BTreeMap::new();
+    let Some(host) = extensions else {
+        return keys;
+    };
+
+    for registered in host.providers() {
+        let declared = match micro_extensions::declare(&registered.name, &registered.config) {
+            Ok(declared) => declared,
+            Err(error) => {
+                if !settings.quiet_startup {
+                    eprintln!("note: {error}");
+                }
+                continue;
+            }
+        };
+
+        if let Err(error) = catalog.apply_overrides(&declared.catalog.to_string()) {
+            if !settings.quiet_startup {
+                eprintln!("note: {} was not applied: {error}", declared.name);
+            }
+            continue;
+        }
+        if let Some(key) = declared.api_key {
+            keys.insert(declared.name, key);
+        }
+    }
+    keys
 }

@@ -30,6 +30,7 @@ interface Registration {
 	handlers: Map<string, Array<(event: Json, ctx: unknown) => unknown>>;
 	flags: Map<string, { description?: string; type: "boolean" | "string"; default?: boolean | string }>;
 	shortcuts: Map<string, { description?: string; handler: (ctx: unknown) => unknown }>;
+	providers: Map<string, Json>;
 }
 
 const loaded: Registration[] = [];
@@ -86,6 +87,15 @@ function apiFor(registration: Registration) {
 
 		getFlag(name: string): boolean | string | undefined {
 			return flagValues.get(name);
+		},
+
+		/** Declare a provider, or change one micro already knows. */
+		registerProvider(name: string, config: Json): void {
+			registration.providers.set(name, config);
+		},
+
+		unregisterProvider(name: string): void {
+			registration.providers.delete(name);
 		},
 
 		// Actions. Each one is micro's to carry out.
@@ -156,6 +166,7 @@ async function load(path: string): Promise<void> {
 		handlers: new Map(),
 		flags: new Map(),
 		shortcuts: new Map(),
+		providers: new Map(),
 	};
 
 	try {
@@ -198,6 +209,7 @@ function describe(): Json {
 				description: shortcut.description ?? "",
 			})),
 			events: [...registration.handlers.keys()],
+			providers: [...registration.providers.entries()].map(([name, config]) => ({ name, config })),
 		})),
 		errors: failures,
 	};

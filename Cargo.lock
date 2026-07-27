@@ -1273,6 +1273,7 @@ name = "micro-extensions"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "micro-models",
  "micro-tools",
  "micro-types",
  "serde",
@@ -1312,6 +1313,7 @@ dependencies = [
  "async-trait",
  "futures",
  "micro-auth",
+ "micro-models",
  "micro-tools",
  "micro-types",
  "reqwest",
