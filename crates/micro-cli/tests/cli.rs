@@ -1129,3 +1129,114 @@ export default (micro) => {{
         "the declared key was used: {authorization}"
     );
 }
+
+/// An extension can refuse a tool call, and the model is told why instead of getting the
+/// tool's output.
+#[test]
+fn an_extension_can_block_a_tool_call() {
+    if which_bun().is_none() {
+        return;
+    }
+    let api = FakeApi::start([
+        Reply::tool_call("call_1", "write", json!({ "path": "secrets.env", "content": "x" })),
+        Reply::text("blocked, then"),
+    ]);
+    let fixture = Fixture::new(&api);
+    fixture.write(
+        ".micro/extensions/guard.ts",
+        r#"
+export default (micro) => {
+    micro.on("tool_call", (event) => {
+        if (String(event.input?.path ?? "").endsWith(".env")) {
+            return { block: true, reason: "no writing to environment files" };
+        }
+    });
+};
+"#,
+    );
+
+    let output = fixture.print(&["-m", "test", "--approve", "unrestricted", "write the file"]);
+    assert!(output.status.success(), "{}", output.stderr);
+
+    // The file was never written, and the model was told why.
+    assert!(!fixture.exists("secrets.env"), "the call did not run");
+    let second = api.request(1);
+    let refused = second["messages"]
+        .as_array()
+        .expect("a conversation")
+        .iter()
+        .any(|message| {
+            message["content"]
+                .as_str()
+                .is_some_and(|text| text.contains("no writing to environment files"))
+        });
+    assert!(refused, "the reason reached the model: {second:#?}");
+}
+
+/// An extension can rewrite what a tool returned before the model reads it.
+#[test]
+fn an_extension_can_rewrite_a_tool_result() {
+    if which_bun().is_none() {
+        return;
+    }
+    let api = FakeApi::start([
+        Reply::tool_call("call_1", "read", json!({ "path": "notes.txt" })),
+        Reply::text("read it"),
+    ]);
+    let fixture = Fixture::new(&api);
+    fixture.write("notes.txt", "token=SECRET-VALUE-1234");
+    fixture.write(
+        ".micro/extensions/redact.ts",
+        r#"
+export default (micro) => {
+    micro.on("tool_result", (event) => {
+        const cleaned = String(event.result ?? "").replace(/SECRET-[A-Z0-9-]+/g, "[redacted]");
+        if (cleaned !== event.result) {
+            return { content: cleaned };
+        }
+    });
+};
+"#,
+    );
+
+    let output = fixture.print(&["-m", "test", "--approve", "unrestricted", "read the notes"]);
+    assert!(output.status.success(), "{}", output.stderr);
+
+    let second = api.request(1);
+    let conversation = serde_json::to_string(&second).unwrap();
+    assert!(conversation.contains("[redacted]"), "the result was rewritten");
+    assert!(
+        !conversation.contains("SECRET-VALUE-1234"),
+        "the secret never reached the model: {conversation}"
+    );
+}
+
+/// An extension that only listens changes nothing, which is what keeps a watcher from
+/// accidentally intercepting.
+#[test]
+fn a_listener_that_answers_nothing_changes_nothing() {
+    if which_bun().is_none() {
+        return;
+    }
+    let api = FakeApi::start([
+        Reply::tool_call("call_1", "read", json!({ "path": "notes.txt" })),
+        Reply::text("read it"),
+    ]);
+    let fixture = Fixture::new(&api);
+    fixture.write("notes.txt", "the plain contents");
+    fixture.write(
+        ".micro/extensions/watcher.ts",
+        r#"
+export default (micro) => {
+    micro.on("tool_call", () => {});
+    micro.on("tool_result", () => {});
+};
+"#,
+    );
+
+    let output = fixture.print(&["-m", "test", "--approve", "unrestricted", "read the notes"]);
+    assert!(output.status.success(), "{}", output.stderr);
+
+    let conversation = serde_json::to_string(&api.request(1)).unwrap();
+    assert!(conversation.contains("the plain contents"), "{conversation}");
+}

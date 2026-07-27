@@ -255,6 +255,13 @@ pub async fn build(
     .with_context_window(model.context_window as usize)
     .with_recorder(recorder)
     .with_observer(watching);
+    // Extensions get a say in what a tool call does, before it runs and after it answers.
+    let agent = match extensions.as_ref() {
+        Some(host) => agent.with_tool_hooks(Arc::new(crate::extensions::ExtensionHooks::new(
+            Arc::clone(host),
+        ))),
+        None => agent,
+    };
     // Compaction is what keeps a long conversation inside the window; turned off, the
     // conversation is left to grow and the provider decides when it will not take more.
     let agent = match settings.auto_compact {

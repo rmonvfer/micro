@@ -249,6 +249,39 @@ impl Host {
         .await
     }
 
+    /// Tell the extensions something happened and wait for what they say about it.
+    ///
+    /// Unlike [`Host::notify`], this is a question: an extension handling the event may
+    /// answer, and what every handler answered comes back. Used where an extension is
+    /// allowed to change what happens rather than only to watch it.
+    pub async fn ask_event(&self, event: &str, payload: Value) -> Result<Vec<Value>, String> {
+        let id = self.claim_id();
+        let (sender, receiver) = oneshot::channel();
+        self.pending.lock().await.insert(id.clone(), sender);
+
+        write_line(
+            &mut *self.stdin.lock().await,
+            &serde_json::json!({
+                "type": "event",
+                "id": id,
+                "event": event,
+                "payload": payload,
+            }),
+        )
+        .await?;
+
+        let answer = tokio::time::timeout(TOOL_TIMEOUT, receiver)
+            .await
+            .map_err(|_| format!("nothing answered {event} in time"))?
+            .map_err(|_| format!("the extension host stopped during {event}"))?;
+
+        Ok(answer
+            .get("results")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default())
+    }
+
     /// Run one of their tools and wait for what it returns.
     pub async fn call_tool(&self, name: &str, arguments: &Value) -> Result<String, String> {
         let id = self.claim_id();

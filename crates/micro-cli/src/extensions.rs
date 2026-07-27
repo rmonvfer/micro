@@ -5,6 +5,7 @@
 //! happens. That is what keeps someone else's code inside the same rules as everything
 //! else: the ask arrives here, and here is where the workspace and the policy are.
 
+use micro_agent::ToolHooks;
 use micro_extensions::FromHost;
 use micro_extensions::Host;
 use serde_json::json;
@@ -213,6 +214,91 @@ async fn show(payload: &Value, asker: Option<&micro_tui::UiAsker>) -> Value {
         }
         // Anything else has nowhere to be shown, and saying so beats pretending.
         other => json!({ "cancelled": true, "error": format!("micro cannot show `{other}`") }),
+    }
+}
+
+/// Extensions deciding what a tool call may do.
+///
+/// Both moments are questions rather than announcements: `tool_call` may refuse the call,
+/// and `tool_result` may rewrite what the model reads. An extension that answers nothing
+/// changes nothing, which is what keeps a listener from accidentally intercepting.
+pub struct ExtensionHooks {
+    host: Arc<Host>,
+}
+
+impl ExtensionHooks {
+    pub fn new(host: Arc<Host>) -> Self {
+        ExtensionHooks { host }
+    }
+}
+
+#[async_trait::async_trait]
+impl ToolHooks for ExtensionHooks {
+    async fn before_tool(&self, id: &str, name: &str, arguments: &Value) -> Option<String> {
+        let answers = self
+            .host
+            .ask_event(
+                "tool_call",
+                json!({ "toolCallId": id, "toolName": name, "input": arguments }),
+            )
+            .await
+            .ok()?;
+
+        // The first refusal wins: a call blocked by anything is blocked.
+        answers.iter().find_map(|answer| {
+            match answer.get("block").and_then(Value::as_bool) {
+                Some(true) => Some(
+                    answer
+                        .get("reason")
+                        .and_then(Value::as_str)
+                        .unwrap_or("an extension blocked this call")
+                        .to_string(),
+                ),
+                _ => None,
+            }
+        })
+    }
+
+    async fn after_tool(
+        &self,
+        id: &str,
+        name: &str,
+        output: String,
+        is_error: bool,
+    ) -> (String, bool) {
+        let asked = self
+            .host
+            .ask_event(
+                "tool_result",
+                json!({
+                    "toolCallId": id,
+                    "toolName": name,
+                    "result": output,
+                    "isError": is_error,
+                }),
+            )
+            .await;
+
+        let Ok(answers) = asked else {
+            return (output, is_error);
+        };
+
+        // Each answer is applied in turn, so a later extension sees what an earlier one
+        // wrote rather than what the tool originally said.
+        let mut output = output;
+        let mut is_error = is_error;
+        for answer in answers {
+            if let Some(content) = answer.get("content") {
+                output = match content.as_str() {
+                    Some(text) => text.to_string(),
+                    None => content.to_string(),
+                };
+            }
+            if let Some(failed) = answer.get("isError").and_then(Value::as_bool) {
+                is_error = failed;
+            }
+        }
+        (output, is_error)
     }
 }
 

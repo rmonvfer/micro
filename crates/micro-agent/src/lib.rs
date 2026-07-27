@@ -22,6 +22,7 @@ use micro_types::StreamEvent;
 use micro_types::ThinkingLevel;
 use micro_types::ToolDefinition;
 use micro_types::Usage;
+use serde_json::Value;
 use std::fmt;
 use std::sync::Arc;
 use std::time::Duration;
@@ -84,6 +85,8 @@ pub struct Agent {
     recorder: Option<UnboundedSender<Message>>,
     /// Anything else watching the events this run produces.
     observer: Option<UnboundedSender<AgentEvent>>,
+    /// Anything allowed to change what a tool call does.
+    hooks: Option<Arc<dyn ToolHooks>>,
     summarizer: Arc<dyn Summarizer>,
     compaction: Option<CompactionConfig>,
     context_window: usize,
@@ -112,6 +115,7 @@ impl Agent {
             messages: Vec::new(),
             recorder: None,
             observer: None,
+            hooks: None,
             summarizer,
             compaction: Some(CompactionConfig::default()),
             context_window: DEFAULT_CONTEXT_WINDOW,
@@ -205,6 +209,16 @@ impl Agent {
         self
     }
 
+    /// Let something decide what a tool call may do.
+    ///
+    /// A hook sits between the model asking for a tool and the tool running, and again
+    /// between the tool answering and the model reading it. It is the one place an
+    /// extension is allowed to change what happens rather than watch it happen.
+    pub fn with_tool_hooks(mut self, hooks: Arc<dyn ToolHooks>) -> Self {
+        self.hooks = Some(hooks);
+        self
+    }
+
     /// Send every event to `observer` as well as to whoever asked for the turn.
     ///
     /// One turn has one caller — a terminal, a headless mode — and that caller owns the
@@ -273,6 +287,25 @@ impl Agent {
             let _ = recorder.send(message.clone());
         }
         self.messages.push(message);
+    }
+
+    /// Whether something watching the run refuses this call, and why.
+    async fn blocked(&self, id: &str, name: &str, arguments: &Value) -> Option<String> {
+        self.hooks.as_ref()?.before_tool(id, name, arguments).await
+    }
+
+    /// The result as it should reach the model, after anything watching has had it.
+    async fn rewritten(
+        &self,
+        id: &str,
+        name: &str,
+        output: String,
+        is_error: bool,
+    ) -> (String, bool) {
+        match &self.hooks {
+            Some(hooks) => hooks.after_tool(id, name, output, is_error).await,
+            None => (output, is_error),
+        }
     }
 
     /// Both places an event goes, as one thing to send to.
@@ -384,6 +417,10 @@ impl Agent {
                         ),
                         true,
                     )
+                } else if let Some(refusal) = self.blocked(&id, &name, &arguments).await {
+                    // Something watching the run refused the call. The model is told why,
+                    // in the same shape a tool's own failure takes.
+                    (refusal, true)
                 } else {
                     match self.find_tool(&name) {
                         Some(tool) => match tool.execute(&arguments).await {
@@ -393,6 +430,10 @@ impl Agent {
                         None => (format!("tool not found: {name}"), true),
                     }
                 };
+
+                // What ran can be rewritten before the model sees it, which is how a
+                // result is redacted or replaced by something watching.
+                let (output, is_error) = self.rewritten(&id, &name, output, is_error).await;
 
                 events.send(AgentEvent::ToolEnd {
                     id: id.clone(),
@@ -861,4 +902,22 @@ impl Fan<'_> {
         }
         let _ = self.primary.send(event);
     }
+}
+
+/// Something allowed to change what a tool call does.
+#[async_trait::async_trait]
+pub trait ToolHooks: Send + Sync {
+    /// Called before a tool runs. `Some(reason)` refuses the call, and the reason is what
+    /// the model is told instead of the tool's output.
+    async fn before_tool(&self, id: &str, name: &str, arguments: &Value) -> Option<String>;
+
+    /// Called once a tool has answered, before the model reads it. Returns the output and
+    /// whether it should be read as a failure.
+    async fn after_tool(
+        &self,
+        id: &str,
+        name: &str,
+        output: String,
+        is_error: bool,
+    ) -> (String, bool);
 }
