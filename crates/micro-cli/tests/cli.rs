@@ -1240,3 +1240,69 @@ export default (micro) => {
     let conversation = serde_json::to_string(&api.request(1)).unwrap();
     assert!(conversation.contains("the plain contents"), "{conversation}");
 }
+
+/// An extension sees what the user typed and can rewrite it before anything is done with
+/// it, or swallow it entirely.
+#[test]
+fn an_extension_can_rewrite_what_the_user_typed() {
+    if which_bun().is_none() {
+        return;
+    }
+    let api = FakeApi::start([Reply::text("answered")]);
+    let fixture = Fixture::new(&api);
+    fixture.write(
+        ".micro/extensions/input.ts",
+        r#"
+export default (micro) => {
+    micro.on("input", (event) => {
+        if (event.text === "shorthand") {
+            return { text: "the expanded question" };
+        }
+    });
+};
+"#,
+    );
+
+    let output = fixture.print(&["-m", "test", "shorthand"]);
+    assert!(output.status.success(), "{}", output.stderr);
+
+    let sent = serde_json::to_string(&api.request(0)).unwrap();
+    assert!(sent.contains("the expanded question"), "{sent}");
+    assert!(!sent.contains("shorthand"), "the original was replaced: {sent}");
+}
+
+/// The moments the host owns reach extensions too: the model changing, and a session
+/// starting.
+#[test]
+fn an_extension_hears_the_moments_the_host_owns() {
+    if which_bun().is_none() {
+        return;
+    }
+    let api = FakeApi::start([]);
+    let fixture = Fixture::new(&api);
+    let log = fixture.workspace().join("host-events.log");
+    fixture.write(
+        ".micro/extensions/hostwatch.ts",
+        &format!(
+            r#"
+import {{ appendFileSync }} from "node:fs";
+export default (micro) => {{
+    for (const event of ["session_start", "session_info_changed", "user_bash"]) {{
+        micro.on(event, (payload) => {{
+            appendFileSync({log:?}, `${{event}} ${{JSON.stringify(payload)}}\n`);
+        }});
+    }}
+}};
+"#,
+            log = log.display().to_string()
+        ),
+    );
+
+    let output = fixture.print(&["-m", "test", "/name the renamed one"]);
+    assert!(output.status.success(), "{}", output.stderr);
+
+    let heard = std::fs::read_to_string(&log).unwrap_or_default();
+    assert!(heard.contains("session_start"), "{heard}");
+    assert!(heard.contains("session_info_changed"), "{heard}");
+    assert!(heard.contains("the renamed one"), "{heard}");
+}

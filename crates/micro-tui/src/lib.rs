@@ -332,7 +332,7 @@ struct Turn<'a> {
 
 async fn submit(
     turn: Turn<'_>,
-    commands: Option<&mut (dyn Commands + 'static)>,
+    mut commands: Option<&mut (dyn Commands + 'static)>,
     line: String,
 ) -> Result<()> {
     let Turn {
@@ -343,10 +343,20 @@ async fn submit(
         approvals,
         questions,
     } = turn;
+    // What was typed is offered to whoever runs commands before anything is done with it:
+    // it may come back changed, or not come back at all.
+    let line = match commands {
+        Some(ref mut commands) => match commands.submitted(line).await {
+            Some(line) => line,
+            None => return Ok(()),
+        },
+        None => line,
+    };
+
     // `!` runs a command here instead of asking the model to run one. Its output still
     // joins the conversation, so the model knows what the user just did.
     if let Some(command) = line.strip_prefix('!') {
-        return run_bash(screen, app, agent, command.trim()).await;
+        return run_bash(screen, app, agent, commands, command.trim()).await;
     }
 
     let Some(commands) = commands else {
@@ -381,6 +391,7 @@ async fn run_bash(
     screen: &mut Screen,
     app: &mut App,
     agent: &mut Agent,
+    commands: Option<&mut (dyn Commands + 'static)>,
     command: &str,
 ) -> Result<()> {
     if command.is_empty() {
@@ -432,6 +443,9 @@ async fn run_bash(
     agent.record(Message::user(format!(
         "<bash command=\"{command}\">\n{output}\n</bash>"
     )));
+    if let Some(commands) = commands {
+        commands.ran_bash(command, &output, failed).await;
+    }
     Ok(())
 }
 

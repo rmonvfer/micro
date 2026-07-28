@@ -90,6 +90,19 @@ impl Applied {
 /// credentials, the session log and the conversation these outcomes change.
 #[async_trait]
 pub trait Commands: Send {
+    /// Tell whatever is listening what the user typed, before anything is done with it.
+    ///
+    /// The line comes back, possibly changed: an extension may rewrite what was submitted,
+    /// or swallow it by returning nothing.
+    async fn submitted(&mut self, line: String) -> Option<String> {
+        Some(line)
+    }
+
+    /// Tell whatever is listening what the user ran with `!`.
+    async fn ran_bash(&mut self, command: &str, output: &str, failed: bool) {
+        let _ = (command, output, failed);
+    }
+
     /// Run a submitted line. `None` means it was ordinary text for the model.
     async fn dispatch(&mut self, line: &str, state: ConversationState) -> Option<CommandOutcome>;
 

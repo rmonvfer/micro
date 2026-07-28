@@ -217,6 +217,25 @@ async fn show(payload: &Value, asker: Option<&micro_tui::UiAsker>) -> Value {
     }
 }
 
+/// Tell the extensions something happened somewhere other than inside a turn.
+///
+/// The agent reports its own moments; these are the ones only the host knows about — what
+/// the user typed, what they ran, what they switched to.
+pub async fn announce(host: Option<&Arc<Host>>, event: &str, payload: Value) {
+    if let Some(host) = host {
+        let _ = host.notify(event, payload).await;
+    }
+}
+
+/// Ask the extensions about something they are allowed to change, and hand back what they
+/// said. Nothing to ask means nothing changed.
+pub async fn consult(host: Option<&Arc<Host>>, event: &str, payload: Value) -> Vec<Value> {
+    match host {
+        Some(host) => host.ask_event(event, payload).await.unwrap_or_default(),
+        None => Vec::new(),
+    }
+}
+
 /// Extensions deciding what a tool call may do.
 ///
 /// Both moments are questions rather than announcements: `tool_call` may refuse the call,

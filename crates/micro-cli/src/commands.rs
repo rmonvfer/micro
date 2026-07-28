@@ -115,6 +115,14 @@ impl CliCommands {
         // Kept in step so the next command reports the model that is actually running.
         self.provider = model.provider.clone();
         self.model = model.clone();
+        crate::extensions::announce(
+            self.extensions.as_ref(),
+            "model_select",
+            serde_json::json!({
+                "model": { "id": model.id, "provider": model.provider },
+            }),
+        )
+        .await;
 
         let note = match self.subscription_warning(&resolved.api_key, &model.provider) {
             Some(warning) => format!("Model: {}\n{warning}", model.qualified_id()),
@@ -177,6 +185,13 @@ impl CliCommands {
             ));
         }
 
+        crate::extensions::announce(
+            self.extensions.as_ref(),
+            "session_tree",
+            serde_json::json!({ "entryId": entry_id }),
+        )
+        .await;
+
         // The branch is what the model is shown from here on, and what the scrollback is
         // rebuilt from, so the two never disagree.
         Applied::Conversation {
@@ -201,6 +216,12 @@ impl CliCommands {
         let messages = loaded.messages;
         self.session_id = loaded.session.id().to_string();
         *self.session.lock().await = loaded.session;
+        crate::extensions::announce(
+            self.extensions.as_ref(),
+            "session_start",
+            serde_json::json!({ "session_id": self.session_id, "resumed": true }),
+        )
+        .await;
 
         Applied::Conversation {
             messages,
@@ -221,6 +242,12 @@ impl CliCommands {
             Ok(session) => {
                 self.session_id = session.id().to_string();
                 *self.session.lock().await = session;
+                crate::extensions::announce(
+                    self.extensions.as_ref(),
+                    "session_start",
+                    serde_json::json!({ "session_id": self.session_id, "resumed": false }),
+                )
+                .await;
                 Applied::Conversation {
                     messages: Vec::new(),
                     note: Some("New session started".to_string()),
@@ -371,7 +398,15 @@ impl CliCommands {
     /// Give the session a title of its own, in place of the derived one.
     async fn rename(&mut self, title: &str) -> Applied {
         match self.session.lock().await.rename(title).await {
-            Ok(()) => Applied::note(format!("Session name set: {title}")),
+            Ok(()) => {
+                crate::extensions::announce(
+                    self.extensions.as_ref(),
+                    "session_info_changed",
+                    serde_json::json!({ "name": title }),
+                )
+                .await;
+                Applied::note(format!("Session name set: {title}"))
+            }
             Err(error) => Applied::error(format!("Could not rename the session: {error}")),
         }
     }
@@ -389,6 +424,12 @@ impl CliCommands {
         let messages = forked.branch();
         self.session_id = forked.id().to_string();
         *self.session.lock().await = forked;
+        crate::extensions::announce(
+            self.extensions.as_ref(),
+            "session_before_fork",
+            serde_json::json!({ "session_id": self.session_id, "whole": whole }),
+        )
+        .await;
 
         Applied::Conversation {
             messages,
@@ -405,6 +446,41 @@ impl CliCommands {
 
 #[async_trait]
 impl Commands for CliCommands {
+    /// What the user typed, before anything is done with it. An extension may rewrite it,
+    /// or swallow it by answering that it handled it.
+    async fn submitted(&mut self, line: String) -> Option<String> {
+        let answers = crate::extensions::consult(
+            self.extensions.as_ref(),
+            "input",
+            serde_json::json!({ "text": line }),
+        )
+        .await;
+
+        let mut line = line;
+        for answer in answers {
+            if answer
+                .get("handled")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false)
+            {
+                return None;
+            }
+            if let Some(text) = answer.get("text").and_then(serde_json::Value::as_str) {
+                line = text.to_string();
+            }
+        }
+        Some(line)
+    }
+
+    async fn ran_bash(&mut self, command: &str, output: &str, failed: bool) {
+        crate::extensions::announce(
+            self.extensions.as_ref(),
+            "user_bash",
+            serde_json::json!({ "command": command, "output": output, "failed": failed }),
+        )
+        .await;
+    }
+
     async fn dispatch(&mut self, line: &str, state: ConversationState) -> Option<CommandOutcome> {
         // An extension's command is tried first, so a name it registered is its own rather
         // than falling through to an unknown-command message.

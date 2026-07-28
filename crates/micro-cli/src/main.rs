@@ -298,6 +298,18 @@ async fn main() -> Result<()> {
         if prompt.trim().is_empty() {
             anyhow::bail!("--print needs a prompt");
         }
+        // What was typed goes past the extensions first here too, so a rewrite works the
+        // same whether or not there is an interface.
+        let prompt = match built.commands.submitted(prompt).await {
+            Some(prompt) => prompt,
+            None => {
+                drop(built.agent);
+                let _ = writer.await;
+                shut_down_extensions(extensions).await;
+                return Ok(());
+            }
+        };
+
         // A slash command is run rather than sent: it is an instruction to micro, and
         // handing it to the model would answer a question nobody asked.
         match run_command_headlessly(&mut built.commands, &prompt).await {
@@ -358,12 +370,12 @@ async fn shut_down_extensions(
 /// `None` means the line was not a command, and belongs to the model. Only commands whose
 /// whole answer is text can run here: anything that would open a picker or change the
 /// running conversation needs an interface to change.
+use micro_tui::Commands as _;
+
 async fn run_command_headlessly(
     commands: &mut commands::CliCommands,
     line: &str,
 ) -> Option<String> {
-    use micro_tui::Commands as _;
-
     let line = line.trim();
     if !line.starts_with('/') {
         return None;
