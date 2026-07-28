@@ -278,7 +278,12 @@ impl Transcript {
                 ),
                 NoticeLevel::Warning,
             ),
-            AgentEvent::AgentStart | AgentEvent::TurnStart => {}
+            // Nothing on screen changes when a turn opens or closes: what a turn produced
+            // is already drawn message by message.
+            AgentEvent::AgentStart
+            | AgentEvent::TurnStart
+            | AgentEvent::TurnEnd { .. }
+            | AgentEvent::AgentSettled => {}
             AgentEvent::AgentEnd { .. } => self.close(),
         }
     }

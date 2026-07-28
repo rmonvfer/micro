@@ -60,7 +60,9 @@ async fn a_plain_text_turn_emits_its_events_in_order() {
             "MessageDelta", // TextDelta "world"
             "MessageDelta", // TextEnd
             "MessageEnd",
+            "TurnEnd",
             "AgentEnd",
+            "AgentSettled",
         ]
     );
 
@@ -445,7 +447,8 @@ async fn a_turn_that_only_emits_done_still_reports_message_end() {
     assert_eq!(events.assistant_message_ends().len(), 1);
     assert_eq!(events.assistant_message_ends()[0].text(), "instant");
     assert_eq!(messages.len(), 2);
-    assert_eq!(events.names().last(), Some(&"AgentEnd"));
+    // Settling is the last thing a run says, after the run itself is reported over.
+    assert_eq!(events.names().last(), Some(&"AgentSettled"));
 }
 
 /// Documents a defect in `micro-agent`: a retried request emits a second assistant

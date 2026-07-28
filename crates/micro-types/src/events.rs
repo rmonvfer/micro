@@ -67,6 +67,10 @@ pub enum StreamEvent {
 pub enum AgentEvent {
     AgentStart,
     TurnStart,
+    /// One exchange with the model is over, along with everything it produced.
+    TurnEnd {
+        messages: Vec<Message>,
+    },
     /// A message entered the conversation. Assistant messages emit this before streaming.
     MessageStart {
         message: Message,
@@ -100,4 +104,6 @@ pub enum AgentEvent {
     AgentEnd {
         messages: Vec<Message>,
     },
+    /// The agent has nothing left to do and nothing queued behind it.
+    AgentSettled,
 }

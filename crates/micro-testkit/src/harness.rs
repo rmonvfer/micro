@@ -177,6 +177,8 @@ fn name_of(event: &AgentEvent) -> &'static str {
     match event {
         AgentEvent::AgentStart => "AgentStart",
         AgentEvent::TurnStart => "TurnStart",
+        AgentEvent::TurnEnd { .. } => "TurnEnd",
+        AgentEvent::AgentSettled => "AgentSettled",
         AgentEvent::MessageStart { .. } => "MessageStart",
         AgentEvent::MessageDelta { .. } => "MessageDelta",
         AgentEvent::MessageEnd { .. } => "MessageEnd",

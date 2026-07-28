@@ -18,6 +18,8 @@ pub fn name_of(event: &AgentEvent) -> Option<&'static str> {
         AgentEvent::AgentStart => Some("agent_start"),
         AgentEvent::AgentEnd { .. } => Some("agent_end"),
         AgentEvent::TurnStart => Some("turn_start"),
+        AgentEvent::TurnEnd { .. } => Some("turn_end"),
+        AgentEvent::AgentSettled => Some("agent_settled"),
         AgentEvent::MessageStart { .. } => Some("message_start"),
         AgentEvent::MessageDelta { .. } => Some("message_update"),
         AgentEvent::MessageEnd { .. } => Some("message_end"),
@@ -32,7 +34,8 @@ pub fn name_of(event: &AgentEvent) -> Option<&'static str> {
 /// What the event carries, in the shape ohm's handlers are written against.
 pub fn payload_of(event: &AgentEvent) -> Value {
     match event {
-        AgentEvent::AgentStart | AgentEvent::TurnStart => json!({}),
+        AgentEvent::AgentStart | AgentEvent::TurnStart | AgentEvent::AgentSettled => json!({}),
+        AgentEvent::TurnEnd { messages } => json!({ "messages": messages }),
         AgentEvent::AgentEnd { messages } => json!({ "messages": messages }),
         AgentEvent::MessageStart { message } => json!({ "message": message }),
         AgentEvent::MessageDelta { event } => json!({ "delta": event }),
@@ -65,6 +68,13 @@ mod tests {
     fn the_moments_an_extension_listens_for_are_named_as_ohm_names_them() {
         assert_eq!(name_of(&AgentEvent::AgentStart), Some("agent_start"));
         assert_eq!(name_of(&AgentEvent::TurnStart), Some("turn_start"));
+        assert_eq!(
+            name_of(&AgentEvent::TurnEnd {
+                messages: Vec::new()
+            }),
+            Some("turn_end")
+        );
+        assert_eq!(name_of(&AgentEvent::AgentSettled), Some("agent_settled"));
         assert_eq!(
             name_of(&AgentEvent::ToolStart {
                 id: "call_1".into(),

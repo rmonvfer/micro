@@ -394,6 +394,11 @@ impl Agent {
                 .collect();
 
             if calls.is_empty() {
+                // The exchange is over whether or not the model asked for anything, so it
+                // is closed on the way out as well as at the end of a round of tools.
+                events.send(AgentEvent::TurnEnd {
+                    messages: produced.clone(),
+                });
                 break;
             }
 
@@ -451,11 +456,20 @@ impl Agent {
                 });
                 self.commit(result, &mut produced);
             }
+
+            // One exchange is over: the model answered and every tool it asked for has
+            // run. Another begins only if it asked for more.
+            events.send(AgentEvent::TurnEnd {
+                messages: produced.clone(),
+            });
         }
 
         events.send(AgentEvent::AgentEnd {
             messages: produced.clone(),
         });
+        // Nothing is left to do, which is a different thing from the run being over: a
+        // caller with more queued starts another run without ever settling.
+        events.send(AgentEvent::AgentSettled);
         produced
     }
 

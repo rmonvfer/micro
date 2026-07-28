@@ -37,7 +37,7 @@
 //! assert_eq!(read.call_count(), 1);
 //! assert_eq!(provider.call_count(), 2);
 //! assert_eq!(messages.len(), 4);
-//! assert_eq!(events.names().last(), Some(&"AgentEnd"));
+//! assert_eq!(events.names().last(), Some(&"AgentSettled"));
 //! # });
 //! # fn tokio_test_block<F: std::future::Future>(f: F) -> F::Output {
 //! #     tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap().block_on(f)
