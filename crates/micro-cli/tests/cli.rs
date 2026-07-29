@@ -1306,3 +1306,81 @@ export default (micro) => {{
     assert!(heard.contains("session_info_changed"), "{heard}");
     assert!(heard.contains("the renamed one"), "{heard}");
 }
+
+/// An extension can change what the model is told, and hears what came back.
+#[test]
+fn an_extension_can_change_the_context_and_see_the_response() {
+    if which_bun().is_none() {
+        return;
+    }
+    let api = FakeApi::start([Reply::text("answered")]);
+    let fixture = Fixture::new(&api);
+    let log = fixture.workspace().join("provider.log");
+    fixture.write(
+        ".micro/extensions/context.ts",
+        &format!(
+            r#"
+import {{ appendFileSync }} from "node:fs";
+export default (micro) => {{
+    micro.on("context", (event) => {{
+        return {{ systemPrompt: `${{event.systemPrompt}}\n\nAlso: be extremely terse.` }};
+    }});
+    micro.on("before_provider_request", (event) => {{
+        appendFileSync({log:?}, `request ${{event.messageCount}}\n`);
+    }});
+    micro.on("after_provider_response", (event) => {{
+        appendFileSync({log:?}, `response ${{event.stopReason}}\n`);
+    }});
+}};
+"#,
+            log = log.display().to_string()
+        ),
+    );
+
+    let output = fixture.print(&["-m", "test", "say something"]);
+    assert!(output.status.success(), "{}", output.stderr);
+
+    // The system prompt the model received carries the extension's addition.
+    let request = api.request(0);
+    let system = request["messages"][0]["content"]
+        .as_str()
+        .expect("a system message");
+    assert!(system.contains("be extremely terse"), "{system}");
+
+    let seen = std::fs::read_to_string(&log).unwrap_or_default();
+    assert!(seen.contains("request 1"), "{seen}");
+    assert!(seen.contains("response"), "{seen}");
+}
+
+/// An extension can replace the prompt a run starts on.
+#[test]
+fn an_extension_can_replace_the_prompt_a_run_starts_on() {
+    if which_bun().is_none() {
+        return;
+    }
+    let api = FakeApi::start([Reply::text("answered")]);
+    let fixture = Fixture::new(&api);
+    fixture.write(
+        ".micro/extensions/start.ts",
+        r#"
+export default (micro) => {
+    micro.on("before_agent_start", (event) => {
+        const message = event.message;
+        return {
+            message: {
+                ...message,
+                content: [{ type: "text", text: "a replaced prompt" }],
+            },
+        };
+    });
+};
+"#,
+    );
+
+    let output = fixture.print(&["-m", "test", "the original prompt"]);
+    assert!(output.status.success(), "{}", output.stderr);
+
+    let sent = serde_json::to_string(&api.request(0)).unwrap();
+    assert!(sent.contains("a replaced prompt"), "{sent}");
+    assert!(!sent.contains("the original prompt"), "{sent}");
+}

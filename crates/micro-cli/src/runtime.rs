@@ -257,7 +257,7 @@ pub async fn build(
     .with_observer(watching);
     // Extensions get a say in what a tool call does, before it runs and after it answers.
     let agent = match extensions.as_ref() {
-        Some(host) => agent.with_tool_hooks(Arc::new(crate::extensions::ExtensionHooks::new(
+        Some(host) => agent.with_hooks(Arc::new(crate::extensions::ExtensionHooks::new(
             Arc::clone(host),
         ))),
         None => agent,

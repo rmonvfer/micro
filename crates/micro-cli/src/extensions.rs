@@ -5,7 +5,7 @@
 //! happens. That is what keeps someone else's code inside the same rules as everything
 //! else: the ask arrives here, and here is where the workspace and the policy are.
 
-use micro_agent::ToolHooks;
+use micro_agent::Hooks;
 use micro_extensions::FromHost;
 use micro_extensions::Host;
 use serde_json::json;
@@ -252,7 +252,7 @@ impl ExtensionHooks {
 }
 
 #[async_trait::async_trait]
-impl ToolHooks for ExtensionHooks {
+impl Hooks for ExtensionHooks {
     async fn before_tool(&self, id: &str, name: &str, arguments: &Value) -> Option<String> {
         let answers = self
             .host
@@ -318,6 +318,76 @@ impl ToolHooks for ExtensionHooks {
             }
         }
         (output, is_error)
+    }
+
+    async fn before_agent_start(&self, prompt: &micro_types::Message) -> Option<micro_types::Message> {
+        let answers = self
+            .host
+            .ask_event("before_agent_start", json!({ "message": prompt }))
+            .await
+            .ok()?;
+
+        // The last replacement wins, so an extension later in the list has the final say.
+        answers
+            .iter()
+            .filter_map(|answer| answer.get("message"))
+            .filter_map(|message| serde_json::from_value(message.clone()).ok())
+            .next_back()
+    }
+
+    async fn before_request(&self, context: micro_types::Context) -> micro_types::Context {
+        let asked = self
+            .host
+            .ask_event(
+                "context",
+                json!({
+                    "systemPrompt": context.system_prompt,
+                    "messages": context.messages,
+                }),
+            )
+            .await;
+
+        let Ok(answers) = asked else {
+            return context;
+        };
+
+        // Each answer is applied in turn, so a later extension sees what an earlier one
+        // changed rather than what the agent originally assembled.
+        let mut context = context;
+        for answer in answers {
+            if let Some(prompt) = answer.get("systemPrompt").and_then(Value::as_str) {
+                context.system_prompt = Some(prompt.to_string());
+            }
+            if let Some(messages) = answer.get("messages") {
+                if let Ok(replaced) = serde_json::from_value(messages.clone()) {
+                    context.messages = replaced;
+                }
+            }
+        }
+
+        // Announced separately, because ohm reports the request itself as its own moment.
+        let _ = self
+            .host
+            .notify(
+                "before_provider_request",
+                json!({ "messageCount": context.messages.len() }),
+            )
+            .await;
+        context
+    }
+
+    async fn after_response(&self, message: &micro_types::AssistantMessage) {
+        let _ = self
+            .host
+            .notify(
+                "after_provider_response",
+                json!({
+                    "message": message,
+                    "usage": message.usage,
+                    "stopReason": format!("{:?}", message.stop_reason),
+                }),
+            )
+            .await;
     }
 }
 

@@ -85,8 +85,8 @@ pub struct Agent {
     recorder: Option<UnboundedSender<Message>>,
     /// Anything else watching the events this run produces.
     observer: Option<UnboundedSender<AgentEvent>>,
-    /// Anything allowed to change what a tool call does.
-    hooks: Option<Arc<dyn ToolHooks>>,
+    /// Anything allowed to change what the run does.
+    hooks: Option<Arc<dyn Hooks>>,
     summarizer: Arc<dyn Summarizer>,
     compaction: Option<CompactionConfig>,
     context_window: usize,
@@ -209,12 +209,11 @@ impl Agent {
         self
     }
 
-    /// Let something decide what a tool call may do.
+    /// Let something decide what the run may do.
     ///
-    /// A hook sits between the model asking for a tool and the tool running, and again
-    /// between the tool answering and the model reading it. It is the one place an
-    /// extension is allowed to change what happens rather than watch it happen.
-    pub fn with_tool_hooks(mut self, hooks: Arc<dyn ToolHooks>) -> Self {
+    /// The one place anything outside the agent is allowed to change what happens rather
+    /// than watch it happen.
+    pub fn with_hooks(mut self, hooks: Arc<dyn Hooks>) -> Self {
         self.hooks = Some(hooks);
         self
     }
@@ -343,6 +342,10 @@ impl Agent {
         events: &UnboundedSender<AgentEvent>,
     ) -> Vec<Message> {
         let events = &self.fan(events);
+        let prompt = match &self.hooks {
+            Some(hooks) => hooks.before_agent_start(&prompt).await.unwrap_or(prompt),
+            None => prompt,
+        };
         let mut produced = Vec::new();
 
         // A turn abandoned partway — Ctrl+C during a tool, or a crash — leaves an assistant
@@ -378,6 +381,9 @@ impl Agent {
             self.compact_if_needed(events).await;
 
             let assistant = self.stream_once(events).await;
+            if let Some(hooks) = &self.hooks {
+                hooks.after_response(&assistant).await;
+            }
             self.commit(Message::Assistant(assistant.clone()), &mut produced);
 
             if matches!(
@@ -514,6 +520,12 @@ impl Agent {
             system_prompt: self.system_prompt.clone(),
             messages: self.messages.clone(),
             tools: self.tool_definitions(),
+        };
+        // Whatever is watching gets the conversation before the provider does, and may
+        // change it: this is where a summary is swapped in, or a file is added.
+        let context = match &self.hooks {
+            Some(hooks) => hooks.before_request(context).await,
+            None => context,
         };
 
         let mut attempt = 0;
@@ -918,12 +930,20 @@ impl Fan<'_> {
     }
 }
 
-/// Something allowed to change what a tool call does.
+/// Something allowed to change what a run does, rather than only to watch it.
+///
+/// Every point sits between two things the agent would otherwise do directly: between the
+/// model asking for a tool and the tool running, between the conversation being assembled
+/// and being sent, between an answer arriving and being read. Each has a default that
+/// changes nothing, so an implementation takes only the ones it cares about.
 #[async_trait::async_trait]
-pub trait ToolHooks: Send + Sync {
+pub trait Hooks: Send + Sync {
     /// Called before a tool runs. `Some(reason)` refuses the call, and the reason is what
     /// the model is told instead of the tool's output.
-    async fn before_tool(&self, id: &str, name: &str, arguments: &Value) -> Option<String>;
+    async fn before_tool(&self, id: &str, name: &str, arguments: &Value) -> Option<String> {
+        let _ = (id, name, arguments);
+        None
+    }
 
     /// Called once a tool has answered, before the model reads it. Returns the output and
     /// whether it should be read as a failure.
@@ -933,5 +953,24 @@ pub trait ToolHooks: Send + Sync {
         name: &str,
         output: String,
         is_error: bool,
-    ) -> (String, bool);
+    ) -> (String, bool) {
+        let _ = (id, name);
+        (output, is_error)
+    }
+
+    /// Called with the prompt a run is about to start on. Returning a message replaces it.
+    async fn before_agent_start(&self, prompt: &Message) -> Option<Message> {
+        let _ = prompt;
+        None
+    }
+
+    /// Called with everything about to be sent to the model, which may be changed.
+    async fn before_request(&self, context: Context) -> Context {
+        context
+    }
+
+    /// Called with the answer, once it is complete.
+    async fn after_response(&self, message: &AssistantMessage) {
+        let _ = message;
+    }
 }
