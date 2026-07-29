@@ -1384,3 +1384,33 @@ export default (micro) => {
     assert!(sent.contains("a replaced prompt"), "{sent}");
     assert!(!sent.contains("the original prompt"), "{sent}");
 }
+
+/// An extension can put a header on the request the provider makes.
+#[test]
+fn an_extension_can_set_a_request_header() {
+    if which_bun().is_none() {
+        return;
+    }
+    let api = FakeApi::start([Reply::text("answered")]);
+    let fixture = Fixture::new(&api);
+    fixture.write(
+        ".micro/extensions/headers.ts",
+        r#"
+export default (micro) => {
+    micro.on("before_provider_headers", () => {
+        return { headers: { "x-team": "platform" } };
+    });
+};
+"#,
+    );
+
+    let output = fixture.print(&["-m", "test", "say something"]);
+    assert!(output.status.success(), "{}", output.stderr);
+
+    let headers = api.headers(0);
+    assert_eq!(
+        headers.get("x-team").map(String::as_str),
+        Some("platform"),
+        "the header reached the provider: {headers:#?}"
+    );
+}

@@ -520,6 +520,7 @@ impl Agent {
             system_prompt: self.system_prompt.clone(),
             messages: self.messages.clone(),
             tools: self.tool_definitions(),
+            headers: Vec::new(),
         };
         // Whatever is watching gets the conversation before the provider does, and may
         // change it: this is where a summary is swapped in, or a file is added.

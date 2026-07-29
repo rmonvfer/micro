@@ -373,6 +373,25 @@ impl Hooks for ExtensionHooks {
                 json!({ "messageCount": context.messages.len() }),
             )
             .await;
+
+        // Headers are their own moment, and their own answer: what comes back is put on
+        // the request, replacing anything the provider would have set itself.
+        if let Ok(answers) = self
+            .host
+            .ask_event("before_provider_headers", json!({ "headers": {} }))
+            .await
+        {
+            for answer in answers {
+                let Some(headers) = answer.get("headers").and_then(Value::as_object) else {
+                    continue;
+                };
+                for (name, value) in headers {
+                    let Some(value) = value.as_str() else { continue };
+                    context.headers.retain(|(held, _)| held != name);
+                    context.headers.push((name.clone(), value.to_string()));
+                }
+            }
+        }
         context
     }
 

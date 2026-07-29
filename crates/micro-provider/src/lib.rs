@@ -73,3 +73,17 @@ pub fn http_client() -> reqwest::Client {
         .build()
         .unwrap_or_default()
 }
+
+/// Put the caller's own headers on a request.
+///
+/// Applied last, so a header named by whoever assembled the request replaces the one the
+/// provider set for itself.
+pub(crate) fn with_carried_headers(
+    mut request: reqwest::RequestBuilder,
+    context: &micro_types::Context,
+) -> reqwest::RequestBuilder {
+    for (name, value) in &context.headers {
+        request = request.header(name.as_str(), value.as_str());
+    }
+    request
+}

@@ -103,6 +103,16 @@ pub trait Commands: Send {
         let _ = (command, output, failed);
     }
 
+    /// Tell whatever is listening that the reasoning effort changed.
+    async fn thinking_changed(&mut self, level: micro_types::ThinkingLevel) {
+        let _ = level;
+    }
+
+    /// Tell whatever is listening that the conversation was summarized.
+    async fn compacted(&mut self, summary: &str) {
+        let _ = summary;
+    }
+
     /// Run a submitted line. `None` means it was ordinary text for the model.
     async fn dispatch(&mut self, line: &str, state: ConversationState) -> Option<CommandOutcome>;
 

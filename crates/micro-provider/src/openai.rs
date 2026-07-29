@@ -168,6 +168,11 @@ async fn run(
     for (name, value) in flavor.headers {
         request = request.header(*name, *value);
     }
+    // Anything the caller added wins, which is how an extension changes a header the
+    // provider would otherwise set for itself.
+    for (name, value) in &context.headers {
+        request = request.header(name.as_str(), value.as_str());
+    }
 
     let response = request
         .json(&payload)

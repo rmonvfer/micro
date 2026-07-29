@@ -474,6 +474,7 @@ async fn apply_outcome(
         CommandOutcome::SetThinking { level } => {
             agent.set_thinking(level);
             app.set_thinking(level);
+            commands.thinking_changed(level).await;
         }
         // Both of these are the interface's own: it holds the conversation being copied or
         // written out, and neither needs anything the host has.
@@ -489,10 +490,13 @@ async fn apply_outcome(
             match compacted {
                 // The summary is the first message of the conversation it left behind, and
                 // renders as a compaction marker, so rebuilding from the agent shows it.
-                Some(Ok(_)) => app.apply_result(Applied::Conversation {
-                    messages: agent.messages().to_vec(),
-                    note: None,
-                }),
+                Some(Ok(summary)) => {
+                    commands.compacted(&summary_text(&summary)).await;
+                    app.apply_result(Applied::Conversation {
+                        messages: agent.messages().to_vec(),
+                        note: None,
+                    });
+                }
                 Some(Err(refusal)) => app.notice(refusal.to_string(), MessageKind::Error),
                 None => app.notice("Compaction cancelled", MessageKind::Error),
             }
@@ -544,6 +548,19 @@ fn apply_applied(app: &mut App, agent: &mut Agent, applied: Applied) {
             }
         }
         other => app.apply_result(other),
+    }
+}
+
+/// What a summary says, for whoever is told the conversation was compacted.
+fn summary_text(message: &Message) -> String {
+    match message {
+        Message::Assistant(assistant) => assistant.text(),
+        Message::User { content, .. } => content
+            .iter()
+            .map(micro_types::ContentBlock::as_text)
+            .collect::<Vec<_>>()
+            .join(""),
+        Message::ToolResult { .. } => String::new(),
     }
 }
 

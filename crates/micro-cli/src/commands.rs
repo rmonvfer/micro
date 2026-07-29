@@ -175,6 +175,13 @@ impl CliCommands {
     /// Nothing is deleted: what came after stays in the log as another branch, and the
     /// next message appended hangs off the entry that was chosen.
     async fn branch(&mut self, entry_id: &str) -> Applied {
+        crate::extensions::announce(
+            self.extensions.as_ref(),
+            "session_before_tree",
+            serde_json::json!({ "entryId": entry_id }),
+        )
+        .await;
+
         let mut session = self.session.lock().await;
         if session.tree().head() == Some(entry_id) {
             return Applied::note("Already at this point");
@@ -386,6 +393,16 @@ impl CliCommands {
             return Applied::error(format!("Could not save the decision: {error}"));
         }
 
+        crate::extensions::announce(
+            self.extensions.as_ref(),
+            "project_trust",
+            serde_json::json!({
+                "path": self.workspace.display().to_string(),
+                "decision": match trusted { true => "yes", false => "no" },
+            }),
+        )
+        .await;
+
         Applied::note(format!(
             "Saved trust decision: {}. Restart micro for this to take effect.",
             match trusted {
@@ -470,6 +487,24 @@ impl Commands for CliCommands {
             }
         }
         Some(line)
+    }
+
+    async fn thinking_changed(&mut self, level: micro_types::ThinkingLevel) {
+        crate::extensions::announce(
+            self.extensions.as_ref(),
+            "thinking_level_select",
+            serde_json::json!({ "level": format!("{level:?}").to_lowercase() }),
+        )
+        .await;
+    }
+
+    async fn compacted(&mut self, summary: &str) {
+        crate::extensions::announce(
+            self.extensions.as_ref(),
+            "session_compact",
+            serde_json::json!({ "summary": summary }),
+        )
+        .await;
     }
 
     async fn ran_bash(&mut self, command: &str, output: &str, failed: bool) {

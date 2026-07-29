@@ -261,6 +261,13 @@ async fn main() -> Result<()> {
             "model": built.model.qualified_id(),
         });
         let _ = host.notify("session_start", started).await;
+        // What micro found on disk for this project, so an extension can add to it.
+        let _ = host
+            .notify(
+                "resources_discover",
+                serde_json::json!({ "workspace": root.display().to_string() }),
+            )
+            .await;
     }
 
     if let Some(host) = extensions.as_ref() {

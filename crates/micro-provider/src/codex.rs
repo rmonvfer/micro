@@ -133,7 +133,7 @@ async fn run(
     // what lets the backend tie a retry to the attempt it repeats.
     let request_id = format!("micro-{}", now_ms());
 
-    let response = client
+    let request = client
         .post(endpoint(&model.base_url))
         .header("authorization", format!("Bearer {api_key}"))
         .header("chatgpt-account-id", account)
@@ -143,7 +143,8 @@ async fn run(
         .header("session-id", &request_id)
         .header("x-client-request-id", &request_id)
         .header("accept", "text/event-stream")
-        .header("content-type", "application/json")
+        .header("content-type", "application/json");
+    let response = crate::with_carried_headers(request, &context)
         .json(&build_payload(&model, &context))
         .send()
         .await

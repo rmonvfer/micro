@@ -212,6 +212,9 @@ pub struct Context {
     pub system_prompt: Option<String>,
     pub messages: Vec<Message>,
     pub tools: Vec<ToolDefinition>,
+    /// Headers to send along with the request, beyond the ones the provider sets itself.
+    /// A header named here replaces the provider's own.
+    pub headers: Vec<(String, String)>,
 }
 
 #[cfg(test)]

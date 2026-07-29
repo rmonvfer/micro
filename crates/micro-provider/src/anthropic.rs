@@ -70,11 +70,12 @@ async fn run(
     sender: &UnboundedSender<StreamEvent>,
 ) -> Result<(), String> {
     let payload = build_payload(&model, &context);
-    let response = client
+    let request = client
         .post(endpoint(&model.base_url))
         .header("x-api-key", api_key)
         .header("anthropic-version", API_VERSION)
-        .header("content-type", "application/json")
+        .header("content-type", "application/json");
+    let response = crate::with_carried_headers(request, &context)
         .json(&payload)
         .send()
         .await
