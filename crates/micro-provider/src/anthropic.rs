@@ -591,6 +591,7 @@ mod tests {
                 description: "read a file".into(),
                 parameters: json!({ "type": "object" }),
             }],
+            headers: Vec::new(),
         }
     }
 

@@ -865,6 +865,7 @@ mod tests {
                 description: "read a file".into(),
                 parameters: json!({ "type": "object" }),
             }],
+            headers: Vec::new(),
         };
         let payload = build_payload(&model(), &context);
 
@@ -888,6 +889,7 @@ mod tests {
                 system_prompt: None,
                 messages: vec![Message::user("think about it")],
                 tools: Vec::new(),
+                headers: Vec::new(),
             },
         );
         assert_eq!(payload["reasoning"]["effort"], "high");

@@ -863,6 +863,7 @@ mod tests {
                 Message::tool_result("call_1", "read", "contents", false),
             ],
             tools: Vec::new(),
+            headers: Vec::new(),
         };
         let wire = build_messages(&context);
 

@@ -601,6 +601,7 @@ mod tests {
             system_prompt: Some("be brief".into()),
             messages: vec![Message::user("hi")],
             tools: Vec::new(),
+            headers: Vec::new(),
         };
 
         drain(provider.stream(model(), context.clone(), "secret".into())).await;
@@ -641,6 +642,7 @@ mod tests {
                     Message::tool_result("c1", "read", "ok", false),
                 ],
                 tools: Vec::new(),
+                headers: Vec::new(),
             },
         };
         assert!(paired.orphaned_tool_results().is_empty());
