@@ -380,10 +380,10 @@ async fn shut_down_extensions(
     let Some(host) = extensions else {
         return;
     };
-    // Only the last holder can shut it down, and by here nothing else should hold it.
-    if let Ok(host) = std::sync::Arc::try_unwrap(host) {
-        host.shutdown().await;
-    }
+    // Not conditional on being the last holder: the pump, the hooks and the command
+    // runner all keep one, and the host has to be told either way or it is killed with
+    // the process, mid-sentence.
+    host.shutdown().await;
 }
 
 /// Run a slash command with nobody watching, and say what it printed.

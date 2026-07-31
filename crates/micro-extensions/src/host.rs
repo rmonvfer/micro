@@ -358,7 +358,7 @@ impl Host {
     }
 
     /// Tell the extensions the session is over, and let the process go.
-    pub async fn shutdown(self) {
+    pub async fn shutdown(&self) {
         let _ = write_line(
             &mut *self.stdin.lock().await,
             &serde_json::json!({ "type": "shutdown" }),
