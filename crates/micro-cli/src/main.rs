@@ -271,10 +271,24 @@ async fn main() -> Result<()> {
     }
 
     if let Some(host) = extensions.as_ref() {
+        // What the pump answers questions from: what is running, and the session it runs
+        // in. Filled in here because this is where both are known.
+        let state = std::sync::Arc::new(tokio::sync::RwLock::new(extensions::State {
+            thinking: format!("{:?}", cli.thinking).to_lowercase(),
+            model: built.model.id.clone(),
+            provider: built.model.provider.clone(),
+            tools: built.tool_names.clone(),
+            commands: micro_commands::commands()
+                .iter()
+                .map(|command| command.name.to_string())
+                .collect(),
+        }));
         tokio::spawn(extensions::serve(
             std::sync::Arc::clone(host),
             root.clone(),
             asker.clone(),
+            state,
+            std::sync::Arc::clone(&built.session),
         ));
     }
 

@@ -107,8 +107,9 @@ function apiFor(registration: Registration) {
 			send({ type: "action", action: "send_message", message, options: options ?? {} });
 		},
 
-		setSessionName(name: string): void {
-			send({ type: "action", action: "set_session_name", name });
+		async setSessionName(name: string): Promise<boolean> {
+			const answer = await ask({ type: "request", request: "set_session_name", name });
+			return answer.ok === true;
 		},
 
 		async exec(command: string, args: string[], options?: Json): Promise<Json> {
@@ -120,9 +121,28 @@ function apiFor(registration: Registration) {
 			return (answer.tools as string[]) ?? [];
 		},
 
-		async setModel(model: Json): Promise<boolean> {
-			const answer = await ask({ type: "request", request: "set_model", model });
-			return answer.ok === true;
+		async getAllTools(): Promise<string[]> {
+			const answer = await ask({ type: "request", request: "get_all_tools" });
+			return (answer.tools as string[]) ?? [];
+		},
+
+		async getCommands(): Promise<string[]> {
+			const answer = await ask({ type: "request", request: "get_commands" });
+			return (answer.commands as string[]) ?? [];
+		},
+
+		async getSessionName(): Promise<string | undefined> {
+			const answer = await ask({ type: "request", request: "get_session_name" });
+			return (answer.name as string | undefined) ?? undefined;
+		},
+
+		async getModel(): Promise<Json | undefined> {
+			const answer = await ask({ type: "request", request: "get_model" });
+			return answer.model as Json | undefined;
+		},
+
+		setModel(model: Json | string): void {
+			send({ type: "action", action: "set_model", model });
 		},
 
 		async getThinkingLevel(): Promise<string> {

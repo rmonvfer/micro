@@ -17,7 +17,13 @@ use std::sync::Arc;
 ///
 /// The stream of asks is taken out of the host first: waiting on it through the host would
 /// hold its lock, and then nothing could be answered while nothing was being asked.
-pub async fn serve(host: Arc<Host>, workspace: PathBuf, asker: Option<micro_tui::UiAsker>) {
+pub async fn serve(
+    host: Arc<Host>,
+    workspace: PathBuf,
+    asker: Option<micro_tui::UiAsker>,
+    state: Arc<tokio::sync::RwLock<State>>,
+    session: Arc<tokio::sync::Mutex<micro_session::Session>>,
+) {
     let Some(mut asks) = host.take_asks().await else {
         return;
     };
@@ -29,7 +35,7 @@ pub async fn serve(host: Arc<Host>, workspace: PathBuf, asker: Option<micro_tui:
                 request,
                 payload,
             } => {
-                let answer = answer(&request, &payload, &workspace).await;
+                let answer = answer(&request, &payload, &workspace, &state, &session).await;
                 if host.answer(&id, answer).await.is_err() {
                     return;
                 }
@@ -54,10 +60,36 @@ pub async fn serve(host: Arc<Host>, workspace: PathBuf, asker: Option<micro_tui:
 }
 
 /// What an extension gets back for a question.
-async fn answer(request: &str, payload: &Value, workspace: &PathBuf) -> Value {
+async fn answer(
+    request: &str,
+    payload: &Value,
+    workspace: &PathBuf,
+    state: &Arc<tokio::sync::RwLock<State>>,
+    session: &Arc<tokio::sync::Mutex<micro_session::Session>>,
+) -> Value {
     match request {
         "exec" => exec(payload, workspace).await,
-        "get_thinking_level" => json!({ "level": "off" }),
+        "get_thinking_level" => json!({ "level": state.read().await.thinking }),
+        "get_active_tools" | "get_all_tools" => json!({ "tools": state.read().await.tools }),
+        "get_commands" => json!({ "commands": state.read().await.commands }),
+        "get_model" => {
+            let state = state.read().await;
+            json!({ "model": { "id": state.model, "provider": state.provider } })
+        }
+        "get_session_name" => {
+            let session = session.lock().await;
+            let name = session.meta().title.clone();
+            json!({ "name": (!name.is_empty()).then_some(name) })
+        }
+        "set_session_name" => {
+            let Some(name) = payload.get("name").and_then(Value::as_str) else {
+                return json!({ "error": "no name to set" });
+            };
+            match session.lock().await.rename(name).await {
+                Ok(()) => json!({ "ok": true }),
+                Err(error) => json!({ "error": error.to_string() }),
+            }
+        }
         other => json!({ "error": format!("micro cannot answer `{other}`") }),
     }
 }
@@ -138,6 +170,28 @@ async fn carry_out(action: &str, payload: &Value, asker: Option<&micro_tui::UiAs
                 }
             }
         }
+        // Both of these change what the next turn runs, which is the interface's to do:
+        // it holds the agent, and a command is how anything else asks it to.
+        "set_thinking_level" => {
+            if let (Some(asker), Some(level)) =
+                (asker, payload.get("level").and_then(Value::as_str))
+            {
+                asker
+                    .ask("send_user_message", format!("/thinking {level}"), None, Vec::new())
+                    .await;
+            }
+        }
+        "set_model" => {
+            let named = payload
+                .get("model")
+                .and_then(|model| model.get("id").and_then(Value::as_str))
+                .or_else(|| payload.get("model").and_then(Value::as_str));
+            if let (Some(asker), Some(model)) = (asker, named) {
+                asker
+                    .ask("send_user_message", format!("/model {model}"), None, Vec::new())
+                    .await;
+            }
+        }
         other => eprintln!("note: an extension asked for `{other}`, which micro does not know"),
     }
 }
@@ -215,6 +269,20 @@ async fn show(payload: &Value, asker: Option<&micro_tui::UiAsker>) -> Value {
         // Anything else has nowhere to be shown, and saying so beats pretending.
         other => json!({ "cancelled": true, "error": format!("micro cannot show `{other}`") }),
     }
+}
+
+/// What micro is running, as an extension asking would see it.
+///
+/// Kept beside the pump rather than reached for through the agent: the agent belongs to
+/// whoever is driving the run, and an extension asking a question must not have to wait
+/// for a turn to finish.
+#[derive(Debug, Default)]
+pub struct State {
+    pub thinking: String,
+    pub model: String,
+    pub provider: String,
+    pub tools: Vec<String>,
+    pub commands: Vec<String>,
 }
 
 /// Tell the extensions something happened somewhere other than inside a turn.
@@ -448,10 +516,84 @@ mod tests {
         assert!(answer["error"].as_str().unwrap().contains("cannot run"));
     }
 
+    /// A scratch session, so a question about the session has one to ask about.
+    async fn scratch_session() -> Arc<tokio::sync::Mutex<micro_session::Session>> {
+        let root = std::env::temp_dir().join(format!(
+            "micro-extensions-state-{}-{}",
+            std::process::id(),
+            micro_types::now_ms()
+        ));
+        let store = micro_session::SessionStore::new(root.join("sessions"));
+        let session = store
+            .create(&root, "anthropic/claude-opus-5")
+            .await
+            .expect("a session");
+        Arc::new(tokio::sync::Mutex::new(session))
+    }
+
     #[tokio::test]
     async fn a_request_micro_does_not_know_is_answered_rather_than_ignored() {
-        let answer = answer("fly", &json!({}), &std::env::temp_dir()).await;
+        let state = Arc::new(tokio::sync::RwLock::new(State::default()));
+        let answer = answer(
+            "fly",
+            &json!({}),
+            &std::env::temp_dir(),
+            &state,
+            &scratch_session().await,
+        )
+        .await;
         assert!(answer["error"].as_str().unwrap().contains("fly"));
+    }
+
+    /// What is running is answered from what the run knows, not made up.
+    #[tokio::test]
+    async fn an_extension_can_ask_what_is_running() {
+        let state = Arc::new(tokio::sync::RwLock::new(State {
+            thinking: "high".into(),
+            model: "gemini-3-pro".into(),
+            provider: "openrouter".into(),
+            tools: vec!["read".into(), "write".into()],
+            commands: vec!["help".into()],
+        }));
+        let session = scratch_session().await;
+        let workspace = std::env::temp_dir();
+
+        let level = answer("get_thinking_level", &json!({}), &workspace, &state, &session).await;
+        assert_eq!(level["level"], "high");
+
+        let tools = answer("get_active_tools", &json!({}), &workspace, &state, &session).await;
+        assert_eq!(tools["tools"][0], "read");
+
+        let model = answer("get_model", &json!({}), &workspace, &state, &session).await;
+        assert_eq!(model["model"]["id"], "gemini-3-pro");
+        assert_eq!(model["model"]["provider"], "openrouter");
+
+        let commands = answer("get_commands", &json!({}), &workspace, &state, &session).await;
+        assert_eq!(commands["commands"][0], "help");
+    }
+
+    /// Naming the session takes effect, and asking gives the name back.
+    #[tokio::test]
+    async fn an_extension_can_name_the_session_and_read_it_back() {
+        let state = Arc::new(tokio::sync::RwLock::new(State::default()));
+        let session = scratch_session().await;
+        let workspace = std::env::temp_dir();
+
+        let unnamed = answer("get_session_name", &json!({}), &workspace, &state, &session).await;
+        assert!(unnamed["name"].is_null(), "{unnamed}");
+
+        let set = answer(
+            "set_session_name",
+            &json!({ "name": "the good one" }),
+            &workspace,
+            &state,
+            &session,
+        )
+        .await;
+        assert_eq!(set["ok"], true);
+
+        let named = answer("get_session_name", &json!({}), &workspace, &state, &session).await;
+        assert_eq!(named["name"], "the good one");
     }
 
     /// A message an extension sends goes into the conversation through the interface.

@@ -55,6 +55,8 @@ pub struct Runtime {
     pub commands: CliCommands,
     /// The extension host, when there was anything to load and a runtime to load it.
     pub extensions: Option<Arc<micro_extensions::Host>>,
+    /// Every tool the model may call, by name, for whoever asks what is available.
+    pub tool_names: Vec<String>,
 }
 
 /// Resolve a model from the catalog, reporting candidates rather than guessing when the
@@ -238,6 +240,10 @@ pub async fn build(
             )));
         }
     }
+    let tool_names: Vec<String> = tools
+        .iter()
+        .map(|tool| tool.definition().name)
+        .collect();
     let tools = micro_policy::gated_tools(tools, engine);
 
     let (recorder, receiver) = tokio::sync::mpsc::unbounded_channel();
@@ -294,6 +300,7 @@ pub async fn build(
     Ok(Runtime {
         agent,
         extensions,
+        tool_names,
         session,
         history,
         model,
