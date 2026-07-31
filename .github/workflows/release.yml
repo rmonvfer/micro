@@ -84,7 +84,9 @@ jobs:
           mkdir release
           find artifacts -name 'micro-*.tar.gz' -exec cp {} release/ \;
           (cd release && sha256sum micro-*.tar.gz > checksums-sha256.txt)
-      - uses: actions/attest-build-provenance@v3
+      - name: Attest public release assets
+        if: ${{ !github.event.repository.private }}
+        uses: actions/attest-build-provenance@v3
         with:
           subject-path: release/*
       - uses: softprops/action-gh-release@v2
