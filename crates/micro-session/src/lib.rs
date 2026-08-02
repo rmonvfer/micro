@@ -12,6 +12,7 @@ mod meta;
 pub use error::Result;
 pub use error::SessionError;
 pub use meta::SessionMeta;
+pub use tree::CustomEntry;
 pub use tree::Entry;
 pub use tree::Row;
 pub use tree::Tree;
@@ -413,6 +414,45 @@ impl Session {
         self.meta.title = title.trim().to_string();
         self.meta.updated_at = micro_types::now_ms();
         self.write_meta().await
+    }
+
+    /// Record something beside the conversation. It is written to the log and read back
+    /// on the next open, and the model never sees it.
+    pub async fn append_custom(
+        &mut self,
+        custom_type: &str,
+        data: serde_json::Value,
+    ) -> Result<()> {
+        let entry = self.tree.push_custom(custom_type, data);
+        self.write_line(&entry).await
+    }
+
+    /// Name an entry, or take its name away.
+    pub async fn set_label(&mut self, entry_id: &str, label: Option<String>) -> Result<bool> {
+        if !self.tree.set_label(entry_id, label.clone()) {
+            return Ok(false);
+        }
+        let written = crate::tree::Label {
+            entry_id: entry_id.to_string(),
+            label,
+            timestamp: micro_types::now_ms(),
+        };
+        self.write_line(&written).await.map(|()| true)
+    }
+
+    /// Append one line to the log, whatever kind of line it is.
+    async fn write_line(&mut self, value: &impl serde::Serialize) -> Result<()> {
+        let mut line =
+            serde_json::to_vec(value).map_err(|source| SessionError::json(&self.log_path, source))?;
+        line.push(b'\n');
+        self.log
+            .write_all(&line)
+            .await
+            .map_err(|source| SessionError::io(&self.log_path, source))?;
+        self.log
+            .flush()
+            .await
+            .map_err(|source| SessionError::io(&self.log_path, source))
     }
 
     /// The JSONL log backing this session.

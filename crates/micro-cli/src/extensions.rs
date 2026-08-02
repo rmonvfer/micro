@@ -81,6 +81,47 @@ async fn answer(
             let name = session.meta().title.clone();
             json!({ "name": (!name.is_empty()).then_some(name) })
         }
+        "append_entry" => {
+            let custom_type = payload
+                .get("customType")
+                .and_then(Value::as_str)
+                .unwrap_or("custom");
+            let data = payload.get("data").cloned().unwrap_or(Value::Null);
+            match session.lock().await.append_custom(custom_type, data).await {
+                Ok(()) => json!({ "ok": true }),
+                Err(error) => json!({ "error": error.to_string() }),
+            }
+        }
+        "set_label" => {
+            let Some(entry_id) = payload.get("entryId").and_then(Value::as_str) else {
+                return json!({ "error": "no entry to label" });
+            };
+            let label = payload
+                .get("label")
+                .and_then(Value::as_str)
+                .map(str::to_string);
+            match session.lock().await.set_label(entry_id, label).await {
+                Ok(true) => json!({ "ok": true }),
+                Ok(false) => json!({ "error": format!("there is no entry {entry_id}") }),
+                Err(error) => json!({ "error": error.to_string() }),
+            }
+        }
+        "get_entries" => {
+            let session = session.lock().await;
+            let customs: Vec<Value> = session
+                .tree()
+                .customs()
+                .iter()
+                .map(|custom| {
+                    json!({
+                        "id": custom.id,
+                        "customType": custom.custom_type,
+                        "data": custom.data,
+                    })
+                })
+                .collect();
+            json!({ "entries": customs })
+        }
         "set_session_name" => {
             let Some(name) = payload.get("name").and_then(Value::as_str) else {
                 return json!({ "error": "no name to set" });

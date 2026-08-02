@@ -1414,3 +1414,46 @@ export default (micro) => {
         "the header reached the provider: {headers:#?}"
     );
 }
+
+/// An extension keeps state in the session, reads it back, and the model never sees it.
+#[test]
+fn an_extension_can_keep_state_the_model_never_sees() {
+    if which_bun().is_none() {
+        return;
+    }
+    let api = FakeApi::start([Reply::text("answered")]);
+    let fixture = Fixture::new(&api);
+    let log = fixture.workspace().join("kept.log");
+    fixture.write(
+        ".micro/extensions/keeper.ts",
+        &format!(
+            r#"
+import {{ writeFileSync }} from "node:fs";
+export default (micro) => {{
+    micro.registerCommand("keep", {{
+        handler: async () => {{
+            await micro.appendEntry("a-note", {{ secretly: "kept aside" }});
+            const kept = await micro.getEntries();
+            writeFileSync({log:?}, JSON.stringify(kept));
+            return `kept ${{kept.length}}`;
+        }},
+    }});
+}};
+"#,
+            log = log.display().to_string()
+        ),
+    );
+
+    let kept = fixture.print(&["-m", "test", "/keep"]);
+    assert!(kept.status.success(), "{}", kept.stderr);
+    assert!(kept.stdout.contains("kept 1"), "{}", kept.stdout);
+
+    let read_back = std::fs::read_to_string(&log).expect("the extension read it back");
+    assert!(read_back.contains("kept aside"), "{read_back}");
+
+    // The next run sends the conversation, and what was kept aside is not in it.
+    let output = fixture.print(&["-m", "test", "say something"]);
+    assert!(output.status.success(), "{}", output.stderr);
+    let sent = serde_json::to_string(&api.request(0)).unwrap();
+    assert!(!sent.contains("kept aside"), "the model never saw it: {sent}");
+}

@@ -11,6 +11,7 @@
 use micro_types::Message;
 use serde::Deserialize;
 use serde::Serialize;
+use serde_json::Value;
 
 /// One entry in the log: a message, and where it sits in the tree.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -34,13 +35,45 @@ impl Entry {
     }
 }
 
-/// A line of the log, which is either an entry or a bare message from an older session.
+/// Something recorded in a session that is not part of the conversation.
 ///
-/// Untagged so both shapes parse: an envelope has an `id`, a bare message has a `role`.
+/// An extension keeps state here — what it decided, what it was told — and a label names
+/// an entry for whoever reads the tree later. None of it is ever shown to the model: the
+/// conversation is what [`Tree::path`] returns, and nothing here is in it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CustomEntry {
+    pub id: String,
+    #[serde(default)]
+    pub parent_id: Option<String>,
+    pub timestamp: i64,
+    /// What kind of thing this is, as whoever wrote it named it.
+    pub custom_type: String,
+    #[serde(default)]
+    pub data: serde_json::Value,
+}
+
+/// A name given to an entry, so a branch can be found again by what it was for.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Label {
+    /// The entry being named.
+    pub entry_id: String,
+    /// The name, or nothing to take a name away.
+    #[serde(default)]
+    pub label: Option<String>,
+    pub timestamp: i64,
+}
+
+/// A line of the log: an entry, something recorded beside the conversation, or a bare
+/// message from an older session.
+///
+/// Untagged so every shape parses: an envelope has an `id` and a `message`, a custom entry
+/// has a `custom_type`, a label has an `entry_id`, and a bare message has a `role`.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(untagged)]
 pub enum Line {
     Entry(Entry),
+    Custom(CustomEntry),
+    Label(Label),
     Bare(Message),
 }
 
@@ -48,6 +81,10 @@ pub enum Line {
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Tree {
     entries: Vec<Entry>,
+    /// Everything recorded beside the conversation, in the order it was written.
+    customs: Vec<CustomEntry>,
+    /// What each entry has been named, by entry id.
+    labels: std::collections::BTreeMap<String, String>,
     head: Option<String>,
 }
 
@@ -65,6 +102,15 @@ impl Tree {
                     tree.head = Some(entry.id.clone());
                     tree.entries.push(entry);
                 }
+                Line::Custom(custom) => tree.customs.push(custom),
+                Line::Label(label) => match label.label {
+                    Some(name) => {
+                        tree.labels.insert(label.entry_id, name);
+                    }
+                    None => {
+                        tree.labels.remove(&label.entry_id);
+                    }
+                },
                 Line::Bare(message) => {
                     tree.push(message);
                 }
@@ -75,6 +121,46 @@ impl Tree {
 
     pub fn entries(&self) -> &[Entry] {
         &self.entries
+    }
+
+    /// Everything recorded beside the conversation.
+    pub fn customs(&self) -> &[CustomEntry] {
+        &self.customs
+    }
+
+    /// What an entry has been named, if anything.
+    pub fn label(&self, entry_id: &str) -> Option<&str> {
+        self.labels.get(entry_id).map(String::as_str)
+    }
+
+    /// Record something beside the conversation, hanging off wherever it currently is.
+    pub fn push_custom(&mut self, custom_type: impl Into<String>, data: Value) -> CustomEntry {
+        let custom = CustomEntry {
+            id: format!("c{}", self.customs.len() + 1),
+            parent_id: self.head.clone(),
+            timestamp: micro_types::now_ms(),
+            custom_type: custom_type.into(),
+            data,
+        };
+        self.customs.push(custom.clone());
+        custom
+    }
+
+    /// Name an entry, or take its name away. Naming something that is not there does
+    /// nothing, which is what makes a stale id harmless.
+    pub fn set_label(&mut self, entry_id: &str, label: Option<String>) -> bool {
+        if !self.entries.iter().any(|entry| entry.id == entry_id) {
+            return false;
+        }
+        match label {
+            Some(label) => {
+                self.labels.insert(entry_id.to_string(), label);
+            }
+            None => {
+                self.labels.remove(entry_id);
+            }
+        }
+        true
     }
 
     pub fn is_empty(&self) -> bool {
@@ -270,6 +356,57 @@ mod tests {
         assert_eq!(tree.entries().len(), 2);
         assert_eq!(tree.path().len(), 2);
         assert_eq!(tree.entries()[1].parent_id.as_deref(), Some("1"));
+    }
+
+    /// What is kept beside the conversation is never in it: the model sees the path, and
+    /// the path holds messages only.
+    #[test]
+    fn something_kept_beside_the_conversation_stays_out_of_it() {
+        let mut tree = Tree::new();
+        tree.push(user("a question"));
+        let kept = tree.push_custom("note", serde_json::json!({ "seen": true }));
+
+        assert_eq!(tree.path().len(), 1, "the model sees the question alone");
+        assert_eq!(tree.customs().len(), 1);
+        assert_eq!(tree.customs()[0].custom_type, "note");
+        assert_eq!(kept.parent_id.as_deref(), Some("1"));
+    }
+
+    #[test]
+    fn an_entry_can_be_named_and_unnamed() {
+        let mut tree = Tree::new();
+        tree.push(user("a question"));
+
+        assert!(tree.set_label("1", Some("the good branch".into())));
+        assert_eq!(tree.label("1"), Some("the good branch"));
+
+        assert!(tree.set_label("1", None));
+        assert_eq!(tree.label("1"), None);
+        assert!(!tree.set_label("nowhere", Some("x".into())), "a stale id is harmless");
+    }
+
+    /// Everything written to the log comes back, each kind as what it was.
+    #[test]
+    fn a_log_holding_every_kind_of_line_reads_back() {
+        let tree = Tree::from_lines(vec![
+            Line::Entry(Entry::new("1", None, user("a question"))),
+            Line::Custom(CustomEntry {
+                id: "c1".into(),
+                parent_id: Some("1".into()),
+                timestamp: 0,
+                custom_type: "note".into(),
+                data: serde_json::json!({ "seen": true }),
+            }),
+            Line::Label(Label {
+                entry_id: "1".into(),
+                label: Some("the good branch".into()),
+                timestamp: 0,
+            }),
+        ]);
+
+        assert_eq!(tree.path().len(), 1);
+        assert_eq!(tree.customs()[0].data["seen"], true);
+        assert_eq!(tree.label("1"), Some("the good branch"));
     }
 
     #[test]

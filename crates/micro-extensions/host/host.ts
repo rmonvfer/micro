@@ -121,6 +121,24 @@ function apiFor(registration: Registration) {
 			return (answer.tools as string[]) ?? [];
 		},
 
+		/** Keep something in the session that the model never sees. */
+		async appendEntry(customType: string, data?: unknown): Promise<boolean> {
+			const answer = await ask({ type: "request", request: "append_entry", customType, data });
+			return answer.ok === true;
+		},
+
+		/** Read back everything this or any other extension kept. */
+		async getEntries(): Promise<Json[]> {
+			const answer = await ask({ type: "request", request: "get_entries" });
+			return (answer.entries as Json[]) ?? [];
+		},
+
+		/** Name an entry, or take its name away by passing nothing. */
+		async setLabel(entryId: string, label?: string): Promise<boolean> {
+			const answer = await ask({ type: "request", request: "set_label", entryId, label });
+			return answer.ok === true;
+		},
+
 		async getAllTools(): Promise<string[]> {
 			const answer = await ask({ type: "request", request: "get_all_tools" });
 			return (answer.tools as string[]) ?? [];
