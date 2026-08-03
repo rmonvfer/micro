@@ -52,6 +52,13 @@ pub enum Entry {
     Assistant(AssistantEntry),
     Tool(ToolEntry),
     Notice { text: String, level: NoticeLevel },
+    /// Something an extension drew itself. micro decides where it goes and how it is
+    /// tinted; what it says is the extension's.
+    Custom {
+        /// What to call it, shown as its label.
+        label: String,
+        lines: Vec<String>,
+    },
 }
 
 #[derive(Debug, Clone, Default)]
@@ -209,6 +216,15 @@ impl Transcript {
         self.entries.push(Entry::Image {
             data: data.into(),
             mime_type: mime_type.into(),
+        });
+        self.version += 1;
+    }
+
+    /// Show something an extension drew.
+    pub fn push_custom(&mut self, label: impl Into<String>, lines: Vec<String>) {
+        self.entries.push(Entry::Custom {
+            label: label.into(),
+            lines,
         });
         self.version += 1;
     }

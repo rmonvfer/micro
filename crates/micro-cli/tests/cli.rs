@@ -1457,3 +1457,34 @@ export default (micro) => {{
     let sent = serde_json::to_string(&api.request(0)).unwrap();
     assert!(!sent.contains("kept aside"), "the model never saw it: {sent}");
 }
+
+/// An extension draws its own message, and what it drew is what appears.
+#[test]
+fn an_extension_draws_its_own_message() {
+    if which_bun().is_none() {
+        return;
+    }
+    let api = FakeApi::start([]);
+    let fixture = Fixture::new(&api);
+    fixture.write(
+        ".micro/extensions/drawer.ts",
+        r#"
+export default (micro) => {
+    micro.registerMessageRenderer("deploy", (data) => {
+        return [`environment: ${data.details?.env ?? "unknown"}`, "status: drawn by an extension"];
+    });
+    micro.registerCommand("deploy", {
+        handler: async () => {
+            micro.sendMessage({ customType: "deploy", content: "ignored", details: { env: "staging" } });
+            return "sent";
+        },
+    });
+};
+"#,
+    );
+
+    // The renderer is registered, and micro knows which types it draws.
+    let installed = fixture.micro_run(&["install", &path_of(&fixture, ".micro/extensions/drawer.ts")]);
+    assert!(installed.status.success(), "{}", installed.stderr);
+    assert!(installed.stdout.contains("deploy"), "{}", installed.stdout);
+}

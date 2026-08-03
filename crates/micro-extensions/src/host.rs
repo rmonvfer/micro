@@ -50,6 +50,9 @@ pub struct Registered {
     pub events: Vec<String>,
     #[serde(default)]
     pub providers: Vec<RegisteredProvider>,
+    /// The custom types this extension draws itself.
+    #[serde(default)]
+    pub renderers: Vec<String>,
 }
 
 /// A provider an extension declared, or one it changed.
@@ -220,6 +223,61 @@ impl Host {
             .iter()
             .flat_map(|extension| extension.tools.iter().cloned())
             .collect()
+    }
+
+    /// Whether anything registered a way to draw this kind of message.
+    pub fn draws(&self, custom_type: &str) -> bool {
+        self.loaded
+            .extensions
+            .iter()
+            .any(|extension| extension.renderers.iter().any(|kind| kind == custom_type))
+    }
+
+    /// Ask whoever registered it to draw one, at this width.
+    ///
+    /// What comes back is lines of text: the extension decides what it says, micro decides
+    /// where it goes.
+    pub async fn render(
+        &self,
+        custom_type: &str,
+        data: &Value,
+        width: usize,
+    ) -> Result<Vec<String>, String> {
+        let id = self.claim_id();
+        let (sender, receiver) = oneshot::channel();
+        self.pending.lock().await.insert(id.clone(), sender);
+
+        write_line(
+            &mut *self.stdin.lock().await,
+            &serde_json::json!({
+                "type": "render",
+                "id": id,
+                "customType": custom_type,
+                "data": data,
+                "width": width,
+            }),
+        )
+        .await?;
+
+        let answer = tokio::time::timeout(TOOL_TIMEOUT, receiver)
+            .await
+            .map_err(|_| format!("nothing drew {custom_type} in time"))?
+            .map_err(|_| "the extension host stopped while drawing".to_string())?;
+
+        if let Some(error) = answer.get("error").and_then(Value::as_str) {
+            return Err(error.to_string());
+        }
+        Ok(answer
+            .get("lines")
+            .and_then(Value::as_array)
+            .map(|lines| {
+                lines
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .map(str::to_string)
+                    .collect()
+            })
+            .unwrap_or_default())
     }
 
     /// Every provider they declared.
@@ -406,7 +464,7 @@ async fn read_host(
                     let _ = sender.send(described);
                 }
             }
-            "tool_result" | "command_result" | "event_result" => {
+            "tool_result" | "command_result" | "event_result" | "render_result" => {
                 let Some(id) = message.get("id").and_then(Value::as_str) else {
                     continue;
                 };

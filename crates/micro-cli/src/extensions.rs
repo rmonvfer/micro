@@ -42,7 +42,7 @@ pub async fn serve(
             }
             // An action is carried out where it belongs; nothing goes back.
             FromHost::Action { action, payload } => {
-                carry_out(&action, &payload, asker.as_ref()).await
+                carry_out(&action, &payload, asker.as_ref(), Some(&host)).await
             }
             FromHost::Ui { id, payload } => {
                 let answer = show(&payload, asker.as_ref()).await;
@@ -176,7 +176,12 @@ async fn exec(payload: &Value, workspace: &PathBuf) -> Value {
 ///
 /// Anything that reaches the conversation goes through the interface, because the
 /// conversation is the interface's: it holds the agent and decides when a turn runs.
-async fn carry_out(action: &str, payload: &Value, asker: Option<&micro_tui::UiAsker>) {
+async fn carry_out(
+    action: &str,
+    payload: &Value,
+    asker: Option<&micro_tui::UiAsker>,
+    host: Option<&Arc<Host>>,
+) {
     match action {
         "send_user_message" => {
             let content = payload
@@ -197,18 +202,36 @@ async fn carry_out(action: &str, payload: &Value, asker: Option<&micro_tui::UiAs
                 None => eprintln!("note: an extension tried to send a message with no session"),
             }
         }
-        // A custom message is one an extension draws itself, which needs a renderer it
-        // registered. Until there is one, saying it plainly is better than dropping it.
+        // A custom message is drawn by whoever registered a renderer for its type, and
+        // said plainly when nobody did.
         "send_message" => {
-            let said = payload
-                .get("message")
-                .and_then(|message| message.get("content"))
+            let message = payload.get("message").cloned().unwrap_or(Value::Null);
+            let custom_type = message
+                .get("customType")
                 .and_then(Value::as_str)
-                .unwrap_or_default();
-            if !said.trim().is_empty() {
-                if let Some(asker) = asker {
-                    asker.ask("notify", said, None, Vec::new()).await;
-                }
+                .unwrap_or("message")
+                .to_string();
+            let content = message
+                .get("content")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string();
+
+            let drawn = match host {
+                Some(host) if host.draws(&custom_type) => Some(
+                    host.render(&custom_type, &message, RENDER_WIDTH)
+                        .await
+                        .unwrap_or_else(|error| vec![format!("could not be drawn: {error}")]),
+                ),
+                _ => None,
+            };
+            let lines =
+                drawn.unwrap_or_else(|| content.lines().map(str::to_string).collect());
+            if lines.is_empty() {
+                return;
+            }
+            if let Some(asker) = asker {
+                asker.ask("custom_message", custom_type, None, lines).await;
             }
         }
         // Both of these change what the next turn runs, which is the interface's to do:
@@ -311,6 +334,12 @@ async fn show(payload: &Value, asker: Option<&micro_tui::UiAsker>) -> Value {
         other => json!({ "cancelled": true, "error": format!("micro cannot show `{other}`") }),
     }
 }
+
+/// How wide a renderer is told the screen is.
+///
+/// A guess rather than the real width: the pump is not the interface and does not know it.
+/// A renderer that cares can wrap for itself.
+const RENDER_WIDTH: usize = 80;
 
 /// What micro is running, as an extension asking would see it.
 ///
@@ -646,6 +675,7 @@ mod tests {
                 "send_user_message",
                 &json!({ "content": "look at the tests" }),
                 Some(&asker),
+                None,
             )
             .await
         });
@@ -660,7 +690,13 @@ mod tests {
     #[tokio::test]
     async fn an_empty_message_is_not_sent_at_all() {
         let (asker, mut requests) = micro_tui::ui_channel();
-        carry_out("send_user_message", &json!({ "content": "   " }), Some(&asker)).await;
+        carry_out(
+            "send_user_message",
+            &json!({ "content": "   " }),
+            Some(&asker),
+            None,
+        )
+        .await;
         assert!(requests.try_recv().is_none());
     }
 

@@ -94,6 +94,7 @@ pub fn lines(transcript: &Transcript, theme: &Theme, display: &Display) -> Rende
             Entry::Compaction { summary, expanded } => {
                 push_compaction(&mut out, summary, *expanded, theme, display)
             }
+            Entry::Custom { label, lines } => push_custom(&mut out, label, lines, theme, display),
             Entry::Image { data, mime_type } => {
                 push_image(&mut out, data, mime_type, theme, display, &mut pictures)
             }
@@ -311,6 +312,37 @@ fn push_notice(
     };
     let spans = vec![Span::styled(body, Style::new().fg(color))];
     out.extend(wrap_spans(&spans, display.width, 0));
+}
+
+
+/// Something an extension drew, on the band ohm gives a custom message.
+///
+/// What it says is the extension's; the label, the tint and the inset are micro's, so one
+/// extension's output cannot be mistaken for the model's or for another extension's.
+fn push_custom(
+    out: &mut Vec<Line<'static>>,
+    label: &str,
+    lines: &[String],
+    theme: &Theme,
+    display: &Display,
+) {
+    let mut rows = vec![Line::from(vec![Span::styled(
+        format!("[{label}]"),
+        Style::new()
+            .fg(theme.custom_message_label)
+            .add_modifier(ratatui::style::Modifier::BOLD),
+    )])];
+    for line in lines {
+        rows.extend(crate::wrap::wrap_spans(
+            &[Span::styled(
+                line.clone(),
+                Style::new().fg(theme.custom_message_text),
+            )],
+            display.width,
+            0,
+        ));
+    }
+    out.extend(band(rows, display.width, theme.custom_message_bg));
 }
 
 #[cfg(test)]
@@ -567,5 +599,39 @@ mod tests {
         let out = lines(&Transcript::new(), &Theme::dark(), &display(40));
         assert!(out.lines.is_empty());
     }
-}
 
+    /// What an extension drew is banded and labelled, so it cannot be mistaken for the
+    /// model's own words.
+    #[test]
+    fn something_an_extension_drew_is_labelled_and_banded() {
+        let mut transcript = Transcript::new();
+        transcript.push_custom("deploy", vec!["staging: ok".into(), "prod: waiting".into()]);
+
+        let out = rendered(&transcript, &display(40));
+        let joined = out.join("\n");
+        assert!(joined.contains("[deploy]"), "{joined}");
+        assert!(joined.contains("staging: ok"), "{joined}");
+        assert!(joined.contains("prod: waiting"), "{joined}");
+    }
+
+    /// It is tinted across the full width, the way every banded block is.
+    #[test]
+    fn what_an_extension_drew_reaches_both_edges() {
+        let mut transcript = Transcript::new();
+        transcript.push_custom("note", vec!["something".into()]);
+
+        let drawn = lines(&transcript, &Theme::dark(), &display(30));
+        let widest = drawn
+            .lines
+            .iter()
+            .map(|line| {
+                line.spans
+                    .iter()
+                    .map(|span| crate::wrap::text_width(&span.content))
+                    .sum::<usize>()
+            })
+            .max()
+            .unwrap_or(0);
+        assert_eq!(widest, 30 + PADDING * 2, "the band reaches both edges");
+    }
+}

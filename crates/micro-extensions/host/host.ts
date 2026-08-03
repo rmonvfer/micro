@@ -31,6 +31,7 @@ interface Registration {
 	flags: Map<string, { description?: string; type: "boolean" | "string"; default?: boolean | string }>;
 	shortcuts: Map<string, { description?: string; handler: (ctx: unknown) => unknown }>;
 	providers: Map<string, Json>;
+	renderers: Map<string, (data: unknown, options: { width: number }) => unknown>;
 }
 
 const loaded: Registration[] = [];
@@ -87,6 +88,22 @@ function apiFor(registration: Registration) {
 
 		getFlag(name: string): boolean | string | undefined {
 			return flagValues.get(name);
+		},
+
+		/** Draw a custom message of this type yourself. */
+		registerMessageRenderer(
+			customType: string,
+			renderer: (data: unknown, options: { width: number }) => unknown,
+		): void {
+			registration.renderers.set(customType, renderer);
+		},
+
+		/** Draw a custom entry of this type yourself. Entries are not sent to the model. */
+		registerEntryRenderer(
+			customType: string,
+			renderer: (data: unknown, options: { width: number }) => unknown,
+		): void {
+			registration.renderers.set(customType, renderer);
 		},
 
 		/** Declare a provider, or change one micro already knows. */
@@ -205,6 +222,7 @@ async function load(path: string): Promise<void> {
 		flags: new Map(),
 		shortcuts: new Map(),
 		providers: new Map(),
+		renderers: new Map(),
 	};
 
 	try {
@@ -248,6 +266,7 @@ function describe(): Json {
 			})),
 			events: [...registration.handlers.keys()],
 			providers: [...registration.providers.entries()].map(([name, config]) => ({ name, config })),
+			renderers: [...registration.renderers.keys()],
 		})),
 		errors: failures,
 	};
@@ -273,6 +292,20 @@ async function runTool(id: string, name: string, args: Json): Promise<void> {
 		return;
 	}
 	send({ type: "tool_result", id, error: `no extension registered a tool called ${name}` });
+}
+
+/** Whatever a renderer returned, as the lines micro will draw. */
+function asLines(drawn: unknown): string[] {
+	if (typeof drawn === "string") {
+		return drawn.split("\n");
+	}
+	if (Array.isArray(drawn)) {
+		return drawn.map((line) => String(line));
+	}
+	if (drawn === undefined || drawn === null) {
+		return [];
+	}
+	return String(drawn).split("\n");
 }
 
 /** A tool may answer with a string, or with a shape carrying output and details. */
@@ -360,6 +393,29 @@ async function handle(line: string): Promise<void> {
 		case "command":
 			await runCommand(message.id as string, message.name as string, (message.args as string) ?? "");
 			return;
+		case "render": {
+			const customType = message.customType as string;
+			const width = (message.width as number) ?? 80;
+			for (const registration of loaded) {
+				const renderer = registration.renderers.get(customType);
+				if (!renderer) {
+					continue;
+				}
+				try {
+					const drawn = await renderer(message.data, { width });
+					send({ type: "render_result", id: message.id, lines: asLines(drawn) });
+				} catch (error) {
+					send({
+						type: "render_result",
+						id: message.id,
+						error: error instanceof Error ? error.message : String(error),
+					});
+				}
+				return;
+			}
+			send({ type: "render_result", id: message.id, lines: [] });
+			return;
+		}
 		case "answer": {
 			// micro answering something the host asked for.
 			const resolve = waiting.get(message.id as string);

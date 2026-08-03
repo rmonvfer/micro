@@ -457,6 +457,14 @@ impl App {
                 request.answer(serde_json::json!({ "queued": true }));
                 return;
             }
+            // Something an extension drew: the title names it, the options are its lines.
+            "custom_message" => {
+                let mut request = request;
+                self.transcript
+                    .push_custom(request.title.clone(), request.options.clone());
+                request.answer(serde_json::json!({ "shown": true }));
+                return;
+            }
             "notify" => {
                 let mut request = request;
                 self.notice(request.title.clone(), MessageKind::Info);
@@ -681,6 +689,9 @@ impl App {
                     out.push_str(&format!("_({mime_type} attached)_\n\n"))
                 }
                 crate::transcript::Entry::Notice { .. } => {}
+                crate::transcript::Entry::Custom { label, lines } => {
+                    out.push_str(&format!("## {label}\n\n{}\n\n", lines.join("\n")))
+                }
             }
         }
 
