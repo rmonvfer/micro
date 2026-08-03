@@ -225,6 +225,24 @@ impl Host {
             .collect()
     }
 
+    /// Every flag the extensions declared.
+    pub fn flags(&self) -> Vec<RegisteredFlag> {
+        self.loaded
+            .extensions
+            .iter()
+            .flat_map(|extension| extension.flags.iter().cloned())
+            .collect()
+    }
+
+    /// Tell the extensions what a flag was set to.
+    pub async fn set_flag(&self, name: &str, value: Value) -> Result<(), String> {
+        write_line(
+            &mut *self.stdin.lock().await,
+            &serde_json::json!({ "type": "set_flag", "name": name, "value": value }),
+        )
+        .await
+    }
+
     /// Whether anything registered a way to draw this kind of message.
     pub fn draws(&self, custom_type: &str) -> bool {
         self.loaded

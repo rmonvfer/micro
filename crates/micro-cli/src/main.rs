@@ -159,7 +159,14 @@ fn parse_thinking(value: &str) -> Result<ThinkingLevel, String> {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let cli = Cli::parse();
+    // Flags micro does not know are held back rather than refused: an extension may have
+    // declared one, and the extensions have not loaded yet.
+    let (mine, given) = micro_extensions::split_unknown(
+        std::env::args(),
+        &["print", "rpc", "quiet", "continue", "local", "live", "all", "overwrite", "help", "version"],
+        &["model", "provider", "thinking", "cwd", "resume", "approve"],
+    );
+    let cli = Cli::parse_from(mine);
 
     match &cli.command {
         Some(Command::Auth { action }) => {
@@ -271,6 +278,27 @@ async fn main() -> Result<()> {
     }
 
     if let Some(host) = extensions.as_ref() {
+        // A flag written on the command line reaches whoever declared it. One nobody
+        // declared is said out loud, so a typo is visible rather than silent.
+        let declared = host.flags();
+        for flag in &given {
+            match declared.iter().find(|known| known.name == flag.name) {
+                Some(known) => {
+                    let value = match (known.r#type.as_str(), &flag.value) {
+                        ("string", Some(value)) => serde_json::json!(value),
+                        ("string", None) => serde_json::json!(""),
+                        (_, Some(value)) => serde_json::json!(!matches!(
+                            value.as_str(),
+                            "false" | "no" | "0" | "off"
+                        )),
+                        (_, None) => serde_json::json!(true),
+                    };
+                    let _ = host.set_flag(&flag.name, value).await;
+                }
+                None => eprintln!("note: nothing declared a `--{}` flag", flag.name),
+            }
+        }
+
         // What the pump answers questions from: what is running, and the session it runs
         // in. Filled in here because this is where both are known.
         let state = std::sync::Arc::new(tokio::sync::RwLock::new(extensions::State {

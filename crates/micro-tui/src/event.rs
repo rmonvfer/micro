@@ -204,6 +204,53 @@ fn alt_action(character: char) -> Action {
     }
 }
 
+
+/// A key press as a person writes it: `ctrl+h`, `alt+enter`, `shift+f5`.
+///
+/// The spelling ohm uses for a registered shortcut, so a key an extension asked for is
+/// recognised by the name it asked for it under.
+pub fn key_name(event: &Event) -> Option<String> {
+    let Event::Key(key) = event else {
+        return None;
+    };
+    if key.kind == KeyEventKind::Release {
+        return None;
+    }
+
+    let mut parts = Vec::new();
+    if key.modifiers.contains(KeyModifiers::CONTROL) {
+        parts.push("ctrl".to_string());
+    }
+    if key.modifiers.contains(KeyModifiers::ALT) {
+        parts.push("alt".to_string());
+    }
+    // Shift is written only where it is not already in the character: `shift+f5`, but `A`
+    // rather than `shift+a`.
+    let named = match key.code {
+        KeyCode::Char(character) => character.to_ascii_lowercase().to_string(),
+        KeyCode::Enter => "enter".to_string(),
+        KeyCode::Tab | KeyCode::BackTab => "tab".to_string(),
+        KeyCode::Esc => "escape".to_string(),
+        KeyCode::Backspace => "backspace".to_string(),
+        KeyCode::Delete => "delete".to_string(),
+        KeyCode::Up => "up".to_string(),
+        KeyCode::Down => "down".to_string(),
+        KeyCode::Left => "left".to_string(),
+        KeyCode::Right => "right".to_string(),
+        KeyCode::Home => "home".to_string(),
+        KeyCode::End => "end".to_string(),
+        KeyCode::PageUp => "pageup".to_string(),
+        KeyCode::PageDown => "pagedown".to_string(),
+        KeyCode::F(number) => format!("f{number}"),
+        _ => return None,
+    };
+    if key.modifiers.contains(KeyModifiers::SHIFT) && !matches!(key.code, KeyCode::Char(_)) {
+        parts.push("shift".to_string());
+    }
+    parts.push(named);
+    Some(parts.join("+"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -326,5 +373,27 @@ mod tests {
     #[test]
     fn a_resize_asks_for_a_repaint() {
         assert_eq!(action_for(&Event::Resize(80, 24)), Action::Resize);
+    }
+
+    #[test]
+    fn a_key_is_named_the_way_a_shortcut_asks_for_it() {
+        assert_eq!(
+            key_name(&key(KeyCode::Char('h'), KeyModifiers::CONTROL)).as_deref(),
+            Some("ctrl+h")
+        );
+        assert_eq!(
+            key_name(&key(KeyCode::Enter, KeyModifiers::ALT)).as_deref(),
+            Some("alt+enter")
+        );
+        assert_eq!(
+            key_name(&key(KeyCode::F(5), KeyModifiers::SHIFT)).as_deref(),
+            Some("shift+f5")
+        );
+        assert_eq!(key_name(&plain(KeyCode::Esc)).as_deref(), Some("escape"));
+        // A capital letter is the character, not a modifier and a letter.
+        assert_eq!(
+            key_name(&key(KeyCode::Char('A'), KeyModifiers::SHIFT)).as_deref(),
+            Some("a")
+        );
     }
 }

@@ -185,7 +185,11 @@ async fn drive(
                 .await?
             }
             None => match input.next().await {
-                Some(Ok(event)) => match handle(&mut app, event) {
+                Some(Ok(event)) => {
+                    if offer_shortcut(&mut commands, &event).await {
+                        continue;
+                    }
+                    match handle(&mut app, event) {
                     Outcome::Quit => return Ok(()),
                     Outcome::ExternalEditor => external_editor(screen, &mut app)?,
                     Outcome::ThinkingChanged(level) => agent.set_thinking(level),
@@ -199,7 +203,8 @@ async fn drive(
                     }
                     Outcome::Suspend => suspend(screen, &mut app)?,
                     _ => {}
-                },
+                    }
+                }
                 // The terminal went away; there is nothing left to read.
                 Some(Err(_)) | None => return Ok(()),
             },
@@ -758,6 +763,26 @@ async fn next_approval(requests: &mut Option<&mut ApprovalRequests>) -> Option<P
 
 fn handle(app: &mut App, event: Event) -> Outcome {
     app.handle(event::action_for(&event))
+}
+
+/// A key nothing built in wanted, offered to whatever registered shortcuts.
+///
+/// Only keys the interface itself ignored are offered, so an extension can never take a
+/// key out from under the editor.
+async fn offer_shortcut(
+    commands: &mut Option<Box<dyn Commands + 'static>>,
+    event: &Event,
+) -> bool {
+    if event::action_for(event) != event::Action::Ignored {
+        return false;
+    }
+    let Some(name) = event::key_name(event) else {
+        return false;
+    };
+    match commands {
+        Some(commands) => commands.shortcut(&name).await,
+        None => false,
+    }
 }
 
 /// The terminal, and the inline region the interface lives in.

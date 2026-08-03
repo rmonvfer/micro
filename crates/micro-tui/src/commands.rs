@@ -103,6 +103,13 @@ pub trait Commands: Send {
         let _ = (command, output, failed);
     }
 
+    /// Run whatever is bound to this key, if anything is. `true` means it was handled and
+    /// the key should go no further.
+    async fn shortcut(&mut self, key: &str) -> bool {
+        let _ = key;
+        false
+    }
+
     /// Tell whatever is listening that the reasoning effort changed.
     async fn thinking_changed(&mut self, level: micro_types::ThinkingLevel) {
         let _ = level;

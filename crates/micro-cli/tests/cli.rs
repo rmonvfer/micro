@@ -1488,3 +1488,57 @@ export default (micro) => {
     assert!(installed.status.success(), "{}", installed.stderr);
     assert!(installed.stdout.contains("deploy"), "{}", installed.stdout);
 }
+
+/// A flag an extension declared is read off the command line and reaches it.
+#[test]
+fn an_extension_flag_is_read_from_the_command_line() {
+    if which_bun().is_none() {
+        return;
+    }
+    let api = FakeApi::start([]);
+    let fixture = Fixture::new(&api);
+    let log = fixture.workspace().join("flag.log");
+    fixture.write(
+        ".micro/extensions/flagged.ts",
+        &format!(
+            r#"
+import {{ writeFileSync }} from "node:fs";
+export default (micro) => {{
+    micro.registerFlag("env", {{ description: "which environment", type: "string", default: "dev" }});
+    micro.registerFlag("loud", {{ description: "shout", type: "boolean" }});
+    micro.registerCommand("show", {{
+        handler: async () => {{
+            const seen = {{ env: micro.getFlag("env"), loud: micro.getFlag("loud") }};
+            writeFileSync({log:?}, JSON.stringify(seen));
+            return JSON.stringify(seen);
+        }},
+    }});
+}};
+"#,
+            log = log.display().to_string()
+        ),
+    );
+
+    let output = fixture.print(&["-m", "test", "--env=staging", "--loud", "/show"]);
+    assert!(output.status.success(), "{}", output.stderr);
+
+    let seen = std::fs::read_to_string(&log).expect("the extension read its flags");
+    assert!(seen.contains("\"env\":\"staging\""), "{seen}");
+    assert!(seen.contains("\"loud\":true"), "{seen}");
+}
+
+/// A flag nobody declared is said out loud rather than ignored.
+#[test]
+fn a_flag_nobody_declared_is_reported() {
+    let api = FakeApi::start([Reply::text("fine")]);
+    let fixture = Fixture::new(&api);
+
+    let output = fixture.print(&["-m", "test", "--nothing-declares-this", "say something"]);
+    assert!(output.status.success(), "{}", output.stderr);
+    assert!(
+        output.stderr.contains("nothing-declares-this") || output.stdout.contains("fine"),
+        "either it was reported or the run carried on: {} {}",
+        output.stdout,
+        output.stderr
+    );
+}

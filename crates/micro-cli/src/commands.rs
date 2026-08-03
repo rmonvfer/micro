@@ -489,6 +489,26 @@ impl Commands for CliCommands {
         Some(line)
     }
 
+    async fn shortcut(&mut self, key: &str) -> bool {
+        let Some(host) = self.extensions.clone() else {
+            return false;
+        };
+        let bound = host
+            .loaded()
+            .extensions
+            .iter()
+            .any(|extension| extension.shortcuts.iter().any(|shortcut| shortcut.key == key));
+        if !bound {
+            return false;
+        }
+
+        // A shortcut is a command with no name: whoever registered it decides what it does.
+        let _ = host
+            .ask_event("shortcut", serde_json::json!({ "key": key }))
+            .await;
+        true
+    }
+
     async fn thinking_changed(&mut self, level: micro_types::ThinkingLevel) {
         crate::extensions::announce(
             self.extensions.as_ref(),

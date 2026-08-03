@@ -384,15 +384,38 @@ async function handle(line: string): Promise<void> {
 			send(describe());
 			return;
 		}
-		case "event":
-			await dispatchEvent(message.id as string | undefined, message.event as string, (message.payload as Json) ?? {});
-			return;
 		case "tool_call":
 			await runTool(message.id as string, message.name as string, (message.arguments as Json) ?? {});
 			return;
 		case "command":
 			await runCommand(message.id as string, message.name as string, (message.args as string) ?? "");
 			return;
+		case "event": {
+			if (message.event === "shortcut") {
+				const key = (message.payload as Json)?.key as string;
+				for (const registration of loaded) {
+					const shortcut = registration.shortcuts.get(key);
+					if (shortcut) {
+						try {
+							await shortcut.handler({});
+						} catch (error) {
+							send({
+								type: "extension_error",
+								path: registration.path,
+								event: "shortcut",
+								error: error instanceof Error ? error.message : String(error),
+							});
+						}
+					}
+				}
+				if (message.id) {
+					send({ type: "event_result", id: message.id, results: [] });
+				}
+				return;
+			}
+			await dispatchEvent(message.id as string | undefined, message.event as string, (message.payload as Json) ?? {});
+			return;
+		}
 		case "render": {
 			const customType = message.customType as string;
 			const width = (message.width as number) ?? 80;

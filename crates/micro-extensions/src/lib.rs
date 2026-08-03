@@ -9,6 +9,7 @@ mod discover;
 mod host;
 mod events;
 mod packages;
+mod flags;
 mod providers;
 mod tool;
 
@@ -30,6 +31,8 @@ pub use host::RegisteredTool;
 pub use events::name_of;
 pub use events::payload_of;
 pub use packages::install;
+pub use flags::split_unknown;
+pub use flags::Given;
 pub use providers::declare;
 pub use providers::resolve_key;
 pub use providers::Declared;
