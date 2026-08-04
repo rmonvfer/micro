@@ -47,6 +47,15 @@ impl Tool for Bash {
     }
 
     async fn execute(&self, arguments: &Value) -> Result<String, String> {
+        self.execute_reporting(arguments, &crate::Progress::default())
+            .await
+    }
+
+    async fn execute_reporting(
+        &self,
+        arguments: &Value,
+        progress: &crate::Progress,
+    ) -> Result<String, String> {
         let command = required_str(arguments, "command")?;
         let timeout_ms = arguments
             .get("timeout_ms")
@@ -66,28 +75,50 @@ impl Tool for Bash {
             .spawn()
             .map_err(|error| format!("cannot start command: {error}"))?;
 
-        let wait = child.wait_with_output();
-        let output = match tokio::time::timeout(Duration::from_millis(timeout_ms), wait).await {
-            Ok(result) => result.map_err(|error| format!("command failed: {error}"))?,
-            Err(_) => {
-                // `wait_with_output` consumed the child, so the timeout path relies on
-                // kill_on_drop to reap it when the future is dropped here.
-                return Err(format!("command timed out after {timeout_ms}ms: {command}"));
+        // Read both streams as they arrive, so what the command has printed is known
+        // before it finishes rather than only after.
+        let mut child = child;
+        let stdout = child.stdout.take();
+        let stderr = child.stderr.take();
+        let collected = std::sync::Arc::new(tokio::sync::Mutex::new(String::new()));
+
+        let reading = {
+            let collected = std::sync::Arc::clone(&collected);
+            let progress = progress.clone();
+            async move {
+                use tokio::io::AsyncBufReadExt as _;
+                let mut out = tokio::io::BufReader::new(stdout.unwrap()).lines();
+                let mut err = tokio::io::BufReader::new(stderr.unwrap()).lines();
+                loop {
+                    let line = tokio::select! {
+                        line = out.next_line() => line,
+                        line = err.next_line() => line,
+                    };
+                    match line {
+                        Ok(Some(line)) => {
+                            let mut held = collected.lock().await;
+                            held.push_str(&line);
+                            held.push('\n');
+                            progress.report(held.clone());
+                        }
+                        // One stream ending is not both; the other is drained by the
+                        // wait below, and whatever it printed is still collected.
+                        Ok(None) | Err(_) => break,
+                    }
+                }
             }
         };
 
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        let mut combined = String::new();
-        combined.push_str(&stdout);
-        if !stderr.is_empty() {
-            if !combined.is_empty() && !combined.ends_with('\n') {
-                combined.push('\n');
-            }
-            combined.push_str(&stderr);
-        }
+        let waiting = async {
+            tokio::join!(reading, child.wait())
+        };
+        let status = match tokio::time::timeout(Duration::from_millis(timeout_ms), waiting).await {
+            Ok((_, status)) => status.map_err(|error| format!("command failed: {error}"))?,
+            Err(_) => return Err(format!("command timed out after {timeout_ms}ms: {command}")),
+        };
 
-        let code = output.status.code();
+        let combined = collected.lock().await.clone();
+        let code = status.code();
         let body = if combined.trim().is_empty() {
             "(no output)".to_string()
         } else {
@@ -151,5 +182,51 @@ mod tests {
             .await
             .unwrap_err();
         assert!(error.contains("timed out"));
+    }
+
+    /// A command that prints as it goes is reported as it goes, and each report carries
+    /// everything printed so far.
+    #[tokio::test]
+    async fn a_running_command_says_what_it_has_printed() {
+        let root = scratch("reporting");
+        let bash = Bash::new(root.clone());
+        let (sender, mut reported) = tokio::sync::mpsc::unbounded_channel();
+
+        let output = bash
+            .execute_reporting(
+                &json!({ "command": "echo first; echo second; echo third" }),
+                &crate::Progress::new(sender),
+            )
+            .await
+            .expect("it ran");
+
+        let mut seen = Vec::new();
+        while let Ok(update) = reported.try_recv() {
+            seen.push(update);
+        }
+
+        assert!(seen.len() >= 2, "it reported as it went: {seen:?}");
+        assert!(seen[0].contains("first"));
+        // Each report is everything so far, not only the newest line.
+        assert!(seen.last().unwrap().contains("first"));
+        assert!(seen.last().unwrap().contains("third"));
+        assert!(output.contains("first") && output.contains("third"), "{output}");
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A tool that says nothing until it is done is still run, and reports nothing.
+    #[tokio::test]
+    async fn a_silent_command_reports_nothing() {
+        let root = scratch("silent");
+        let bash = Bash::new(root.clone());
+        let (sender, mut reported) = tokio::sync::mpsc::unbounded_channel();
+
+        bash.execute_reporting(&json!({ "command": "true" }), &crate::Progress::new(sender))
+            .await
+            .expect("it ran");
+
+        assert!(reported.try_recv().is_err());
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

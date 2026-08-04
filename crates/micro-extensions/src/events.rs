@@ -24,6 +24,7 @@ pub fn name_of(event: &AgentEvent) -> Option<&'static str> {
         AgentEvent::MessageDelta { .. } => Some("message_update"),
         AgentEvent::MessageEnd { .. } => Some("message_end"),
         AgentEvent::ToolStart { .. } => Some("tool_execution_start"),
+        AgentEvent::ToolUpdate { .. } => Some("tool_execution_update"),
         AgentEvent::ToolEnd { .. } => Some("tool_execution_end"),
         // A retry is micro's own business: the request is repeated, and nothing about the
         // conversation changed.
@@ -45,6 +46,9 @@ pub fn payload_of(event: &AgentEvent) -> Value {
             name,
             arguments,
         } => json!({ "toolCallId": id, "toolName": name, "args": arguments }),
+        AgentEvent::ToolUpdate { id, name, output } => {
+            json!({ "toolCallId": id, "toolName": name, "result": output })
+        }
         AgentEvent::ToolEnd {
             id,
             name,

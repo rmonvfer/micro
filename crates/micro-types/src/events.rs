@@ -100,6 +100,13 @@ pub enum AgentEvent {
         max_attempts: u32,
         delay_ms: u64,
     },
+    /// A tool has said what it has done so far. `output` is everything it has produced,
+    /// not only the newest part, so a consumer never has to accumulate.
+    ToolUpdate {
+        id: String,
+        name: String,
+        output: String,
+    },
     /// Terminal: every message the loop produced this run.
     AgentEnd {
         messages: Vec<Message>,

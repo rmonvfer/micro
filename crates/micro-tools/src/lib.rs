@@ -30,6 +30,43 @@ pub trait Tool: Send + Sync {
     fn definition(&self) -> ToolDefinition;
 
     async fn execute(&self, arguments: &Value) -> Result<String, String>;
+
+    /// Run, reporting what is happening as it happens.
+    ///
+    /// A tool that has nothing to report until it finishes takes the default: the same
+    /// run, with nothing said along the way.
+    async fn execute_reporting(
+        &self,
+        arguments: &Value,
+        progress: &Progress,
+    ) -> Result<String, String> {
+        let _ = progress;
+        self.execute(arguments).await
+    }
+}
+
+/// Where a tool says what it is doing while it does it.
+///
+/// A sink with nowhere to send drops what it is given, so a tool never has to ask whether
+/// anyone is listening.
+#[derive(Clone, Default)]
+pub struct Progress {
+    sender: Option<tokio::sync::mpsc::UnboundedSender<String>>,
+}
+
+impl Progress {
+    pub fn new(sender: tokio::sync::mpsc::UnboundedSender<String>) -> Self {
+        Progress {
+            sender: Some(sender),
+        }
+    }
+
+    /// Say what has happened so far. Whoever is listening decides what to do with it.
+    pub fn report(&self, text: impl Into<String>) {
+        if let Some(sender) = &self.sender {
+            let _ = sender.send(text.into());
+        }
+    }
 }
 
 /// The default tool set, rooted at `root`.

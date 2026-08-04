@@ -277,6 +277,11 @@ impl Transcript {
                     expanded: false,
                 }));
             }
+            // What a tool has printed so far replaces what it had printed before, so a
+            // long command reads as it runs rather than only once it is over.
+            AgentEvent::ToolUpdate { id, name, output } => {
+                self.update_tool(id, name, output)
+            }
             AgentEvent::ToolEnd {
                 id,
                 name,
@@ -401,6 +406,20 @@ impl Transcript {
                 tool.output = Some(output.to_string());
                 tool.is_error = is_error;
             }
+        }
+    }
+
+    /// What a tool has produced so far, while it is still running.
+    fn update_tool(&mut self, id: &str, name: &str, output: &str) {
+        match self.tools.get(id).copied() {
+            Some(index) => {
+                if let Some(Entry::Tool(tool)) = self.entries.get_mut(index) {
+                    tool.output = Some(output.to_string());
+                }
+            }
+            // An update for a call nothing announced still shows: better an entry with no
+            // arguments than output nobody can see.
+            None => self.finish_tool(id, name, output, false),
         }
     }
 

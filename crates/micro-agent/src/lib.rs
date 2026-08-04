@@ -434,10 +434,37 @@ impl Agent {
                     (refusal, true)
                 } else {
                     match self.find_tool(&name) {
-                        Some(tool) => match tool.execute(&arguments).await {
-                            Ok(output) => (output, false),
-                            Err(error) => (error, true),
-                        },
+                        Some(tool) => {
+                            // What the tool says while it works is forwarded as it says it,
+                            // so a long command is watchable rather than silent.
+                            let (reporting, mut reported) =
+                                tokio::sync::mpsc::unbounded_channel::<String>();
+                            let forwarding = {
+                                let events = events.clone_for_updates();
+                                let id = id.clone();
+                                let name = name.clone();
+                                tokio::spawn(async move {
+                                    while let Some(output) = reported.recv().await {
+                                        events.send(AgentEvent::ToolUpdate {
+                                            id: id.clone(),
+                                            name: name.clone(),
+                                            output,
+                                        });
+                                    }
+                                })
+                            };
+
+                            let ran = tool
+                                .execute_reporting(&arguments, &micro_tools::Progress::new(reporting))
+                                .await;
+                            // The sender is gone with the call, so the forwarder ends.
+                            let _ = forwarding.await;
+
+                            match ran {
+                                Ok(output) => (output, false),
+                                Err(error) => (error, true),
+                            }
+                        }
                         None => (format!("tool not found: {name}"), true),
                     }
                 };
@@ -923,6 +950,14 @@ struct Fan<'a> {
 }
 
 impl Fan<'_> {
+    /// A sender that can be moved into a task, for events produced while a tool runs.
+    fn clone_for_updates(&self) -> Updates {
+        Updates {
+            primary: self.primary.clone(),
+            observer: self.observer.clone(),
+        }
+    }
+
     fn send(&self, event: AgentEvent) {
         if let Some(observer) = &self.observer {
             let _ = observer.send(event.clone());
@@ -973,5 +1008,21 @@ pub trait Hooks: Send + Sync {
     /// Called with the answer, once it is complete.
     async fn after_response(&self, message: &AssistantMessage) {
         let _ = message;
+    }
+}
+
+/// The same two places an event goes, owned rather than borrowed, so a task that outlives
+/// the call site can still report.
+struct Updates {
+    primary: UnboundedSender<AgentEvent>,
+    observer: Option<UnboundedSender<AgentEvent>>,
+}
+
+impl Updates {
+    fn send(&self, event: AgentEvent) {
+        if let Some(observer) = &self.observer {
+            let _ = observer.send(event.clone());
+        }
+        let _ = self.primary.send(event);
     }
 }
