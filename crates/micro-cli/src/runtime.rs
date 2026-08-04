@@ -260,7 +260,9 @@ pub async fn build(
     .with_history(history.clone())
     .with_context_window(model.context_window as usize)
     .with_recorder(recorder)
-    .with_observer(watching);
+    .with_observer(watching)
+    // The session names the conversation, so a cached prompt is recognised across turns.
+    .with_cache_key(session.id());
     // Extensions get a say in what a tool call does, before it runs and after it answers.
     let agent = match extensions.as_ref() {
         Some(host) => agent.with_hooks(Arc::new(crate::extensions::ExtensionHooks::new(

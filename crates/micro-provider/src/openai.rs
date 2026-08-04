@@ -43,6 +43,13 @@ pub struct Flavor {
     max_tokens_field: &'static str,
     supports_stream_options: bool,
     supports_reasoning_effort: bool,
+    /// Whether the endpoint understands `store`, which OpenAI's own does and most
+    /// compatible ones do not.
+    supports_store: bool,
+    /// Whether the endpoint caches a prompt when told which conversation it belongs to.
+    supports_prompt_cache: bool,
+    /// Whether it wants to be told who started the request, as Copilot does.
+    copilot_headers: bool,
     headers: &'static [(&'static str, &'static str)],
 }
 
@@ -52,6 +59,9 @@ static OPENAI: Flavor = Flavor {
     max_tokens_field: "max_completion_tokens",
     supports_stream_options: true,
     supports_reasoning_effort: true,
+    supports_store: true,
+    supports_prompt_cache: true,
+    copilot_headers: false,
     headers: &[],
 };
 
@@ -63,6 +73,9 @@ static OPENROUTER: Flavor = Flavor {
     max_tokens_field: "max_tokens",
     supports_stream_options: true,
     supports_reasoning_effort: true,
+    supports_store: false,
+    supports_prompt_cache: false,
+    copilot_headers: false,
     headers: &[
         ("http-referer", "https://github.com/agentmode/micro"),
         ("x-title", "micro"),
@@ -77,6 +90,9 @@ static COPILOT: Flavor = Flavor {
     max_tokens_field: "max_tokens",
     supports_stream_options: true,
     supports_reasoning_effort: false,
+    supports_store: false,
+    supports_prompt_cache: false,
+    copilot_headers: true,
     headers: &[
         ("user-agent", "GitHubCopilotChat/0.35.0"),
         ("editor-version", "vscode/1.107.0"),
@@ -167,6 +183,14 @@ async fn run(
         .header("accept", "text/event-stream");
     for (name, value) in flavor.headers {
         request = request.header(*name, *value);
+    }
+    // Copilot bills and rate-limits differently depending on who started the request, and
+    // refuses an image unless the request says one is coming.
+    if flavor.copilot_headers {
+        request = request.header("x-initiator", initiator(&context.messages));
+        if carries_images(&context.messages) {
+            request = request.header("copilot-vision-request", "true");
+        }
     }
     // Anything the caller added wins, which is how an extension changes a header the
     // provider would otherwise set for itself.
@@ -535,6 +559,10 @@ fn reasoning_effort(level: ThinkingLevel) -> Option<&'static str> {
     }
 }
 
+/// The longest a prompt cache key may be. A longer one is refused rather than truncated
+/// by the provider, so it is cut here.
+const PROMPT_CACHE_KEY_MAX: usize = 64;
+
 pub(crate) fn build_payload(flavor: &Flavor, model: &Model, context: &Context) -> Value {
     let mut payload = Map::new();
     payload.insert("model".into(), json!(model.id));
@@ -550,6 +578,21 @@ pub(crate) fn build_payload(flavor: &Flavor, model: &Model, context: &Context) -
         if let Some(effort) = reasoning_effort(model.thinking) {
             payload.insert("reasoning_effort".into(), json!(effort));
         }
+    }
+
+    // Naming the conversation is what lets a prompt be cached against it and hit next
+    // turn. Clamped, because the field has a limit and a longer name is simply refused.
+    if flavor.supports_prompt_cache {
+        if let Some(key) = &context.cache_key {
+            let clamped: String = key.chars().take(PROMPT_CACHE_KEY_MAX).collect();
+            payload.insert("prompt_cache_key".into(), json!(clamped));
+        }
+    }
+
+    // Nothing is stored on the provider's side: a conversation micro cannot account for
+    // is one it should not be leaving behind.
+    if flavor.supports_store {
+        payload.insert("store".into(), json!(false));
     }
 
     if !context.tools.is_empty() {
@@ -568,9 +611,47 @@ pub(crate) fn build_payload(flavor: &Flavor, model: &Model, context: &Context) -
             })
             .collect();
         payload.insert("tools".into(), Value::Array(tools));
+    } else if has_tool_history(&context.messages) {
+        // A conversation holding tool calls is refused by some endpoints unless the
+        // request still declares tools, even when there are none left to offer.
+        payload.insert("tools".into(), Value::Array(Vec::new()));
     }
 
     Value::Object(payload)
+}
+
+/// Who the request is on behalf of: the person, or the agent carrying on by itself.
+///
+/// Anything other than the user having just spoken is the agent continuing, which is what
+/// Copilot means by an agent-initiated request.
+fn initiator(messages: &[Message]) -> &'static str {
+    match messages.last() {
+        Some(Message::User { .. }) => "user",
+        _ => "agent",
+    }
+}
+
+/// Whether the conversation carries an image, in a prompt or in a tool's result.
+fn carries_images(messages: &[Message]) -> bool {
+    let has_image = |content: &[micro_types::ContentBlock]| {
+        content
+            .iter()
+            .any(|block| matches!(block, micro_types::ContentBlock::Image { .. }))
+    };
+    messages.iter().any(|message| match message {
+        Message::User { content, .. } => has_image(content),
+        Message::ToolResult { content, .. } => has_image(content),
+        Message::Assistant(_) => false,
+    })
+}
+
+/// Whether anything in the conversation was a tool call or its result.
+fn has_tool_history(messages: &[Message]) -> bool {
+    messages.iter().any(|message| match message {
+        Message::ToolResult { .. } => true,
+        Message::Assistant(assistant) => !assistant.tool_calls().is_empty(),
+        Message::User { .. } => false,
+    })
 }
 
 /// Convert the conversation to the chat-completions shape: the system prompt as the
@@ -864,6 +945,7 @@ mod tests {
             ],
             tools: Vec::new(),
             headers: Vec::new(),
+            cache_key: None,
         };
         let wire = build_messages(&context);
 
@@ -1128,5 +1210,94 @@ mod tests {
 
         assert_eq!(headers["x-title"], "micro");
         assert!(headers["http-referer"].starts_with("https://"));
+    }
+
+    /// Naming the conversation is what makes a cached prompt hit on the next turn.
+    #[test]
+    fn a_conversation_is_named_so_its_prompt_can_be_cached() {
+        let context = Context {
+            cache_key: Some("session-1786".into()),
+            ..Context::default()
+        };
+
+        let cached = build_payload(&OPENAI, &model(), &context);
+        assert_eq!(cached["prompt_cache_key"], "session-1786");
+        // Nothing is left behind on the provider's side.
+        assert_eq!(cached["store"], false);
+
+        // An endpoint that does not cache is not told about it.
+        let elsewhere = build_payload(&OPENROUTER, &model(), &context);
+        assert!(elsewhere.get("prompt_cache_key").is_none());
+        assert!(elsewhere.get("store").is_none());
+    }
+
+    /// The field has a limit, and a longer name is refused rather than truncated, so it is
+    /// cut before it is sent.
+    #[test]
+    fn a_name_too_long_to_send_is_cut() {
+        let context = Context {
+            cache_key: Some("x".repeat(200)),
+            ..Context::default()
+        };
+        let payload = build_payload(&OPENAI, &model(), &context);
+        assert_eq!(
+            payload["prompt_cache_key"].as_str().unwrap().len(),
+            PROMPT_CACHE_KEY_MAX
+        );
+    }
+
+    /// A conversation holding tool calls still declares tools, even when there are none
+    /// left to offer: some endpoints refuse it otherwise.
+    #[test]
+    fn a_conversation_with_tool_history_still_declares_tools() {
+        let context = Context {
+            messages: vec![
+                Message::user("read it"),
+                Message::tool_result("call_1", "read", "done", false),
+            ],
+            ..Context::default()
+        };
+        let payload = build_payload(&OPENAI, &model(), &context);
+        assert_eq!(payload["tools"], serde_json::json!([]));
+
+        // A conversation with no tools in it at all says nothing about them.
+        let plain = build_payload(&OPENAI, &model(), &Context::default());
+        assert!(plain.get("tools").is_none());
+    }
+
+    /// Copilot bills a request the user started differently from one the agent continued.
+    #[test]
+    fn copilot_is_told_who_started_the_request() {
+        assert_eq!(initiator(&[Message::user("hi")]), "user");
+        assert_eq!(
+            initiator(&[
+                Message::user("hi"),
+                Message::tool_result("call_1", "read", "done", false)
+            ]),
+            "agent"
+        );
+        assert_eq!(initiator(&[]), "agent");
+    }
+
+    #[test]
+    fn an_image_anywhere_in_the_conversation_is_declared() {
+        let image = micro_types::ContentBlock::Image {
+            data: "AAAA".into(),
+            mime_type: "image/png".into(),
+        };
+
+        assert!(!carries_images(&[Message::user("no pictures")]));
+        assert!(carries_images(&[Message::User {
+            content: vec![image.clone()],
+            timestamp: 0,
+        }]));
+        // A tool that returned one counts too.
+        assert!(carries_images(&[Message::ToolResult {
+            tool_call_id: "call_1".into(),
+            tool_name: "read".into(),
+            content: vec![image],
+            is_error: false,
+            timestamp: 0,
+        }]));
     }
 }

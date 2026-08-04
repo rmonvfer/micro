@@ -545,12 +545,7 @@ pub(crate) fn build_payload(model: &Model, context: &Context) -> Value {
 
     let mut generation = Map::new();
     generation.insert("maxOutputTokens".into(), json!(model.max_tokens));
-    if let Some(budget) = model.thinking.budget_tokens() {
-        generation.insert(
-            "thinkingConfig".into(),
-            json!({ "thinkingBudget": budget, "includeThoughts": true }),
-        );
-    }
+    generation.insert("thinkingConfig".into(), thinking_config(model));
     payload.insert("generationConfig".into(), Value::Object(generation));
 
     Value::Object(payload)
@@ -782,6 +777,67 @@ fn sanitize_below(key: &str, value: &Value) -> Value {
     value.clone()
 }
 
+
+/// How much thinking to ask for, and whether to be shown any of it.
+///
+/// Turning it off is said outright rather than left unsaid: a model that thinks by default
+/// keeps thinking when nothing tells it not to, and bills for it. Not every model can be
+/// told to stop — the newest ones take a level instead of a budget, and their lowest level
+/// is as quiet as they get.
+fn thinking_config(model: &Model) -> Value {
+    let Some(budget) = model.thinking.budget_tokens() else {
+        return match lowest_level(&model.id) {
+            Some(level) => json!({ "thinkingLevel": level }),
+            None => json!({ "thinkingBudget": 0 }),
+        };
+    };
+
+    match lowest_level(&model.id) {
+        // A model that takes a level does not take a budget, so effort is spelled as one.
+        Some(_) => json!({ "thinkingLevel": level_for(model.thinking), "includeThoughts": true }),
+        None => json!({ "thinkingBudget": budget, "includeThoughts": true }),
+    }
+}
+
+/// The quietest a model can be told to be, for the models that cannot be told to stop.
+fn lowest_level(id: &str) -> Option<&'static str> {
+    let id = id.to_ascii_lowercase();
+    if is_gemini_3(&id, "pro") {
+        return Some("LOW");
+    }
+    if is_gemini_3(&id, "flash")
+        || id == "gemini-flash-latest"
+        || id == "gemini-flash-lite-latest"
+        || id.contains("gemma-4")
+        || id.contains("gemma4")
+    {
+        return Some("MINIMAL");
+    }
+    None
+}
+
+/// `gemini-3-pro`, `gemini-3.1-pro`, and the same for flash.
+fn is_gemini_3(id: &str, family: &str) -> bool {
+    let Some(rest) = id.split_once("gemini-3").map(|(_, rest)| rest) else {
+        return false;
+    };
+    let rest = match rest.strip_prefix('.') {
+        Some(rest) => rest.trim_start_matches(|c: char| c.is_ascii_digit()),
+        None => rest,
+    };
+    rest.starts_with(&format!("-{family}"))
+}
+
+/// How hard a model that takes levels should think.
+fn level_for(thinking: micro_types::ThinkingLevel) -> &'static str {
+    match thinking {
+        micro_types::ThinkingLevel::Off => "MINIMAL",
+        micro_types::ThinkingLevel::Low => "LOW",
+        micro_types::ThinkingLevel::Medium => "MEDIUM",
+        micro_types::ThinkingLevel::High => "HIGH",
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -880,7 +936,9 @@ mod tests {
             "be brief"
         );
         assert_eq!(payload["generationConfig"]["maxOutputTokens"], 8_192);
-        assert!(payload["generationConfig"].get("thinkingConfig").is_none());
+        // Thinking is turned off outright rather than left unsaid: a model that thinks by
+        // default keeps thinking, and bills for it, when nothing says otherwise.
+        assert_eq!(payload["generationConfig"]["thinkingConfig"]["thinkingBudget"], 0);
 
         let blank = build_payload(&model(), &Context::default());
         assert!(blank.get("system_instruction").is_none());
@@ -1615,5 +1673,56 @@ mod tests {
 
         assert!(receiver.try_recv().is_err());
         assert!(!state.started);
+    }
+
+    /// The newest models cannot be told to stop thinking, so they are told to think as
+    /// little as they can instead.
+    #[test]
+    fn a_model_that_cannot_stop_thinking_is_asked_for_its_quietest_level() {
+        for (id, quietest) in [
+            ("gemini-3-pro-preview", "LOW"),
+            ("gemini-3.1-pro", "LOW"),
+            ("gemini-3-flash", "MINIMAL"),
+            ("gemini-flash-latest", "MINIMAL"),
+            ("gemini-flash-lite-latest", "MINIMAL"),
+            ("gemma-4-27b", "MINIMAL"),
+        ] {
+            let config = thinking_config(&Model {
+                id: id.into(),
+                ..model()
+            });
+            assert_eq!(config["thinkingLevel"], quietest, "{id}");
+            assert!(config.get("includeThoughts").is_none(), "{id} stays quiet");
+        }
+    }
+
+    /// A model that takes a budget is told a budget, and one that takes a level is told a
+    /// level, whichever way the effort was asked for.
+    #[test]
+    fn effort_is_spelled_the_way_each_model_takes_it() {
+        let budgeted = thinking_config(&Model {
+            thinking: ThinkingLevel::High,
+            ..model()
+        });
+        assert!(budgeted["thinkingBudget"].as_u64().unwrap() > 0);
+        assert_eq!(budgeted["includeThoughts"], true);
+
+        let levelled = thinking_config(&Model {
+            id: "gemini-3-pro".into(),
+            thinking: ThinkingLevel::High,
+            ..model()
+        });
+        assert_eq!(levelled["thinkingLevel"], "HIGH");
+        assert_eq!(levelled["includeThoughts"], true);
+        assert!(levelled.get("thinkingBudget").is_none());
+    }
+
+    #[test]
+    fn an_older_model_is_told_to_stop_outright() {
+        let config = thinking_config(&Model {
+            id: "gemini-2.5-flash".into(),
+            ..model()
+        });
+        assert_eq!(config["thinkingBudget"], 0);
     }
 }

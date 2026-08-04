@@ -22,6 +22,21 @@ use tokio::sync::mpsc::UnboundedReceiver;
 use tokio::sync::mpsc::UnboundedSender;
 
 const API_VERSION: &str = "2023-06-01";
+
+/// What an Anthropic subscription credential looks like. A plan's own token is an OAuth
+/// token, and it is sent as a bearer rather than as an API key.
+const OAUTH_PREFIX: &str = "sk-ant-oat";
+
+/// Lets a thinking model keep thinking between tool calls instead of starting over each
+/// time. Without it the thinking blocks around a tool call are refused.
+const INTERLEAVED_THINKING_BETA: &str = "interleaved-thinking-2025-05-14";
+/// Streams a tool call's arguments as they are produced rather than in one piece.
+const FINE_GRAINED_TOOL_STREAMING_BETA: &str = "fine-grained-tool-streaming-2025-05-14";
+/// What a subscription credential is allowed to be used for, and by what.
+const CLAUDE_CODE_BETA: &str = "claude-code-20250219";
+const OAUTH_BETA: &str = "oauth-2025-04-20";
+/// The client a subscription credential is issued to.
+const CLAUDE_CODE_VERSION: &str = "2.1.75";
 /// Anthropic allows at most four cache breakpoints per request.
 const MAX_CACHE_BREAKPOINTS: usize = 4;
 
@@ -72,9 +87,20 @@ async fn run(
     let payload = build_payload(&model, &context);
     let request = client
         .post(endpoint(&model.base_url))
-        .header("x-api-key", api_key)
         .header("anthropic-version", API_VERSION)
-        .header("content-type", "application/json");
+        .header("content-type", "application/json")
+        .header("accept", "application/json")
+        .header("anthropic-dangerous-direct-browser-access", "true")
+        .header("anthropic-beta", betas(&api_key, &model, &context).join(","));
+    // A subscription credential is a bearer token issued to a named client, and is
+    // refused when it is sent as an API key.
+    let request = match is_oauth(&api_key) {
+        true => request
+            .header("authorization", format!("Bearer {api_key}"))
+            .header("user-agent", format!("claude-cli/{CLAUDE_CODE_VERSION}"))
+            .header("x-app", "cli"),
+        false => request.header("x-api-key", api_key),
+    };
     let response = crate::with_carried_headers(request, &context)
         .json(&payload)
         .send()
@@ -379,17 +405,49 @@ fn normalize_tool_id(id: &str) -> String {
     sanitized.chars().take(40).collect()
 }
 
+/// Whether a credential is a subscription token rather than an API key.
+fn is_oauth(api_key: &str) -> bool {
+    api_key.starts_with(OAUTH_PREFIX)
+}
+
+/// The beta features this request needs, in the order ohm sends them.
+///
+/// A subscription credential names what it is being used for; everything else is asked for
+/// only when the request would otherwise be answered differently.
+fn betas(api_key: &str, model: &Model, context: &Context) -> Vec<&'static str> {
+    let mut betas = Vec::new();
+    if is_oauth(api_key) {
+        betas.push(CLAUDE_CODE_BETA);
+        betas.push(OAUTH_BETA);
+    }
+    if !context.tools.is_empty() {
+        betas.push(FINE_GRAINED_TOOL_STREAMING_BETA);
+        // Only worth asking for when there is thinking to interleave with the calls.
+        if model.thinking.budget_tokens().is_some() {
+            betas.push(INTERLEAVED_THINKING_BETA);
+        }
+    }
+    betas
+}
+
 pub(crate) fn build_payload(model: &Model, context: &Context) -> Value {
     let mut payload = Map::new();
     payload.insert("model".into(), json!(model.id));
     payload.insert("max_tokens".into(), json!(model.max_tokens));
     payload.insert("stream".into(), json!(true));
 
-    if let Some(budget) = model.thinking.budget_tokens() {
-        payload.insert(
-            "thinking".into(),
-            json!({ "type": "enabled", "budget_tokens": budget }),
-        );
+    match model.thinking.budget_tokens() {
+        Some(budget) => {
+            payload.insert(
+                "thinking".into(),
+                json!({ "type": "enabled", "budget_tokens": budget }),
+            );
+        }
+        // Said outright rather than left out: a model that thinks by default keeps
+        // thinking when nothing tells it not to, and bills for it.
+        None => {
+            payload.insert("thinking".into(), json!({ "type": "disabled" }));
+        }
     }
 
     if let Some(system) = &context.system_prompt {
@@ -592,6 +650,7 @@ mod tests {
                 parameters: json!({ "type": "object" }),
             }],
             headers: Vec::new(),
+            cache_key: None,
         }
     }
 
@@ -707,12 +766,71 @@ mod tests {
     #[test]
     fn thinking_budget_is_sent_only_when_enabled() {
         let plain = build_payload(&Model::anthropic("claude-opus-5"), &Context::default());
-        assert!(plain.get("thinking").is_none());
+        // Turned off outright rather than left unsaid, so a model that thinks by default
+        // does not keep thinking and billing for it.
+        assert_eq!(plain["thinking"]["type"], "disabled");
 
         let thinking = build_payload(
             &Model::anthropic("claude-opus-5").with_thinking(micro_types::ThinkingLevel::High),
             &Context::default(),
         );
         assert_eq!(thinking["thinking"]["budget_tokens"], 32_000);
+    }
+
+    /// A subscription credential is a bearer token issued to a named client, and says so.
+    #[test]
+    fn a_subscription_credential_asks_for_what_it_is_allowed() {
+        let model = Model::anthropic("claude-opus-5");
+        let context = context_with(vec![Message::user("hi")]);
+
+        let asked = betas("sk-ant-oat01-abc", &model, &context);
+        assert!(asked.contains(&CLAUDE_CODE_BETA), "{asked:?}");
+        assert!(asked.contains(&OAUTH_BETA), "{asked:?}");
+        assert!(is_oauth("sk-ant-oat01-abc"));
+    }
+
+    #[test]
+    fn an_api_key_asks_for_nothing_it_does_not_need() {
+        let model = Model::anthropic("claude-opus-5");
+        let without_tools = Context {
+            tools: Vec::new(),
+            ..context_with(vec![Message::user("hi")])
+        };
+
+        assert!(betas("sk-ant-api03-abc", &model, &without_tools).is_empty());
+        assert!(!is_oauth("sk-ant-api03-abc"));
+    }
+
+    /// Streaming a call's arguments is asked for whenever there are tools, and keeping
+    /// the thinking between them only when there is thinking to keep.
+    #[test]
+    fn tools_and_thinking_ask_for_what_they_need() {
+        let context = context_with(vec![Message::user("hi")]);
+
+        let plain = betas("sk-ant-api03-abc", &Model::anthropic("claude-opus-5"), &context);
+        assert!(plain.contains(&FINE_GRAINED_TOOL_STREAMING_BETA), "{plain:?}");
+        assert!(!plain.contains(&INTERLEAVED_THINKING_BETA), "{plain:?}");
+
+        let thinking =
+            Model::anthropic("claude-opus-5").with_thinking(micro_types::ThinkingLevel::High);
+        let asked = betas("sk-ant-api03-abc", &thinking, &context);
+        assert!(asked.contains(&INTERLEAVED_THINKING_BETA), "{asked:?}");
+    }
+
+    /// Thinking is turned off outright, because a model that thinks by default keeps
+    /// thinking when nothing says otherwise.
+    #[test]
+    fn thinking_is_turned_off_rather_than_left_unsaid() {
+        let payload = build_payload(
+            &Model::anthropic("claude-opus-5"),
+            &context_with(vec![Message::user("hi")]),
+        );
+        assert_eq!(payload["thinking"]["type"], "disabled");
+
+        let thinking =
+            Model::anthropic("claude-opus-5").with_thinking(micro_types::ThinkingLevel::Medium);
+        let payload = build_payload(&thinking, &context_with(vec![Message::user("hi")]));
+        assert_eq!(payload["thinking"]["type"], "enabled");
+        assert!(payload["thinking"]["budget_tokens"].as_u64().unwrap() > 0);
     }
 }

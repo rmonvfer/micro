@@ -42,6 +42,7 @@ impl Summarizer for ProviderSummarizer {
             messages: vec![Message::user(format!("{transcript}\n{COMPACTION_PROMPT}"))],
             tools: Vec::new(),
             headers: Vec::new(),
+            cache_key: None,
         };
 
         let mut model = self.model.clone();

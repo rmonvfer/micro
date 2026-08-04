@@ -87,6 +87,8 @@ pub struct Agent {
     observer: Option<UnboundedSender<AgentEvent>>,
     /// Anything allowed to change what the run does.
     hooks: Option<Arc<dyn Hooks>>,
+    /// What this conversation is called, for a provider that caches against it.
+    cache_key: Option<String>,
     summarizer: Arc<dyn Summarizer>,
     compaction: Option<CompactionConfig>,
     context_window: usize,
@@ -116,6 +118,7 @@ impl Agent {
             recorder: None,
             observer: None,
             hooks: None,
+            cache_key: None,
             summarizer,
             compaction: Some(CompactionConfig::default()),
             context_window: DEFAULT_CONTEXT_WINDOW,
@@ -206,6 +209,12 @@ impl Agent {
     /// durable as it happens rather than only once the run returns.
     pub fn with_recorder(mut self, recorder: UnboundedSender<Message>) -> Self {
         self.recorder = Some(recorder);
+        self
+    }
+
+    /// Name the conversation, so a provider that caches a prompt can recognise it again.
+    pub fn with_cache_key(mut self, key: impl Into<String>) -> Self {
+        self.cache_key = Some(key.into());
         self
     }
 
@@ -548,6 +557,7 @@ impl Agent {
             messages: self.messages.clone(),
             tools: self.tool_definitions(),
             headers: Vec::new(),
+            cache_key: self.cache_key.clone(),
         };
         // Whatever is watching gets the conversation before the provider does, and may
         // change it: this is where a summary is swapped in, or a file is added.

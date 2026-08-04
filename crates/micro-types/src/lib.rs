@@ -215,6 +215,9 @@ pub struct Context {
     /// Headers to send along with the request, beyond the ones the provider sets itself.
     /// A header named here replaces the provider's own.
     pub headers: Vec<(String, String)>,
+    /// What this conversation is called, for a provider that caches a prompt against it.
+    /// Sending the same key for the same conversation is what makes a cache hit possible.
+    pub cache_key: Option<String>,
 }
 
 #[cfg(test)]

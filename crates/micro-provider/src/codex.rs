@@ -866,6 +866,7 @@ mod tests {
                 parameters: json!({ "type": "object" }),
             }],
             headers: Vec::new(),
+            cache_key: None,
         };
         let payload = build_payload(&model(), &context);
 
@@ -890,6 +891,7 @@ mod tests {
                 messages: vec![Message::user("think about it")],
                 tools: Vec::new(),
                 headers: Vec::new(),
+                cache_key: None,
             },
         );
         assert_eq!(payload["reasoning"]["effort"], "high");

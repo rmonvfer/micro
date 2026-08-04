@@ -602,6 +602,7 @@ mod tests {
             messages: vec![Message::user("hi")],
             tools: Vec::new(),
             headers: Vec::new(),
+            cache_key: None,
         };
 
         drain(provider.stream(model(), context.clone(), "secret".into())).await;
@@ -643,6 +644,7 @@ mod tests {
                 ],
                 tools: Vec::new(),
                 headers: Vec::new(),
+                cache_key: None,
             },
         };
         assert!(paired.orphaned_tool_results().is_empty());
