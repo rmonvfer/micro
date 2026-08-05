@@ -41,6 +41,8 @@ pub struct CliCommands {
     skills_enabled: bool,
     /// Show only the newest entry when the changelog is asked for.
     collapse_changelog: bool,
+    /// How hard the model is being asked to reason, so a model swap keeps it.
+    thinking: micro_types::ThinkingLevel,
     /// The extension host, so a command an extension registered can be run.
     extensions: Option<Arc<micro_extensions::Host>>,
     /// Warn that a subscription credential bills per token here. Said once a run, as ohm
@@ -64,6 +66,7 @@ pub struct HostParts {
     pub home: PathBuf,
     pub skills_enabled: bool,
     pub collapse_changelog: bool,
+    pub thinking: micro_types::ThinkingLevel,
     pub anthropic_extra_usage: bool,
     pub extensions: Option<Arc<micro_extensions::Host>>,
 }
@@ -82,6 +85,7 @@ impl CliCommands {
             home: parts.home,
             skills_enabled: parts.skills_enabled,
             collapse_changelog: parts.collapse_changelog,
+            thinking: parts.thinking,
             extensions: parts.extensions,
             anthropic_extra_usage: parts.anthropic_extra_usage,
             warned_about_extra_usage: false,
@@ -132,7 +136,9 @@ impl CliCommands {
         Applied::Model {
             swap: Box::new(micro_agent::ModelSwap {
                 provider: resolved.client,
-                model: model.to_runtime(micro_types::ThinkingLevel::Off),
+                // The effort the user chose belongs to them, not to the model they were
+                // using when they chose it.
+                model: model.to_runtime(self.thinking),
                 api_key: resolved.api_key,
                 context_window: model.context_window as usize,
             }),
@@ -510,6 +516,8 @@ impl Commands for CliCommands {
     }
 
     async fn thinking_changed(&mut self, level: micro_types::ThinkingLevel) {
+        // Remembered here so a model swap carries it rather than resetting it.
+        self.thinking = level;
         crate::extensions::announce(
             self.extensions.as_ref(),
             "thinking_level_select",
@@ -676,6 +684,7 @@ mod tests {
             home: root.join("home"),
             skills_enabled: true,
             collapse_changelog: false,
+            thinking: micro_types::ThinkingLevel::Off,
             extensions: None,
             anthropic_extra_usage: true,
         });

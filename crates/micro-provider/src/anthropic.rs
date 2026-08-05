@@ -131,13 +131,20 @@ async fn run(
     Ok(())
 }
 
+/// Where a Messages request goes.
+///
+/// The catalog records a service's root, the way Anthropic's own clients take it, and the
+/// version belongs to the protocol rather than to the address: every Messages-compatible
+/// service answers at `/v1/messages` under whatever root it is given.
 fn endpoint(base_url: &str) -> String {
     let trimmed = base_url.trim_end_matches('/');
     if trimmed.ends_with("/messages") {
-        trimmed.to_string()
-    } else {
-        format!("{trimmed}/messages")
+        return trimmed.to_string();
     }
+    if trimmed.ends_with("/v1") {
+        return format!("{trimmed}/messages");
+    }
+    format!("{trimmed}/v1/messages")
 }
 
 /// Which block the stream is currently inside, plus the text accumulated for it.
@@ -685,6 +692,19 @@ mod tests {
         assert_eq!(
             endpoint("https://api.anthropic.com/v1/messages/"),
             "https://api.anthropic.com/v1/messages"
+        );
+    }
+
+    /// A service's root is recorded without the protocol version, which is added here.
+    #[test]
+    fn a_service_root_gains_the_version_the_protocol_lives_under() {
+        assert_eq!(
+            endpoint("https://api.anthropic.com"),
+            "https://api.anthropic.com/v1/messages"
+        );
+        assert_eq!(
+            endpoint("https://api.kimi.com/coding"),
+            "https://api.kimi.com/coding/v1/messages"
         );
     }
 

@@ -1,0 +1,280 @@
+[
+	{
+		"id": "anthropic",
+		"name": "Anthropic",
+		"env": [
+			"ANTHROPIC_OAUTH_TOKEN",
+			"ANTHROPIC_API_KEY"
+		],
+		"oauth": true,
+		"label": "Anthropic API key"
+	},
+	{
+		"id": "openai",
+		"name": "OpenAI",
+		"env": [
+			"OPENAI_API_KEY"
+		],
+		"oauth": false,
+		"label": "OpenAI API key"
+	},
+	{
+		"id": "openai-codex",
+		"name": "OpenAI Codex",
+		"env": [],
+		"oauth": true,
+		"label": "OpenAI Codex API key"
+	},
+	{
+		"id": "google",
+		"name": "Google",
+		"env": [
+			"GEMINI_API_KEY"
+		],
+		"oauth": false,
+		"label": "Gemini API key"
+	},
+	{
+		"id": "github-copilot",
+		"name": "GitHub Copilot",
+		"env": [
+			"COPILOT_GITHUB_TOKEN"
+		],
+		"oauth": true,
+		"label": "GitHub Copilot token"
+	},
+	{
+		"id": "openrouter",
+		"name": "OpenRouter",
+		"env": [
+			"OPENROUTER_API_KEY"
+		],
+		"oauth": false,
+		"label": "OpenRouter API key"
+	},
+	{
+		"id": "ant-ling",
+		"name": "Ant Ling",
+		"env": [
+			"ANT_LING_API_KEY"
+		],
+		"oauth": false,
+		"label": "Ant Ling API key"
+	},
+	{
+		"id": "cerebras",
+		"name": "Cerebras",
+		"env": [
+			"CEREBRAS_API_KEY"
+		],
+		"oauth": false,
+		"label": "Cerebras API key"
+	},
+	{
+		"id": "cloudflare-ai-gateway",
+		"name": "Cloudflare AI Gateway",
+		"env": [
+			"CLOUDFLARE_API_KEY"
+		],
+		"oauth": false,
+		"label": "Cloudflare AI Gateway API key"
+	},
+	{
+		"id": "cloudflare-workers-ai",
+		"name": "Cloudflare Workers AI",
+		"env": [
+			"CLOUDFLARE_API_KEY"
+		],
+		"oauth": false,
+		"label": "Cloudflare Workers AI API key"
+	},
+	{
+		"id": "deepseek",
+		"name": "DeepSeek",
+		"env": [
+			"DEEPSEEK_API_KEY"
+		],
+		"oauth": false,
+		"label": "DeepSeek API key"
+	},
+	{
+		"id": "fireworks",
+		"name": "Fireworks",
+		"env": [
+			"FIREWORKS_API_KEY"
+		],
+		"oauth": false,
+		"label": "Fireworks API key"
+	},
+	{
+		"id": "groq",
+		"name": "Groq",
+		"env": [
+			"GROQ_API_KEY"
+		],
+		"oauth": false,
+		"label": "Groq API key"
+	},
+	{
+		"id": "huggingface",
+		"name": "Hugging Face",
+		"env": [
+			"HF_TOKEN"
+		],
+		"oauth": false,
+		"label": "Hugging Face token"
+	},
+	{
+		"id": "kimi-coding",
+		"name": "Kimi For Coding",
+		"env": [
+			"KIMI_API_KEY"
+		],
+		"oauth": false,
+		"label": "Kimi API key"
+	},
+	{
+		"id": "minimax",
+		"name": "MiniMax",
+		"env": [
+			"MINIMAX_API_KEY"
+		],
+		"oauth": false,
+		"label": "MiniMax API key"
+	},
+	{
+		"id": "minimax-cn",
+		"name": "MiniMax CN",
+		"env": [
+			"MINIMAX_CN_API_KEY"
+		],
+		"oauth": false,
+		"label": "MiniMax CN API key"
+	},
+	{
+		"id": "moonshotai",
+		"name": "Moonshot AI",
+		"env": [
+			"MOONSHOT_API_KEY"
+		],
+		"oauth": false,
+		"label": "Moonshot AI API key"
+	},
+	{
+		"id": "moonshotai-cn",
+		"name": "Moonshot AI CN",
+		"env": [
+			"MOONSHOT_API_KEY"
+		],
+		"oauth": false,
+		"label": "Moonshot AI API key"
+	},
+	{
+		"id": "nvidia",
+		"name": "NVIDIA",
+		"env": [
+			"NVIDIA_API_KEY"
+		],
+		"oauth": false,
+		"label": "NVIDIA API key"
+	},
+	{
+		"id": "opencode",
+		"name": "OpenCode Zen",
+		"env": [
+			"OPENCODE_API_KEY"
+		],
+		"oauth": false,
+		"label": "OpenCode API key"
+	},
+	{
+		"id": "opencode-go",
+		"name": "OpenCode Zen Go",
+		"env": [
+			"OPENCODE_API_KEY"
+		],
+		"oauth": false,
+		"label": "OpenCode API key"
+	},
+	{
+		"id": "together",
+		"name": "Together",
+		"env": [
+			"TOGETHER_API_KEY"
+		],
+		"oauth": false,
+		"label": "Together API key"
+	},
+	{
+		"id": "vercel-ai-gateway",
+		"name": "Vercel AI Gateway",
+		"env": [
+			"AI_GATEWAY_API_KEY"
+		],
+		"oauth": false,
+		"label": "Vercel AI Gateway API key"
+	},
+	{
+		"id": "xai",
+		"name": "xAI",
+		"env": [
+			"XAI_API_KEY"
+		],
+		"oauth": false,
+		"label": "xAI API key"
+	},
+	{
+		"id": "xiaomi",
+		"name": "Xiaomi",
+		"env": [
+			"XIAOMI_API_KEY"
+		],
+		"oauth": false,
+		"label": "Xiaomi API key"
+	},
+	{
+		"id": "xiaomi-token-plan-ams",
+		"name": "Xiaomi Token Plan AMS",
+		"env": [
+			"XIAOMI_TOKEN_PLAN_AMS_API_KEY"
+		],
+		"oauth": false,
+		"label": "Xiaomi Token Plan AMS API key"
+	},
+	{
+		"id": "xiaomi-token-plan-cn",
+		"name": "Xiaomi Token Plan CN",
+		"env": [
+			"XIAOMI_TOKEN_PLAN_CN_API_KEY"
+		],
+		"oauth": false,
+		"label": "Xiaomi Token Plan CN API key"
+	},
+	{
+		"id": "xiaomi-token-plan-sgp",
+		"name": "Xiaomi Token Plan SGP",
+		"env": [
+			"XIAOMI_TOKEN_PLAN_SGP_API_KEY"
+		],
+		"oauth": false,
+		"label": "Xiaomi Token Plan SGP API key"
+	},
+	{
+		"id": "zai",
+		"name": "Z.AI",
+		"env": [
+			"ZAI_API_KEY"
+		],
+		"oauth": false,
+		"label": "Z.AI API key"
+	},
+	{
+		"id": "zai-coding-cn",
+		"name": "Z.AI Coding CN",
+		"env": [
+			"ZAI_CODING_CN_API_KEY"
+		],
+		"oauth": false,
+		"label": "Z.AI Coding CN API key"
+	}
+]

@@ -546,7 +546,11 @@ fn apply_applied(app: &mut App, agent: &mut Agent, applied: Applied) {
             }
         }
         Applied::Model { swap, note } => {
+            // Everything the footer says about the model changes with it: the name, and
+            // how much room there is, which is what the context share is measured against.
             app.set_model_label(swap.model.id.clone());
+            app.context_window = swap.context_window as u32;
+            app.set_thinking(swap.model.thinking);
             agent.set_model(*swap);
             if let Some(note) = note {
                 app.notice(note, MessageKind::Info);

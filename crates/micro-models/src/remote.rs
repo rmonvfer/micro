@@ -560,7 +560,7 @@ mod tests {
         catalog
             .apply_overrides(
                 r#"{"providers": {"openrouter": {"models": [
-                    {"id": "anthropic/claude-opus-5", "cost": {"input": 999.0, "output": 999.0}}
+                    {"id": "anthropic/claude-opus-5", "aliases": ["opus"], "cost": {"input": 999.0, "output": 999.0}}
                 ]}}}"#,
             )
             .unwrap();

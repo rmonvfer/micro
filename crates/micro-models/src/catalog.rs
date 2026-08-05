@@ -532,8 +532,10 @@ mod tests {
     #[test]
     fn providers_are_listed_in_priority_order() {
         let catalog = Catalog::bundled();
+        let listed = catalog.providers();
+
         assert_eq!(
-            catalog.providers(),
+            listed.iter().take(5).copied().collect::<Vec<_>>(),
             vec![
                 "openrouter",
                 "github-copilot",
@@ -542,6 +544,11 @@ mod tests {
                 "openai-codex"
             ]
         );
+        // The rest follow in name order, after the ranked ones.
+        let rest: Vec<&str> = listed.into_iter().skip(5).collect();
+        let mut sorted = rest.clone();
+        sorted.sort_unstable();
+        assert_eq!(rest, sorted);
     }
 
     #[test]
@@ -647,7 +654,7 @@ mod tests {
             .unwrap();
 
         let added = catalog.get("anthropic", "claude-experimental").unwrap();
-        assert_eq!(added.base_url, "https://api.anthropic.com/v1");
+        assert_eq!(added.base_url, "https://api.anthropic.com");
         assert_eq!(added.api, WireApi::AnthropicMessages);
         assert_eq!(added.context_window, 500_000);
     }
@@ -668,8 +675,14 @@ mod tests {
         let model = catalog.get("ollama", "qwen3-coder:30b").unwrap();
         assert_eq!(model.name, "Qwen3 Coder 30B");
         assert!(model.cost.is_free());
-        // An unranked provider sorts after the known ones.
-        assert_eq!(*catalog.providers().last().unwrap(), "ollama");
+        // An unranked provider sorts after every ranked one.
+        let listed = catalog.providers();
+        let ollama = listed.iter().position(|name| *name == "ollama").unwrap();
+        let ranked = listed
+            .iter()
+            .position(|name| !PROVIDER_ORDER.contains(name))
+            .unwrap();
+        assert!(ollama >= ranked, "{listed:?}");
     }
 
     #[test]
@@ -734,7 +747,7 @@ mod tests {
         let runtime = def.to_runtime(micro_types::ThinkingLevel::High);
         assert_eq!(runtime.id, "claude-opus-5");
         assert_eq!(runtime.provider, "anthropic");
-        assert_eq!(runtime.base_url, "https://api.anthropic.com/v1");
+        assert_eq!(runtime.base_url, "https://api.anthropic.com");
         assert_eq!(runtime.max_tokens, def.max_output_tokens);
         assert_eq!(runtime.thinking, micro_types::ThinkingLevel::High);
 

@@ -138,8 +138,10 @@ fn contains(haystack: &str, needle: &str) -> bool {
 mod tests {
     use super::*;
 
+    /// A fixed catalog, so these tests describe how a query is matched rather than which
+    /// models a service happened to offer when the bundled catalog was last built.
     fn catalog() -> Catalog {
-        Catalog::bundled()
+        Catalog::from_json(include_str!("../testdata/resolve-catalog.json")).unwrap()
     }
 
     #[test]
@@ -191,6 +193,17 @@ mod tests {
         assert_eq!(model.qualified_id(), "openrouter/anthropic/claude-opus-5");
     }
 
+    /// The bundled catalog is assembled from what services publish, so it is checked for
+    /// shape rather than for any particular model.
+    #[test]
+    fn the_bundled_catalog_resolves_what_it_lists() {
+        let bundled = Catalog::bundled();
+        let first = bundled.models().first().expect("the catalog lists models").clone();
+
+        let resolved = bundled.resolve(&first.qualified_id()).model().cloned();
+        assert_eq!(resolved.map(|model| model.qualified_id()), Some(first.qualified_id()));
+    }
+
     #[test]
     fn resolves_a_unique_prefix() {
         let catalog = catalog();
@@ -201,8 +214,8 @@ mod tests {
     #[test]
     fn resolves_a_unique_qualified_prefix() {
         let catalog = catalog();
-        let model = catalog.resolve("google/gemini-2.5-f").model().unwrap();
-        assert_eq!(model.qualified_id(), "google/gemini-2.5-flash");
+        let model = catalog.resolve("google/gemini-3-p").model().unwrap();
+        assert_eq!(model.qualified_id(), "google/gemini-3-pro");
     }
 
     #[test]

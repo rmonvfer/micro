@@ -1,0 +1,53 @@
+{
+	"providers": {
+		"anthropic": {
+			"base_url": "https://api.anthropic.com",
+			"api": "anthropic-messages",
+			"models": [
+				{ "id": "claude-opus-5", "name": "Claude Opus 5" },
+				{ "id": "claude-sonnet-5", "name": "Claude Sonnet 5" },
+				{ "id": "claude-haiku-4-5-20251001", "name": "Claude Haiku 4.5" }
+			]
+		},
+		"openrouter": {
+			"base_url": "https://openrouter.ai/api/v1",
+			"api": "openai-completions",
+			"models": [
+				{
+					"id": "anthropic/claude-opus-5",
+					"name": "Claude Opus 5",
+					"aliases": ["opus"]
+				},
+				{ "id": "anthropic/claude-sonnet-5", "name": "Claude Sonnet 5" }
+			]
+		},
+		"github-copilot": {
+			"base_url": "https://api.individual.githubcopilot.com",
+			"api": "openai-responses",
+			"models": [
+				{
+					"id": "claude-opus-5",
+					"name": "Claude Opus 5",
+					"api": "anthropic-messages"
+				}
+			]
+		},
+		"google": {
+			"base_url": "https://generativelanguage.googleapis.com/v1beta",
+			"api": "google-generative-ai",
+			"models": [
+				{ "id": "gemini-2.5-pro", "name": "Gemini 2.5 Pro" },
+				{ "id": "gemini-2.5-flash", "name": "Gemini 2.5 Flash" },
+				{ "id": "gemini-2.5-flash-lite", "name": "Gemini 2.5 Flash Lite" },
+				{ "id": "gemini-3-pro", "name": "Gemini 3 Pro" },
+				{ "id": "gemini-3-flash", "name": "Gemini 3 Flash" },
+				{ "id": "gemini-3-flash-lite", "name": "Gemini 3 Flash Lite" }
+			]
+		},
+		"deepseek": {
+			"base_url": "https://api.deepseek.com",
+			"api": "openai-completions",
+			"models": [{ "id": "deepseek/deepseek-v4-pro", "name": "DeepSeek V4 Pro" }]
+		}
+	}
+}
