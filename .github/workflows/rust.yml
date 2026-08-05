@@ -41,6 +41,12 @@ jobs:
         run: cargo test -p micro-sandbox
   dependencies:
     runs-on: ubuntu-latest
+    permissions:
+      checks: write
+      contents: read
+      issues: write
     steps:
       - uses: actions/checkout@v5
       - uses: rustsec/audit-check@v2.0.0
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
