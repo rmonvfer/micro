@@ -325,6 +325,8 @@ mod tests {
             headers: Default::default(),
             aliases: Vec::new(),
             cost: Default::default(),
+            compat: Default::default(),
+            thinking: Default::default(),
         };
         assert_eq!(price(&model), "included");
 

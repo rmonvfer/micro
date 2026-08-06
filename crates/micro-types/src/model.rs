@@ -13,6 +13,16 @@ pub enum ThinkingLevel {
 }
 
 impl ThinkingLevel {
+    /// What this level is called on the wire.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            ThinkingLevel::Off => "off",
+            ThinkingLevel::Low => "low",
+            ThinkingLevel::Medium => "medium",
+            ThinkingLevel::High => "high",
+        }
+    }
+
     /// Token budget to hand the provider, or `None` when thinking is off.
     pub fn budget_tokens(&self) -> Option<u32> {
         match self {
@@ -33,6 +43,16 @@ pub struct Model {
     pub max_tokens: u32,
     #[serde(default)]
     pub thinking: ThinkingLevel,
+    /// Whether asking this model to reason means anything. A model that does not reason
+    /// is never sent a reasoning parameter, whatever level is selected.
+    #[serde(default)]
+    pub reasoning: bool,
+    /// What the service serving this model accepts, on top of the protocol it speaks.
+    #[serde(default)]
+    pub compat: crate::Compat,
+    /// Headers this model's service asks every request to carry.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub headers: std::collections::BTreeMap<String, String>,
 }
 
 impl Model {
@@ -43,6 +63,9 @@ impl Model {
             base_url: "https://api.anthropic.com/v1".into(),
             max_tokens: 32_000,
             thinking: ThinkingLevel::Off,
+            compat: Default::default(),
+            headers: Default::default(),
+            reasoning: Default::default(),
         }
     }
 

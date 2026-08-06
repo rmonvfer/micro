@@ -94,6 +94,13 @@ pub struct ModelDef {
     pub aliases: Vec<String>,
     #[serde(default)]
     pub cost: ModelCost,
+    /// Where this service differs from the protocol it answers.
+    #[serde(default, skip_serializing_if = "crate::CompatOverrides::is_empty")]
+    pub compat: crate::CompatOverrides,
+    /// What this model calls each thinking level. A level mapped to nothing is one it
+    /// does not offer.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub thinking: BTreeMap<String, Option<String>>,
 }
 
 impl ModelDef {
@@ -119,6 +126,15 @@ impl ModelDef {
             base_url: self.base_url.clone(),
             max_tokens: self.max_output_tokens,
             thinking,
+            reasoning: self.reasoning,
+            compat: crate::compat::resolve(
+                &self.provider,
+                &self.base_url,
+                &self.id,
+                &self.compat,
+                &self.thinking,
+            ),
+            headers: self.headers.clone(),
         }
     }
 }
@@ -345,6 +361,12 @@ impl Catalog {
             if let Some(aliases) = entry.aliases {
                 model.aliases = aliases;
             }
+            if let Some(compat) = entry.compat {
+                model.compat = compat;
+            }
+            if let Some(thinking) = entry.thinking {
+                model.thinking = thinking;
+            }
             model.headers.extend(entry.headers);
             return Ok(());
         }
@@ -375,6 +397,8 @@ impl Catalog {
             headers,
             aliases: entry.aliases.unwrap_or_default(),
             cost: entry.cost.unwrap_or_default(),
+            compat: entry.compat.unwrap_or_default(),
+            thinking: entry.thinking.unwrap_or_default(),
         });
         Ok(())
     }
@@ -454,6 +478,10 @@ struct ModelEntry {
     aliases: Option<Vec<String>>,
     #[serde(default)]
     cost: Option<ModelCost>,
+    #[serde(default)]
+    compat: Option<crate::CompatOverrides>,
+    #[serde(default)]
+    thinking: Option<BTreeMap<String, Option<String>>>,
 }
 
 #[cfg(test)]
@@ -701,6 +729,8 @@ mod tests {
             headers: BTreeMap::new(),
             aliases: Vec::new(),
             cost: ModelCost::default(),
+            compat: Default::default(),
+            thinking: Default::default(),
         };
 
         catalog.merge_listing([fresh]);
@@ -727,6 +757,8 @@ mod tests {
             headers: BTreeMap::new(),
             aliases: Vec::new(),
             cost: ModelCost::default(),
+            compat: Default::default(),
+            thinking: Default::default(),
         }]);
         assert_eq!(catalog.len(), before + 1);
         assert!(catalog.get("openrouter", "brand-new").is_some());

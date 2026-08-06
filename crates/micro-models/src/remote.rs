@@ -118,6 +118,8 @@ pub fn parse_openrouter(body: &str) -> Result<Vec<ModelDef>> {
                     cache_read: per_million(pricing.input_cache_read.as_deref()),
                     cache_write: per_million(pricing.input_cache_write.as_deref()),
                 },
+                compat: Default::default(),
+                thinking: Default::default(),
             }
         })
         .collect();
@@ -162,6 +164,8 @@ pub fn parse_copilot(body: &str, base_url: &str) -> Result<Vec<ModelDef>> {
                 headers: BTreeMap::new(),
                 aliases: Vec::new(),
                 cost: ModelCost::default(),
+                compat: Default::default(),
+                thinking: Default::default(),
             }
         })
         .collect();

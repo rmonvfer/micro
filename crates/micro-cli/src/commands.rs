@@ -98,7 +98,7 @@ impl CliCommands {
     /// This is the half a command cannot do by itself. The interface applies the result,
     /// because the agent is its, but only here are the catalog and the credential store.
     async fn swap_to(&mut self, model: &ModelDef) -> Applied {
-        let resolved = match micro_provider::resolve(&self.auth, &model.provider).await {
+        let resolved = match micro_provider::resolve(&self.auth, model).await {
             Ok(resolved) => resolved,
             Err(error) => {
                 return Applied::error(format!(

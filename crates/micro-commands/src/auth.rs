@@ -13,15 +13,15 @@ pub(crate) async fn login(argument: Option<&str>, context: &CommandContext<'_>) 
     let Some(name) = argument else {
         return CommandOutcome::Choose(Picker::new(
             "Sign in to a provider",
-            micro_auth::PROVIDERS
+            micro_auth::provider_table()
                 .iter()
-                .map(|provider| {
+                .map(|entry| {
                     PickerItem::new(
-                        *provider,
-                        describe(&context.auth.status_of(provider)),
-                        format!("/login {provider}"),
+                        entry.id.clone(),
+                        describe(&context.auth.status_of(&entry.id)),
+                        format!("/login {}", entry.id),
                     )
-                    .current(*provider == context.provider)
+                    .current(entry.id == context.provider)
                 })
                 .collect(),
         ));
@@ -123,16 +123,15 @@ fn describe(status: &ProviderStatus) -> String {
 /// The canonical id for a name micro knows, or nothing.
 fn known(name: &str) -> Option<&'static str> {
     let canonical = canonical_provider(name);
-    micro_auth::PROVIDERS
-        .iter()
-        .copied()
+    micro_auth::providers()
+        .into_iter()
         .find(|provider| *provider == canonical)
 }
 
 fn unknown_provider(name: &str) -> String {
     format!(
         "unknown provider \"{name}\" - try one of: {}",
-        micro_auth::PROVIDERS.join(", ")
+        micro_auth::providers().join(", ")
     )
 }
 
@@ -154,7 +153,7 @@ mod tests {
             .iter()
             .map(|item| item.label.as_str())
             .collect();
-        assert_eq!(labels, micro_auth::PROVIDERS.to_vec());
+        assert_eq!(labels, micro_auth::providers());
         assert!(picker
             .items
             .iter()
@@ -187,7 +186,7 @@ mod tests {
         let CommandOutcome::PromptForApiKey { provider, .. } = outcome else {
             panic!("expected a key prompt");
         };
-        assert_eq!(provider, "gemini");
+        assert_eq!(provider, "google");
     }
 
     #[tokio::test]
@@ -246,7 +245,7 @@ mod tests {
         let outcome = dispatch("/auth", &harness.context()).await.unwrap();
         let report = text(&outcome);
 
-        for provider in micro_auth::PROVIDERS {
+        for provider in micro_auth::providers() {
             assert!(report.contains(provider), "missing {provider}");
         }
 
@@ -279,7 +278,8 @@ mod tests {
     #[test]
     fn only_providers_micro_knows_are_accepted() {
         assert_eq!(known("copilot"), Some("github-copilot"));
-        assert_eq!(known("GEMINI"), Some("gemini"));
-        assert_eq!(known("cerebras"), None);
+        assert_eq!(known("GEMINI"), Some("google"));
+        // A service micro cannot speak to is not offered a login.
+        assert_eq!(known("mistral"), None);
     }
 }

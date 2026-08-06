@@ -489,6 +489,9 @@ mod tests {
             base_url: "https://example.invalid".into(),
             max_tokens: 1024,
             thinking: ThinkingLevel::Off,
+            compat: Default::default(),
+            headers: Default::default(),
+            reasoning: Default::default(),
         }
     }
 

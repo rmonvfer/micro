@@ -14,7 +14,9 @@ use micro_types::AssistantMessage;
 use micro_types::ContentBlock;
 use micro_types::Context;
 use micro_types::Message;
+use micro_types::MaxTokensField;
 use micro_types::Model;
+use micro_types::ThinkingFormat;
 use micro_types::StopReason;
 use micro_types::StreamEvent;
 use micro_types::ThinkingLevel;
@@ -28,111 +30,44 @@ use tokio::sync::mpsc::UnboundedReceiver;
 use tokio::sync::mpsc::UnboundedSender;
 
 pub(crate) const OPENAI_BASE_URL: &str = "https://api.openai.com/v1";
-pub(crate) const OPENROUTER_BASE_URL: &str = "https://openrouter.ai/api/v1";
-pub(crate) const COPILOT_BASE_URL: &str = "https://api.individual.githubcopilot.com";
 
 /// The last line of a chat-completions stream, which carries no JSON.
 const DONE_SENTINEL: &str = "[DONE]";
 
-/// What one service needs on top of the shared wire format.
-pub struct Flavor {
-    /// The provider id, used to select this flavor and to label its errors.
-    name: &'static str,
-    base_url: &'static str,
-    /// Newer OpenAI models take `max_completion_tokens`; everyone else takes `max_tokens`.
-    max_tokens_field: &'static str,
-    supports_stream_options: bool,
-    supports_reasoning_effort: bool,
-    /// Whether the endpoint understands `store`, which OpenAI's own does and most
-    /// compatible ones do not.
-    supports_store: bool,
-    /// Whether the endpoint caches a prompt when told which conversation it belongs to.
-    supports_prompt_cache: bool,
-    /// Whether it wants to be told who started the request, as Copilot does.
-    copilot_headers: bool,
-    headers: &'static [(&'static str, &'static str)],
-}
-
-static OPENAI: Flavor = Flavor {
-    name: "openai",
-    base_url: OPENAI_BASE_URL,
-    max_tokens_field: "max_completion_tokens",
-    supports_stream_options: true,
-    supports_reasoning_effort: true,
-    supports_store: true,
-    supports_prompt_cache: true,
-    copilot_headers: false,
-    headers: &[],
-};
-
-/// OpenRouter attributes requests to the app that made them through these two headers,
-/// which is what puts micro on its leaderboards.
-static OPENROUTER: Flavor = Flavor {
-    name: "openrouter",
-    base_url: OPENROUTER_BASE_URL,
-    max_tokens_field: "max_tokens",
-    supports_stream_options: true,
-    supports_reasoning_effort: true,
-    supports_store: false,
-    supports_prompt_cache: false,
-    copilot_headers: false,
-    headers: &[
-        ("http-referer", "https://github.com/agentmode/micro"),
-        ("x-title", "micro"),
-    ],
-};
-
-/// Copilot serves whichever editor its headers describe, and rejects requests that do not
-/// describe one. It exposes no reasoning-effort control.
-static COPILOT: Flavor = Flavor {
-    name: "github-copilot",
-    base_url: COPILOT_BASE_URL,
-    max_tokens_field: "max_tokens",
-    supports_stream_options: true,
-    supports_reasoning_effort: false,
-    supports_store: false,
-    supports_prompt_cache: false,
-    copilot_headers: true,
-    headers: &[
-        ("user-agent", "GitHubCopilotChat/0.35.0"),
-        ("editor-version", "vscode/1.107.0"),
-        ("editor-plugin-version", "copilot-chat/0.35.0"),
-        ("copilot-integration-id", "vscode-chat"),
-        ("openai-intent", "conversation-edits"),
-    ],
-};
-
 #[derive(Clone)]
 pub struct OpenAi {
-    flavor: &'static Flavor,
+    /// The service being spoken to. What it accepts travels with each model; this names
+    /// it, for the handful of decisions that are the service's own and for its errors.
+    provider: String,
     client: reqwest::Client,
 }
 
 impl OpenAi {
-    /// OpenAI itself. Use [`OpenAi::openrouter`] or [`OpenAi::copilot`] for the services
-    /// that reimplement the same format.
+    /// OpenAI itself.
     pub fn new() -> Self {
-        OpenAi::with_flavor(&OPENAI)
+        OpenAi::for_provider(micro_auth::OPENAI)
     }
 
     pub fn openrouter() -> Self {
-        OpenAi::with_flavor(&OPENROUTER)
+        OpenAi::for_provider(micro_auth::OPENROUTER)
     }
 
     pub fn copilot() -> Self {
-        OpenAi::with_flavor(&COPILOT)
+        OpenAi::for_provider(micro_auth::GITHUB_COPILOT)
     }
 
-    fn with_flavor(flavor: &'static Flavor) -> Self {
+    /// A client for one service, whether or not micro has heard of it. Every service
+    /// answering this protocol is reached the same way; the model says what it accepts.
+    pub fn for_provider(provider: impl Into<String>) -> Self {
         OpenAi {
-            flavor,
+            provider: provider.into(),
             client: crate::http_client(),
         }
     }
 
-    /// The endpoint this flavor talks to, for callers assembling a [`Model`].
+    /// The endpoint OpenAI itself serves, for callers assembling a [`Model`].
     pub fn base_url(&self) -> &'static str {
-        self.flavor.base_url
+        OPENAI_BASE_URL
     }
 }
 
@@ -144,7 +79,7 @@ impl Default for OpenAi {
 
 impl Provider for OpenAi {
     fn name(&self) -> &str {
-        self.flavor.name
+        &self.provider
     }
 
     fn stream(
@@ -155,10 +90,10 @@ impl Provider for OpenAi {
     ) -> UnboundedReceiver<StreamEvent> {
         let (sender, receiver) = mpsc::unbounded_channel();
         let client = self.client.clone();
-        let flavor = self.flavor;
+        let provider = self.provider.clone();
 
         tokio::spawn(async move {
-            if let Err(message) = run(client, flavor, model, context, api_key, &sender).await {
+            if let Err(message) = run(client, provider, model, context, api_key, &sender).await {
                 let _ = sender.send(StreamEvent::Error { message });
             }
         });
@@ -169,25 +104,29 @@ impl Provider for OpenAi {
 
 async fn run(
     client: reqwest::Client,
-    flavor: &'static Flavor,
+    provider: String,
     model: Model,
     context: Context,
     api_key: String,
     sender: &UnboundedSender<StreamEvent>,
 ) -> Result<(), String> {
-    let payload = build_payload(flavor, &model, &context);
+    let payload = build_payload(&model, &context);
     let mut request = client
         .post(endpoint(&model.base_url))
         .bearer_auth(api_key)
         .header("content-type", "application/json")
         .header("accept", "text/event-stream");
-    for (name, value) in flavor.headers {
-        request = request.header(*name, *value);
+    // Whatever the service asks to be told about the client it is talking to, which the
+    // catalog records per model.
+    for (name, value) in &model.headers {
+        request = request.header(name.as_str(), value.as_str());
     }
     // Copilot bills and rate-limits differently depending on who started the request, and
     // refuses an image unless the request says one is coming.
-    if flavor.copilot_headers {
-        request = request.header("x-initiator", initiator(&context.messages));
+    if is_copilot(&provider, &model.base_url) {
+        request = request
+            .header("x-initiator", initiator(&context.messages))
+            .header("openai-intent", "conversation-edits");
         if carries_images(&context.messages) {
             request = request.header("copilot-vision-request", "true");
         }
@@ -202,28 +141,32 @@ async fn run(
         .json(&payload)
         .send()
         .await
-        .map_err(|error| format!("{} request failed: {error}", flavor.name))?;
+        .map_err(|error| format!("{provider} request failed: {error}"))?;
 
     let status = response.status();
     if !status.is_success() {
         let body = response.text().await.unwrap_or_default();
         return Err(format!(
-            "{} returned {}: {}",
-            flavor.name,
+            "{provider} returned {}: {}",
             status.as_u16(),
             body.trim()
         ));
     }
 
-    let mut state = Accumulator::new(flavor.name, &model);
+    let mut state = Accumulator::new(&provider, &model);
     read_sse(response, |event| state.handle(event, sender))
         .await
-        .map_err(|error| format!("{} stream failed: {error}", flavor.name))?;
+        .map_err(|error| format!("{provider} stream failed: {error}"))?;
 
     if !state.finished {
         state.finish(sender);
     }
     Ok(())
+}
+
+/// Whether this is Copilot, which wants to be told who started a request.
+fn is_copilot(provider: &str, base_url: &str) -> bool {
+    provider == micro_auth::GITHUB_COPILOT || base_url.contains("githubcopilot.com")
 }
 
 fn endpoint(base_url: &str) -> String {
@@ -262,7 +205,8 @@ struct OpenTool {
 }
 
 struct Accumulator {
-    label: &'static str,
+    /// The service, for the errors it reports mid-stream.
+    label: String,
     provider: String,
     model_id: String,
     blocks: Vec<ContentBlock>,
@@ -279,9 +223,9 @@ struct Accumulator {
 }
 
 impl Accumulator {
-    fn new(label: &'static str, model: &Model) -> Self {
+    fn new(label: impl Into<String>, model: &Model) -> Self {
         Accumulator {
-            label,
+            label: label.into(),
             provider: model.provider.clone(),
             model_id: model.id.clone(),
             blocks: Vec::new(),
@@ -319,7 +263,7 @@ impl Accumulator {
         };
 
         // Rate limits and upstream failures arrive as a chunk rather than a status code.
-        if let Some(message) = stream_error(self.label, &value) {
+        if let Some(message) = stream_error(&self.label, &value) {
             self.finished = true;
             let _ = sender.send(StreamEvent::Error { message });
             return;
@@ -533,6 +477,7 @@ fn stream_error(label: &str, value: &Value) -> Option<String> {
     }
 }
 
+
 /// A JSON string with something in it.
 fn non_empty(value: Option<&Value>) -> Option<String> {
     value
@@ -550,39 +495,140 @@ fn map_finish_reason(reason: &str) -> StopReason {
     }
 }
 
-fn reasoning_effort(level: ThinkingLevel) -> Option<&'static str> {
-    match level {
-        ThinkingLevel::Off => None,
-        ThinkingLevel::Low => Some("low"),
-        ThinkingLevel::Medium => Some("medium"),
-        ThinkingLevel::High => Some("high"),
+/// Ask for reasoning effort in the shape this service accepts.
+///
+/// Every service that answers this protocol has its own spelling: a top-level field, a
+/// nested object, a switch, or nothing at all. The level a model does not offer is left
+/// out rather than sent under a name the service would reject.
+fn apply_thinking(payload: &mut Map<String, Value>, model: &Model) {
+    let compat = &model.compat;
+    if !model.reasoning {
+        return;
+    }
+
+    let asked = !matches!(model.thinking, ThinkingLevel::Off);
+    let effort = compat.level(model.thinking);
+    let off = compat.level(ThinkingLevel::Off);
+
+    match compat.thinking_format {
+        ThinkingFormat::Zai => {
+            payload.insert(
+                "thinking".into(),
+                match asked {
+                    true => json!({ "type": "enabled", "clear_thinking": false }),
+                    false => json!({ "type": "disabled" }),
+                },
+            );
+            if asked && compat.supports_reasoning_effort {
+                if let Some(effort) = effort {
+                    payload.insert("reasoning_effort".into(), json!(effort));
+                }
+            }
+        }
+        ThinkingFormat::Qwen => {
+            payload.insert("enable_thinking".into(), json!(asked));
+        }
+        ThinkingFormat::QwenChatTemplate | ThinkingFormat::ChatTemplate => {
+            payload.insert(
+                "chat_template_kwargs".into(),
+                json!({ "enable_thinking": asked, "preserve_thinking": true }),
+            );
+        }
+        ThinkingFormat::Deepseek => {
+            if asked {
+                payload.insert("thinking".into(), json!({ "type": "enabled" }));
+            } else if off.is_some() {
+                payload.insert("thinking".into(), json!({ "type": "disabled" }));
+            }
+            if asked && compat.supports_reasoning_effort {
+                if let Some(effort) = effort {
+                    payload.insert("reasoning_effort".into(), json!(effort));
+                }
+            }
+        }
+        ThinkingFormat::Openrouter => match asked {
+            true => {
+                if let Some(effort) = effort {
+                    payload.insert("reasoning".into(), json!({ "effort": effort }));
+                }
+            }
+            false => {
+                if let Some(off) = off {
+                    payload.insert("reasoning".into(), json!({ "effort": off }));
+                }
+            }
+        },
+        ThinkingFormat::AntLing => {
+            if asked {
+                if let Some(effort) = effort {
+                    payload.insert("reasoning".into(), json!({ "effort": effort }));
+                }
+            }
+        }
+        ThinkingFormat::Together => {
+            payload.insert("reasoning".into(), json!({ "enabled": asked }));
+            if asked && compat.supports_reasoning_effort {
+                if let Some(effort) = effort {
+                    payload.insert("reasoning_effort".into(), json!(effort));
+                }
+            }
+        }
+        ThinkingFormat::StringThinking => match asked {
+            true => {
+                if let Some(effort) = effort {
+                    payload.insert("thinking".into(), json!(effort));
+                }
+            }
+            false => {
+                if let Some(off) = off {
+                    payload.insert("thinking".into(), json!(off));
+                }
+            }
+        },
+        ThinkingFormat::Openai => {
+            if !compat.supports_reasoning_effort {
+                return;
+            }
+            let level = match asked {
+                true => effort,
+                false => off,
+            };
+            if let Some(level) = level {
+                payload.insert("reasoning_effort".into(), json!(level));
+            }
+        }
     }
 }
+
 
 /// The longest a prompt cache key may be. A longer one is refused rather than truncated
 /// by the provider, so it is cut here.
 const PROMPT_CACHE_KEY_MAX: usize = 64;
 
-pub(crate) fn build_payload(flavor: &Flavor, model: &Model, context: &Context) -> Value {
+pub(crate) fn build_payload(model: &Model, context: &Context) -> Value {
+    let compat = &model.compat;
     let mut payload = Map::new();
     payload.insert("model".into(), json!(model.id));
     payload.insert("messages".into(), Value::Array(build_messages(context)));
     payload.insert("stream".into(), json!(true));
-    payload.insert(flavor.max_tokens_field.into(), json!(model.max_tokens));
+    payload.insert(
+        match compat.max_tokens_field {
+            MaxTokensField::MaxTokens => "max_tokens",
+            MaxTokensField::MaxCompletionTokens => "max_completion_tokens",
+        }
+        .into(),
+        json!(model.max_tokens),
+    );
 
-    if flavor.supports_stream_options {
+    if compat.supports_usage_in_streaming {
         payload.insert("stream_options".into(), json!({ "include_usage": true }));
     }
 
-    if flavor.supports_reasoning_effort {
-        if let Some(effort) = reasoning_effort(model.thinking) {
-            payload.insert("reasoning_effort".into(), json!(effort));
-        }
-    }
+    apply_thinking(&mut payload, model);
 
     // Naming the conversation is what lets a prompt be cached against it and hit next
     // turn. Clamped, because the field has a limit and a longer name is simply refused.
-    if flavor.supports_prompt_cache {
+    if model.base_url.contains("api.openai.com") {
         if let Some(key) = &context.cache_key {
             let clamped: String = key.chars().take(PROMPT_CACHE_KEY_MAX).collect();
             payload.insert("prompt_cache_key".into(), json!(clamped));
@@ -591,7 +637,7 @@ pub(crate) fn build_payload(flavor: &Flavor, model: &Model, context: &Context) -
 
     // Nothing is stored on the provider's side: a conversation micro cannot account for
     // is one it should not be leaving behind.
-    if flavor.supports_store {
+    if compat.supports_store {
         payload.insert("store".into(), json!(false));
     }
 
@@ -600,17 +646,22 @@ pub(crate) fn build_payload(flavor: &Flavor, model: &Model, context: &Context) -
             .tools
             .iter()
             .map(|tool| {
-                json!({
-                    "type": "function",
-                    "function": {
-                        "name": tool.name,
-                        "description": tool.description,
-                        "parameters": tool.parameters,
-                    },
-                })
+                let mut function = json!({
+                    "name": tool.name,
+                    "description": tool.description,
+                    "parameters": tool.parameters,
+                });
+                // Some services reject a tool definition carrying fields they do not know.
+                if compat.supports_strict_mode {
+                    function["strict"] = json!(false);
+                }
+                json!({ "type": "function", "function": function })
             })
             .collect();
         payload.insert("tools".into(), Value::Array(tools));
+        if compat.zai_tool_stream {
+            payload.insert("tool_stream".into(), json!(true));
+        }
     } else if has_tool_history(&context.messages) {
         // A conversation holding tool calls is refused by some endpoints unless the
         // request still declares tools, even when there are none left to offer.
@@ -787,14 +838,21 @@ mod tests {
     use super::*;
     use micro_types::ToolDefinition;
 
+    /// A model as the catalog would hand it over, so each test speaks to the service it
+    /// names rather than to a hand-written approximation of one.
+    fn served_by(provider: &str, id: &str) -> Model {
+        let catalog = micro_models::Catalog::bundled();
+        let model = catalog
+            .by_provider(provider)
+            .find(|model| model.id == id)
+            .unwrap_or_else(|| panic!("{provider} serves {id}"));
+        let mut runtime = model.to_runtime(ThinkingLevel::Off);
+        runtime.max_tokens = 4_096;
+        runtime
+    }
+
     fn model() -> Model {
-        Model {
-            id: "gpt-5".into(),
-            provider: "openrouter".into(),
-            base_url: OPENROUTER_BASE_URL.into(),
-            max_tokens: 4_096,
-            thinking: ThinkingLevel::Off,
-        }
+        served_by("openrouter", "openai/gpt-5.6-terra")
     }
 
     /// Drive the accumulator with the chunks a service would send, and collect what a
@@ -855,7 +913,7 @@ mod tests {
             }],
             ..Context::default()
         };
-        let payload = build_payload(&OPENAI, &model(), &context);
+        let payload = build_payload(&served_by("openai", "gpt-5.6-terra"), &context);
 
         assert_eq!(payload["tools"][0]["function"]["parameters"], parameters);
     }
@@ -863,7 +921,7 @@ mod tests {
     #[test]
     fn endpoint_is_not_doubled_up() {
         assert_eq!(
-            endpoint(OPENROUTER_BASE_URL),
+            endpoint("https://openrouter.ai/api/v1"),
             "https://openrouter.ai/api/v1/chat/completions"
         );
         assert_eq!(
@@ -872,30 +930,37 @@ mod tests {
         );
     }
 
+    /// Which field carries the limit is the service's own business.
     #[test]
-    fn each_flavor_spells_its_output_limit_its_own_way() {
-        let payload = build_payload(&OPENROUTER, &model(), &Context::default());
+    fn each_service_spells_its_output_limit_its_own_way() {
+        let payload = build_payload(&served_by("together", "openai/gpt-oss-120b"), &Context::default());
         assert_eq!(payload["max_tokens"], 4_096);
         assert_eq!(payload["stream"], true);
         assert_eq!(payload["stream_options"]["include_usage"], true);
 
-        let payload = build_payload(&OPENAI, &model(), &Context::default());
+        let payload = build_payload(&served_by("openai", "gpt-5.6-terra"), &Context::default());
         assert_eq!(payload["max_completion_tokens"], 4_096);
         assert!(payload.get("max_tokens").is_none());
     }
 
+    /// OpenRouter normalizes reasoning into an object of its own; OpenAI takes a field.
     #[test]
-    fn reasoning_effort_is_sent_only_where_it_is_supported() {
-        let thinking = model().with_thinking(ThinkingLevel::High);
-
+    fn reasoning_is_asked_for_in_the_shape_the_service_accepts() {
+        let openrouter = model().with_thinking(ThinkingLevel::High);
         assert_eq!(
-            build_payload(&OPENROUTER, &thinking, &Context::default())["reasoning_effort"],
+            build_payload(&openrouter, &Context::default())["reasoning"]["effort"],
             "high"
         );
-        assert!(build_payload(&COPILOT, &thinking, &Context::default())
-            .get("reasoning_effort")
-            .is_none());
-        assert!(build_payload(&OPENROUTER, &model(), &Context::default())
+
+        let openai = served_by("openai", "gpt-5.6-terra").with_thinking(ThinkingLevel::High);
+        assert_eq!(
+            build_payload(&openai, &Context::default())["reasoning_effort"],
+            "high"
+        );
+
+        // A service that offers no reasoning control is not asked for one.
+        let copilot = served_by("github-copilot", "gpt-4.1").with_thinking(ThinkingLevel::High);
+        assert!(build_payload(&copilot, &Context::default())
             .get("reasoning_effort")
             .is_none());
     }
@@ -910,7 +975,7 @@ mod tests {
             }],
             ..Context::default()
         };
-        let payload = build_payload(&OPENROUTER, &model(), &context);
+        let payload = build_payload(&model(), &context);
 
         assert_eq!(payload["tools"][0]["type"], "function");
         assert_eq!(payload["tools"][0]["function"]["name"], "read");
@@ -1193,23 +1258,27 @@ mod tests {
         assert!(stream_error("openrouter", &json!({ "error": null })).is_none());
     }
 
+    /// Copilot serves whichever editor its headers describe, and the catalog is where
+    /// that description lives.
     #[test]
     fn copilot_describes_the_editor_it_serves() {
-        let headers: BTreeMap<_, _> = COPILOT.headers.iter().copied().collect();
+        let headers = served_by("github-copilot", "gpt-4.1").headers;
 
-        assert_eq!(headers["copilot-integration-id"], "vscode-chat");
-        assert_eq!(headers["editor-version"], "vscode/1.107.0");
-        assert_eq!(headers["editor-plugin-version"], "copilot-chat/0.35.0");
-        assert_eq!(headers["user-agent"], "GitHubCopilotChat/0.35.0");
-        assert_eq!(headers["openai-intent"], "conversation-edits");
+        assert_eq!(headers["Copilot-Integration-Id"], "vscode-chat");
+        assert_eq!(headers["Editor-Version"], "vscode/1.107.0");
+        assert_eq!(headers["Editor-Plugin-Version"], "copilot-chat/0.35.0");
+        assert_eq!(headers["User-Agent"], "GitHubCopilotChat/0.35.0");
     }
 
+    /// Only Copilot is told who started a request, and it is told on every request.
     #[test]
-    fn openrouter_identifies_the_app_making_the_request() {
-        let headers: BTreeMap<_, _> = OPENROUTER.headers.iter().copied().collect();
-
-        assert_eq!(headers["x-title"], "micro");
-        assert!(headers["http-referer"].starts_with("https://"));
+    fn copilot_is_recognised_by_name_and_by_address() {
+        assert!(is_copilot("github-copilot", "https://example.test"));
+        assert!(is_copilot(
+            "elsewhere",
+            "https://api.individual.githubcopilot.com"
+        ));
+        assert!(!is_copilot("openrouter", "https://openrouter.ai/api/v1"));
     }
 
     /// Naming the conversation is what makes a cached prompt hit on the next turn.
@@ -1220,15 +1289,20 @@ mod tests {
             ..Context::default()
         };
 
-        let cached = build_payload(&OPENAI, &model(), &context);
+        let cached = build_payload(&served_by("openai", "gpt-5.6-terra"), &context);
         assert_eq!(cached["prompt_cache_key"], "session-1786");
         // Nothing is left behind on the provider's side.
         assert_eq!(cached["store"], false);
 
-        // An endpoint that does not cache is not told about it.
-        let elsewhere = build_payload(&OPENROUTER, &model(), &context);
+        // A gateway keeps a prompt only for the few minutes it takes to answer, so
+        // naming the conversation buys nothing and is left out.
+        let elsewhere = build_payload(&model(), &context);
         assert!(elsewhere.get("prompt_cache_key").is_none());
-        assert!(elsewhere.get("store").is_none());
+        assert_eq!(elsewhere["store"], false);
+
+        // A service that does not understand being told not to store is not told.
+        let reimplementation = build_payload(&served_by("cerebras", "gpt-oss-120b"), &context);
+        assert!(reimplementation.get("store").is_none());
     }
 
     /// The field has a limit, and a longer name is refused rather than truncated, so it is
@@ -1239,7 +1313,7 @@ mod tests {
             cache_key: Some("x".repeat(200)),
             ..Context::default()
         };
-        let payload = build_payload(&OPENAI, &model(), &context);
+        let payload = build_payload(&served_by("openai", "gpt-5.6-terra"), &context);
         assert_eq!(
             payload["prompt_cache_key"].as_str().unwrap().len(),
             PROMPT_CACHE_KEY_MAX
@@ -1257,11 +1331,11 @@ mod tests {
             ],
             ..Context::default()
         };
-        let payload = build_payload(&OPENAI, &model(), &context);
+        let payload = build_payload(&served_by("openai", "gpt-5.6-terra"), &context);
         assert_eq!(payload["tools"], serde_json::json!([]));
 
         // A conversation with no tools in it at all says nothing about them.
-        let plain = build_payload(&OPENAI, &model(), &Context::default());
+        let plain = build_payload(&served_by("openai", "gpt-5.6-terra"), &Context::default());
         assert!(plain.get("tools").is_none());
     }
 

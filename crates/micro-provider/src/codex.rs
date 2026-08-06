@@ -812,6 +812,9 @@ mod tests {
             base_url: CODEX_BASE_URL.into(),
             max_tokens: 8192,
             thinking: ThinkingLevel::Off,
+            compat: Default::default(),
+            headers: Default::default(),
+            reasoning: Default::default(),
         }
     }
 

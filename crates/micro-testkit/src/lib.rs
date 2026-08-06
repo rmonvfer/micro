@@ -24,6 +24,9 @@
 //!     base_url: "https://example.invalid".into(),
 //!     max_tokens: 1024,
 //!     thinking: ThinkingLevel::Off,
+//!     reasoning: false,
+//!     compat: Default::default(),
+//!     headers: Default::default(),
 //! };
 //! let mut agent = micro_agent::Agent::new(
 //!     Arc::new(provider.clone()),

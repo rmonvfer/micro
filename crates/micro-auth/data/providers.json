@@ -6,8 +6,7 @@
 			"ANTHROPIC_OAUTH_TOKEN",
 			"ANTHROPIC_API_KEY"
 		],
-		"oauth": true,
-		"label": "Anthropic API key"
+		"key": "Anthropic API key"
 	},
 	{
 		"id": "openai",
@@ -15,15 +14,13 @@
 		"env": [
 			"OPENAI_API_KEY"
 		],
-		"oauth": false,
-		"label": "OpenAI API key"
+		"key": "OpenAI API key"
 	},
 	{
 		"id": "openai-codex",
 		"name": "OpenAI Codex",
 		"env": [],
-		"oauth": true,
-		"label": "OpenAI Codex API key"
+		"key": "OpenAI Codex API key"
 	},
 	{
 		"id": "google",
@@ -31,8 +28,7 @@
 		"env": [
 			"GEMINI_API_KEY"
 		],
-		"oauth": false,
-		"label": "Gemini API key"
+		"key": "Gemini API key"
 	},
 	{
 		"id": "github-copilot",
@@ -40,8 +36,7 @@
 		"env": [
 			"COPILOT_GITHUB_TOKEN"
 		],
-		"oauth": true,
-		"label": "GitHub Copilot token"
+		"key": "GitHub Copilot token"
 	},
 	{
 		"id": "openrouter",
@@ -49,8 +44,7 @@
 		"env": [
 			"OPENROUTER_API_KEY"
 		],
-		"oauth": false,
-		"label": "OpenRouter API key"
+		"key": "OpenRouter API key"
 	},
 	{
 		"id": "ant-ling",
@@ -58,8 +52,7 @@
 		"env": [
 			"ANT_LING_API_KEY"
 		],
-		"oauth": false,
-		"label": "Ant Ling API key"
+		"key": "Ant Ling API key"
 	},
 	{
 		"id": "cerebras",
@@ -67,8 +60,7 @@
 		"env": [
 			"CEREBRAS_API_KEY"
 		],
-		"oauth": false,
-		"label": "Cerebras API key"
+		"key": "Cerebras API key"
 	},
 	{
 		"id": "cloudflare-ai-gateway",
@@ -76,8 +68,7 @@
 		"env": [
 			"CLOUDFLARE_API_KEY"
 		],
-		"oauth": false,
-		"label": "Cloudflare AI Gateway API key"
+		"key": "Cloudflare AI Gateway API key"
 	},
 	{
 		"id": "cloudflare-workers-ai",
@@ -85,8 +76,7 @@
 		"env": [
 			"CLOUDFLARE_API_KEY"
 		],
-		"oauth": false,
-		"label": "Cloudflare Workers AI API key"
+		"key": "Cloudflare Workers AI API key"
 	},
 	{
 		"id": "deepseek",
@@ -94,8 +84,7 @@
 		"env": [
 			"DEEPSEEK_API_KEY"
 		],
-		"oauth": false,
-		"label": "DeepSeek API key"
+		"key": "DeepSeek API key"
 	},
 	{
 		"id": "fireworks",
@@ -103,8 +92,7 @@
 		"env": [
 			"FIREWORKS_API_KEY"
 		],
-		"oauth": false,
-		"label": "Fireworks API key"
+		"key": "Fireworks API key"
 	},
 	{
 		"id": "groq",
@@ -112,8 +100,7 @@
 		"env": [
 			"GROQ_API_KEY"
 		],
-		"oauth": false,
-		"label": "Groq API key"
+		"key": "Groq API key"
 	},
 	{
 		"id": "huggingface",
@@ -121,8 +108,7 @@
 		"env": [
 			"HF_TOKEN"
 		],
-		"oauth": false,
-		"label": "Hugging Face token"
+		"key": "Hugging Face token"
 	},
 	{
 		"id": "kimi-coding",
@@ -130,8 +116,7 @@
 		"env": [
 			"KIMI_API_KEY"
 		],
-		"oauth": false,
-		"label": "Kimi API key"
+		"key": "Kimi API key"
 	},
 	{
 		"id": "minimax",
@@ -139,8 +124,7 @@
 		"env": [
 			"MINIMAX_API_KEY"
 		],
-		"oauth": false,
-		"label": "MiniMax API key"
+		"key": "MiniMax API key"
 	},
 	{
 		"id": "minimax-cn",
@@ -148,8 +132,7 @@
 		"env": [
 			"MINIMAX_CN_API_KEY"
 		],
-		"oauth": false,
-		"label": "MiniMax CN API key"
+		"key": "MiniMax CN API key"
 	},
 	{
 		"id": "moonshotai",
@@ -157,8 +140,7 @@
 		"env": [
 			"MOONSHOT_API_KEY"
 		],
-		"oauth": false,
-		"label": "Moonshot AI API key"
+		"key": "Moonshot AI API key"
 	},
 	{
 		"id": "moonshotai-cn",
@@ -166,8 +148,7 @@
 		"env": [
 			"MOONSHOT_API_KEY"
 		],
-		"oauth": false,
-		"label": "Moonshot AI API key"
+		"key": "Moonshot AI API key"
 	},
 	{
 		"id": "nvidia",
@@ -175,8 +156,7 @@
 		"env": [
 			"NVIDIA_API_KEY"
 		],
-		"oauth": false,
-		"label": "NVIDIA API key"
+		"key": "NVIDIA API key"
 	},
 	{
 		"id": "opencode",
@@ -184,8 +164,7 @@
 		"env": [
 			"OPENCODE_API_KEY"
 		],
-		"oauth": false,
-		"label": "OpenCode API key"
+		"key": "OpenCode API key"
 	},
 	{
 		"id": "opencode-go",
@@ -193,8 +172,7 @@
 		"env": [
 			"OPENCODE_API_KEY"
 		],
-		"oauth": false,
-		"label": "OpenCode API key"
+		"key": "OpenCode API key"
 	},
 	{
 		"id": "together",
@@ -202,8 +180,7 @@
 		"env": [
 			"TOGETHER_API_KEY"
 		],
-		"oauth": false,
-		"label": "Together API key"
+		"key": "Together API key"
 	},
 	{
 		"id": "vercel-ai-gateway",
@@ -211,8 +188,7 @@
 		"env": [
 			"AI_GATEWAY_API_KEY"
 		],
-		"oauth": false,
-		"label": "Vercel AI Gateway API key"
+		"key": "Vercel AI Gateway API key"
 	},
 	{
 		"id": "xai",
@@ -220,8 +196,7 @@
 		"env": [
 			"XAI_API_KEY"
 		],
-		"oauth": false,
-		"label": "xAI API key"
+		"key": "xAI API key"
 	},
 	{
 		"id": "xiaomi",
@@ -229,8 +204,7 @@
 		"env": [
 			"XIAOMI_API_KEY"
 		],
-		"oauth": false,
-		"label": "Xiaomi API key"
+		"key": "Xiaomi API key"
 	},
 	{
 		"id": "xiaomi-token-plan-ams",
@@ -238,8 +212,7 @@
 		"env": [
 			"XIAOMI_TOKEN_PLAN_AMS_API_KEY"
 		],
-		"oauth": false,
-		"label": "Xiaomi Token Plan AMS API key"
+		"key": "Xiaomi Token Plan AMS API key"
 	},
 	{
 		"id": "xiaomi-token-plan-cn",
@@ -247,8 +220,7 @@
 		"env": [
 			"XIAOMI_TOKEN_PLAN_CN_API_KEY"
 		],
-		"oauth": false,
-		"label": "Xiaomi Token Plan CN API key"
+		"key": "Xiaomi Token Plan CN API key"
 	},
 	{
 		"id": "xiaomi-token-plan-sgp",
@@ -256,8 +228,7 @@
 		"env": [
 			"XIAOMI_TOKEN_PLAN_SGP_API_KEY"
 		],
-		"oauth": false,
-		"label": "Xiaomi Token Plan SGP API key"
+		"key": "Xiaomi Token Plan SGP API key"
 	},
 	{
 		"id": "zai",
@@ -265,8 +236,7 @@
 		"env": [
 			"ZAI_API_KEY"
 		],
-		"oauth": false,
-		"label": "Z.AI API key"
+		"key": "Z.AI API key"
 	},
 	{
 		"id": "zai-coding-cn",
@@ -274,7 +244,6 @@
 		"env": [
 			"ZAI_CODING_CN_API_KEY"
 		],
-		"oauth": false,
-		"label": "Z.AI Coding CN API key"
+		"key": "Z.AI Coding CN API key"
 	}
 ]

@@ -26,7 +26,8 @@ use tokio::sync::mpsc;
 use tokio::sync::mpsc::UnboundedReceiver;
 use tokio::sync::mpsc::UnboundedSender;
 
-pub(crate) const GEMINI_BASE_URL: &str = "https://generativelanguage.googleapis.com/v1beta";
+#[cfg(test)]
+const GEMINI_BASE_URL: &str = "https://generativelanguage.googleapis.com/v1beta";
 
 /// JSON Schema keywords Gemini's function declarations reject. Anything left in the
 /// schema after this filter is a keyword it understands.
@@ -851,6 +852,9 @@ mod tests {
             base_url: GEMINI_BASE_URL.into(),
             max_tokens: 8_192,
             thinking: ThinkingLevel::Off,
+            compat: Default::default(),
+            headers: Default::default(),
+            reasoning: Default::default(),
         }
     }
 

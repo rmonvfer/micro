@@ -31,6 +31,9 @@ fn model() -> Model {
         base_url: "https://example.invalid".into(),
         max_tokens: 1024,
         thinking: ThinkingLevel::Off,
+        reasoning: Default::default(),
+        compat: Default::default(),
+        headers: Default::default(),
     }
 }
 

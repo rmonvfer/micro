@@ -26,6 +26,7 @@
 
 mod bundled;
 mod catalog;
+mod compat;
 mod cost;
 mod error;
 mod overrides;
@@ -33,6 +34,7 @@ mod remote;
 mod resolve;
 
 pub use catalog::{Catalog, Modality, ModelCost, ModelDef, WireApi};
+pub use compat::CompatOverrides;
 pub use cost::{RequestCost, TokenUsage};
 pub use error::{Error, Result};
 pub use overrides::{config_dir, user_catalog_path, USER_CATALOG_FILE};

@@ -138,14 +138,14 @@ pub async fn build(
     // A provider an extension declared is not in the registry, and does not need to be:
     // it brought its own endpoint and its own credential, and the model says which wire
     // protocol to speak.
-    let mut resolved = match micro_provider::resolve(&store, &provider_name).await {
+    let mut resolved = match micro_provider::resolve(&store, &model).await {
         Ok(resolved) => Resolved {
             client: resolved.client,
             api_key: resolved.api_key,
         },
         Err(error) => match declared.get(&provider_name) {
             Some(key) => Resolved {
-                client: micro_provider::client_for(model.api),
+                client: micro_provider::client_for_model(&model),
                 api_key: key.clone(),
             },
             None => {

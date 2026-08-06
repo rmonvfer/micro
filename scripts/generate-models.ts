@@ -2362,8 +2362,7 @@ async function generateModels() {
 			id: described.id,
 			name: described.name,
 			env: described.env,
-			oauth: described.oauth === true,
-			label: described.label ?? `${described.name} API key`,
+			key: described.label ?? `${described.name} API key`,
 		});
 	}
 

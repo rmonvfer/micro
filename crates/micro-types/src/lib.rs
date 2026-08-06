@@ -1,9 +1,15 @@
 //! The conversation model shared by every layer: content blocks, messages, usage,
 //! and the events a provider emits while a response streams in.
 
+mod compat;
 mod events;
 mod model;
 
+pub use compat::CacheControlFormat;
+pub use compat::Compat;
+pub use compat::MaxTokensField;
+pub use compat::SessionAffinity;
+pub use compat::ThinkingFormat;
 pub use events::AgentEvent;
 pub use events::StreamEvent;
 pub use model::Model;
