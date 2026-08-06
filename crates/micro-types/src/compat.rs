@@ -141,4 +141,39 @@ impl Compat {
             None => Some(name.to_string()),
         }
     }
+
+    /// What this model calls thinking being off, as far as it says anything.
+    ///
+    /// Three answers, and they are all different: a name to send, an explicit refusal to
+    /// take one, and silence. Silence is not the same as a refusal — a service that
+    /// spells "off" as a value of its own is told nothing unless the model named it.
+    pub fn off(&self) -> OffLevel {
+        match self.thinking.get("off") {
+            Some(Some(named)) => OffLevel::Named(named.clone()),
+            Some(None) => OffLevel::Unsupported,
+            None => OffLevel::Unsaid,
+        }
+    }
+}
+
+/// What a model says about thinking being off.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum OffLevel {
+    /// The service takes this name for it.
+    Named(String),
+    /// The model cannot be asked to stop thinking, so nothing is sent.
+    Unsupported,
+    /// The model says nothing, and each protocol has its own default.
+    Unsaid,
+}
+
+impl OffLevel {
+    /// The name to send where a protocol has one of its own to fall back on.
+    pub fn or(&self, fallback: &str) -> Option<String> {
+        match self {
+            OffLevel::Named(named) => Some(named.clone()),
+            OffLevel::Unsaid => Some(fallback.to_string()),
+            OffLevel::Unsupported => None,
+        }
+    }
 }

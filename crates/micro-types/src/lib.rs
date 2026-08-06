@@ -8,6 +8,7 @@ mod model;
 pub use compat::CacheControlFormat;
 pub use compat::Compat;
 pub use compat::MaxTokensField;
+pub use compat::OffLevel;
 pub use compat::SessionAffinity;
 pub use compat::ThinkingFormat;
 pub use events::AgentEvent;

@@ -347,6 +347,14 @@ async fn main() -> Result<()> {
         if prompt.trim().is_empty() {
             anyhow::bail!("--print needs a prompt");
         }
+        // Signing in is something micro does at a prompt, and there is no prompt here,
+        // so a run that cannot authenticate says so instead of spending a request.
+        if let Some(notice) = &built.notice {
+            drop(built.agent);
+            let _ = writer.await;
+            shut_down_extensions(extensions).await;
+            anyhow::bail!("{notice}");
+        }
         // What was typed goes past the extensions first here too, so a rewrite works the
         // same whether or not there is an interface.
         let prompt = match built.commands.submitted(prompt).await {
@@ -382,6 +390,7 @@ async fn main() -> Result<()> {
             questions,
             // Without this every submitted line goes to the model, `/help` included.
             commands: Some(Box::new(built.commands)),
+            notice: built.notice,
             ..micro_tui::TuiOptions::default()
         };
         // The conversation is persisted through the recorder, so the transcript the

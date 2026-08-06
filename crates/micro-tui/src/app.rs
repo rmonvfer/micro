@@ -62,6 +62,9 @@ pub struct TuiOptions {
     pub commands: Option<Box<dyn Commands + 'static>>,
     /// What the user settled in `/settings`.
     pub settings: Preferences,
+    /// Something to say before anything else happens, such as that nobody is signed in
+    /// to the service serving the chosen model.
+    pub notice: Option<String>,
 }
 
 impl Default for TuiOptions {
@@ -74,6 +77,7 @@ impl Default for TuiOptions {
             theme: None,
             approvals: None,
             questions: None,
+            notice: None,
             commands: None,
             settings: Preferences::default(),
         }
@@ -235,7 +239,8 @@ impl App {
     pub fn new(history: &[Message], options: TuiOptions) -> Self {
         let capabilities = crate::capabilities::detect();
         let workspace = options.cwd;
-        App {
+        let notice = options.notice;
+        let mut app = App {
             transcript: Transcript::from_messages(history),
             editor: Editor::new(),
             approvals: ApprovalQueue::new(),
@@ -272,7 +277,14 @@ impl App {
                 false => None,
             },
             settings: options.settings,
+        };
+
+        // Said before the first frame, so the reason nothing can be sent is on screen
+        // rather than waiting to be discovered by sending something.
+        if let Some(notice) = notice {
+            app.notice(notice, MessageKind::Info);
         }
+        app
     }
 
     /// What the user settled in `/settings`, for the parts of the frame drawn elsewhere.

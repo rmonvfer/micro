@@ -15,6 +15,7 @@ use micro_types::ContentBlock;
 use micro_types::Context;
 use micro_types::Message;
 use micro_types::MaxTokensField;
+use micro_types::OffLevel;
 use micro_types::Model;
 use micro_types::ThinkingFormat;
 use micro_types::StopReason;
@@ -508,7 +509,7 @@ fn apply_thinking(payload: &mut Map<String, Value>, model: &Model) {
 
     let asked = !matches!(model.thinking, ThinkingLevel::Off);
     let effort = compat.level(model.thinking);
-    let off = compat.level(ThinkingLevel::Off);
+    let off = compat.off();
 
     match compat.thinking_format {
         ThinkingFormat::Zai => {
@@ -535,10 +536,15 @@ fn apply_thinking(payload: &mut Map<String, Value>, model: &Model) {
             );
         }
         ThinkingFormat::Deepseek => {
-            if asked {
-                payload.insert("thinking".into(), json!({ "type": "enabled" }));
-            } else if off.is_some() {
-                payload.insert("thinking".into(), json!({ "type": "disabled" }));
+            match asked {
+                true => {
+                    payload.insert("thinking".into(), json!({ "type": "enabled" }));
+                }
+                false => {
+                    if off != OffLevel::Unsupported {
+                        payload.insert("thinking".into(), json!({ "type": "disabled" }));
+                    }
+                }
             }
             if asked && compat.supports_reasoning_effort {
                 if let Some(effort) = effort {
@@ -546,18 +552,17 @@ fn apply_thinking(payload: &mut Map<String, Value>, model: &Model) {
                 }
             }
         }
-        ThinkingFormat::Openrouter => match asked {
-            true => {
-                if let Some(effort) = effort {
-                    payload.insert("reasoning".into(), json!({ "effort": effort }));
-                }
+        ThinkingFormat::Openrouter => {
+            // The gateway spells thinking being off as an effort of its own, so it is
+            // told even then.
+            let level = match asked {
+                true => effort,
+                false => off.or("none"),
+            };
+            if let Some(level) = level {
+                payload.insert("reasoning".into(), json!({ "effort": level }));
             }
-            false => {
-                if let Some(off) = off {
-                    payload.insert("reasoning".into(), json!({ "effort": off }));
-                }
-            }
-        },
+        }
         ThinkingFormat::AntLing => {
             if asked {
                 if let Some(effort) = effort {
@@ -573,25 +578,27 @@ fn apply_thinking(payload: &mut Map<String, Value>, model: &Model) {
                 }
             }
         }
-        ThinkingFormat::StringThinking => match asked {
-            true => {
-                if let Some(effort) = effort {
-                    payload.insert("thinking".into(), json!(effort));
-                }
+        ThinkingFormat::StringThinking => {
+            let level = match asked {
+                true => effort,
+                false => off.or("none"),
+            };
+            if let Some(level) = level {
+                payload.insert("thinking".into(), json!(level));
             }
-            false => {
-                if let Some(off) = off {
-                    payload.insert("thinking".into(), json!(off));
-                }
-            }
-        },
+        }
         ThinkingFormat::Openai => {
             if !compat.supports_reasoning_effort {
                 return;
             }
+            // There is no name for off here: a model that has one says so, and one that
+            // does not is simply not asked to reason.
             let level = match asked {
                 true => effort,
-                false => off,
+                false => match off {
+                    OffLevel::Named(named) => Some(named),
+                    _ => None,
+                },
             };
             if let Some(level) = level {
                 payload.insert("reasoning_effort".into(), json!(level));
@@ -941,6 +948,30 @@ mod tests {
         let payload = build_payload(&served_by("openai", "gpt-5.6-terra"), &Context::default());
         assert_eq!(payload["max_completion_tokens"], 4_096);
         assert!(payload.get("max_tokens").is_none());
+    }
+
+    /// Thinking being off is not a level every service has a name for. A model that
+    /// spells it out is sent that spelling; one that says nothing is sent nothing.
+    #[test]
+    fn a_service_is_only_told_thinking_is_off_when_it_has_a_word_for_it() {
+        let unsaid = served_by("openai", "o1");
+        assert!(build_payload(&unsaid, &Context::default())
+            .get("reasoning_effort")
+            .is_none());
+
+        // This one names it, and is told.
+        let named = served_by("openai", "gpt-5.6-terra");
+        assert_eq!(named.compat.off(), OffLevel::Named("none".into()));
+        assert_eq!(
+            build_payload(&named, &Context::default())["reasoning_effort"],
+            "none"
+        );
+
+        // A gateway has a word for it of its own, so it is told either way.
+        assert_eq!(
+            build_payload(&model(), &Context::default())["reasoning"]["effort"],
+            "none"
+        );
     }
 
     /// OpenRouter normalizes reasoning into an object of its own; OpenAI takes a field.

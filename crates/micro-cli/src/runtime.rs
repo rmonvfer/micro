@@ -44,6 +44,9 @@ struct Resolved {
 /// Everything a run needs, resolved and ready.
 pub struct Runtime {
     pub agent: Agent,
+    /// Something the interface should say before anything else happens, such as that
+    /// nobody is signed in to the service serving the chosen model.
+    pub notice: Option<String>,
     /// Shared, because branching and renaming reach the same open session the writer
     /// task is appending to.
     pub session: Arc<Mutex<Session>>,
@@ -138,22 +141,17 @@ pub async fn build(
     // A provider an extension declared is not in the registry, and does not need to be:
     // it brought its own endpoint and its own credential, and the model says which wire
     // protocol to speak.
+    // A provider an extension declared is not in the credential store, and does not need
+    // to be: it brought its own endpoint and its own credential, and the model says which
+    // wire protocol to speak.
     let mut resolved = match micro_provider::resolve(&store, &model).await {
         Ok(resolved) => Resolved {
             client: resolved.client,
             api_key: resolved.api_key,
         },
-        Err(error) => match declared.get(&provider_name) {
-            Some(key) => Resolved {
-                client: micro_provider::client_for_model(&model),
-                api_key: key.clone(),
-            },
-            None => {
-                return Err(anyhow::Error::new(error).context(format!(
-                    "no usable credential for `{provider_name}`. Run `micro auth login \
-                     {provider_name}`."
-                )))
-            }
+        Err(_) => Resolved {
+            client: micro_provider::client_for_model(&model),
+            api_key: declared.get(&provider_name).cloned().unwrap_or_default(),
         },
     };
 
@@ -165,15 +163,26 @@ pub async fn build(
         }
     }
 
-    // A stored credential can be present and still be empty, which every provider reports
-    // as a missing authentication header rather than as a bad key. Catching it here says
-    // what to do about it instead of spending a request to find out.
-    if resolved.api_key.trim().is_empty() {
-        return Err(anyhow!(
-            "the credential for `{provider_name}` is empty. Run `micro auth login \
+    // Not being signed in is worth saying, but it is not worth refusing to start over:
+    // signing in is something micro does, and it cannot be reached from outside.
+    //
+    // A stored credential can be present and still be empty, which every service reports
+    // as a missing authentication header rather than as a bad key. Saying which of the
+    // two it is saves the reader working it out from a request that failed.
+    let notice = match (
+        resolved.api_key.trim().is_empty(),
+        store.get(&provider_name).is_some(),
+    ) {
+        (false, _) => None,
+        (true, true) => Some(format!(
+            "The stored credential for {provider_name} is empty. Run `/login \
              {provider_name}` to replace it."
-        ));
-    }
+        )),
+        (true, false) => Some(format!(
+            "Not signed in to {provider_name}. Run `/login {provider_name}`, or `/model` \
+             to choose a service you are signed in to."
+        )),
+    };
 
     // The Codex backend is the one provider with a choice about how it answers, so it is
     // built with what the user chose rather than with the default.
@@ -302,6 +311,7 @@ pub async fn build(
 
     Ok(Runtime {
         agent,
+        notice,
         extensions,
         tool_names,
         session,

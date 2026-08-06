@@ -612,10 +612,28 @@ impl Commands for CliCommands {
     }
 
     async fn store_api_key(&mut self, provider: String, key: String) -> Applied {
-        match self.auth.store_api_key(&provider, &key) {
-            Ok(_) => Applied::note(format!("Stored a credential for {provider}.")),
-            Err(error) => Applied::error(error.to_string()),
+        if let Err(error) = self.auth.store_api_key(&provider, &key) {
+            return Applied::error(error.to_string());
         }
+
+        // A credential for the service already in use reaches the running agent now.
+        // Waiting for a restart to pick it up would make signing in look like it failed.
+        if micro_auth::canonical_provider(&provider)
+            == micro_auth::canonical_provider(&self.model.provider)
+        {
+            let model = self.model.clone();
+            return match self.swap_to(&model).await {
+                Applied::Model { swap, .. } => Applied::Model {
+                    swap,
+                    note: Some(format!("Signed in to {provider}.")),
+                },
+                other => other,
+            };
+        }
+
+        Applied::note(format!(
+            "Signed in to {provider}. Run `/model` to use one of its models."
+        ))
     }
 }
 

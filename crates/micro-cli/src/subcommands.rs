@@ -13,7 +13,16 @@ use std::io::Write as _;
 
 pub async fn auth_status() -> Result<()> {
     let store = AuthStore::open()?;
-    for status in store.status() {
+    let listed = store.status();
+    // Wide enough for the longest name on the list, so the columns line up whatever is
+    // on it.
+    let width = listed
+        .iter()
+        .map(|status| status.provider.chars().count())
+        .max()
+        .unwrap_or(0);
+
+    for status in listed {
         // A credential can be stored and still be blank, which reads as "ready" everywhere
         // else and as a missing authentication header at the provider. Say so here.
         let blank = store
@@ -34,7 +43,7 @@ pub async fn auth_status() -> Result<()> {
             micro_auth::CredentialSource::Environment { variable } => format!("${variable}"),
             micro_auth::CredentialSource::Missing => String::new(),
         };
-        println!("{:<16} {:<14} {}", status.provider, state, source);
+        println!("{:<width$}  {:<14} {source}", status.provider, state);
     }
     Ok(())
 }
