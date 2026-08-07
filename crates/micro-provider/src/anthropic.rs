@@ -12,6 +12,7 @@ use micro_types::Context;
 use micro_types::Message;
 use micro_types::Model;
 use micro_types::StopReason;
+use micro_types::ToolDefinition;
 use micro_types::StreamEvent;
 use micro_types::Usage;
 use serde_json::json;
@@ -77,6 +78,52 @@ impl Provider for Anthropic {
     }
 }
 
+/// The tools Claude Code declares, in the casing it declares them with.
+///
+/// A subscription credential is issued to that client, and a request made with one is
+/// expected to look like one of its requests: a tool micro spells differently is spelled
+/// this way on the way out, and answered under its own name on the way back.
+///
+/// Source: https://cchistory.mariozechner.at/data/prompts-2.1.11.md
+const CLAUDE_CODE_TOOLS: &[&str] = &[
+    "Read",
+    "Write",
+    "Edit",
+    "Bash",
+    "Grep",
+    "Glob",
+    "AskUserQuestion",
+    "EnterPlanMode",
+    "ExitPlanMode",
+    "KillShell",
+    "NotebookEdit",
+    "Skill",
+    "Task",
+    "TaskOutput",
+    "TodoWrite",
+    "WebFetch",
+    "WebSearch",
+];
+
+/// One tool's name as Claude Code spells it, or as it was given when that client has no
+/// tool by that name.
+fn claude_code_name(name: &str) -> String {
+    CLAUDE_CODE_TOOLS
+        .iter()
+        .find(|known| known.eq_ignore_ascii_case(name))
+        .map(|known| known.to_string())
+        .unwrap_or_else(|| name.to_string())
+}
+
+/// The name the caller knows a tool by, for a call that came back under another spelling.
+fn declared_name(name: &str, tools: &[ToolDefinition]) -> String {
+    tools
+        .iter()
+        .find(|tool| tool.name.eq_ignore_ascii_case(name))
+        .map(|tool| tool.name.clone())
+        .unwrap_or_else(|| name.to_string())
+}
+
 async fn run(
     client: reqwest::Client,
     model: Model,
@@ -84,7 +131,8 @@ async fn run(
     api_key: String,
     sender: &UnboundedSender<StreamEvent>,
 ) -> Result<(), String> {
-    let payload = build_payload(&model, &context);
+    let subscription = is_oauth(&api_key);
+    let payload = build_payload(&model, &context, subscription);
     let request = client
         .post(endpoint(&model.base_url))
         .header("anthropic-version", API_VERSION)
@@ -94,7 +142,7 @@ async fn run(
         .header("anthropic-beta", betas(&api_key, &model, &context).join(","));
     // A subscription credential is a bearer token issued to a named client, and is
     // refused when it is sent as an API key.
-    let request = match is_oauth(&api_key) {
+    let request = match subscription {
         true => request
             .header("authorization", format!("Bearer {api_key}"))
             .header("user-agent", format!("claude-cli/{CLAUDE_CODE_VERSION}"))
@@ -117,7 +165,7 @@ async fn run(
         ));
     }
 
-    let mut state = Accumulator::new(&model);
+    let mut state = Accumulator::new(&model, &context.tools, subscription);
     read_sse(response, |event| state.handle(event, sender))
         .await
         .map_err(|error| format!("Anthropic stream failed: {error}"))?;
@@ -168,6 +216,9 @@ enum OpenBlock {
 }
 
 struct Accumulator {
+    /// The tools the caller declared, when their names were changed on the way out. A
+    /// call is answered under the name the caller knows.
+    tools: Vec<ToolDefinition>,
     provider: String,
     model_id: String,
     blocks: Vec<ContentBlock>,
@@ -178,8 +229,12 @@ struct Accumulator {
 }
 
 impl Accumulator {
-    fn new(model: &Model) -> Self {
+    fn new(model: &Model, tools: &[ToolDefinition], subscription: bool) -> Self {
         Accumulator {
+            tools: match subscription {
+                true => tools.to_vec(),
+                false => Vec::new(),
+            },
             provider: model.provider.clone(),
             model_id: model.id.clone(),
             blocks: Vec::new(),
@@ -244,7 +299,7 @@ impl Accumulator {
                     }
                     Some("tool_use") => {
                         let id = read_str(block, "id");
-                        let name = read_str(block, "name");
+                        let name = declared_name(&read_str(block, "name"), &self.tools);
                         self.open = Some(OpenBlock::ToolCall {
                             index,
                             id: id.clone(),
@@ -428,7 +483,9 @@ fn betas(api_key: &str, model: &Model, context: &Context) -> Vec<&'static str> {
         betas.push(OAUTH_BETA);
     }
     if !context.tools.is_empty() {
-        betas.push(FINE_GRAINED_TOOL_STREAMING_BETA);
+        if !model.compat.supports_eager_tool_input_streaming {
+            betas.push(FINE_GRAINED_TOOL_STREAMING_BETA);
+        }
         // Only worth asking for when there is thinking to interleave with the calls.
         if model.thinking.budget_tokens().is_some() {
             betas.push(INTERLEAVED_THINKING_BETA);
@@ -437,7 +494,15 @@ fn betas(api_key: &str, model: &Model, context: &Context) -> Vec<&'static str> {
     betas
 }
 
-pub(crate) fn build_payload(model: &Model, context: &Context) -> Value {
+/// A tool's name as it should be sent.
+fn name_for(name: &str, subscription: bool) -> String {
+    match subscription {
+        true => claude_code_name(name),
+        false => name.to_string(),
+    }
+}
+
+pub(crate) fn build_payload(model: &Model, context: &Context, subscription: bool) -> Value {
     let mut payload = Map::new();
     payload.insert("model".into(), json!(model.id));
     payload.insert("max_tokens".into(), json!(model.max_tokens));
@@ -463,7 +528,7 @@ pub(crate) fn build_payload(model: &Model, context: &Context) -> Value {
 
     payload.insert(
         "messages".into(),
-        Value::Array(build_messages(&context.messages)),
+        Value::Array(build_messages(&context.messages, subscription)),
     );
 
     if !context.tools.is_empty() {
@@ -471,18 +536,24 @@ pub(crate) fn build_payload(model: &Model, context: &Context) -> Value {
             .tools
             .iter()
             .map(|tool| {
-                json!({
-                    "name": tool.name,
+                let mut described = json!({
+                    "name": name_for(&tool.name, subscription),
                     "description": tool.description,
                     "input_schema": tool.parameters,
-                })
+                });
+                // A service that streams a tool's arguments as they are decided is told
+                // to; one that does not is asked for the same thing as a beta instead.
+                if model.compat.supports_eager_tool_input_streaming {
+                    described["eager_input_streaming"] = json!(true);
+                }
+                described
             })
             .collect();
         payload.insert("tools".into(), Value::Array(tools));
     }
 
     let mut payload = Value::Object(payload);
-    apply_cache_breakpoints(&mut payload);
+    apply_cache_breakpoints(&mut payload, model.compat.supports_cache_control_on_tools);
     payload
 }
 
@@ -491,7 +562,7 @@ pub(crate) fn build_payload(model: &Model, context: &Context) -> Value {
 /// Consecutive tool results are merged into a single user message because Anthropic
 /// expects every `tool_use` in an assistant turn to be answered by `tool_result` blocks
 /// grouped in the user turn that follows it.
-fn build_messages(messages: &[Message]) -> Vec<Value> {
+fn build_messages(messages: &[Message], subscription: bool) -> Vec<Value> {
     let mut wire: Vec<Value> = Vec::new();
     let mut pending_results: Vec<Value> = Vec::new();
 
@@ -525,11 +596,11 @@ fn build_messages(messages: &[Message]) -> Vec<Value> {
             }
             Message::User { content, .. } => {
                 flush(&mut pending_results, &mut wire);
-                wire.push(json!({ "role": "user", "content": encode_blocks(content) }));
+                wire.push(json!({ "role": "user", "content": encode_blocks(content, subscription) }));
             }
             Message::Assistant(assistant) => {
                 flush(&mut pending_results, &mut wire);
-                let content = encode_blocks(&assistant.content);
+                let content = encode_blocks(&assistant.content, subscription);
                 if !content.is_empty() {
                     wire.push(json!({ "role": "assistant", "content": content }));
                 }
@@ -541,7 +612,7 @@ fn build_messages(messages: &[Message]) -> Vec<Value> {
     wire
 }
 
-fn encode_blocks(blocks: &[ContentBlock]) -> Vec<Value> {
+fn encode_blocks(blocks: &[ContentBlock], subscription: bool) -> Vec<Value> {
     blocks
         .iter()
         .filter_map(|block| match block {
@@ -580,7 +651,7 @@ fn encode_blocks(blocks: &[ContentBlock]) -> Vec<Value> {
             } => Some(json!({
                 "type": "tool_use",
                 "id": normalize_tool_id(id),
-                "name": name,
+                "name": name_for(name, subscription),
                 "input": arguments,
             })),
         })
@@ -590,14 +661,18 @@ fn encode_blocks(blocks: &[ContentBlock]) -> Vec<Value> {
 /// Mark up to four cache breakpoints: the last tool definition, the system prompt, and
 /// the final two user turns. Everything before a breakpoint is served from cache on the
 /// next request that shares the same prefix.
-pub(crate) fn apply_cache_breakpoints(payload: &mut Value) {
+pub(crate) fn apply_cache_breakpoints(payload: &mut Value, on_tools: bool) {
     let cache_control = json!({ "type": "ephemeral" });
     let mut remaining = MAX_CACHE_BREAKPOINTS;
 
-    if let Some(tools) = payload.get_mut("tools").and_then(Value::as_array_mut) {
-        if let Some(last) = tools.last_mut().and_then(Value::as_object_mut) {
-            last.insert("cache_control".into(), cache_control.clone());
-            remaining -= 1;
+    // Some services answering this protocol reject a marker on a tool definition, so
+    // there the breakpoints start with the system prompt instead.
+    if on_tools {
+        if let Some(tools) = payload.get_mut("tools").and_then(Value::as_array_mut) {
+            if let Some(last) = tools.last_mut().and_then(Value::as_object_mut) {
+                last.insert("cache_control".into(), cache_control.clone());
+                remaining -= 1;
+            }
         }
     }
 
@@ -678,7 +753,7 @@ mod tests {
             }],
             ..Context::default()
         };
-        let payload = build_payload(&Model::anthropic("claude-opus-5"), &context);
+        let payload = build_payload(&Model::anthropic("claude-opus-5"), &context, false);
 
         assert_eq!(payload["tools"][0]["input_schema"], parameters);
     }
@@ -730,7 +805,7 @@ mod tests {
             Message::tool_result("a", "read", "first", false),
             Message::tool_result("b", "read", "second", false),
         ];
-        let wire = build_messages(&messages);
+        let wire = build_messages(&messages, false);
 
         assert_eq!(wire.len(), 3);
         assert_eq!(wire[2]["role"], "user");
@@ -746,7 +821,7 @@ mod tests {
             },
             ContentBlock::text("kept"),
         ];
-        let encoded = encode_blocks(&blocks);
+        let encoded = encode_blocks(&blocks, false);
         assert_eq!(encoded.len(), 1);
         assert_eq!(encoded[0]["type"], "text");
     }
@@ -756,6 +831,7 @@ mod tests {
         let payload = build_payload(
             &Model::anthropic("claude-opus-5"),
             &context_with(vec![Message::user("one"), Message::user("two")]),
+            false,
         );
 
         assert_eq!(payload["tools"][0]["cache_control"]["type"], "ephemeral");
@@ -785,7 +861,7 @@ mod tests {
 
     #[test]
     fn thinking_budget_is_sent_only_when_enabled() {
-        let plain = build_payload(&Model::anthropic("claude-opus-5"), &Context::default());
+        let plain = build_payload(&Model::anthropic("claude-opus-5"), &Context::default(), false);
         // Turned off outright rather than left unsaid, so a model that thinks by default
         // does not keep thinking and billing for it.
         assert_eq!(plain["thinking"]["type"], "disabled");
@@ -793,6 +869,7 @@ mod tests {
         let thinking = build_payload(
             &Model::anthropic("claude-opus-5").with_thinking(micro_types::ThinkingLevel::High),
             &Context::default(),
+            false,
         );
         assert_eq!(thinking["thinking"]["budget_tokens"], 32_000);
     }
@@ -821,20 +898,53 @@ mod tests {
         assert!(!is_oauth("sk-ant-api03-abc"));
     }
 
-    /// Streaming a call's arguments is asked for whenever there are tools, and keeping
-    /// the thinking between them only when there is thinking to keep.
+    /// Keeping the thinking between tool calls is asked for only when there is thinking
+    /// to keep. Streaming a call's arguments is asked for per tool where that is taken,
+    /// and as a beta where it is not.
     #[test]
     fn tools_and_thinking_ask_for_what_they_need() {
         let context = context_with(vec![Message::user("hi")]);
+        let model = Model::anthropic("claude-opus-5");
 
-        let plain = betas("sk-ant-api03-abc", &Model::anthropic("claude-opus-5"), &context);
-        assert!(plain.contains(&FINE_GRAINED_TOOL_STREAMING_BETA), "{plain:?}");
+        let plain = betas("sk-ant-api03-abc", &model, &context);
+        assert!(!plain.contains(&FINE_GRAINED_TOOL_STREAMING_BETA), "{plain:?}");
         assert!(!plain.contains(&INTERLEAVED_THINKING_BETA), "{plain:?}");
+        assert_eq!(
+            build_payload(&model, &context, false)["tools"][0]["eager_input_streaming"],
+            true
+        );
 
-        let thinking =
-            Model::anthropic("claude-opus-5").with_thinking(micro_types::ThinkingLevel::High);
+        let mut legacy = model.clone();
+        legacy.compat.supports_eager_tool_input_streaming = false;
+        let asked = betas("sk-ant-api03-abc", &legacy, &context);
+        assert!(asked.contains(&FINE_GRAINED_TOOL_STREAMING_BETA), "{asked:?}");
+        assert!(build_payload(&legacy, &context, false)["tools"][0]
+            .get("eager_input_streaming")
+            .is_none());
+
+        let thinking = model.with_thinking(micro_types::ThinkingLevel::High);
         let asked = betas("sk-ant-api03-abc", &thinking, &context);
         assert!(asked.contains(&INTERLEAVED_THINKING_BETA), "{asked:?}");
+    }
+
+    /// A subscription credential is issued to Claude Code, so a request made with one
+    /// names its tools the way that client names them, and a call comes back under the
+    /// name the caller declared.
+    #[test]
+    fn a_subscription_request_names_tools_the_way_its_client_does() {
+        let context = context_with(vec![Message::user("hi")]);
+        let model = Model::anthropic("claude-opus-5");
+
+        let sent = build_payload(&model, &context, true);
+        assert_eq!(sent["tools"][0]["name"], "Read");
+        assert_eq!(
+            build_payload(&model, &context, false)["tools"][0]["name"],
+            "read"
+        );
+
+        assert_eq!(declared_name("Read", &context.tools), "read");
+        // A tool that client has never heard of is sent as it was given.
+        assert_eq!(claude_code_name("compact"), "compact");
     }
 
     /// Thinking is turned off outright, because a model that thinks by default keeps
@@ -844,12 +954,13 @@ mod tests {
         let payload = build_payload(
             &Model::anthropic("claude-opus-5"),
             &context_with(vec![Message::user("hi")]),
+            false,
         );
         assert_eq!(payload["thinking"]["type"], "disabled");
 
         let thinking =
             Model::anthropic("claude-opus-5").with_thinking(micro_types::ThinkingLevel::Medium);
-        let payload = build_payload(&thinking, &context_with(vec![Message::user("hi")]));
+        let payload = build_payload(&thinking, &context_with(vec![Message::user("hi")]), false);
         assert_eq!(payload["thinking"]["type"], "enabled");
         assert!(payload["thinking"]["budget_tokens"].as_u64().unwrap() > 0);
     }
