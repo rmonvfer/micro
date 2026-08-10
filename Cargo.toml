@@ -26,9 +26,12 @@ members = [
 ]
 
 [workspace.package]
-version = "0.1.9"
+version = "0.1.10"
 edition = "2021"
 license = "MIT"
+
+[patch.crates-io]
+citationberg = { git = "https://github.com/typst/citationberg", rev = "072ae9f46b503f6151481ecd02560ac34de5fb78" }
 
 [workspace.dependencies]
 micro-types = { path = "crates/micro-types" }

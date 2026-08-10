@@ -7,9 +7,9 @@ use std::sync::Mutex;
 use std::sync::OnceLock;
 use typst::foundations::Dict;
 use typst::foundations::IntoValue;
-use typst::layout::PagedDocument;
 use typst_as_lib::TypstEngine;
 use typst_as_lib::TypstTemplateCollection;
+use typst_layout::PagedDocument;
 
 /// The size mathematics is set at, which is what ties it to the size of the words around it.
 const TEXT_SIZE_PT: f64 = 12.0;
@@ -152,7 +152,7 @@ static TYPESET: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize:
 fn typeset(source: &str, ink: Color, cell: Cell) -> Option<Math> {
     TYPESET.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let measured = compile(MEASURE_ID, source, ink, None)?;
-    let size = measured.pages.first()?.frame.size();
+    let size = measured.pages().first()?.frame.size();
 
     let row_points = row_points(cell);
     let columns = (size.x.to_pt() / COLUMN_POINTS).ceil().max(1.0);
@@ -160,7 +160,11 @@ fn typeset(source: &str, ink: Color, cell: Cell) -> Option<Math> {
 
     let page = Some((columns * COLUMN_POINTS, rows * row_points));
     let document = compile(PAGE_ID, source, ink, page)?;
-    let png = typst_render::render(document.pages.first()?, pixels_per_point(cell))
+    let options = typst_render::RenderOptions {
+        pixel_per_pt: f64::from(pixels_per_point(cell)).into(),
+        ..Default::default()
+    };
+    let png = typst_render::render(document.pages().first()?, &options)
         .encode_png()
         .ok()?;
     Some(Math {
