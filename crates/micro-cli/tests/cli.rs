@@ -119,9 +119,8 @@ fn a_tool_that_writes_really_changes_the_workspace() {
     ]);
     let fixture = Fixture::new(&api);
 
-    // Writing is asked about under the default mode, so this run allows it outright.
     fixture
-        .print(&["-m", "test", "--approve", "workspace", "create created.txt"])
+        .print(&["-m", "test", "create created.txt"])
         .expect_success("micro --print with a write");
 
     assert!(fixture.exists("created.txt"), "the file was never written");
@@ -189,63 +188,6 @@ fn continue_resumes_the_conversation() {
 
     // Both runs share one session rather than starting a second.
     assert_eq!(fixture.session_logs().len(), 1);
-}
-
-#[test]
-fn cautious_refuses_a_shell_command_rather_than_running_it() {
-    let marker = "should-not-exist.txt";
-    let api = FakeApi::start([
-        Reply::tool_call(
-            "call_1",
-            "bash",
-            json!({ "command": format!("touch {marker}") }),
-        ),
-        Reply::text("I could not run that."),
-    ]);
-    let fixture = Fixture::new(&api);
-
-    // Default mode, and stdin is closed, so there is nobody to approve the command.
-    let output = fixture.print(&["-m", "test", "create a file with the shell"]);
-
-    output.expect_success("micro --print with a refused command");
-    assert!(
-        !fixture.exists(marker),
-        "the command ran despite not being approved"
-    );
-
-    let results = tool_results(&api.request(1));
-    assert_eq!(results.len(), 1);
-    let reported = results[0]["content"].as_str().unwrap_or_default();
-    assert!(
-        reported.contains("not approved") || reported.contains("approval"),
-        "the model should be told why the command did not run, got {reported:?}"
-    );
-}
-
-#[test]
-fn an_explicit_policy_rule_lets_a_command_through() {
-    let api = FakeApi::start([
-        Reply::tool_call("call_1", "bash", json!({ "command": "echo approved" })),
-        Reply::text("It printed approved."),
-    ]);
-    let fixture = Fixture::new(&api);
-    std::fs::write(
-        fixture.home().join("policy.json"),
-        json!({ "mode": "cautious", "rules": { "bash:echo": "allow" } }).to_string(),
-    )
-    .expect("write policy.json");
-
-    fixture
-        .print(&["-m", "test", "echo something"])
-        .expect_success("micro --print with an allowing rule");
-
-    let results = tool_results(&api.request(1));
-    assert_eq!(results.len(), 1);
-    let reported = results[0]["content"].as_str().unwrap_or_default();
-    assert!(
-        reported.contains("approved"),
-        "the command should have run, got {reported:?}"
-    );
 }
 
 #[test]
@@ -483,7 +425,7 @@ fn help_and_version_exit_zero() {
     let help = Output::run(fixture.micro().arg("--help"));
     help.expect_success("micro --help");
     assert!(help.stdout.contains("--print"));
-    assert!(help.stdout.contains("--approve"));
+    assert!(help.stdout.contains("--exclude-tools"));
 
     let version = Output::run(fixture.micro().arg("--version"));
     version.expect_success("micro --version");
@@ -797,7 +739,7 @@ export default (micro) => {
 
     // Approval is given up front: an extension's tool is third-party code, so without
     // this the policy asks, and nothing is there to answer.
-    let output = fixture.print(&["-m", "test", "--approve", "unrestricted", "greet the world"]);
+    let output = fixture.print(&["-m", "test", "greet the world"]);
     assert!(output.status.success(), "{}", output.stderr);
 
     // The model was offered the extension's tool by name.
@@ -817,47 +759,6 @@ export default (micro) => {
             .is_some_and(|text| text.contains("hello world, from an extension"))
     });
     assert!(carried, "the extension's answer reached the model: {messages:#?}");
-}
-
-/// An extension's tool goes through the same policy as everything built in, so an
-/// unattended run refuses it rather than running someone else's code unasked.
-#[test]
-fn an_extension_tool_is_gated_like_every_other_tool() {
-    if which_bun().is_none() {
-        return;
-    }
-    let api = FakeApi::start([
-        Reply::tool_call("call_1", "project_greeting", json!({ "who": "world" })),
-        Reply::text("it was refused"),
-    ]);
-    let fixture = Fixture::new(&api);
-    fixture.write(
-        ".micro/extensions/greeter.ts",
-        r#"
-export default (micro) => {
-    micro.registerTool({
-        name: "project_greeting",
-        description: "Return the project's own greeting",
-        execute: async () => "this should not have run",
-    });
-};
-"#,
-    );
-
-    let output = fixture.print(&["-m", "test", "greet the world"]);
-    assert!(output.status.success(), "{}", output.stderr);
-
-    let messages = api.request(1);
-    let refused = messages["messages"]
-        .as_array()
-        .expect("a conversation")
-        .iter()
-        .any(|message| {
-            message["content"]
-                .as_str()
-                .is_some_and(|text| text.contains("Refused by the workspace policy"))
-        });
-    assert!(refused, "the call was refused: {messages:#?}");
 }
 
 /// A project with no extensions starts exactly as it did before, and says nothing about it.
@@ -982,7 +883,7 @@ export default (micro) => {{
         ),
     );
 
-    let output = fixture.print(&["-m", "test", "--approve", "unrestricted", "read the notes"]);
+    let output = fixture.print(&["-m", "test", "read the notes"]);
     assert!(output.status.success(), "{}", output.stderr);
 
     let heard = std::fs::read_to_string(&log).unwrap_or_default();
@@ -1155,7 +1056,7 @@ export default (micro) => {
 "#,
     );
 
-    let output = fixture.print(&["-m", "test", "--approve", "unrestricted", "write the file"]);
+    let output = fixture.print(&["-m", "test", "write the file"]);
     assert!(output.status.success(), "{}", output.stderr);
 
     // The file was never written, and the model was told why.
@@ -1199,7 +1100,7 @@ export default (micro) => {
 "#,
     );
 
-    let output = fixture.print(&["-m", "test", "--approve", "unrestricted", "read the notes"]);
+    let output = fixture.print(&["-m", "test", "read the notes"]);
     assert!(output.status.success(), "{}", output.stderr);
 
     let second = api.request(1);
@@ -1234,7 +1135,7 @@ export default (micro) => {
 "#,
     );
 
-    let output = fixture.print(&["-m", "test", "--approve", "unrestricted", "read the notes"]);
+    let output = fixture.print(&["-m", "test", "read the notes"]);
     assert!(output.status.success(), "{}", output.stderr);
 
     let conversation = serde_json::to_string(&api.request(1)).unwrap();

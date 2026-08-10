@@ -33,6 +33,15 @@ use std::str::FromStr;
 pub const FILE_NAME: &str = "config.json";
 pub const MICRO_DIR_ENV: &str = "MICRO_DIR";
 
+mod trust;
+
+pub use trust::requires_decision;
+pub use trust::PROJECT_DIR;
+pub use trust::ProjectTrust;
+pub use trust::TrustDecision;
+pub use trust::TrustStore;
+pub use trust::TRUST_FILE_NAME;
+
 pub const MODEL_ENV: &str = "MICRO_MODEL";
 pub const PROVIDER_ENV: &str = "MICRO_PROVIDER";
 pub const THINKING_ENV: &str = "MICRO_THINKING";
@@ -191,9 +200,9 @@ pub struct Config {
     /// What happens to a prompt written while an answer is arriving.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub follow_up_mode: Option<FollowUpMode>,
-    /// Whether a project nobody has decided about is trusted.
+    /// What to do about a project nobody has decided about.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub default_project_trust: Option<bool>,
+    pub default_project_trust: Option<ProjectTrust>,
     /// How long a request may go without producing anything, in seconds.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub http_idle_timeout: Option<u64>,
@@ -256,7 +265,7 @@ pub struct Settings {
     pub cache_miss_notices: bool,
     pub double_escape: DoubleEscape,
     pub follow_up_mode: FollowUpMode,
-    pub default_project_trust: bool,
+    pub default_project_trust: ProjectTrust,
     pub http_idle_timeout: u64,
     pub scoped_models: Vec<String>,
     pub anthropic_extra_usage: bool,
@@ -304,7 +313,7 @@ impl Default for Settings {
             cache_miss_notices: false,
             double_escape: DoubleEscape::default(),
             follow_up_mode: FollowUpMode::default(),
-            default_project_trust: false,
+            default_project_trust: ProjectTrust::default(),
             http_idle_timeout: DEFAULT_HTTP_IDLE_TIMEOUT,
             scoped_models: Vec::new(),
             anthropic_extra_usage: true,
@@ -539,6 +548,16 @@ fn from_env<T: FromStr<Err = String>>(variable: &str, value: Option<String>) -> 
             })
         })
         .transpose()
+}
+
+/// The directory micro keeps everything the user has settled in: `$MICRO_DIR`, and
+/// `~/.micro` when nothing names one.
+pub fn config_dir() -> Result<PathBuf> {
+    default_path().map(|path| {
+        path.parent()
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| PathBuf::from("."))
+    })
 }
 
 /// `$MICRO_DIR/config.json`, falling back to `~/.micro/config.json`.

@@ -1,23 +1,59 @@
 //! Whether a project has been vouched for.
 //!
-//! A trusted project is one the user has said they are willing to have edited without
-//! being asked about every file. The decision is kept per workspace and read when a run
-//! starts, so it survives the session that made it. It is deliberately not a way to skip
-//! approval for shell commands: a command can reach outside the workspace, and trusting a
-//! directory says nothing about that.
+//! A project carries things it would like micro to run: its own settings, the resources
+//! it points at, and the extensions it ships. Reading a directory is one thing; running
+//! what it contains is another, and that is what trusting it decides. The decision is
+//! kept per workspace and read when a run starts, so it survives the session that made
+//! it.
 
-use crate::error::PolicyError;
-use crate::error::Result;
-use crate::policy::micro_home;
-use crate::policy::Mode;
+use crate::config_dir;
+use crate::ConfigError;
 use serde::Deserialize;
 use serde::Serialize;
 use std::collections::BTreeMap;
 use std::path::Path;
 use std::path::PathBuf;
 
-/// The file the decisions live in, beside the policy.
+/// The file the decisions live in, beside the settings.
 pub const TRUST_FILE_NAME: &str = "trust.json";
+
+/// What a project keeps under its own directory that micro would run or be steered by.
+///
+/// Reading a project is one thing; running what it ships is another. A project carrying
+/// none of these is used without a question, which is why most projects never see one.
+const TRUST_REQUIRING: &[&str] = &[
+    "settings.json",
+    "extensions",
+    "skills",
+    "prompts",
+    "themes",
+    "SYSTEM.md",
+    "APPEND_SYSTEM.md",
+];
+
+/// The directory a project keeps its own configuration in.
+pub const PROJECT_DIR: &str = ".micro";
+
+/// Whether this project carries anything that needs to be trusted before it is used.
+pub fn requires_decision(workspace: impl AsRef<Path>) -> bool {
+    let configured = workspace.as_ref().join(PROJECT_DIR);
+    TRUST_REQUIRING
+        .iter()
+        .any(|entry| configured.join(entry).exists())
+}
+
+/// What to do about a project nobody has decided about.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProjectTrust {
+    /// Put the question to the user, when there is someone to ask.
+    #[default]
+    Ask,
+    /// Trust it without asking.
+    Always,
+    /// Do not trust it, and do not ask.
+    Never,
+}
 
 /// What was decided about one project, and when.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -37,37 +73,37 @@ pub struct TrustStore {
 impl TrustStore {
     /// Reads `$MICRO_DIR/trust.json`. A missing file means nothing has been decided yet,
     /// which is not an error.
-    pub async fn load() -> Result<Self> {
-        TrustStore::load_from(micro_home()?).await
+    pub async fn load() -> Result<Self, ConfigError> {
+        TrustStore::load_from(config_dir()?).await
     }
 
-    pub async fn load_from(directory: impl AsRef<Path>) -> Result<Self> {
+    pub async fn load_from(directory: impl AsRef<Path>) -> Result<Self, ConfigError> {
         let path = directory.as_ref().join(TRUST_FILE_NAME);
         let raw = match tokio::fs::read(&path).await {
             Ok(raw) => raw,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
                 return Ok(TrustStore::default())
             }
-            Err(source) => return Err(PolicyError::io(path, source)),
+            Err(source) => return Err(unreadable(&path, source)),
         };
-        serde_json::from_slice(&raw).map_err(|source| PolicyError::json(path, source))
+        serde_json::from_slice(&raw).map_err(|source| malformed(&path, source))
     }
 
-    pub async fn save(&self) -> Result<()> {
-        self.save_to(micro_home()?).await
+    pub async fn save(&self) -> Result<(), ConfigError> {
+        self.save_to(config_dir()?).await
     }
 
-    pub async fn save_to(&self, directory: impl AsRef<Path>) -> Result<()> {
+    pub async fn save_to(&self, directory: impl AsRef<Path>) -> Result<(), ConfigError> {
         let directory = directory.as_ref();
         tokio::fs::create_dir_all(directory)
             .await
-            .map_err(|source| PolicyError::io(directory, source))?;
+            .map_err(|source| unreadable(directory, source))?;
         let path = directory.join(TRUST_FILE_NAME);
         let encoded =
-            serde_json::to_vec_pretty(self).map_err(|source| PolicyError::json(&path, source))?;
+            serde_json::to_vec_pretty(self).map_err(|source| malformed(&path, source))?;
         tokio::fs::write(&path, encoded)
             .await
-            .map_err(|source| PolicyError::io(path, source))
+            .map_err(|source| unreadable(&path, source))
     }
 
     /// What was decided about a project, if anything was.
@@ -102,17 +138,6 @@ impl TrustStore {
             .iter()
             .map(|(path, decision)| (path.as_str(), decision))
     }
-
-    /// How a run should start in this workspace.
-    ///
-    /// Trusting a project buys freedom to edit inside it and nothing more, so a mode that
-    /// already grants at least that much is left alone.
-    pub fn mode_for(&self, workspace: impl AsRef<Path>, requested: Mode) -> Mode {
-        match (requested, self.is_trusted(workspace)) {
-            (Mode::Cautious, true) => Mode::Workspace,
-            (mode, _) => mode,
-        }
-    }
 }
 
 /// The key a workspace is filed under: its canonical path when it can be resolved, and
@@ -122,6 +147,20 @@ fn key(workspace: &Path) -> String {
         .canonicalize()
         .unwrap_or_else(|_| workspace.to_path_buf());
     resolved.display().to_string()
+}
+
+fn unreadable(path: impl AsRef<Path>, source: std::io::Error) -> ConfigError {
+    ConfigError::Malformed {
+        path: path.as_ref().display().to_string(),
+        message: source.to_string(),
+    }
+}
+
+fn malformed(path: impl AsRef<Path>, source: serde_json::Error) -> ConfigError {
+    ConfigError::Malformed {
+        path: path.as_ref().display().to_string(),
+        message: source.to_string(),
+    }
 }
 
 fn now_ms() -> i64 {
@@ -175,19 +214,18 @@ mod tests {
         assert_eq!(store.decision("/project"), None);
     }
 
-    /// Trust widens the cautious default and nothing else: a mode the user asked for
-    /// explicitly is theirs, and an untrusted project is left as it was.
+    /// A project nobody has decided about is not trusted, which is not the same as one
+    /// that was refused: the first can still be asked about.
     #[test]
-    fn trust_only_widens_the_cautious_default() {
+    fn an_undecided_project_is_not_a_refused_one() {
         let mut store = TrustStore::default();
-        store.decide("/project", true);
+        store.decide("/refused", false);
 
-        assert_eq!(store.mode_for("/project", Mode::Cautious), Mode::Workspace);
-        assert_eq!(
-            store.mode_for("/project", Mode::Unrestricted),
-            Mode::Unrestricted
-        );
-        assert_eq!(store.mode_for("/elsewhere", Mode::Cautious), Mode::Cautious);
+        assert!(!store.is_trusted("/refused"));
+        assert!(store.decision("/refused").is_some());
+
+        assert!(!store.is_trusted("/unknown"));
+        assert_eq!(store.decision("/unknown"), None);
     }
 
     #[tokio::test]

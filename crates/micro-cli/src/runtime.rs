@@ -29,9 +29,10 @@ pub struct Selection {
     pub model: Option<String>,
     pub provider: Option<String>,
     pub thinking: ThinkingLevel,
-    pub mode: micro_policy::Mode,
-    /// Whoever answers when the policy cannot decide on its own.
-    pub approver: Arc<dyn micro_policy::Approver>,
+    /// When this names anything, only these tools are offered to the model.
+    pub tools: Vec<String>,
+    /// Tools to withhold, whatever else is on offer.
+    pub exclude_tools: Vec<String>,
 }
 
 /// The two things a run needs from a provider: something to talk to it with, and the
@@ -114,6 +115,7 @@ pub async fn build(
     selection: &Selection,
     resume: Option<&str>,
     settings: &micro_config::Settings,
+    trusted: bool,
 ) -> Result<Runtime> {
     // Set before any provider is built, since a client carries the timeout it was made
     // with.
@@ -123,8 +125,9 @@ pub async fn build(
 
     // Extensions are loaded before a model is picked, because one of them may be what
     // serves it: a provider an extension declares is in the catalog by the time the
-    // catalog is read.
-    let extensions = load_extensions(root, settings).await;
+    // catalog is read. What the project itself ships is loaded only once the project has
+    // been trusted; what the user installed for themselves always is.
+    let extensions = load_extensions(root, settings, trusted).await;
     let declared = apply_declared_providers(&mut catalog, extensions.as_deref(), settings);
     // A workspace that has been given a shortlist may only use what is on it, so a model
     // outside it cannot be reached by cycling or by a stale config.
@@ -209,34 +212,13 @@ pub async fn build(
         ),
     };
 
-    let context = load_context(root, settings.skill_commands).await;
+    let context = load_context(root, settings.skill_commands, trusted).await;
     if !settings.quiet_startup {
         for diagnostic in &context.diagnostics {
             eprintln!("note: {diagnostic}");
         }
     }
 
-    // Every tool goes through the policy, so approval is enforced at the one place tools
-    // actually execute rather than at each call site.
-    let mut policy = micro_policy::Policy::load()
-        .await
-        .unwrap_or_else(|_| micro_policy::Policy::new(selection.mode));
-    // A project that was vouched for with `/trust` starts wider than the cautious
-    // default, which is the whole point of having said so.
-    let trust = micro_policy::TrustStore::load().await.unwrap_or_default();
-    // A project nobody has decided about takes the standing answer, which is cautious
-    // unless the user has said otherwise.
-    let assumed = match (trust.decision(root).is_none(), settings.default_project_trust) {
-        (true, true) => micro_policy::Mode::Workspace,
-        _ => selection.mode,
-    };
-    policy.mode = trust.mode_for(root, assumed);
-    let engine = Arc::new(micro_policy::PolicyEngine::new(
-        policy,
-        root.to_path_buf(),
-        Arc::clone(&selection.approver),
-    ));
-    // What extensions registered goes through the same policy as everything built in.
     let mut tools = micro_tools::builtin_tools(root.to_path_buf());
     if let Some(host) = extensions.as_ref() {
         let registered = host.tools();
@@ -249,11 +231,12 @@ pub async fn build(
             )));
         }
     }
+    // What an extension registered is offered on the same terms as everything built in.
+    let tools = offered(tools, &selection.tools, &selection.exclude_tools);
     let tool_names: Vec<String> = tools
         .iter()
         .map(|tool| tool.definition().name)
         .collect();
-    let tools = micro_policy::gated_tools(tools, engine);
 
     let (recorder, receiver) = tokio::sync::mpsc::unbounded_channel();
     // Extensions watch the run rather than sitting in the middle of it: the events go to
@@ -301,7 +284,7 @@ pub async fn build(
         model: model.clone(),
         session: Arc::clone(&session),
         session_id,
-        home: micro_policy::micro_home().unwrap_or_default(),
+        home: micro_context::micro_home().unwrap_or_default(),
         skills_enabled: settings.skill_commands,
         collapse_changelog: settings.collapse_changelog,
         thinking: selection.thinking,
@@ -358,7 +341,7 @@ pub struct LoadedContext {
     pub diagnostics: Vec<String>,
 }
 
-pub async fn load_context(root: &Path, skills_enabled: bool) -> LoadedContext {
+pub async fn load_context(root: &Path, skills_enabled: bool, trusted: bool) -> LoadedContext {
     let instructions = match InstructionLoader::from_env() {
         Ok(loader) => loader.load(root).await.unwrap_or_default(),
         Err(_) => Default::default(),
@@ -367,8 +350,10 @@ pub async fn load_context(root: &Path, skills_enabled: bool) -> LoadedContext {
     // Skills are announced by name and description only; the model reads a skill's file
     // when it decides one applies, which is what keeps a shelf of them out of the context.
     let home = micro_context::micro_home().unwrap_or_default();
+    // A skill is a file the model is told to read and follow, so the project's own are
+    // offered only once the project has been trusted.
     let skills = match skills_enabled {
-        true => micro_skills::discover(root, &home).await,
+        true => micro_skills::discover(root, &home, trusted).await,
         false => Default::default(),
     };
 
@@ -427,11 +412,31 @@ fn scoped(catalog: Catalog, allowed: &[String]) -> Catalog {
 ///
 /// Nothing here is fatal. An extension that will not load is named on stderr and the run
 /// carries on without it, and a missing Bun means no extensions rather than no micro.
+/// The tools to offer the model.
+///
+/// An allowlist, when there is one, is the whole of what is offered; a denylist takes
+/// away from whatever is left. Names are matched as they are written.
+fn offered(
+    tools: Vec<Arc<dyn micro_tools::Tool>>,
+    allowed: &[String],
+    excluded: &[String],
+) -> Vec<Arc<dyn micro_tools::Tool>> {
+    tools
+        .into_iter()
+        .filter(|tool| {
+            let name = tool.definition().name;
+            let listed = allowed.is_empty() || allowed.contains(&name);
+            listed && !excluded.contains(&name)
+        })
+        .collect()
+}
+
 async fn load_extensions(
     root: &Path,
     settings: &micro_config::Settings,
+    trusted: bool,
 ) -> Option<Arc<micro_extensions::Host>> {
-    let home = micro_policy::micro_home().unwrap_or_default();
+    let home = micro_context::micro_home().unwrap_or_default();
     // A configured entry is a source rather than a path: `npm:thing` is installed
     // somewhere of micro's choosing, and that is where it is loaded from.
     let configured: Vec<String> = settings
@@ -445,7 +450,7 @@ async fn load_extensions(
             Err(_) => source.clone(),
         })
         .collect();
-    let paths = micro_extensions::discover(root, &home, &configured);
+    let paths = micro_extensions::discover(root, &home, &configured, trusted);
     if paths.is_empty() {
         return None;
     }

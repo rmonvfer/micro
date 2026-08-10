@@ -188,7 +188,7 @@ pub async fn latest_session(workspace: &std::path::Path) -> Result<String> {
 /// again. A package that will not fetch leaves the settings alone.
 pub async fn install(source: &str, local: bool, workspace: &Path) -> Result<()> {
     let parsed = micro_extensions::Source::parse(source).map_err(anyhow::Error::msg)?;
-    let home = micro_policy::micro_home()?;
+    let home = micro_context::micro_home()?;
 
     println!("Installing {}...", parsed.canonical());
     let installed = micro_extensions::install(&parsed, &home, workspace, local)
@@ -222,7 +222,7 @@ pub async fn install(source: &str, local: bool, workspace: &Path) -> Result<()> 
 /// `micro remove <source>` — take a package away and forget it.
 pub async fn remove(source: &str, local: bool, workspace: &Path) -> Result<()> {
     let parsed = micro_extensions::Source::parse(source).map_err(anyhow::Error::msg)?;
-    let home = micro_policy::micro_home()?;
+    let home = micro_context::micro_home()?;
 
     micro_extensions::remove(&parsed, &home, workspace, local).map_err(anyhow::Error::msg)?;
     let forgotten = remember(&parsed.canonical(), false)?;
@@ -245,7 +245,7 @@ pub async fn list_packages() -> Result<()> {
         return Ok(());
     }
 
-    let home = micro_policy::micro_home()?;
+    let home = micro_context::micro_home()?;
     let workspace = std::env::current_dir().unwrap_or_default();
     for source in sources {
         let parsed = micro_extensions::Source::parse(&source).map_err(anyhow::Error::msg)?;

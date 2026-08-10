@@ -102,16 +102,6 @@ fn header(
     wrap_spans(&spans, width, INDENT)
 }
 
-/// A result body, drawn under a heading that is inset by [`INDENT`].
-pub(super) fn render_body(
-    rows: &[Row],
-    view: &tools::ToolView,
-    theme: &Theme,
-    width: usize,
-) -> Vec<Line<'static>> {
-    body_lines(rows, view, theme, width, INDENT)
-}
-
 /// Draw a body, painting each run of diff lines as one block.
 ///
 /// A diff is painted whole rather than a row at a time because a line that replaced exactly
@@ -489,22 +479,4 @@ mod tests {
         );
     }
 
-    #[test]
-    fn a_row_drawn_under_a_heading_keeps_its_inset() {
-        let theme = Theme::dark();
-        let view = tools::preview(
-            "edit",
-            &json!({ "path": "a.rs", "old_string": "old", "new_string": "new" }),
-        );
-        let (rows, _) = view.visible(true);
-        let out = render_body(&rows, &view, &theme, 40);
-
-        assert_eq!(out[0].spans[0].content.as_ref(), "  ");
-        let drawn: String = out[0]
-            .spans
-            .iter()
-            .map(|span| span.content.as_ref())
-            .collect();
-        assert_eq!(drawn.trim_end(), "  -1 old");
-    }
 }

@@ -1215,7 +1215,6 @@ dependencies = [
  "micro-context",
  "micro-extensions",
  "micro-models",
- "micro-policy",
  "micro-provider",
  "micro-rpc",
  "micro-session",
@@ -1287,19 +1286,6 @@ version = "0.1.0"
 dependencies = [
  "micro-types",
  "reqwest",
- "serde",
- "serde_json",
- "thiserror 2.0.20",
- "tokio",
-]
-
-[[package]]
-name = "micro-policy"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "micro-tools",
- "micro-types",
  "serde",
  "serde_json",
  "thiserror 2.0.20",
@@ -1395,7 +1381,6 @@ dependencies = [
  "micro-commands",
  "micro-config",
  "micro-context",
- "micro-policy",
  "micro-session",
  "micro-types",
  "ratatui",

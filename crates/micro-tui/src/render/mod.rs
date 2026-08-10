@@ -8,7 +8,6 @@
 //! prints above the region into the terminal's own history. [`draw`] then lays the same
 //! bands out inside exactly that many rows, so the two always agree on where things go.
 
-mod approval;
 mod editor;
 mod menu;
 mod overlay;
@@ -169,22 +168,12 @@ fn chrome(app: &App, theme: &Theme, width: u16) -> Chrome {
 }
 
 /// The rows of whatever overlay is up, in the order of what is blocking on an answer: a
-/// tool call first, then a credential, then a list to choose from.
+/// credential first, then a list to choose from.
 fn overlay_lines(app: &App, theme: &Theme, width: usize) -> Vec<Line<'static>> {
     // Sized against the screen, not against the region: the region is sized by what this
     // turns out to need, so measuring it against itself would never settle.
     let budget = (app.rows() / MAX_PROMPT_SHARE).max(4) as usize;
 
-    if let Some(request) = app.approvals.showing() {
-        return approval::lines(
-            request,
-            app.approvals.selected(),
-            app.approvals.waiting(),
-            theme,
-            width,
-            budget,
-        );
-    }
     if let Some(prompt) = app.key_prompt() {
         return overlay::key_prompt_lines(prompt, theme, width);
     }
@@ -445,30 +434,6 @@ mod tests {
         });
         app.handle(Action::Insert("a half written\nprompt".into()));
         app
-    }
-
-    /// Painting must stay inside the buffer at any size a terminal can be dragged to, with
-    /// an approval prompt open as well as without one.
-    #[test]
-    fn every_terminal_size_paints_with_a_prompt_open() {
-        for (width, height) in [(1, 1), (2, 3), (8, 4), (20, 6), (80, 24), (200, 60)] {
-            let mut app = populated();
-            let (pending, _answer) =
-                crate::approval::PendingApproval::new(micro_policy::ApprovalRequest {
-                    tool: "bash".into(),
-                    subject: Some("cd build\nmake clean\nmake all".into()),
-                    arguments: serde_json::json!({ "command": "cd build\nmake clean\nmake all" }),
-                    reason: "policy asks before running a shell command".into(),
-                    key: "bash:cd build".into(),
-                });
-            app.ask_approval(pending);
-
-            let mut terminal =
-                Terminal::new(TestBackend::new(width, height)).expect("test backend");
-            terminal
-                .draw(|frame| draw(frame, &mut app))
-                .unwrap_or_else(|error| panic!("{width}x{height} failed: {error}"));
-        }
     }
 
     /// Painting must stay inside the buffer at any size a terminal can be dragged to.

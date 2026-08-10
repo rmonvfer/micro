@@ -43,14 +43,11 @@ mod wrap;
 
 // The pieces the interface is assembled from. They hold no terminal state, so a caller that
 // wants to show a conversation its own way can reuse them.
-pub mod approval;
 pub mod editor;
 pub mod theme;
 pub mod transcript;
 
 pub use app::TuiOptions;
-pub use approval::approval_channel;
-pub use approval::ApprovalRequests;
 pub use commands::Applied;
 pub use commands::Commands;
 pub use commands::ConversationState;
@@ -64,7 +61,6 @@ pub use ui::UiRequests;
 
 use crate::app::App;
 use crate::app::Outcome;
-use crate::approval::PendingApproval;
 use anyhow::Result;
 use crossterm::event::DisableBracketedPaste;
 use crossterm::event::DisableMouseCapture;
@@ -135,7 +131,6 @@ async fn drive(
     history: &[Message],
     mut options: TuiOptions,
 ) -> Result<()> {
-    let mut approvals = options.approvals.take();
     let mut questions = options.questions.take();
     let mut commands = options.commands.take();
     let mut app = App::new(history, options);
@@ -176,7 +171,6 @@ async fn drive(
                         app: &mut app,
                         agent,
                         input: &mut input,
-                        approvals: approvals.as_mut(),
                         questions: &mut questions,
                     },
                     commands.as_deref_mut(),
@@ -331,7 +325,6 @@ struct Turn<'a> {
     app: &'a mut App,
     agent: &'a mut Agent,
     input: &'a mut EventStream,
-    approvals: Option<&'a mut ApprovalRequests>,
     questions: &'a mut Option<crate::ui::UiRequests>,
 }
 
@@ -345,7 +338,6 @@ async fn submit(
         app,
         agent,
         input,
-        approvals,
         questions,
     } = turn;
     // What was typed is offered to whoever runs commands before anything is done with it:
@@ -367,7 +359,7 @@ async fn submit(
     let Some(commands) = commands else {
         mark_prompt_submitted();
         let prompt = app.begin_turn(&line);
-        return run_turn(screen, app, agent, input, approvals, questions, prompt).await;
+        return run_turn(screen, app, agent, input, questions, prompt).await;
     };
 
     let state = app.conversation_state();
@@ -382,7 +374,7 @@ async fn submit(
         Some(None) => {
             mark_prompt_submitted();
             let prompt = app.begin_turn(&line);
-            run_turn(screen, app, agent, input, approvals, questions, prompt).await
+            run_turn(screen, app, agent, input, questions, prompt).await
         }
         Some(Some(outcome)) => apply_outcome(screen, app, agent, input, commands, outcome).await,
     }
@@ -667,14 +659,12 @@ async fn run_turn(
     app: &mut App,
     agent: &mut Agent,
     input: &mut EventStream,
-    approvals: Option<&mut ApprovalRequests>,
     questions: &mut Option<crate::ui::UiRequests>,
     prompt: Message,
 ) -> Result<()> {
     let (sender, mut receiver) = unbounded_channel::<AgentEvent>();
     let progress = app.settings().terminal_progress;
     report_progress(progress, true);
-    let mut approvals = approvals;
     let mut turn = Box::pin(agent.run(prompt, &sender));
     let mut ticker = tokio::time::interval(TICK);
     ticker.set_missed_tick_behavior(MissedTickBehavior::Delay);
@@ -715,7 +705,6 @@ async fn run_turn(
                     break;
                 }
             },
-            Some(pending) = next_approval(&mut approvals) => app.ask_approval(pending),
             Some(question) = next_question(questions) => app.ask_question(question),
             Some(event) = receiver.recv() => {
                 app.apply_event(event);
@@ -734,31 +723,14 @@ async fn run_turn(
     while let Ok(event) = receiver.try_recv() {
         app.apply_event(event);
     }
-    // A request the abandoned turn had already sent would otherwise open as a prompt during
-    // the next one, for a call that is no longer going to run. Collecting it here hands it
-    // to `finish_turn`, which refuses everything outstanding.
-    if let Some(requests) = approvals {
-        while let Some(pending) = requests.try_recv() {
-            app.ask_approval(pending);
-        }
-    }
     app.finish_turn(aborted);
     report_progress(progress, false);
     Ok(())
 }
 
-/// The next question from an extension. Inert when nothing can ask, for the same reason as
-/// [`next_approval`].
+/// The next question from an extension. With nothing able to ask, this never resolves,
+/// which leaves the arm inert rather than closing the select over it.
 async fn next_question(requests: &mut Option<crate::ui::UiRequests>) -> Option<crate::ui::UiRequest> {
-    match requests {
-        Some(requests) => requests.recv().await,
-        None => std::future::pending().await,
-    }
-}
-
-/// The next approval request. With nothing able to ask, this never resolves, which leaves
-/// the arm inert rather than closing the select over it.
-async fn next_approval(requests: &mut Option<&mut ApprovalRequests>) -> Option<PendingApproval> {
     match requests {
         Some(requests) => requests.recv().await,
         None => std::future::pending().await,

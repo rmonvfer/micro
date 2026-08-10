@@ -13,7 +13,6 @@ members = [
     "crates/micro-context",
     "crates/micro-skills",
     "crates/micro-commands",
-    "crates/micro-policy",
     "crates/micro-agent",
     "crates/micro-testkit",
     "crates/micro-tui",
@@ -38,7 +37,6 @@ micro-session = { path = "crates/micro-session" }
 micro-context = { path = "crates/micro-context" }
 micro-skills = { path = "crates/micro-skills" }
 micro-commands = { path = "crates/micro-commands" }
-micro-policy = { path = "crates/micro-policy" }
 micro-agent = { path = "crates/micro-agent" }
 micro-testkit = { path = "crates/micro-testkit" }
 micro-tui = { path = "crates/micro-tui" }

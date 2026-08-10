@@ -50,7 +50,15 @@ struct ManifestSection {
 }
 
 /// Every extension to load, in the order they should be loaded.
-pub fn discover(workspace: &Path, home: &Path, configured: &[String]) -> Vec<PathBuf> {
+///
+/// The project's own are loaded only once the project has been trusted; the user's own
+/// and whatever the configuration names are theirs, and load either way.
+pub fn discover(
+    workspace: &Path,
+    home: &Path,
+    configured: &[String],
+    trusted: bool,
+) -> Vec<PathBuf> {
     let mut found = Vec::new();
     let mut seen = std::collections::BTreeSet::new();
 
@@ -63,7 +71,9 @@ pub fn discover(workspace: &Path, home: &Path, configured: &[String]) -> Vec<Pat
         }
     };
 
-    add(in_directory(&workspace.join(PROJECT_DIR)), &mut found);
+    if trusted {
+        add(in_directory(&workspace.join(PROJECT_DIR)), &mut found);
+    }
     add(in_directory(&home.join("extensions")), &mut found);
 
     for path in configured {
@@ -273,14 +283,14 @@ mod tests {
         write(&workspace.join(PROJECT_DIR).join("local.ts"), "export default () => {}");
         write(&home.join("extensions/global.ts"), "export default () => {}");
 
-        let found = discover(&workspace, &home, &[]);
+        let found = discover(&workspace, &home, &[], true);
         assert_eq!(found.len(), 2, "{found:?}");
         assert!(found[0].ends_with("local.ts"));
         assert!(found[1].ends_with("global.ts"));
 
         // Naming one of them again does not load it a second time.
         let configured = vec![found[0].display().to_string()];
-        assert_eq!(discover(&workspace, &home, &configured).len(), 2);
+        assert_eq!(discover(&workspace, &home, &configured, true).len(), 2);
     }
 
     #[test]
@@ -294,6 +304,7 @@ mod tests {
             &workspace,
             &root.join("home"),
             &[root.join("elsewhere/thing.ts").display().to_string()],
+            true,
         );
         assert_eq!(found.len(), 1);
         assert!(found[0].ends_with("thing.ts"));
@@ -311,6 +322,7 @@ mod tests {
             &workspace,
             &root.join("home"),
             &[root.join("bundle").display().to_string()],
+            true,
         );
         assert_eq!(found.len(), 2, "{found:?}");
     }
@@ -321,7 +333,8 @@ mod tests {
         assert!(discover(
             Path::new("/nowhere-at-all"),
             Path::new("/nor-here"),
-            &[]
+            &[],
+            true
         )
         .is_empty());
     }

@@ -59,15 +59,6 @@ pub enum Body {
 }
 
 impl Body {
-    pub fn is_empty(&self) -> bool {
-        match self {
-            Body::Empty => true,
-            Body::Diff { lines, .. } => lines.is_empty(),
-            Body::Text(lines) => lines.is_empty(),
-            Body::Matches(files) => files.is_empty(),
-            Body::Paths(paths) => paths.is_empty(),
-        }
-    }
 }
 
 /// A tool result ready to render: what it acted on, how it went, and what it produced.
@@ -133,25 +124,6 @@ impl ToolView {
                 })
                 .collect(),
         }
-    }
-}
-
-/// What a call would do, read from its arguments alone.
-///
-/// Approval is asked for before the tool runs, so there is no result to interpret. A file
-/// change is fully described by its arguments, though, and showing that diff is most of the
-/// reason for asking at all.
-pub fn preview(name: &str, arguments: &Value) -> ToolView {
-    let subject = subject(name, arguments);
-    match name {
-        "edit" | "multi_edit" | "write" => file_change(name, subject, arguments),
-        _ => ToolView {
-            subject,
-            detail: None,
-            body: Body::Empty,
-            collapsed_rows: 0,
-            notes: Vec::new(),
-        },
     }
 }
 
@@ -764,25 +736,6 @@ mod tests {
         assert_eq!(rows.len(), COLLAPSED_LIST_ROWS);
         assert_eq!(hidden, 30 - COLLAPSED_LIST_ROWS);
         assert_eq!(view.visible(true).1, 0);
-    }
-
-    #[test]
-    fn a_preview_diffs_a_change_that_has_not_run_yet() {
-        let view = preview(
-            "edit",
-            &json!({ "path": "a.rs", "old_string": "old", "new_string": "new" }),
-        );
-        assert_eq!(view.subject, "a.rs");
-        assert_eq!(view.detail.as_deref(), Some("+1 -1"));
-        assert_eq!(gutters(&view, true), vec!["-1 old", "+1 new"]);
-    }
-
-    #[test]
-    fn a_preview_of_a_tool_with_nothing_to_show_is_just_its_subject() {
-        let view = preview("bash", &json!({ "command": "rm -rf build" }));
-        assert_eq!(view.subject, "rm -rf build");
-        assert_eq!(view.body, Body::Empty);
-        assert!(rows_of(&view, true).is_empty());
     }
 
     #[test]

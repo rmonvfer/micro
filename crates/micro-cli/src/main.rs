@@ -1,7 +1,6 @@
 //! Entry point. With no subcommand it opens the interface; `--print` runs one prompt and
 //! exits.
 
-mod approver;
 mod commands;
 mod headless;
 mod extensions;
@@ -62,9 +61,14 @@ struct Cli {
     #[arg(short, long)]
     quiet: bool,
 
-    /// How much the agent may do without asking.
-    #[arg(long, value_parser = parse_mode, default_value = "cautious")]
-    approve: micro_policy::Mode,
+    /// Comma-separated allowlist of tool names to enable.
+    #[arg(long, short = 't', value_delimiter = ',')]
+    tools: Vec<String>,
+
+    /// Comma-separated denylist of tool names to disable.
+    #[arg(long = "exclude-tools", short = 'x', value_delimiter = ',')]
+    exclude_tools: Vec<String>,
+
 }
 
 #[derive(Subcommand)]
@@ -136,15 +140,59 @@ enum SessionAction {
     Delete { id: String },
 }
 
-fn parse_mode(value: &str) -> Result<micro_policy::Mode, String> {
-    match value {
-        "cautious" => Ok(micro_policy::Mode::Cautious),
-        "workspace" => Ok(micro_policy::Mode::Workspace),
-        "unrestricted" => Ok(micro_policy::Mode::Unrestricted),
-        other => Err(format!(
-            "unknown approval mode `{other}`: expected cautious, workspace, or unrestricted"
-        )),
+/// Whether this project may run what it ships.
+///
+/// A project carrying none of it is used without a question. One that does is answered by
+/// whatever was decided about it before, then by the standing answer, and only then by
+/// asking. With nobody at a terminal there is nobody to ask, so it is not trusted.
+async fn project_trusted(root: &std::path::Path, settings: &micro_config::Settings, has_ui: bool) -> bool {
+    if !micro_config::requires_decision(root) {
+        return true;
     }
+
+    let mut store = micro_config::TrustStore::load().await.unwrap_or_default();
+    if let Some(decision) = store.decision(root) {
+        return decision.trusted;
+    }
+
+    match settings.default_project_trust {
+        micro_config::ProjectTrust::Always => return true,
+        micro_config::ProjectTrust::Never => return false,
+        micro_config::ProjectTrust::Ask => {}
+    }
+    if !has_ui {
+        return false;
+    }
+
+    let trusted = ask_about_trust(root);
+    store.decide(root, trusted);
+    if let Err(error) = store.save().await {
+        eprintln!("note: the decision was not saved: {error}");
+    }
+    trusted
+}
+
+/// Put the question to whoever is at the terminal, before the interface takes it over.
+fn ask_about_trust(root: &std::path::Path) -> bool {
+    use std::io::BufRead as _;
+    use std::io::Write as _;
+
+    println!("Trust project folder?");
+    println!("{}", root.display());
+    println!();
+    println!(
+        "This allows micro to load {} settings and resources, and run this project's \
+         extensions.",
+        micro_config::PROJECT_DIR
+    );
+    print!("Trust it? [y/N] ");
+    let _ = std::io::stdout().flush();
+
+    let mut answer = String::new();
+    if std::io::stdin().lock().read_line(&mut answer).is_err() {
+        return false;
+    }
+    matches!(answer.trim().to_ascii_lowercase().as_str(), "y" | "yes")
 }
 
 fn parse_thinking(value: &str) -> Result<ThinkingLevel, String> {
@@ -164,7 +212,7 @@ async fn main() -> Result<()> {
     let (mine, given) = micro_extensions::split_unknown(
         std::env::args(),
         &["print", "rpc", "quiet", "continue", "local", "live", "all", "overwrite", "help", "version"],
-        &["model", "provider", "thinking", "cwd", "resume", "approve"],
+        &["model", "provider", "thinking", "cwd", "resume", "tools", "exclude-tools"],
     );
     let cli = Cli::parse_from(mine);
 
@@ -229,26 +277,12 @@ async fn main() -> Result<()> {
         }
     };
 
-    let (approver, approvals): (std::sync::Arc<dyn micro_policy::Approver>, _) = match (
-        cli.print, cli.rpc,
-    ) {
-        // Nobody is at a terminal to answer in RPC mode, so a call the policy cannot
-        // decide is refused rather than left waiting for an answer that cannot come.
-        (_, true) => (std::sync::Arc::new(micro_policy::DenyEverything), None),
-        // With `--print` the user is at the terminal, and is asked there.
-        (true, false) => (std::sync::Arc::new(approver::TerminalApprover), None),
-        (false, false) => {
-            let (approver, requests) = micro_tui::approval_channel();
-            (approver, Some(requests))
-        }
-    };
-
     let selection = Selection {
         model: settings.model.clone(),
         provider: settings.provider.clone(),
         thinking: cli.thinking,
-        mode: cli.approve,
-        approver,
+        tools: cli.tools.clone(),
+        exclude_tools: cli.exclude_tools.clone(),
     };
 
     let resume = match (&cli.resume, cli.continue_latest) {
@@ -257,7 +291,11 @@ async fn main() -> Result<()> {
         (None, false) => None,
     };
 
-    let mut built = runtime::build(&root, &selection, resume.as_deref(), &settings).await?;
+    // A project's own extensions and skills are things it asks micro to run, so whether
+    // to run them is settled before anything of the project's is loaded.
+    let trusted = project_trusted(&root, &settings, !cli.print && !cli.rpc).await;
+    let mut built =
+        runtime::build(&root, &selection, resume.as_deref(), &settings, trusted).await?;
     // Extensions are told the session has begun, and told again when it ends, which is
     // where one that holds anything open gets to let go of it.
     let extensions = built.extensions.clone();
@@ -386,7 +424,6 @@ async fn main() -> Result<()> {
             context_window: built.model.context_window,
             thinking: cli.thinking,
             settings: micro_tui::Preferences::from(&settings),
-            approvals,
             questions,
             // Without this every submitted line goes to the model, `/help` included.
             commands: Some(Box::new(built.commands)),

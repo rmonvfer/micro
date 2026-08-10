@@ -8,9 +8,6 @@
 //! caches them against the width and the transcript's version, so a frame arriving between
 //! two streamed tokens reuses what the last one wrapped.
 
-use crate::approval::ApprovalQueue;
-use crate::approval::Choice;
-use crate::approval::PendingApproval;
 use crate::capabilities::ImageProtocol;
 use crate::clipboard;
 use crate::commands::Applied;
@@ -55,7 +52,6 @@ pub struct TuiOptions {
     /// The palette to paint in. Worked out from the terminal when it is left open.
     pub theme: Option<Theme>,
     /// Where tool calls come to be approved, when anything is gating them.
-    pub approvals: Option<crate::approval::ApprovalRequests>,
     /// Where questions from extensions arrive, when anything can ask them.
     pub questions: Option<crate::ui::UiRequests>,
     /// How a slash command is run. Without this every submitted line goes to the model.
@@ -75,7 +71,6 @@ impl Default for TuiOptions {
             context_window: 0,
             thinking: ThinkingLevel::Off,
             theme: None,
-            approvals: None,
             questions: None,
             notice: None,
             commands: None,
@@ -186,7 +181,6 @@ struct CacheKey {
 pub struct App {
     pub transcript: Transcript,
     pub editor: Editor,
-    pub approvals: ApprovalQueue,
     /// The palette everything is painted in.
     pub theme: Theme,
     /// Whether the model's reasoning is shown alongside its answers.
@@ -243,7 +237,6 @@ impl App {
         let mut app = App {
             transcript: Transcript::from_messages(history),
             editor: Editor::new(),
-            approvals: ApprovalQueue::new(),
             theme: options.theme.unwrap_or_else(Theme::dark),
             show_thinking: !options.settings.hide_thinking,
             thinking: options.thinking,
@@ -377,7 +370,7 @@ impl App {
     /// Whether something is holding the keyboard, which is also what decides where the
     /// cursor is drawn: an input the next keystroke will not reach must not blink.
     pub fn overlay_is_open(&self) -> bool {
-        self.approvals.is_open() || self.key_prompt.is_some() || self.picker.is_some()
+        self.key_prompt.is_some() || self.picker.is_some()
     }
 
     pub fn is_running(&self) -> bool {
@@ -592,13 +585,10 @@ impl App {
 
     /// The turn is over, however it ended.
     ///
-    /// An abandoned turn leaves requests nobody is going to answer, so they are refused
-    /// here rather than opening as prompts during the next one.
     pub fn finish_turn(&mut self, aborted: bool) {
         self.transcript.close();
         self.turn = None;
         if aborted {
-            self.approvals.deny_all(crate::approval::INTERRUPTED);
             self.notice("Interrupted", MessageKind::Info);
         }
     }
@@ -651,11 +641,6 @@ impl App {
                 }
             }
         }
-    }
-
-    /// A tool call is waiting on an answer.
-    pub fn ask_approval(&mut self, pending: PendingApproval) {
-        self.approvals.push(pending);
     }
 
     /// Put the last answer on the system clipboard.
@@ -761,11 +746,8 @@ impl App {
 
     /// Answer one action.
     pub fn handle(&mut self, action: Action) -> Outcome {
-        // An overlay owns the keyboard while it is up, in the order of what is blocking on
-        // an answer: a tool call first, then a credential, then a list to choose from.
-        if self.approvals.is_open() {
-            return self.handle_approval(action);
-        }
+        // An overlay owns the keyboard while it is up, in the order of what is blocking
+        // on an answer: a credential first, then a list to choose from.
         if self.key_prompt.is_some() {
             return self.handle_key_prompt(action);
         }
@@ -1067,29 +1049,6 @@ impl App {
             0 => Menu::open_for(&line, column),
             _ => None,
         };
-    }
-
-    fn handle_approval(&mut self, action: Action) -> Outcome {
-        match action {
-            Action::MoveUp | Action::FocusPrevious => self.approvals.select_previous(),
-            Action::MoveDown | Action::FocusNext => self.approvals.select_next(),
-            Action::Submit => self.approvals.confirm(),
-            Action::Cancel => self.approvals.answer(Choice::Deny),
-            // A choice can be answered by its key without moving to it first, which is how
-            // ohm lets an approval be answered in one press.
-            Action::Insert(text) => {
-                if let Some(choice) = Choice::from_key(&text) {
-                    self.approvals.answer(choice);
-                }
-            }
-            Action::Interrupt => {
-                self.approvals.answer(Choice::Deny);
-                return Outcome::Handled;
-            }
-            Action::Quit => return Outcome::Quit,
-            _ => {}
-        }
-        Outcome::Handled
     }
 
     fn handle_key_prompt(&mut self, action: Action) -> Outcome {
@@ -1831,77 +1790,6 @@ mod tests {
         assert_eq!(app.editor.cursor().1, 6, "the cursor moved to it");
     }
 
-    /// An approval owns the keyboard while it is up: a key that would reach the prompt is
-    /// an answer instead.
-    #[test]
-    fn an_approval_takes_the_keyboard_while_it_is_open() {
-        let (approver, mut requests) = crate::approval::approval_channel();
-        let mut app = app();
-
-        let asking = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .unwrap();
-        asking.block_on(async {
-            let request = micro_policy::ApprovalRequest {
-                tool: "bash".into(),
-                subject: Some("rm -rf /".into()),
-                arguments: serde_json::json!({ "command": "rm -rf /" }),
-                reason: "the policy cannot vouch for this".into(),
-                key: "bash:rm -rf /".into(),
-            };
-            let answering =
-                tokio::spawn(async move { approver.approve(&request).await });
-            let pending = requests.recv().await.expect("a request");
-            app.ask_approval(pending);
-
-            assert!(app.overlay_is_open());
-            app.handle(Action::Insert("x".into()));
-            assert!(app.editor.is_empty(), "typing did not reach the prompt");
-
-            app.handle(Action::Cancel);
-            assert!(!app.overlay_is_open(), "answering closed it");
-            assert!(matches!(
-                answering.await.unwrap(),
-                micro_policy::Approval::Denied(_)
-            ));
-        });
-    }
-
-    /// An abandoned turn refuses every request it left behind, so nothing opens as a
-    /// prompt during the next one.
-    #[test]
-    fn an_interrupted_turn_refuses_what_it_left_behind() {
-        let (approver, mut requests) = crate::approval::approval_channel();
-        let mut app = app();
-        app.busy("thinking");
-
-        let asking = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .unwrap();
-        asking.block_on(async {
-            let request = micro_policy::ApprovalRequest {
-                tool: "write".into(),
-                subject: Some("src/main.rs".into()),
-                arguments: serde_json::json!({ "path": "src/main.rs" }),
-                reason: "the policy cannot vouch for this".into(),
-                key: "write:src/main.rs".into(),
-            };
-            let answering =
-                tokio::spawn(async move { approver.approve(&request).await });
-            let pending = requests.recv().await.expect("a request");
-            app.ask_approval(pending);
-
-            app.finish_turn(true);
-            assert!(!app.overlay_is_open(), "nothing is left asking");
-            assert!(matches!(
-                answering.await.unwrap(),
-                micro_policy::Approval::Denied(_)
-            ));
-        });
-    }
-
     #[test]
     fn the_theme_can_be_changed_without_touching_the_conversation() {
         let mut app = app();
@@ -2245,33 +2133,6 @@ mod tests {
         assert_eq!(app.activity(), "compacting");
         app.idle();
         assert!(!app.is_running());
-    }
-
-    /// An approval can be answered by its own key without moving to it first.
-    #[test]
-    fn an_approval_takes_the_answer_by_its_key() {
-        let (approver, mut requests) = crate::approval::approval_channel();
-        let mut app = app();
-
-        tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .unwrap()
-            .block_on(async {
-                let request = micro_policy::ApprovalRequest {
-                    tool: "read".into(),
-                    subject: Some("src/main.rs".into()),
-                    arguments: serde_json::json!({ "path": "src/main.rs" }),
-                    reason: "the policy cannot vouch for this".into(),
-                    key: "read:src/main.rs".into(),
-                };
-                let answering = tokio::spawn(async move { approver.approve(&request).await });
-                app.ask_approval(requests.recv().await.expect("a request"));
-
-                app.handle(Action::Insert("a".into()));
-                assert!(!app.overlay_is_open());
-                assert_eq!(answering.await.unwrap(), micro_policy::Approval::Session);
-            });
     }
 
     /// A prompt sent while the conversation is scrolled back brings the reader to the end,

@@ -349,6 +349,14 @@ impl Fixture {
         )
         .expect("write models.json");
 
+        // The workspace is vouched for, the way a user vouches for a project they are
+        // working in. Without it a project's own extensions and skills are left alone.
+        std::fs::write(
+            home.join("config.json"),
+            json!({ "default_project_trust": "always" }).to_string(),
+        )
+        .expect("write config.json");
+
         Fixture {
             // Canonicalized so the workspace matches what the session store records.
             root: root.canonicalize().unwrap_or(root),

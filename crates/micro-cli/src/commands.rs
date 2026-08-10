@@ -342,7 +342,13 @@ impl CliCommands {
     /// Only the standing instructions change. The conversation is left exactly as it is,
     /// because nothing that was said stopped being true.
     async fn reload(&self) -> Applied {
-        let context = crate::runtime::load_context(&self.workspace, self.skills_enabled).await;
+        let trusted = !micro_config::requires_decision(&self.workspace)
+            || micro_config::TrustStore::load_from(&self.home)
+                .await
+                .unwrap_or_default()
+                .is_trusted(&self.workspace);
+        let context =
+            crate::runtime::load_context(&self.workspace, self.skills_enabled, trusted).await;
 
         let mut note = format!(
             "Reloaded {} and {}.",
@@ -390,7 +396,7 @@ impl CliCommands {
     /// The decision is read when a run starts, so it takes effect from the next one: the
     /// policy this run is enforcing was settled before the first tool call.
     async fn trust(&self, trusted: bool) -> Applied {
-        let mut store = match micro_policy::TrustStore::load_from(&self.home).await {
+        let mut store = match micro_config::TrustStore::load_from(&self.home).await {
             Ok(store) => store,
             Err(error) => return Applied::error(format!("Cannot read the trust store: {error}")),
         };
@@ -1098,14 +1104,10 @@ mod tests {
             "Saved trust decision: trusted. Restart micro for this to take effect."
         );
 
-        let store = micro_policy::TrustStore::load_from(root.join("home"))
+        let store = micro_config::TrustStore::load_from(root.join("home"))
             .await
             .unwrap();
         assert!(store.is_trusted(&host.workspace));
-        assert_eq!(
-            store.mode_for(&host.workspace, micro_policy::Mode::Cautious),
-            micro_policy::Mode::Workspace
-        );
 
         let outcome = host
             .dispatch("/trust off", state(0))
@@ -1115,7 +1117,7 @@ mod tests {
             note(&host.apply(outcome).await),
             "Saved trust decision: untrusted. Restart micro for this to take effect."
         );
-        let store = micro_policy::TrustStore::load_from(root.join("home"))
+        let store = micro_config::TrustStore::load_from(root.join("home"))
             .await
             .unwrap();
         assert!(!store.is_trusted(&host.workspace));

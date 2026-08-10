@@ -8,7 +8,6 @@ license.workspace = true
 micro-agent = { workspace = true }
 micro-commands = { workspace = true }
 micro-config = { workspace = true }
-micro-policy = { workspace = true }
 micro-session = { workspace = true }
 micro-context = { workspace = true }
 micro-types = { workspace = true }

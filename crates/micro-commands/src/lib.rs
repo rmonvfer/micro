@@ -453,7 +453,14 @@ fn theme(argument: Option<&str>) -> CommandOutcome {
 /// What skills were found, and anything that stopped one loading.
 async fn skills(context: &CommandContext<'_>) -> CommandOutcome {
     let home = micro_context::micro_home().unwrap_or_default();
-    let found = micro_skills::discover(context.workspace, &home).await;
+    // Listing what is on offer answers with what this run is actually offering, which is
+    // the project's own only when the project has been trusted.
+    let trusted = !micro_config::requires_decision(context.workspace)
+        || micro_config::TrustStore::load()
+            .await
+            .unwrap_or_default()
+            .is_trusted(context.workspace);
+    let found = micro_skills::discover(context.workspace, &home, trusted).await;
 
     if found.skills.is_empty() && found.diagnostics.is_empty() {
         return CommandOutcome::info(
@@ -514,8 +521,8 @@ fn settings(context: &CommandContext<'_>) -> CommandOutcome {
         ),
         PickerItem::new(
             "Default project trust",
-            on_off(now.default_project_trust),
-            "/trust",
+            format!("{:?}", now.default_project_trust).to_lowercase(),
+            "/set default_project_trust",
         ),
         PickerItem::new("Auto-compact", on_off(now.auto_compact), "/set auto_compact"),
         PickerItem::new(
@@ -704,8 +711,8 @@ fn describe(config: &micro_config::Config, name: &str) -> Option<String> {
             format!("{:?}", now.follow_up_mode).to_lowercase()
         ),
         "default_project_trust" => format!(
-            "default_project_trust is {} (on or off)",
-            now.default_project_trust
+            "default_project_trust is {} (ask, always or never)",
+            format!("{:?}", now.default_project_trust).to_lowercase()
         ),
         "http_idle_timeout" => {
             format!("http_idle_timeout is {} (seconds)", now.http_idle_timeout)
@@ -796,7 +803,14 @@ fn assign(config: &mut micro_config::Config, name: &str, value: &str) -> Result<
                 other => return Err(format!("`{other}` is not queue or interrupt")),
             })
         }
-        "default_project_trust" => config.default_project_trust = Some(flag()?),
+        "default_project_trust" => {
+            config.default_project_trust = Some(match value.to_ascii_lowercase().as_str() {
+                "ask" => micro_config::ProjectTrust::Ask,
+                "always" => micro_config::ProjectTrust::Always,
+                "never" => micro_config::ProjectTrust::Never,
+                other => return Err(format!("`{other}` is not ask, always or never")),
+            })
+        }
         "http_idle_timeout" => config.http_idle_timeout = Some(number(3600)?),
         "anthropic_extra_usage" => config.anthropic_extra_usage = Some(flag()?),
         "transport" => {
@@ -1175,7 +1189,7 @@ mod tests {
             ("cache_miss_notices", "on"),
             ("double_escape", "fork"),
             ("follow_up_mode", "interrupt"),
-            ("default_project_trust", "on"),
+            ("default_project_trust", "always"),
             ("http_idle_timeout", "300"),
             ("scoped_models", "anthropic/, google/gemini-3-pro"),
             ("transport", "auto"),
