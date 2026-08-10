@@ -448,9 +448,14 @@ async fn run_command_headlessly(
         return Some(text.to_string());
     }
 
+    // Whatever the command settled on, said the way it would be said on screen. A run
+    // without an interface applies nothing else: there is no agent to hand a new model
+    // to and no scrollback to rebuild.
     match commands.apply(outcome).await {
         micro_tui::Applied::Note { text, .. } => Some(text),
         micro_tui::Applied::Conversation { note, .. } => note,
-        other => Some(format!("{other:?}")),
+        micro_tui::Applied::SystemPrompt { note, .. } => note,
+        micro_tui::Applied::Model { note, .. } => note,
+        micro_tui::Applied::Nothing => None,
     }
 }
