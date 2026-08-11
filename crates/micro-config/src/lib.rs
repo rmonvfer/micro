@@ -15,7 +15,7 @@
 //!     model: Some("opus".to_string()),
 //!     ..Overrides::default()
 //! })?;
-//! println!("{:?} at {:?}", settings.model, settings.approval);
+//! println!("{:?} at {:?}", settings.model, settings.thinking);
 //! # Ok::<(), micro_config::ConfigError>(())
 //! ```
 
@@ -46,7 +46,6 @@ pub const MODEL_ENV: &str = "MICRO_MODEL";
 pub const PROVIDER_ENV: &str = "MICRO_PROVIDER";
 pub const THINKING_ENV: &str = "MICRO_THINKING";
 pub const THEME_ENV: &str = "MICRO_THEME";
-pub const APPROVAL_ENV: &str = "MICRO_APPROVAL";
 pub const LIVE_MODELS_ENV: &str = "MICRO_LIVE_MODELS";
 
 /// The palette to use when the config names none.
@@ -111,20 +110,6 @@ pub enum FollowUpMode {
     Interrupt,
 }
 
-/// How much the agent may do without being asked. Mirrors the modes the policy layer
-/// enforces; this is only where the choice is remembered between runs.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ApprovalMode {
-    /// Reading is free; changing a file or running a command is asked about.
-    #[default]
-    Cautious,
-    /// Reading and editing inside the workspace are free; commands are still asked about.
-    Workspace,
-    /// Everything is allowed except what cannot be undone.
-    Unrestricted,
-}
-
 /// The config file, as it is written on disk.
 ///
 /// Every field is optional: absent means "no preference", and the default applies. Keys
@@ -140,8 +125,6 @@ pub struct Config {
     pub thinking: Option<Thinking>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub theme: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub approval: Option<ApprovalMode>,
     /// Merge live provider listings into the model catalog on startup.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub live_models: Option<bool>,
@@ -231,7 +214,6 @@ pub struct Overrides {
     pub provider: Option<String>,
     pub thinking: Option<Thinking>,
     pub theme: Option<String>,
-    pub approval: Option<ApprovalMode>,
     pub live_models: Option<bool>,
 }
 
@@ -244,7 +226,6 @@ pub struct Settings {
     pub provider: Option<String>,
     pub thinking: Thinking,
     pub theme: String,
-    pub approval: ApprovalMode,
     pub live_models: bool,
 
     pub auto_compact: bool,
@@ -292,7 +273,6 @@ impl Default for Settings {
             provider: None,
             thinking: Thinking::default(),
             theme: DEFAULT_THEME.to_string(),
-            approval: ApprovalMode::default(),
             live_models: false,
 
             auto_compact: true,
@@ -424,12 +404,6 @@ impl Config {
             .unwrap_or_default(),
             theme: layered(arguments.theme.clone(), read(THEME_ENV), self.theme.clone())
                 .unwrap_or_else(|| DEFAULT_THEME.to_string()),
-            approval: layered(
-                arguments.approval,
-                from_env(APPROVAL_ENV, read(APPROVAL_ENV))?,
-                self.approval,
-            )
-            .unwrap_or_default(),
             live_models: layered(
                 arguments.live_models,
                 from_env::<BoolSetting>(LIVE_MODELS_ENV, read(LIVE_MODELS_ENV))?.map(bool::from),
@@ -499,7 +473,6 @@ impl Config {
             provider: take(&mut fields, "provider", path)?,
             thinking: take(&mut fields, "thinking", path)?,
             theme: take(&mut fields, "theme", path)?,
-            approval: take(&mut fields, "approval", path)?,
             live_models: take(&mut fields, "live_models", path)?,
             auto_compact: take(&mut fields, "auto_compact", path)?,
             hide_thinking: take(&mut fields, "hide_thinking", path)?,
@@ -629,21 +602,6 @@ impl FromStr for Thinking {
     }
 }
 
-impl FromStr for ApprovalMode {
-    type Err = String;
-
-    fn from_str(value: &str) -> std::result::Result<Self, Self::Err> {
-        match value.to_ascii_lowercase().as_str() {
-            "cautious" => Ok(ApprovalMode::Cautious),
-            "workspace" => Ok(ApprovalMode::Workspace),
-            "unrestricted" => Ok(ApprovalMode::Unrestricted),
-            other => Err(format!(
-                "unknown approval mode `{other}` - expected cautious, workspace, or unrestricted"
-            )),
-        }
-    }
-}
-
 impl fmt::Display for Thinking {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(match self {
@@ -651,16 +609,6 @@ impl fmt::Display for Thinking {
             Thinking::Low => "low",
             Thinking::Medium => "medium",
             Thinking::High => "high",
-        })
-    }
-}
-
-impl fmt::Display for ApprovalMode {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(match self {
-            ApprovalMode::Cautious => "cautious",
-            ApprovalMode::Workspace => "workspace",
-            ApprovalMode::Unrestricted => "unrestricted",
         })
     }
 }
@@ -759,7 +707,6 @@ mod tests {
                 "provider": "openrouter",
                 "thinking": "high",
                 "theme": "light",
-                "approval": "workspace",
                 "live_models": true
             }"#,
         )
@@ -770,7 +717,6 @@ mod tests {
         assert_eq!(config.provider.as_deref(), Some("openrouter"));
         assert_eq!(config.thinking, Some(Thinking::High));
         assert_eq!(config.theme.as_deref(), Some("light"));
-        assert_eq!(config.approval, Some(ApprovalMode::Workspace));
         assert_eq!(config.live_models, Some(true));
         assert!(config.extra.is_empty());
     }
@@ -851,17 +797,13 @@ mod tests {
         let path = scratch("save").join("nested").join("config.json");
         let config = Config {
             model: Some("opus".into()),
-            approval: Some(ApprovalMode::Unrestricted),
             ..Config::default()
         };
         config.save_to(&path).unwrap();
 
         assert_eq!(Config::load_from(&path).unwrap(), config);
         let written = fs::read_to_string(&path).unwrap();
-        assert!(
-            written.contains("\"approval\": \"unrestricted\""),
-            "{written}"
-        );
+        assert!(written.contains("\"model\": \"opus\""), "{written}");
         // Fields nobody set stay out of the file rather than being written as null.
         assert!(!written.contains("theme"), "{written}");
     }
@@ -904,7 +846,6 @@ mod tests {
     fn precedence_holds_for_every_setting() {
         let config = Config {
             thinking: Some(Thinking::Low),
-            approval: Some(ApprovalMode::Cautious),
             theme: Some("light".into()),
             provider: Some("anthropic".into()),
             live_models: Some(false),
@@ -912,7 +853,6 @@ mod tests {
         };
         let environment = environment(&[
             (THINKING_ENV, "medium"),
-            (APPROVAL_ENV, "workspace"),
             (THEME_ENV, "dark"),
             (PROVIDER_ENV, "openrouter"),
             (LIVE_MODELS_ENV, "true"),
@@ -920,14 +860,12 @@ mod tests {
 
         let from_env = config.resolve(&Overrides::default(), &environment).unwrap();
         assert_eq!(from_env.thinking, Thinking::Medium);
-        assert_eq!(from_env.approval, ApprovalMode::Workspace);
         assert_eq!(from_env.theme, "dark");
         assert_eq!(from_env.provider.as_deref(), Some("openrouter"));
         assert!(from_env.live_models);
 
         let arguments = Overrides {
             thinking: Some(Thinking::High),
-            approval: Some(ApprovalMode::Unrestricted),
             theme: Some("light".into()),
             provider: Some("gemini".into()),
             live_models: Some(false),
@@ -935,7 +873,6 @@ mod tests {
         };
         let from_arguments = config.resolve(&arguments, &environment).unwrap();
         assert_eq!(from_arguments.thinking, Thinking::High);
-        assert_eq!(from_arguments.approval, ApprovalMode::Unrestricted);
         assert_eq!(from_arguments.theme, "light");
         assert_eq!(from_arguments.provider.as_deref(), Some("gemini"));
         assert!(!from_arguments.live_models);
@@ -962,7 +899,6 @@ mod tests {
 
         assert_eq!(settings, Settings::default());
         assert_eq!(settings.thinking, Thinking::Off);
-        assert_eq!(settings.approval, ApprovalMode::Cautious);
         assert_eq!(settings.theme, "dark");
         assert!(!settings.live_models);
         assert_eq!(settings.model, None);
@@ -988,12 +924,6 @@ mod tests {
         assert_eq!("none".parse::<Thinking>().unwrap(), Thinking::Off);
         assert!("extreme".parse::<Thinking>().is_err());
 
-        assert_eq!(
-            "Unrestricted".parse::<ApprovalMode>().unwrap(),
-            ApprovalMode::Unrestricted
-        );
-        assert!("yolo".parse::<ApprovalMode>().is_err());
-
         for yes in ["1", "true", "YES", "on"] {
             assert_eq!(yes.parse::<BoolSetting>().unwrap(), BoolSetting(true));
         }
@@ -1006,7 +936,6 @@ mod tests {
     #[test]
     fn a_setting_reads_back_as_it_is_written() {
         assert_eq!(Thinking::Medium.to_string(), "medium");
-        assert_eq!(ApprovalMode::Workspace.to_string(), "workspace");
         assert_eq!(
             Thinking::Medium.to_string().parse::<Thinking>().unwrap(),
             Thinking::Medium

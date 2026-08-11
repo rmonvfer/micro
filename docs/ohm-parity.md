@@ -62,7 +62,6 @@ What ohm has, where micro's equivalent lives, and whether they agree.
 | Editor frame | rules above and below, coloured by reasoning effort | **Matches** |
 | Autocomplete | `menu.rs` + `fuzzy.rs`, sized by `autocomplete_max_items` | **Matches** for slash commands; ohm also completes `@` paths |
 | Selectors | `picker.rs` drives model, session, tree, settings, thinking, theme and trust | **Matches** in function; ohm draws each as its own component |
-| Approval prompt | `approval.rs` + `render/approval.rs` | **micro-only.** ohm has no in-TUI approval of this shape |
 | Status indicator | `render/status.rs` `activity_line` — braille spinner, two reserved rows | **Matches** |
 | Footer | `render/status.rs` `Footer` — cwd, usage, context share, model, effort, attachments | **Matches** |
 | Keybinding hints | `render/hints.rs` — dim keys, muted description, `option` on macOS | **Matches** |
@@ -1161,10 +1160,11 @@ border, the spinner line, blank, `dim("escape") + muted(" cancel")`, blank, bord
 **Extension selector / input / editor** (`extension-selector.ts`, `extension-input.ts`,
 `extension-editor.ts`) — the same skeleton, driven by an extension's schema.
 
-micro has none of these. Its `render/approval.rs` is the only dialog and is a micro-only
-concept; the cheapest parity move is to restyle it into the skeleton above — border rules in
-`border`, a `bold(accent(...))` title, `→ ` option rows in `accent`, hints in
-`dim`+`muted` — rather than the current `surface`-tinted band.
+micro has none of these. Its dialogs are the picker, the credential prompt and the question
+an extension asks, all drawn by `render/overlay.rs`; the cheapest parity move is to restyle
+them into the skeleton above — border rules in `border`, a `bold(accent(...))` title, `→ `
+option rows in `accent`, hints in `dim`+`muted` — rather than the current `surface`-tinted
+band.
 
 ---
 

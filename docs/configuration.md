@@ -3,14 +3,14 @@
 Everything micro keeps lives in one directory. `MICRO_DIR` names it; when that variable is
 unset the directory is `~/.micro`. Every crate that stores anything resolves the location
 the same way, so pointing `MICRO_DIR` at a scratch directory moves credentials, models,
-policy, and sessions together — which is how a test run or a second profile stays clear of
+trust, and sessions together — which is how a test run or a second profile stays clear of
 your real setup.
 
 ```
 ~/.micro/
 ├── auth.json      credentials, one entry per provider
 ├── models.json    additions and overrides for the model catalog
-├── policy.json    standing rules about what may run unasked
+├── trust.json     which projects may run the code they ship
 ├── config.json    remembered settings
 └── sessions/      one JSONL log and metadata sidecar per conversation
 ```
@@ -68,37 +68,27 @@ resolves neither from itself nor its provider is rejected rather than half-regis
 Adding a provider block for a name the catalog already knows re-points every model under it,
 which is the way to send a provider through a proxy without listing its models.
 
-## policy.json
+## trust.json
 
-The standing answer to what may run without being asked. Absent, it means the cautious
-default.
+What was decided about each project, keyed by its canonical path.
 
 ```json
 {
-  "mode": "workspace",
-  "rules": {
-    "bash:cargo": "allow",
-    "bash:git push": "ask",
-    "write:src/generated.rs": "deny"
+  "projects": {
+    "/Users/you/code/thing": { "trusted": true, "decided_at": 1786000000000 }
   }
 }
 ```
 
-`mode` is `cautious`, `workspace`, or `unrestricted`, and `--approve` overrides it for a
-single run. A rule key is either a tool name — `bash`, `read`, `write`, `edit`,
-`multi_edit`, `ls`, `grep`, `find` — or a tool and a subject after a colon. The value is
-`allow`, `ask`, or `deny`.
+A project is only asked about when it carries something micro would run or be steered by:
+a `.micro/` directory holding `settings.json`, `extensions`, `skills`, `prompts`, `themes`,
+`SYSTEM.md` or `APPEND_SYSTEM.md`. Everything else is used without a question.
 
-The subject is a command for `bash` and a path for a file tool. A `bash` subject matches as
-a prefix, token by token, so `bash:cargo` covers every cargo invocation while leaving the
-rest of a chained command to be judged separately. Rules are consulted from most specific to
-least — an exact rule, then a prefix rule, then the tool's own rule, then the mode — and a
-command that cannot be undone is refused ahead of all of it unless an exact rule names that
-precise command.
-
-Grants made by answering "allow for the session" are remembered in memory for that run only
-and never written here. They match the exact invocation that was approved and nothing
-broader.
+An undecided project takes the `default_project_trust` setting — `ask`, `always` or
+`never`. `ask` puts the question at the terminal before the interface starts; with nobody
+there to answer, as in `--print` and `--rpc`, the project is left alone. `/trust` settles it
+from inside a session, and takes effect on the next run because what loads was decided
+before the first one started.
 
 ## config.json
 
@@ -111,23 +101,21 @@ that knew more is preserved rather than dropped when the file is saved.
   "provider": "anthropic",
   "thinking": "medium",
   "theme": "dark",
-  "approval": "cautious",
   "live_models": true
 }
 ```
 
 `model` is a query the catalog resolves — an id, a qualified id, a prefix, or an alias —
 rather than an assertion that a particular model exists. `thinking` is `off`, `low`,
-`medium`, or `high`; `approval` takes the same three modes as `policy.json`; `live_models`
-merges live provider listings into the catalog at startup.
+`medium`, or `high`; `live_models` merges live provider listings into the catalog at
+startup.
 
 Three layers decide what is in force, each beating the one below: a command-line argument,
 then an environment variable, then this file. The variables are `MICRO_MODEL`,
-`MICRO_PROVIDER`, `MICRO_THINKING`, `MICRO_THEME`, `MICRO_APPROVAL`, and
-`MICRO_LIVE_MODELS`.
+`MICRO_PROVIDER`, `MICRO_THINKING`, `MICRO_THEME`, and `MICRO_LIVE_MODELS`.
 
 The `micro` binary reads `MICRO_MODEL` and `MICRO_PROVIDER`, and takes the rest from
-`--model`, `--provider`, `--thinking`, and `--approve` on the command line.
+`--model`, `--provider`, and `--thinking` on the command line.
 
 ## sessions/
 

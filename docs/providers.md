@@ -93,6 +93,6 @@ unknown, then add the id and its environment variables to `micro-auth` so a cred
 be stored and resolved. Add its models to the bundled catalog, or leave that to a live
 listing if the provider publishes one.
 
-Nothing above needs to change. The agent loop, the tools, and the policy gate never learn
+Nothing above needs to change. The agent loop and the tools never learn
 that a provider was added, and a user reaches the new models through the same resolution
 that finds every other one.
