@@ -6,6 +6,7 @@ license.workspace = true
 
 [dependencies]
 micro-agent = { workspace = true }
+micro-auth = { workspace = true }
 micro-commands = { workspace = true }
 micro-config = { workspace = true }
 micro-session = { workspace = true }

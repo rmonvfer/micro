@@ -18,12 +18,15 @@ pub struct Picker {
     query: String,
     /// Indices into `choices.items`, narrowed by the query and ranked by it.
     matches: Vec<usize>,
+    /// What the list leaves out, when it leaves anything out.
+    hint: Option<String>,
     selected: usize,
 }
 
 impl Picker {
     pub fn new(choices: Choices) -> Self {
         let mut picker = Picker {
+            hint: choices.hint.clone(),
             choices,
             query: String::new(),
             matches: Vec::new(),
@@ -43,6 +46,11 @@ impl Picker {
 
     pub fn title(&self) -> &str {
         &self.choices.title
+    }
+
+    /// What this list leaves out, when it leaves anything out.
+    pub fn hint(&self) -> Option<&str> {
+        self.hint.as_deref()
     }
 
     pub fn query(&self) -> &str {

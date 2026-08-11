@@ -151,6 +151,8 @@ impl CommandOutcome {
 pub struct Picker {
     pub title: String,
     pub items: Vec<PickerItem>,
+    /// Something to say about what the list leaves out.
+    pub hint: Option<String>,
 }
 
 impl Picker {
@@ -158,7 +160,14 @@ impl Picker {
         Picker {
             title: title.into(),
             items,
+            hint: None,
         }
+    }
+
+    /// The same list, with a line saying what it is not showing.
+    pub fn saying(mut self, hint: impl Into<String>) -> Self {
+        self.hint = Some(hint.into());
+        self
     }
 
     /// The line to dispatch for the item at `index`.

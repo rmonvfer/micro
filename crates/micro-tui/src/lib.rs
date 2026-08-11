@@ -63,9 +63,7 @@ use crate::app::App;
 use crate::app::Outcome;
 use anyhow::Result;
 use crossterm::event::DisableBracketedPaste;
-use crossterm::event::DisableMouseCapture;
 use crossterm::event::EnableBracketedPaste;
-use crossterm::event::EnableMouseCapture;
 use crossterm::event::Event;
 use crossterm::event::EventStream;
 use crossterm::execute;
@@ -465,6 +463,29 @@ async fn apply_outcome(
             env_names,
         } => app.open_key_prompt(provider, env_names),
 
+        // Where to go and what to type has to be on screen before the waiting starts: the
+        // code expires with the wait, so showing it afterwards shows nothing useful.
+        CommandOutcome::DeviceLogin { pending } => {
+            app.notice(
+                format!(
+                    "Open {} and enter the code: {}",
+                    pending.verification_uri(),
+                    pending.user_code()
+                ),
+                MessageKind::Info,
+            );
+            app.busy("waiting for authorization");
+            screen.render(app)?;
+
+            let work = commands.finish_device_login(pending);
+            let applied = await_host(screen, app, input, work).await?;
+            app.idle();
+            match applied {
+                Some(applied) => apply_applied(app, agent, applied),
+                None => app.notice("Sign-in cancelled", MessageKind::Error),
+            }
+        }
+
         // Both of these belong to the interface alone. Reasoning effort rides on the model
         // the agent already holds, and a palette never leaves this crate, so neither is
         // worth a round trip through the host.
@@ -771,13 +792,17 @@ struct Screen {
 }
 
 impl Screen {
+    /// Take the terminal, without asking it to report the mouse.
+    ///
+    /// A terminal that is reporting the mouse hands drags to the program instead of
+    /// selecting text with them, and selecting text is worth more than a scroll wheel that
+    /// keys already cover. ohm asks for no mouse reporting either.
     fn enter() -> Result<Self> {
         enable_raw_mode()?;
         execute!(
             std::io::stdout(),
             EnterAlternateScreen,
-            EnableBracketedPaste,
-            EnableMouseCapture
+            EnableBracketedPaste
         )?;
         let mut terminal = Terminal::new(CrosstermBackend::new(std::io::stdout()))?;
         terminal.clear()?;
@@ -800,8 +825,7 @@ impl Screen {
         execute!(
             std::io::stdout(),
             EnterAlternateScreen,
-            EnableBracketedPaste,
-            EnableMouseCapture
+            EnableBracketedPaste
         )?;
         self.terminal.clear()?;
         Ok(())
@@ -822,7 +846,6 @@ fn leave() {
     }
     let _ = execute!(
         std::io::stdout(),
-        DisableMouseCapture,
         DisableBracketedPaste,
         LeaveAlternateScreen
     );

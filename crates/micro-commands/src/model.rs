@@ -20,8 +20,26 @@ fn step_direction(query: &str) -> Option<bool> {
 ///
 /// With nothing in use yet the first model is what a step lands on, so the keys do
 /// something sensible before a model has been chosen.
+/// The models on offer: those served by something the user is signed in to.
+///
+/// A catalog lists every service micro can speak to, which is far more than any one person
+/// has an account with. Offering all of them would bury the handful that can actually
+/// answer, so the rest are left out until there is a credential for them.
+fn offered(context: &CommandContext<'_>) -> Vec<ModelDef> {
+    context
+        .catalog
+        .models()
+        .iter()
+        .filter(|model| context.auth.status_of(&model.provider).is_authenticated())
+        .cloned()
+        .collect()
+}
+
+/// What is said about the ones left out.
+const ONLY_CONFIGURED: &str = "Only showing models from configured providers. Use /login to add providers.";
+
 fn neighbour(context: &CommandContext<'_>, forward: bool) -> Option<ModelDef> {
-    let models = context.catalog.models();
+    let models = offered(context);
     if models.is_empty() {
         return None;
     }
@@ -40,15 +58,22 @@ fn neighbour(context: &CommandContext<'_>, forward: bool) -> Option<ModelDef> {
 
 pub(crate) fn model(argument: Option<&str>, context: &CommandContext<'_>) -> CommandOutcome {
     let Some(query) = argument else {
-        return CommandOutcome::Choose(Picker::new(
-            "Select a model",
-            context
-                .catalog
-                .models()
-                .iter()
-                .map(|model| item(model, context.model))
-                .collect(),
-        ));
+        let offered = offered(context);
+        if offered.is_empty() {
+            return CommandOutcome::error(
+                "no provider is signed in - run `/login` to add one".to_string(),
+            );
+        }
+        return CommandOutcome::Choose(
+            Picker::new(
+                "Select a model",
+                offered
+                    .iter()
+                    .map(|model| item(model, context.model))
+                    .collect(),
+            )
+            .saying(ONLY_CONFIGURED),
+        );
     };
 
     // `next` and `previous` step through the catalog from wherever it currently is, which
@@ -164,18 +189,38 @@ mod tests {
     use crate::dispatch;
     use crate::testing::*;
 
+    /// The list offers what can answer, not everything micro can speak to. Which
+    /// providers those are depends on the environment, so the property is asserted.
     #[tokio::test]
-    async fn model_with_no_argument_offers_the_whole_catalog() {
+    async fn model_with_no_argument_offers_what_is_signed_in() {
         let harness = Harness::new("model-picker");
+        harness.auth.store_api_key("anthropic", "sk-ant-test").unwrap();
+
         let outcome = dispatch("/model", &harness.context()).await.unwrap();
         let picker = picker(&outcome);
 
         assert_eq!(picker.title, "Select a model");
-        assert_eq!(picker.items.len(), harness.catalog.len());
+        assert_eq!(
+            picker.hint.as_deref(),
+            Some(ONLY_CONFIGURED),
+            "the list should say what it leaves out"
+        );
         assert!(picker
             .items
             .iter()
             .all(|item| item.command.starts_with("/model ")));
+        assert!(
+            picker.items.iter().any(|item| item.label.starts_with("anthropic/")),
+            "the signed-in provider is offered"
+        );
+        for item in &picker.items {
+            let provider = item.label.split('/').next().unwrap_or_default();
+            assert!(
+                harness.auth.status_of(provider).is_authenticated(),
+                "{} is offered without a credential",
+                item.label
+            );
+        }
     }
 
     #[tokio::test]
@@ -237,6 +282,7 @@ mod tests {
     #[tokio::test]
     async fn the_model_in_use_is_marked_in_the_picker() {
         let harness = Harness::new("model-current");
+        harness.auth.store_api_key("anthropic", "sk-ant-test").unwrap();
         let current = harness
             .catalog
             .resolve("anthropic/claude-opus-5")

@@ -6,6 +6,7 @@
 //! interface hands those on and hears what to tell the user.
 
 use async_trait::async_trait;
+use micro_auth::PendingDeviceLogin;
 use micro_commands::CommandOutcome;
 use micro_types::Message;
 
@@ -130,6 +131,12 @@ pub trait Commands: Send {
 
     /// Store a key the user typed at the interface's prompt.
     async fn store_api_key(&mut self, provider: String, key: String) -> Applied;
+
+    /// Wait for a device-code sign-in the user has been shown the code for.
+    ///
+    /// Separate from [`Commands::apply`] because the interface has to say where to go and
+    /// what to type before the waiting starts: the code is useless once the wait is over.
+    async fn finish_device_login(&mut self, pending: Box<PendingDeviceLogin>) -> Applied;
 }
 
 #[cfg(test)]

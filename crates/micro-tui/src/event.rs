@@ -51,8 +51,6 @@ pub enum Action {
     PageUp,
     PageDown,
     /// Move it by a few lines, from the wheel.
-    ScrollUp(usize),
-    ScrollDown(usize),
     /// Arm jump-to-char: the next printable key moves the cursor to it.
     ArmJump { forward: bool },
     /// Step to the next or previous model in the catalog.
@@ -81,9 +79,6 @@ pub enum Action {
     Resize,
 }
 
-/// Lines one notch of the wheel moves.
-const WHEEL_LINES: usize = 3;
-
 /// The intent behind a terminal event.
 pub fn action_for(event: &Event) -> Action {
     match event {
@@ -93,12 +88,8 @@ pub fn action_for(event: &Event) -> Action {
         // A paste is its own action: it is cleaned, and a large one is held aside behind a
         // marker rather than filling the prompt.
         Event::Paste(text) => Action::Paste(text.clone()),
-        // The screen is ours now, so the wheel is ours to handle.
-        Event::Mouse(mouse) => match mouse.kind {
-            crossterm::event::MouseEventKind::ScrollUp => Action::ScrollUp(WHEEL_LINES),
-            crossterm::event::MouseEventKind::ScrollDown => Action::ScrollDown(WHEEL_LINES),
-            _ => Action::Ignored,
-        },
+        // Nothing asks the terminal to report the mouse, so it selects text with it.
+        Event::Mouse(_) => Action::Ignored,
         Event::Resize(..) => Action::Resize,
         Event::FocusGained | Event::FocusLost => Action::Ignored,
     }

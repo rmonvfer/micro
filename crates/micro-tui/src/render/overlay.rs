@@ -27,7 +27,16 @@ pub fn picker_lines(
     width: usize,
     max_rows: usize,
 ) -> Vec<Line<'static>> {
-    let mut head = vec![title(picker, theme), filter(picker, theme)];
+    let mut head = vec![title(picker, theme)];
+    // Said before the list rather than after it: it explains what is missing from what
+    // follows.
+    if let Some(saying) = picker.hint() {
+        head.push(Line::from(vec![
+            Span::raw("  "),
+            Span::styled(saying.to_string(), Style::new().fg(theme.warning)),
+        ]));
+    }
+    head.push(filter(picker, theme));
     let tail = vec![hint("↑↓ move · enter choose · esc cancel", theme)];
 
     let budget = max_rows.saturating_sub(head.len() + tail.len()).max(1);

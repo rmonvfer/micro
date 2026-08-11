@@ -1378,6 +1378,7 @@ dependencies = [
  "futures",
  "libc",
  "micro-agent",
+ "micro-auth",
  "micro-commands",
  "micro-config",
  "micro-context",

@@ -97,6 +97,29 @@ impl CliCommands {
     ///
     /// This is the half a command cannot do by itself. The interface applies the result,
     /// because the agent is its, but only here are the catalog and the credential store.
+    /// What a sign-in leaves behind, however the credential was collected.
+    ///
+    /// A credential for the service already in use reaches the running agent now. Waiting
+    /// for a restart to pick it up would make signing in look like it failed.
+    async fn signed_in(&mut self, provider: &str) -> Applied {
+        if micro_auth::canonical_provider(provider)
+            == micro_auth::canonical_provider(&self.model.provider)
+        {
+            let model = self.model.clone();
+            return match self.swap_to(&model).await {
+                Applied::Model { swap, .. } => Applied::Model {
+                    swap,
+                    note: Some(format!("Signed in to {provider}.")),
+                },
+                other => other,
+            };
+        }
+
+        Applied::note(format!(
+            "Signed in to {provider}. Run `/model` to use one of its models."
+        ))
+    }
+
     async fn swap_to(&mut self, model: &ModelDef) -> Applied {
         let resolved = match micro_provider::resolve(&self.auth, model).await {
             Ok(resolved) => resolved,
@@ -563,13 +586,6 @@ impl Commands for CliCommands {
         match outcome {
             // A device login is entirely this side of the seam: poll GitHub, store what it
             // returns. Nothing about the running agent changes.
-            CommandOutcome::DeviceLogin { pending } => {
-                match self.auth.complete_device_login(&pending).await {
-                    Ok(_) => Applied::note(format!("Signed in to {}.", pending.provider)),
-                    Err(error) => Applied::error(format!("Sign-in failed: {error}")),
-                }
-            }
-
             CommandOutcome::Fork {
                 session_id,
                 through_index,
@@ -617,29 +633,22 @@ impl Commands for CliCommands {
         }
     }
 
+    async fn finish_device_login(
+        &mut self,
+        pending: Box<micro_auth::PendingDeviceLogin>,
+    ) -> Applied {
+        let provider = pending.provider.clone();
+        if let Err(error) = self.auth.complete_device_login(&pending).await {
+            return Applied::error(format!("Sign-in failed: {error}"));
+        }
+        self.signed_in(&provider).await
+    }
+
     async fn store_api_key(&mut self, provider: String, key: String) -> Applied {
         if let Err(error) = self.auth.store_api_key(&provider, &key) {
             return Applied::error(error.to_string());
         }
-
-        // A credential for the service already in use reaches the running agent now.
-        // Waiting for a restart to pick it up would make signing in look like it failed.
-        if micro_auth::canonical_provider(&provider)
-            == micro_auth::canonical_provider(&self.model.provider)
-        {
-            let model = self.model.clone();
-            return match self.swap_to(&model).await {
-                Applied::Model { swap, .. } => Applied::Model {
-                    swap,
-                    note: Some(format!("Signed in to {provider}.")),
-                },
-                other => other,
-            };
-        }
-
-        Applied::note(format!(
-            "Signed in to {provider}. Run `/model` to use one of its models."
-        ))
+        self.signed_in(&provider).await
     }
 }
 
@@ -755,9 +764,12 @@ mod tests {
         assert!(outcome.text().unwrap().contains("did you mean /model"));
     }
 
+    /// The list offers what can actually answer, and marks what is running.
     #[tokio::test]
-    async fn the_model_picker_marks_the_model_in_use() {
+    async fn the_model_picker_offers_what_is_signed_in_and_marks_the_model_in_use() {
         let (mut host, _root) = host("model-picker").await;
+        host.auth.store_api_key("anthropic", "sk-ant-test").unwrap();
+
         let outcome = host.dispatch("/model", state(0)).await.expect("a command");
 
         let CommandOutcome::Choose(picker) = outcome else {
@@ -770,6 +782,22 @@ mod tests {
             .map(|item| item.label.as_str())
             .collect();
         assert_eq!(current, vec!["anthropic/claude-opus-5"]);
+
+        // Everything offered is served by something there is a credential for. Which
+        // providers those are depends on the environment the test runs in, so the
+        // property is asserted rather than the list.
+        for item in &picker.items {
+            let provider = item.label.split('/').next().unwrap_or_default();
+            assert!(
+                host.auth.status_of(provider).is_authenticated(),
+                "{} is offered without a credential",
+                item.label
+            );
+        }
+        assert!(
+            picker.hint.is_some(),
+            "the list should say what it leaves out"
+        );
     }
 
     /// Without a credential the swap cannot be built, and the report says which provider to

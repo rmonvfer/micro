@@ -839,14 +839,6 @@ impl App {
                 self.scroll_by(-(self.page() as isize));
                 Outcome::Handled
             }
-            Action::ScrollUp(lines) => {
-                self.scroll_by(lines as isize);
-                Outcome::Handled
-            }
-            Action::ScrollDown(lines) => {
-                self.scroll_by(-(lines as isize));
-                Outcome::Handled
-            }
 
             Action::FocusPrevious => self.move_focus(false),
             Action::FocusNext => self.move_focus(true),
@@ -1606,7 +1598,7 @@ mod tests {
         app.set_viewport(10);
         app.refresh_lines();
 
-        app.handle(Action::ScrollDown(5));
+        app.handle(Action::PageDown);
         assert_eq!(app.scroll(), 0, "the end is as far forward as it goes");
 
         for _ in 0..100 {
