@@ -37,10 +37,20 @@ const MAX_EDITOR_ROWS: usize = 10;
 /// The share of the screen an approval prompt may claim. It takes what its content needs up
 /// to this, and never so much that the conversation behind it disappears.
 const MAX_PROMPT_SHARE: u16 = 3;
-/// Rows kept for the spinner: a blank one, then the message. Both are held whether or not a
-/// turn is running, so starting one never shifts the interface vertically. ohm reserves the
-/// same two, which is why its editor does not jump when an answer begins.
+/// Rows kept for the spinner: a blank one, then the message.
+///
+/// Held from the first turn onward, whether or not one is running, so starting one never
+/// shifts the interface vertically. Before then they are not held at all: a screen that
+/// has done nothing has nothing to say there, and ohm leaves the same space empty.
 const ACTIVITY_ROWS: u16 = 2;
+
+/// The rows the spinner is entitled to right now.
+fn activity_rows(app: &App) -> u16 {
+    match app.reserves_activity_rows() {
+        true => ACTIVITY_ROWS,
+        false => 0,
+    }
+}
 /// What this is called on its own first screen.
 const APP_NAME: &str = "micro";
 
@@ -76,7 +86,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             Constraint::Min(0),
             Constraint::Length(1),
             Constraint::Length(chrome.overlay.len() as u16),
-            Constraint::Length(ACTIVITY_ROWS),
+            Constraint::Length(activity_rows(app)),
             Constraint::Length(chrome.editor),
             Constraint::Length(chrome.menu.len() as u16),
             Constraint::Length(status::HEIGHT),
@@ -142,13 +152,15 @@ struct Chrome {
     overlay: Vec<Line<'static>>,
     menu: Vec<Line<'static>>,
     editor: u16,
+    /// The rows held for the spinner, which is none until something has been worked on.
+    activity: u16,
 }
 
 impl Chrome {
     /// The blank row, whatever is open, the spinner's row, the input, its menu, the footer.
     fn rows(&self) -> u16 {
         1 + self.overlay.len() as u16
-            + ACTIVITY_ROWS
+            + self.activity
             + self.editor
             + self.menu.len() as u16
             + status::HEIGHT
@@ -164,6 +176,7 @@ fn chrome(app: &App, theme: &Theme, width: u16) -> Chrome {
             .unwrap_or_default(),
         // The prompt's own rows, plus the rule above it and the rule below it.
         editor: app.editor.height(width as usize).clamp(1, MAX_EDITOR_ROWS) as u16 + editor::RULES,
+        activity: activity_rows(app),
     }
 }
 
@@ -467,6 +480,58 @@ mod tests {
                     .to_string()
             })
             .collect()
+    }
+
+    /// The rows the spinner draws in are not held open until something has been worked
+    /// on, so a screen that has done nothing sits close to the input; from the first turn
+    /// onward they stay held, so the input does not jump as turns come and go.
+    #[test]
+    fn the_spinner_holds_its_rows_only_once_there_has_been_a_turn() {
+        /// Blank rows between the last thing said and the rule above the input.
+        fn gap(rows: &[String]) -> usize {
+            let rule = rows
+                .iter()
+                .position(|row| row.starts_with('\u{2500}'))
+                .expect("the input has a rule above it");
+            rows[..rule]
+                .iter()
+                .rev()
+                .take_while(|row| row.trim().is_empty())
+                .count()
+        }
+
+        // Ending on an answer rather than a question: a question's block carries a blank
+        // row of its own beneath it, which would be counted as part of the gap.
+        let mut app = App::new(&[], TuiOptions::default());
+        app.transcript.push_user("a question");
+        app.apply_event(AgentEvent::MessageDelta {
+            event: micro_types::StreamEvent::TextDelta {
+                index: 0,
+                delta: "an answer".into(),
+            },
+        });
+
+        assert_eq!(gap(&paint(&mut app, 40, 12)), 1, "nothing has been worked on");
+
+        app.busy("thinking");
+        app.finish_turn(false);
+        assert_eq!(
+            gap(&paint(&mut app, 40, 12)),
+            3,
+            "the spinner's two rows are held from the first turn onward"
+        );
+
+        // And they stay held while one runs, so nothing shifts when it begins.
+        app.busy("thinking");
+        let running = paint(&mut app, 40, 12);
+        let rule = running
+            .iter()
+            .position(|row| row.starts_with('\u{2500}'))
+            .expect("the input has a rule above it");
+        assert!(
+            running[..rule].iter().any(|row| row.contains("thinking")),
+            "the spinner draws in the rows that were held for it: {running:?}"
+        );
     }
 
     /// Paint the way the real screen does: the whole terminal, with the interface laid out

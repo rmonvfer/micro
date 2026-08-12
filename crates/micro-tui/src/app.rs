@@ -194,6 +194,9 @@ pub struct App {
     pub workspace: PathBuf,
     /// Advanced by the event loop, so the spinner turns while a turn runs.
     pub tick: usize,
+    /// Whether anything has been worked on yet, which is what decides whether the rows the
+    /// spinner draws in are held open. See [`App::reserves_activity_rows`].
+    worked: bool,
     pub should_quit: bool,
 
     model: String,
@@ -241,6 +244,7 @@ impl App {
             show_thinking: !options.settings.hide_thinking,
             thinking: options.thinking,
             context_window: options.context_window,
+            worked: false,
             cwd: shorten_home(&workspace.display().to_string()),
             workspace,
             tick: 0,
@@ -283,6 +287,15 @@ impl App {
     /// What the user settled in `/settings`, for the parts of the frame drawn elsewhere.
     pub fn settings(&self) -> &Preferences {
         &self.settings
+    }
+
+    /// Whether the two rows the spinner draws in are held open.
+    ///
+    /// They are not, until something has been worked on. A screen that has done nothing
+    /// yet sits close to the input the way ohm's does; once a turn has run, the rows stay
+    /// held whether or not one is running, so the input never jumps as turns come and go.
+    pub fn reserves_activity_rows(&self) -> bool {
+        self.worked
     }
 
     /// The model as the footer names it.
@@ -413,6 +426,7 @@ impl App {
 
     /// Say that something is happening, so the activity line has a word for it.
     pub fn busy(&mut self, label: &'static str) {
+        self.worked = true;
         self.turn = Some(Turn {
             label,
             started: Instant::now(),
