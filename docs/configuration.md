@@ -105,7 +105,8 @@ that knew more is preserved rather than dropped when the file is saved.
 }
 ```
 
-`model` is a query the catalog resolves — an id, a qualified id, a prefix, or an alias —
+`interface_padding` is the columns and rows kept clear between the terminal's edges and
+the interface; `model` is a query the catalog resolves — an id, a qualified id, a prefix, or an alias —
 rather than an assertion that a particular model exists. `thinking` is `off`, `low`,
 `medium`, or `high`; `live_models` merges live provider listings into the catalog at
 startup.

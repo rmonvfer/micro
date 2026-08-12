@@ -197,6 +197,8 @@ pub struct App {
     /// Whether anything has been worked on yet, which is what decides whether the rows the
     /// spinner draws in are held open. See [`App::reserves_activity_rows`].
     worked: bool,
+    /// Whether ctrl+c has been pressed once on an empty prompt, so the next one leaves.
+    quitting: bool,
     pub should_quit: bool,
 
     model: String,
@@ -245,6 +247,7 @@ impl App {
             thinking: options.thinking,
             context_window: options.context_window,
             worked: false,
+            quitting: false,
             cwd: shorten_home(&workspace.display().to_string()),
             workspace,
             tick: 0,
@@ -760,6 +763,10 @@ impl App {
 
     /// Answer one action.
     pub fn handle(&mut self, action: Action) -> Outcome {
+        // Asking again only counts while it is still the question being answered.
+        if !matches!(action, Action::Interrupt | Action::Resize | Action::Ignored) {
+            self.quitting = false;
+        }
         // An overlay owns the keyboard while it is up, in the order of what is blocking
         // on an answer: a credential first, then a list to choose from.
         if self.key_prompt.is_some() {
@@ -898,6 +905,11 @@ impl App {
 
     /// Ctrl+C. What it stops depends on what is going on: a turn, then a half-written
     /// prompt, and with neither there is nothing to interrupt but the wait itself.
+    /// Ctrl+C: stop what is running, clear what is written, or leave.
+    ///
+    /// On an empty prompt with nothing running there is nothing to interrupt, so it asks
+    /// before leaving: pressed again it quits, and anything else typed in between takes
+    /// the question back. ohm treats it the same way.
     fn interrupt(&mut self) -> Outcome {
         if let Some(turn) = self.turn.as_mut() {
             turn.interrupting = true;
@@ -908,7 +920,12 @@ impl App {
             self.menu = None;
             return Outcome::Handled;
         }
-        Outcome::Interrupt
+        if self.quitting {
+            return Outcome::Quit;
+        }
+        self.quitting = true;
+        self.notice("Press ctrl+c again to exit", MessageKind::Info);
+        Outcome::Handled
     }
 
     /// Enter. A menu takes it before the prompt does, so a completion is committed rather
@@ -1531,6 +1548,33 @@ mod tests {
 
     /// Ctrl+C clears a half-written prompt before it interrupts anything, which is what
     /// makes it safe to press when nothing is running.
+    /// On an empty prompt with nothing running, ctrl+c asks before it leaves.
+    #[test]
+    fn interrupting_an_empty_prompt_twice_leaves() {
+        let mut app = app();
+
+        assert_eq!(app.handle(Action::Interrupt), Outcome::Handled);
+        assert_eq!(app.handle(Action::Interrupt), Outcome::Quit);
+    }
+
+    /// Typing something in between takes the question back, so a stray press cannot
+    /// combine with a later one to close the session.
+    #[test]
+    fn a_press_between_the_two_takes_the_question_back() {
+        let mut app = app();
+
+        assert_eq!(app.handle(Action::Interrupt), Outcome::Handled);
+        app.handle(Action::Insert("a".into()));
+        app.handle(Action::Interrupt);
+        assert_eq!(
+            app.handle(Action::Interrupt),
+            Outcome::Handled,
+            "the count starts again"
+        );
+    }
+
+    /// What is written is cleared before anything else is considered, so a half-typed
+    /// prompt is never lost to a press meant for something else.
     #[test]
     fn interrupting_clears_the_prompt_before_it_stops_anything() {
         let mut app = app();
@@ -1538,7 +1582,9 @@ mod tests {
         assert_eq!(app.handle(Action::Interrupt), Outcome::Handled);
         assert!(app.editor.is_empty());
 
-        assert_eq!(app.handle(Action::Interrupt), Outcome::Interrupt);
+        // With nothing left to clear it asks about leaving, and leaves on the next press.
+        assert_eq!(app.handle(Action::Interrupt), Outcome::Handled);
+        assert_eq!(app.handle(Action::Interrupt), Outcome::Quit);
     }
 
     #[test]

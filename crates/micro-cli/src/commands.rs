@@ -97,6 +97,18 @@ impl CliCommands {
     ///
     /// This is the half a command cannot do by itself. The interface applies the result,
     /// because the agent is its, but only here are the catalog and the credential store.
+    /// Write the chosen model to the settings, so the next run starts on it.
+    fn remember_model(&self, model: &ModelDef) -> Result<(), String> {
+        let path = self.home.join(micro_config::FILE_NAME);
+        let mut config = micro_config::Config::load_from(&path)
+            .map_err(|error| format!("cannot read the settings: {error}"))?;
+        config.model = Some(model.qualified_id());
+        config.provider = Some(model.provider.clone());
+        config
+            .save_to(&path)
+            .map_err(|error| format!("cannot write the settings: {error}"))
+    }
+
     /// What a sign-in leaves behind, however the credential was collected.
     ///
     /// A credential for the service already in use reaches the running agent now. Waiting
@@ -142,6 +154,9 @@ impl CliCommands {
         // Kept in step so the next command reports the model that is actually running.
         self.provider = model.provider.clone();
         self.model = model.clone();
+        // And remembered, so the next run starts on it. Choosing a model is a decision
+        // about how to work, not about this conversation.
+        let remembered = self.remember_model(model);
         crate::extensions::announce(
             self.extensions.as_ref(),
             "model_select",
@@ -151,10 +166,13 @@ impl CliCommands {
         )
         .await;
 
-        let note = match self.subscription_warning(&resolved.api_key, &model.provider) {
+        let mut note = match self.subscription_warning(&resolved.api_key, &model.provider) {
             Some(warning) => format!("Model: {}\n{warning}", model.qualified_id()),
             None => format!("Model: {}", model.qualified_id()),
         };
+        if let Err(error) = remembered {
+            note.push_str(&format!("\nIt was not remembered for next time: {error}"));
+        }
 
         Applied::Model {
             swap: Box::new(micro_agent::ModelSwap {
@@ -798,6 +816,27 @@ mod tests {
             picker.hint.is_some(),
             "the list should say what it leaves out"
         );
+    }
+
+    /// Choosing a model is a decision about how to work, so the next run starts on it.
+    #[tokio::test]
+    async fn switching_model_is_remembered_for_next_time() {
+        let (mut host, root) = host("remember-model").await;
+        host.auth.store_api_key("anthropic", "sk-ant-test").unwrap();
+
+        let outcome = host
+            .dispatch("/model anthropic/claude-sonnet-5", state(0))
+            .await
+            .expect("a command");
+        let applied = host.apply(outcome).await;
+        assert!(!applied.is_error(), "{applied:?}");
+
+        let saved = micro_config::Config::load_from(
+            root.join("home").join(micro_config::FILE_NAME),
+        )
+        .expect("the settings were written");
+        assert_eq!(saved.model.as_deref(), Some("anthropic/claude-sonnet-5"));
+        assert_eq!(saved.provider.as_deref(), Some("anthropic"));
     }
 
     /// Without a credential the swap cannot be built, and the report says which provider to

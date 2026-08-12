@@ -683,6 +683,10 @@ fn describe(config: &micro_config::Config, name: &str) -> Option<String> {
         "skill_commands" => format!("skill_commands is {} (on or off)", now.skill_commands),
         "editor_padding" => format!("editor_padding is {} (columns)", now.editor_padding),
         "output_padding" => format!("output_padding is {} (columns)", now.output_padding),
+        "interface_padding" => format!(
+            "interface_padding is {} (columns and rows around the interface)",
+            now.interface_padding
+        ),
         "autocomplete_max_items" => format!(
             "autocomplete_max_items is {} (rows)",
             now.autocomplete_max_items
@@ -773,6 +777,14 @@ fn assign(config: &mut micro_config::Config, name: &str, value: &str) -> Result<
         }
         "output_padding" => {
             config.output_padding = Some(
+                value
+                    .parse::<u16>()
+                    .map_err(|_| format!("`{value}` is not a number"))?
+                    .min(20),
+            )
+        }
+        "interface_padding" => {
+            config.interface_padding = Some(
                 value
                     .parse::<u16>()
                     .map_err(|_| format!("`{value}` is not a number"))?
@@ -1180,6 +1192,7 @@ mod tests {
             ("skill_commands", "off"),
             ("editor_padding", "2"),
             ("output_padding", "0"),
+            ("interface_padding", "2"),
             ("autocomplete_max_items", "12"),
             ("show_hardware_cursor", "on"),
             ("terminal_progress", "off"),

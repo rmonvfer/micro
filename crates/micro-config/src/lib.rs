@@ -156,6 +156,9 @@ pub struct Config {
     /// Columns of breathing room on each side of the conversation.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub output_padding: Option<u16>,
+    /// Columns and rows kept clear between the terminal's edges and the interface.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub interface_padding: Option<u16>,
     /// How many completions the command menu offers at once.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub autocomplete_max_items: Option<usize>,
@@ -237,6 +240,7 @@ pub struct Settings {
     pub skill_commands: bool,
     pub editor_padding: u16,
     pub output_padding: u16,
+    pub interface_padding: u16,
     pub autocomplete_max_items: usize,
     pub show_hardware_cursor: bool,
     pub terminal_progress: bool,
@@ -284,6 +288,7 @@ impl Default for Settings {
             skill_commands: true,
             editor_padding: 0,
             output_padding: DEFAULT_PADDING,
+            interface_padding: DEFAULT_PADDING,
             autocomplete_max_items: DEFAULT_AUTOCOMPLETE_MAX_ITEMS,
             show_hardware_cursor: false,
             terminal_progress: true,
@@ -427,6 +432,9 @@ impl Config {
             skill_commands: self.skill_commands.unwrap_or(defaults.skill_commands),
             editor_padding: self.editor_padding.unwrap_or(defaults.editor_padding),
             output_padding: self.output_padding.unwrap_or(defaults.output_padding),
+            interface_padding: self
+                .interface_padding
+                .unwrap_or(defaults.interface_padding),
             autocomplete_max_items: self
                 .autocomplete_max_items
                 .unwrap_or(defaults.autocomplete_max_items)
@@ -483,6 +491,7 @@ impl Config {
             skill_commands: take(&mut fields, "skill_commands", path)?,
             editor_padding: take(&mut fields, "editor_padding", path)?,
             output_padding: take(&mut fields, "output_padding", path)?,
+            interface_padding: take(&mut fields, "interface_padding", path)?,
             autocomplete_max_items: take(&mut fields, "autocomplete_max_items", path)?,
             show_hardware_cursor: take(&mut fields, "show_hardware_cursor", path)?,
             terminal_progress: take(&mut fields, "terminal_progress", path)?,

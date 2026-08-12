@@ -56,7 +56,7 @@ const APP_NAME: &str = "micro";
 
 /// Lay the whole interface out on the frame.
 pub fn draw(frame: &mut Frame, app: &mut App) {
-    let area = frame.area();
+    let area = margin(frame.area(), app.settings().interface_padding);
     if area.width == 0 || area.height == 0 {
         return;
     }
@@ -385,6 +385,22 @@ fn draw_status(frame: &mut Frame, content: Rect, app: &App, theme: &Theme) {
 
 /// Pull an area in by the horizontal padding.
 /// Pull an area in by a chosen number of columns on each side.
+/// The interface's own area: the terminal, less the margin it keeps around itself.
+///
+/// Everything is laid out inside this, so the margin is there whatever is drawn — the
+/// rules above and below the input, a tinted band, the footer. A terminal too small to
+/// spare the room keeps as much of it as it can.
+fn margin(area: Rect, padding: u16) -> Rect {
+    let horizontal = padding.min(area.width.saturating_sub(1) / 2);
+    let vertical = padding.min(area.height.saturating_sub(1) / 2);
+    Rect {
+        x: area.x + horizontal,
+        y: area.y + vertical,
+        width: area.width.saturating_sub(horizontal * 2),
+        height: area.height.saturating_sub(vertical * 2),
+    }
+}
+
 fn inset_by(area: Rect, padding: u16) -> Rect {
     Rect {
         x: area.x + padding.min(area.width),
@@ -491,7 +507,7 @@ mod tests {
         fn gap(rows: &[String]) -> usize {
             let rule = rows
                 .iter()
-                .position(|row| row.starts_with('\u{2500}'))
+                .position(|row| row.trim_start().starts_with('\u{2500}'))
                 .expect("the input has a rule above it");
             rows[..rule]
                 .iter()
@@ -526,12 +542,38 @@ mod tests {
         let running = paint(&mut app, 40, 12);
         let rule = running
             .iter()
-            .position(|row| row.starts_with('\u{2500}'))
+            .position(|row| row.trim_start().starts_with('\u{2500}'))
             .expect("the input has a rule above it");
         assert!(
             running[..rule].iter().any(|row| row.contains("thinking")),
             "the spinner draws in the rows that were held for it: {running:?}"
         );
+    }
+
+    /// Options with the interface's margin turned off, for the tests that measure how
+    /// content wraps and fills rather than where it sits.
+    fn unpadded() -> TuiOptions {
+        let mut options = TuiOptions::default();
+        options.settings.interface_padding = 0;
+        options
+    }
+
+    /// The interface keeps clear of the terminal's edges, on every side.
+    #[test]
+    fn the_interface_keeps_a_margin_around_itself() {
+        let mut app = App::new(&[], TuiOptions::default());
+        app.transcript.push_user("a question");
+        let rows = paint(&mut app, 40, 12);
+
+        assert!(rows.first().is_some_and(|row| row.is_empty()), "{rows:?}");
+        assert!(rows.last().is_some_and(|row| row.is_empty()), "{rows:?}");
+        for row in rows.iter().filter(|row| !row.is_empty()) {
+            assert!(row.starts_with(' '), "a row reaches the left edge: {row:?}");
+            assert!(
+                row.chars().count() < 40,
+                "a row reaches the right edge: {row:?}"
+            );
+        }
     }
 
     /// Paint the way the real screen does: the whole terminal, with the interface laid out
@@ -560,7 +602,7 @@ mod tests {
 
     #[test]
     fn the_opening_screen_wraps_rather_than_being_cut() {
-        let mut app = App::new(&[], TuiOptions::default());
+        let mut app = App::new(&[], unpadded());
         let rows = paint(&mut app, 80, 50);
 
         // Two lines that do not fit at this width take a second row each.
@@ -605,7 +647,7 @@ mod tests {
 
     #[test]
     fn a_long_conversation_fills_the_screen_and_hands_the_rest_to_the_terminal() {
-        let mut app = App::new(&[], TuiOptions::default());
+        let mut app = App::new(&[], unpadded());
         for index in 0..40 {
             app.transcript.push_user(format!("prompt number {index}"));
         }
