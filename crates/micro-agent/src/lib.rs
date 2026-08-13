@@ -75,6 +75,85 @@ impl PartialEq for ModelSwap {
     }
 }
 
+/// Something a run produced that belongs in the session log.
+///
+/// Almost everything is a message. Compaction is not: it does not add to the
+/// conversation, it changes where the conversation is read from, and a session that
+/// recorded only messages would summarize the same stretch again every time it reopened.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Record {
+    Message(Message),
+    /// A stretch replaced by a summary, with how many of the most recent messages are
+    /// still part of the conversation.
+    Compacted { summary: String, kept: usize },
+}
+
+/// A way to reach a run that is already going.
+///
+/// A run holds the agent, so nothing else can call into it while it lasts. This is what
+/// a caller keeps hold of instead: messages left here are picked up by the loop at the
+/// next point it can take them, without interrupting what it is doing.
+#[derive(Clone, Default)]
+pub struct Steering {
+    queues: Arc<std::sync::Mutex<Queues>>,
+}
+
+#[derive(Default)]
+struct Queues {
+    /// Taken at the start of the next turn, so it reaches the model as soon as the one
+    /// in flight is done rather than after everything the model asks for.
+    steering: Vec<Message>,
+    /// Taken when the run would otherwise end, which continues it rather than starting
+    /// a second one.
+    follow_up: Vec<Message>,
+}
+
+impl Steering {
+    /// Say something to the model at the next turn boundary.
+    pub fn steer(&self, message: Message) {
+        self.lock().steering.push(message);
+    }
+
+    /// Say something once the run would otherwise be over.
+    pub fn follow_up(&self, message: Message) {
+        self.lock().follow_up.push(message);
+    }
+
+    /// Whether anything is waiting, for a caller deciding whether to start a new run.
+    pub fn is_empty(&self) -> bool {
+        self.waiting() == 0
+    }
+
+    /// How many messages are waiting to be said.
+    pub fn waiting(&self) -> usize {
+        let held = self.lock();
+        held.steering.len() + held.follow_up.len()
+    }
+
+    /// Forget everything waiting, for a run that was abandoned: what was queued behind
+    /// it was queued behind the thing that is now gone.
+    pub fn take_all(&self) -> Vec<Message> {
+        let mut held = self.lock();
+        let mut all = std::mem::take(&mut held.steering);
+        all.extend(std::mem::take(&mut held.follow_up));
+        all
+    }
+
+    fn take_steering(&self) -> Vec<Message> {
+        std::mem::take(&mut self.lock().steering)
+    }
+
+    fn take_follow_up(&self) -> Vec<Message> {
+        std::mem::take(&mut self.lock().follow_up)
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, Queues> {
+        self.queues
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+}
+
 pub struct Agent {
     provider: Arc<dyn Provider>,
     tools: Vec<Arc<dyn Tool>>,
@@ -82,7 +161,7 @@ pub struct Agent {
     api_key: String,
     system_prompt: Option<String>,
     messages: Vec<Message>,
-    recorder: Option<UnboundedSender<Message>>,
+    recorder: Option<UnboundedSender<Record>>,
     /// Anything else watching the events this run produces.
     observer: Option<UnboundedSender<AgentEvent>>,
     /// Anything allowed to change what the run does.
@@ -92,6 +171,8 @@ pub struct Agent {
     summarizer: Arc<dyn Summarizer>,
     compaction: Option<CompactionConfig>,
     context_window: usize,
+    /// What has been said to the run while it was running.
+    steering: Steering,
 }
 
 impl Agent {
@@ -122,7 +203,16 @@ impl Agent {
             summarizer,
             compaction: Some(CompactionConfig::default()),
             context_window: DEFAULT_CONTEXT_WINDOW,
+            steering: Steering::default(),
         }
+    }
+
+    /// A handle onto this agent's runs, for saying something to one while it lasts.
+    ///
+    /// Taken before the run starts, since the run borrows the agent for as long as it
+    /// goes on.
+    pub fn steering(&self) -> Steering {
+        self.steering.clone()
     }
 
     pub fn with_system_prompt(mut self, prompt: impl Into<String>) -> Self {
@@ -207,7 +297,7 @@ impl Agent {
 
     /// Send every finalized message to `recorder` as it is produced, so a conversation is
     /// durable as it happens rather than only once the run returns.
-    pub fn with_recorder(mut self, recorder: UnboundedSender<Message>) -> Self {
+    pub fn with_recorder(mut self, recorder: UnboundedSender<Record>) -> Self {
         self.recorder = Some(recorder);
         self
     }
@@ -256,9 +346,9 @@ impl Agent {
     /// Summarize the conversation now, whether or not it has grown enough to trigger on
     /// its own, and continue from the summary.
     ///
-    /// The summary is returned so a caller can show it. Only the live conversation is
-    /// rewritten: the recorder already has every message verbatim, so the session log
-    /// stays a full transcript.
+    /// The summary is returned so a caller can show it. Every message stays in the log
+    /// verbatim; what is recorded alongside them is where the conversation now starts
+    /// reading from, so reopening the session costs no summarizing.
     pub async fn compact_now(&mut self) -> std::result::Result<Message, CompactionRefusal> {
         let config = self.compaction.unwrap_or_default();
         let compactor = Compactor::new(self.summarizer.clone(), config);
@@ -271,6 +361,7 @@ impl Agent {
             })?;
 
         let summary = compacted.messages[0].clone();
+        self.record_compaction(&compacted.messages);
         self.messages = compacted.messages;
         Ok(summary)
     }
@@ -292,7 +383,7 @@ impl Agent {
     /// session log and survives a resume.
     pub fn record(&mut self, message: Message) {
         if let Some(recorder) = &self.recorder {
-            let _ = recorder.send(message.clone());
+            let _ = recorder.send(Record::Message(message.clone()));
         }
         self.messages.push(message);
     }
@@ -325,9 +416,25 @@ impl Agent {
     }
 
     /// Append to the conversation, reporting the message to the recorder if one is set.
+    /// Record that a stretch was summarized, so reopening the session reads the summary
+    /// rather than paying to write it again.
+    fn record_compaction(&self, messages: &[Message]) {
+        let Some(recorder) = &self.recorder else {
+            return;
+        };
+        let Some(summary) = messages.first().and_then(micro_context::summary_text) else {
+            return;
+        };
+        let _ = recorder.send(Record::Compacted {
+            summary: summary.to_string(),
+            // Everything after the summary is what was kept.
+            kept: messages.len().saturating_sub(1),
+        });
+    }
+
     fn commit(&mut self, message: Message, produced: &mut Vec<Message>) {
         if let Some(recorder) = &self.recorder {
-            let _ = recorder.send(message.clone());
+            let _ = recorder.send(Record::Message(message.clone()));
         }
         self.messages.push(message.clone());
         produced.push(message);
@@ -365,7 +472,7 @@ impl Agent {
         // or a week ago in another one.
         for repair in answer_abandoned_calls(&mut self.messages) {
             if let Some(recorder) = &self.recorder {
-                let _ = recorder.send(repair.clone());
+                let _ = recorder.send(Record::Message(repair.clone()));
             }
             events.send(AgentEvent::MessageStart {
                 message: repair.clone(),
@@ -386,6 +493,19 @@ impl Agent {
         self.commit(prompt, &mut produced);
 
         loop {
+            // Anything said while the last turn ran goes in before this one is sent, so
+            // it reaches the model at the first moment it can rather than after
+            // everything the model went on to ask for.
+            for said in self.steering.take_steering() {
+                events.send(AgentEvent::MessageStart {
+                    message: said.clone(),
+                });
+                events.send(AgentEvent::MessageEnd {
+                    message: said.clone(),
+                });
+                self.commit(said, &mut produced);
+            }
+
             events.send(AgentEvent::TurnStart);
             self.compact_if_needed(events).await;
 
@@ -399,6 +519,11 @@ impl Agent {
                 assistant.stop_reason,
                 StopReason::Error | StopReason::Aborted
             ) {
+                // A turn that failed is still a turn that ended. Anything pairing a start
+                // with an end would be left waiting for one that never came.
+                events.send(AgentEvent::TurnEnd {
+                    messages: produced.clone(),
+                });
                 break;
             }
 
@@ -414,13 +539,33 @@ impl Agent {
                 events.send(AgentEvent::TurnEnd {
                     messages: produced.clone(),
                 });
-                break;
+
+                // Something queued for after the answer continues this run rather than
+                // starting another, which is what keeps it one conversation.
+                let queued = self.steering.take_follow_up();
+                if queued.is_empty() {
+                    break;
+                }
+                for said in queued {
+                    events.send(AgentEvent::MessageStart {
+                        message: said.clone(),
+                    });
+                    events.send(AgentEvent::MessageEnd {
+                        message: said.clone(),
+                    });
+                    self.commit(said, &mut produced);
+                }
+                continue;
             }
 
             // A response cut off by the token limit can yield tool calls whose streamed
             // arguments happen to parse but are silently incomplete. None are safe to run.
             let truncated = assistant.stop_reason == StopReason::Length;
 
+            // Every call is announced and vetted in the order the model asked for it, so
+            // whatever is watching sees a stable order and a refusal is decided before
+            // anything runs.
+            let mut prepared = Vec::with_capacity(calls.len());
             for (id, name, arguments) in calls {
                 events.send(AgentEvent::ToolStart {
                     id: id.clone(),
@@ -428,68 +573,88 @@ impl Agent {
                     arguments: arguments.clone(),
                 });
 
-                let (output, is_error) = if truncated {
-                    (
+                // Either the call is already answered — refused, or never runnable — or a
+                // tool is held ready to run it.
+                let mut settled = None;
+                let mut runnable = None;
+                if truncated {
+                    settled = Some((
                         format!(
                             "Tool call \"{name}\" was not executed: the response hit the output \
                              token limit, so its arguments may be truncated. Re-issue the call \
                              with complete arguments."
                         ),
                         true,
-                    )
+                    ));
                 } else if let Some(refusal) = self.blocked(&id, &name, &arguments).await {
                     // Something watching the run refused the call. The model is told why,
                     // in the same shape a tool's own failure takes.
-                    (refusal, true)
+                    settled = Some((refusal, true));
                 } else {
                     match self.find_tool(&name) {
-                        Some(tool) => {
-                            // What the tool says while it works is forwarded as it says it,
-                            // so a long command is watchable rather than silent.
-                            let (reporting, mut reported) =
-                                tokio::sync::mpsc::unbounded_channel::<String>();
-                            let forwarding = {
-                                let events = events.clone_for_updates();
-                                let id = id.clone();
-                                let name = name.clone();
-                                tokio::spawn(async move {
-                                    while let Some(output) = reported.recv().await {
-                                        events.send(AgentEvent::ToolUpdate {
-                                            id: id.clone(),
-                                            name: name.clone(),
-                                            output,
-                                        });
-                                    }
-                                })
-                            };
-
-                            let ran = tool
-                                .execute_reporting(&arguments, &micro_tools::Progress::new(reporting))
-                                .await;
-                            // The sender is gone with the call, so the forwarder ends.
-                            let _ = forwarding.await;
-
-                            match ran {
-                                Ok(output) => (output, false),
-                                Err(error) => (error, true),
-                            }
-                        }
-                        None => (format!("tool not found: {name}"), true),
+                        Some(tool) => runnable = Some(Arc::clone(tool)),
+                        None => settled = Some((format!("tool not found: {name}"), true)),
                     }
-                };
+                }
 
-                // What ran can be rewritten before the model sees it, which is how a
-                // result is redacted or replaced by something watching.
-                let (output, is_error) = self.rewritten(&id, &name, output, is_error).await;
+                prepared.push((id, name, arguments, settled, runnable));
+            }
 
-                events.send(AgentEvent::ToolEnd {
-                    id: id.clone(),
-                    name: name.clone(),
-                    output: output.clone(),
-                    is_error,
-                });
+            // The calls the model asked for in one answer do not depend on each other, so
+            // they run together: a turn asking for several files takes as long as the
+            // slowest read rather than the sum of all of them.
+            // Shared for the length of the batch: every call reads the same hooks, and
+            // nothing is committed until they have all answered.
+            let agent = &*self;
+            let ran = futures::future::join_all(prepared.into_iter().map(
+                |(id, name, arguments, settled, runnable)| {
+                    let events = &events;
+                    async move {
+                        let (content, is_error) = match (settled, runnable) {
+                            (Some((text, is_error)), _) => {
+                                (vec![ContentBlock::text(text)], is_error)
+                            }
+                            (None, Some(tool)) => {
+                                run_tool(tool, &id, &name, &arguments, events).await
+                            }
+                            // Neither answered nor runnable cannot happen: the preflight
+                            // sets one or the other for every call.
+                            (None, None) => (
+                                vec![ContentBlock::text(format!("tool not found: {name}"))],
+                                true,
+                            ),
+                        };
 
-                let result = Message::tool_result(id, name, output, is_error);
+                        // What ran can be rewritten before the model sees it, which is how
+                        // a result is redacted or replaced by something watching. Only the
+                        // text is offered: a rewrite is a decision about what the model
+                        // should be told, so anything else the tool returned goes with it.
+                        let said: String = content.iter().map(ContentBlock::as_text).collect();
+                        let (output, is_error) =
+                            agent.rewritten(&id, &name, said.clone(), is_error).await;
+                        let content = match output == said {
+                            true => content,
+                            false => vec![ContentBlock::text(output.clone())],
+                        };
+
+                        // Reported the moment this call is done rather than when the whole
+                        // batch is, so a quick tool is not held behind a slow one.
+                        events.send(AgentEvent::ToolEnd {
+                            id: id.clone(),
+                            name: name.clone(),
+                            output,
+                            is_error,
+                        });
+
+                        Message::tool_result_content(id, name, content, is_error)
+                    }
+                },
+            ))
+            .await;
+
+            // Committed in the order the model asked, whatever order they finished in, so
+            // the conversation reads the same every time.
+            for result in ran {
                 events.send(AgentEvent::MessageStart {
                     message: result.clone(),
                 });
@@ -518,9 +683,10 @@ impl Agent {
     /// Replace the older part of the conversation with a summary once it approaches the
     /// context window.
     ///
-    /// Only the live conversation is rewritten. The run's own output and the recorder keep
-    /// every message verbatim, so what gets persisted stays a full transcript and
-    /// compaction stays a property of this process's context rather than of the session.
+    /// Nothing is deleted: the log keeps every message verbatim. Recorded alongside them
+    /// is where the conversation now starts reading from, which makes compaction a fact
+    /// about the session rather than about the process that happened to do it — a session
+    /// reopened later reads the summary instead of writing the same one again.
     async fn compact_if_needed(&mut self, events: &Fan<'_>) {
         let Some(config) = self.compaction else {
             return;
@@ -538,6 +704,7 @@ impl Agent {
         };
 
         let summary = compacted.messages[0].clone();
+        self.record_compaction(&compacted.messages);
         self.messages = compacted.messages;
 
         // The summary joins the conversation like any other message, so it is announced
@@ -905,7 +1072,10 @@ mod tests {
         agent.record(Message::user("<bash command=\"ls\">a.txt</bash>"));
 
         assert_eq!(agent.messages().len(), 1);
-        assert_eq!(written.try_recv().unwrap(), agent.messages()[0]);
+        assert_eq!(
+            written.try_recv().unwrap(),
+            Record::Message(agent.messages()[0].clone())
+        );
     }
 
     #[test]
@@ -947,6 +1117,45 @@ impl fmt::Display for CompactionRefusal {
             }
             CompactionRefusal::Failed(message) => write!(formatter, "Compaction failed: {message}"),
         }
+    }
+}
+
+/// Run one tool, forwarding what it says while it works.
+///
+/// A long command is watchable rather than silent: whatever it prints is reported as it
+/// prints it, and the reporting ends when the call does.
+async fn run_tool(
+    tool: Arc<dyn Tool>,
+    id: &str,
+    name: &str,
+    arguments: &Value,
+    events: &Fan<'_>,
+) -> (Vec<ContentBlock>, bool) {
+    let (reporting, mut reported) = tokio::sync::mpsc::unbounded_channel::<String>();
+    let forwarding = {
+        let events = events.clone_for_updates();
+        let id = id.to_string();
+        let name = name.to_string();
+        tokio::spawn(async move {
+            while let Some(output) = reported.recv().await {
+                events.send(AgentEvent::ToolUpdate {
+                    id: id.clone(),
+                    name: name.clone(),
+                    output,
+                });
+            }
+        })
+    };
+
+    let ran = tool
+        .execute_content(arguments, &micro_tools::Progress::new(reporting))
+        .await;
+    // The sender is gone with the call, so the forwarder ends.
+    let _ = forwarding.await;
+
+    match ran {
+        Ok(content) => (content, false),
+        Err(error) => (vec![ContentBlock::text(error)], true),
     }
 }
 

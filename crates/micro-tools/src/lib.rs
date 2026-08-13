@@ -2,6 +2,8 @@
 
 mod bash;
 mod files;
+mod fuzzy;
+mod mutations;
 mod search;
 
 pub use bash::Bash;
@@ -14,6 +16,7 @@ pub use search::Find;
 pub use search::Grep;
 
 use async_trait::async_trait;
+use micro_types::ContentBlock;
 use micro_types::ToolDefinition;
 use serde_json::Value;
 use std::path::Path;
@@ -42,6 +45,21 @@ pub trait Tool: Send + Sync {
     ) -> Result<String, String> {
         let _ = progress;
         self.execute(arguments).await
+    }
+
+    /// Run, answering with content the model reads rather than with text alone.
+    ///
+    /// Almost everything a tool has to say is text, which is the default. A tool that
+    /// hands back something the model looks at rather than reads — an image — says so
+    /// here, and the blocks travel to the provider as they are.
+    async fn execute_content(
+        &self,
+        arguments: &Value,
+        progress: &Progress,
+    ) -> Result<Vec<ContentBlock>, String> {
+        self.execute_reporting(arguments, progress)
+            .await
+            .map(|text| vec![ContentBlock::text(text)])
     }
 }
 

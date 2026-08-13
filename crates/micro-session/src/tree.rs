@@ -52,6 +52,24 @@ pub struct CustomEntry {
     pub data: serde_json::Value,
 }
 
+/// A stretch of the conversation replaced by a summary of it.
+///
+/// Compaction is a fact about the session rather than about the process that did it: a
+/// session reopened later reads the summary and what followed it, and does not pay to
+/// summarize the same stretch again. Nothing is deleted — the entries it stands for are
+/// still in the log, and a reader looking at the tree can still see them.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Compaction {
+    /// The entry this was recorded after, which is where it sits on the path.
+    pub entry_id: String,
+    /// The first entry that is still part of the conversation. Everything before it on
+    /// the path is what the summary stands for.
+    pub first_kept: Option<String>,
+    /// What the model said the replaced stretch amounted to.
+    pub summary: String,
+    pub timestamp: i64,
+}
+
 /// A name given to an entry, so a branch can be found again by what it was for.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Label {
@@ -72,6 +90,7 @@ pub struct Label {
 #[serde(untagged)]
 pub enum Line {
     Entry(Entry),
+    Compaction(Compaction),
     Custom(CustomEntry),
     Label(Label),
     Bare(Message),
@@ -85,6 +104,9 @@ pub struct Tree {
     customs: Vec<CustomEntry>,
     /// What each entry has been named, by entry id.
     labels: std::collections::BTreeMap<String, String>,
+    /// Every compaction recorded, oldest first. The newest one on the current path is
+    /// what the conversation is read through.
+    compactions: Vec<Compaction>,
     head: Option<String>,
 }
 
@@ -102,6 +124,7 @@ impl Tree {
                     tree.head = Some(entry.id.clone());
                     tree.entries.push(entry);
                 }
+                Line::Compaction(compaction) => tree.compactions.push(compaction),
                 Line::Custom(custom) => tree.customs.push(custom),
                 Line::Label(label) => match label.label {
                     Some(name) => {
@@ -192,7 +215,44 @@ impl Tree {
         true
     }
 
-    /// The conversation as the model should see it: the path from the root to the head.
+    /// Record that a stretch of the conversation has been summarized.
+    ///
+    /// `kept` is how many of the most recent entries on the path are still part of the
+    /// conversation; everything before them is what the summary stands for.
+    pub fn push_compaction(&mut self, summary: impl Into<String>, kept: usize) -> Compaction {
+        let ids = self.path_ids();
+        let first_kept = match kept >= ids.len() {
+            // Nothing was replaced, which is a compaction that changed nothing.
+            true => ids.first().cloned(),
+            false => ids.get(ids.len() - kept).cloned(),
+        };
+        let compaction = Compaction {
+            entry_id: self.head.clone().unwrap_or_default(),
+            first_kept,
+            summary: summary.into(),
+            timestamp: micro_types::now_ms(),
+        };
+        self.compactions.push(compaction.clone());
+        compaction
+    }
+
+    /// The compaction the conversation is currently read through, if any.
+    ///
+    /// The newest one whose kept entry is still on the path: a compaction recorded on a
+    /// branch that has since been left behind says nothing about this one.
+    fn active_compaction(&self) -> Option<&Compaction> {
+        let ids = self.path_ids();
+        self.compactions
+            .iter()
+            .rev()
+            .find(|compaction| match &compaction.first_kept {
+                Some(kept) => ids.iter().any(|id| id == kept),
+                None => false,
+            })
+    }
+
+    /// The conversation as the model should see it: the path from the root to the head,
+    /// with any summarized stretch standing in for what it replaced.
     pub fn path(&self) -> Vec<Message> {
         let mut path = Vec::new();
         let mut cursor = self.head.clone();
@@ -200,11 +260,33 @@ impl Tree {
             let Some(entry) = self.entries.iter().find(|entry| entry.id == id) else {
                 break;
             };
-            path.push(entry.message.clone());
+            path.push((entry.id.clone(), entry.message.clone()));
             cursor = entry.parent_id.clone();
         }
         path.reverse();
-        path
+
+        let Some(compaction) = self.active_compaction() else {
+            return path.into_iter().map(|(_, message)| message).collect();
+        };
+
+        // Everything before the first kept entry is what the summary stands for, so the
+        // summary is read in its place.
+        let from = compaction
+            .first_kept
+            .as_ref()
+            .and_then(|kept| path.iter().position(|(id, _)| id == kept))
+            .unwrap_or(0);
+        let mut read = vec![micro_context::summary_message(&compaction.summary)];
+        read.extend(path.into_iter().skip(from).map(|(_, message)| message));
+        read
+    }
+
+    /// Where an entry sits along the path from the root to the head, counting from zero.
+    ///
+    /// An entry on another branch has no position here: it is not part of the
+    /// conversation as it currently stands.
+    pub fn position_on_path(&self, id: &str) -> Option<usize> {
+        self.path_ids().iter().position(|entry_id| entry_id == id)
     }
 
     /// Every entry that continues directly from `id`, oldest first.
@@ -229,6 +311,7 @@ impl Tree {
         rows
     }
 
+    /// The ids along the path from the root to the head, oldest first.
     fn path_ids(&self) -> Vec<String> {
         let mut ids = Vec::new();
         let mut cursor = self.head.clone();
@@ -239,6 +322,7 @@ impl Tree {
             ids.push(entry.id.clone());
             cursor = entry.parent_id.clone();
         }
+        ids.reverse();
         ids
     }
 
@@ -417,5 +501,101 @@ mod tests {
         ]);
         assert_eq!(tree.path().len(), 2);
         assert_eq!(tree.head(), Some("2"));
+    }
+}
+
+#[cfg(test)]
+mod compaction {
+    use super::*;
+
+    fn conversation() -> Tree {
+        let mut tree = Tree::new();
+        for index in 0..6 {
+            tree.push(Message::user(format!("message {index}")));
+        }
+        tree
+    }
+
+    fn text(message: &Message) -> String {
+        message
+            .content()
+            .iter()
+            .map(micro_types::ContentBlock::as_text)
+            .collect()
+    }
+
+    /// After compacting, the conversation reads as the summary and what was kept — the
+    /// replaced stretch is still in the log but no longer part of what the model sees.
+    #[test]
+    fn the_conversation_reads_through_the_summary() {
+        let mut tree = conversation();
+        tree.push_compaction("what happened before", 2);
+
+        let path = tree.path();
+        assert_eq!(path.len(), 3, "the summary and the two kept messages");
+        assert!(micro_context::is_summary(&path[0]));
+        assert!(text(&path[0]).contains("what happened before"));
+        assert_eq!(text(&path[1]), "message 4");
+        assert_eq!(text(&path[2]), "message 5");
+    }
+
+    /// Nothing is deleted: the entries the summary stands for are still on the tree.
+    #[test]
+    fn nothing_is_removed_from_the_log() {
+        let mut tree = conversation();
+        tree.push_compaction("earlier", 2);
+        assert_eq!(tree.entries().len(), 6);
+    }
+
+    /// The conversation carries on after a compaction, and what follows joins what was
+    /// kept rather than what was replaced.
+    #[test]
+    fn the_conversation_continues_after_a_compaction() {
+        let mut tree = conversation();
+        tree.push_compaction("earlier", 2);
+        tree.push(Message::user("after"));
+
+        let path = tree.path();
+        assert_eq!(text(path.last().unwrap()), "after");
+        assert!(micro_context::is_summary(&path[0]));
+        assert_eq!(path.len(), 4);
+    }
+
+    /// Compacting twice reads through the newer summary alone, not through both.
+    #[test]
+    fn the_newest_compaction_is_the_one_that_counts() {
+        let mut tree = conversation();
+        tree.push_compaction("first summary", 4);
+        tree.push(Message::user("more"));
+        tree.push_compaction("second summary", 2);
+
+        let path = tree.path();
+        assert!(text(&path[0]).contains("second summary"));
+        assert!(!path.iter().skip(1).any(|message| text(message).contains("first summary")));
+    }
+
+    /// A compaction recorded on a branch that was left behind says nothing about the one
+    /// being read now.
+    #[test]
+    fn a_compaction_on_another_branch_is_ignored() {
+        let mut tree = conversation();
+        tree.push_compaction("on the abandoned branch", 2);
+        // Go back to before everything the compaction kept.
+        assert!(tree.branch_from("2"));
+
+        let path = tree.path();
+        assert!(
+            !micro_context::is_summary(&path[0]),
+            "the conversation reads plainly again: {path:?}",
+        );
+        assert_eq!(path.len(), 2);
+    }
+
+    /// A session that never compacted reads exactly as it always did.
+    #[test]
+    fn a_plain_conversation_is_unchanged() {
+        let tree = conversation();
+        assert_eq!(tree.path().len(), 6);
+        assert_eq!(text(&tree.path()[0]), "message 0");
     }
 }

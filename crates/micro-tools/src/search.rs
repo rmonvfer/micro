@@ -46,8 +46,8 @@ impl Tool for Grep {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: "grep".into(),
-            description: "Search file contents with a regular expression. Skips anything \
-                          .gitignore excludes, hidden files, and binary files."
+            description: "Search file contents with a regular expression. Respects .gitignore \
+                          and skips binary files."
                 .into(),
             parameters: json!({
                 "type": "object",
@@ -64,6 +64,16 @@ impl Tool for Grep {
                     "case_insensitive": {
                         "type": "boolean",
                         "description": "Match regardless of case, default false",
+                    },
+                    "literal": {
+                        "type": "boolean",
+                        "description": "Treat pattern as a literal string instead of a regex \
+                                        (default: false)",
+                    },
+                    "context": {
+                        "type": "number",
+                        "description": "Number of lines to show before and after each match \
+                                        (default: 0)",
                     },
                     "output_mode": {
                         "type": "string",
@@ -89,13 +99,30 @@ impl Tool for Grep {
             None => OutputMode::Content,
         };
 
+        let literal = arguments
+            .get("literal")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        let context = arguments
+            .get("context")
+            .and_then(Value::as_u64)
+            .unwrap_or(0) as usize;
+
+        // A literal pattern is escaped rather than compiled as written, so a dot means a
+        // dot and a bracket means a bracket.
+        let expression = match literal {
+            true => regex::escape(&pattern),
+            false => pattern.clone(),
+        };
+
         let search = Search {
             root: self.root.clone(),
             start: resolve_path(&self.root, requested)?,
-            regex: RegexBuilder::new(&pattern)
+            regex: RegexBuilder::new(&expression)
                 .case_insensitive(case_insensitive)
                 .build()
                 .map_err(|error| format!("invalid pattern {pattern}: {error}"))?,
+            context,
             glob: arguments
                 .get("glob")
                 .and_then(Value::as_str)
@@ -126,8 +153,8 @@ impl Tool for Find {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: "find".into(),
-            description: "Find files by glob pattern, most recently modified first. Skips \
-                          anything .gitignore excludes and hidden files."
+            description: "Find files by glob pattern, most recently modified first. Respects \
+                          .gitignore."
                 .into(),
             parameters: json!({
                 "type": "object",
@@ -200,6 +227,8 @@ struct Search {
     regex: Regex,
     glob: Option<String>,
     mode: OutputMode,
+    /// Lines to show either side of a match. Zero shows only the matching line.
+    context: usize,
 }
 
 impl Search {
@@ -230,14 +259,29 @@ impl Search {
             let text = String::from_utf8_lossy(&bytes);
             let mut file_matches = 0usize;
 
-            for (index, line) in text.lines().enumerate() {
+            let lines: Vec<&str> = text.lines().collect();
+            for (index, line) in lines.iter().enumerate() {
                 if !self.regex.is_match(line) {
                     continue;
                 }
                 file_matches += 1;
                 match self.mode {
                     OutputMode::Content => {
-                        hits.push(format!("{relative}:{}:{}", index + 1, line.trim_end()));
+                        let first = index.saturating_sub(self.context);
+                        let last = (index + self.context).min(lines.len().saturating_sub(1));
+                        for around in first..=last {
+                            // A match is separated from its surroundings by the marker, the
+                            // way a context-carrying search has always shown it.
+                            let marker = match around == index {
+                                true => ':',
+                                false => '-',
+                            };
+                            hits.push(format!(
+                                "{relative}{marker}{}{marker}{}",
+                                around + 1,
+                                lines[around].trim_end()
+                            ));
+                        }
                         if hits.len() >= MAX_MATCHES {
                             capped = true;
                             break;
@@ -328,11 +372,13 @@ impl Lookup {
 ///
 /// Global git configuration is left out so a search depends only on the workspace rather
 /// than on the machine, and `require_git` is off so a `.gitignore` still counts in a
-/// directory that is not a checkout.
+/// directory that is not a checkout. Hidden files are searched: a dotfile is where a
+/// project keeps its configuration, and leaving it out means answering a question about
+/// the workspace with only part of it while appearing to have read all of it.
 fn walker(start: &Path, glob: Option<&str>) -> Result<Walk, String> {
     let mut builder = WalkBuilder::new(start);
     builder
-        .hidden(true)
+        .hidden(false)
         .git_ignore(true)
         .git_exclude(true)
         .git_global(false)
@@ -652,5 +698,139 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(output, "no files match **/*.rs");
+    }
+}
+
+#[cfg(test)]
+mod hidden {
+    use super::*;
+    use serde_json::json;
+
+    fn scratch(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("micro-hidden-{name}"));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn write(root: &Path, relative: &str, contents: impl AsRef<[u8]>) {
+        let path = root.join(relative);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, contents).unwrap();
+    }
+
+    /// A dotfile is part of the workspace, and a search that skipped it would answer with
+    /// only part of the project while looking like it had read all of it.
+    #[tokio::test]
+    async fn grep_reads_hidden_files() {
+        let root = scratch("grep");
+        write(&root, ".env.example", "TOKEN=needle\n");
+        write(&root, ".config/settings.toml", "key = \"needle\"\n");
+        write(&root, "visible.txt", "needle\n");
+
+        let output = Grep::new(root)
+            .execute(&json!({ "pattern": "needle", "output_mode": "files" }))
+            .await
+            .unwrap();
+
+        assert!(output.contains(".env.example"), "{output}");
+        assert!(output.contains("settings.toml"), "{output}");
+        assert!(output.contains("visible.txt"), "{output}");
+    }
+
+    #[tokio::test]
+    async fn find_lists_hidden_files() {
+        let root = scratch("find");
+        write(&root, ".gitignore", "target\n");
+        write(&root, "README.md", "hello\n");
+
+        let output = Find::new(root)
+            .execute(&json!({ "pattern": "**/*" }))
+            .await
+            .unwrap();
+
+        assert!(output.contains(".gitignore"), "{output}");
+        assert!(output.contains("README.md"), "{output}");
+    }
+
+    /// What a workspace ignores is still ignored: reading hidden files is not the same as
+    /// ignoring `.gitignore`.
+    #[tokio::test]
+    async fn an_ignored_path_stays_ignored() {
+        let root = scratch("ignored");
+        write(&root, ".gitignore", "secret.txt\n");
+        write(&root, "secret.txt", "needle\n");
+        write(&root, "kept.txt", "needle\n");
+
+        let output = Grep::new(root)
+            .execute(&json!({ "pattern": "needle", "output_mode": "files" }))
+            .await
+            .unwrap();
+
+        assert!(output.contains("kept.txt"), "{output}");
+        assert!(!output.contains("secret.txt"), "{output}");
+    }
+}
+
+#[cfg(test)]
+mod literal_and_context {
+    use super::*;
+    use serde_json::json;
+
+    fn scratch(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("micro-grep-{name}"));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// A literal pattern means what it says: a dot is a dot, not any character.
+    #[tokio::test]
+    async fn a_literal_pattern_is_not_a_regex() {
+        let root = scratch("literal");
+        std::fs::write(root.join("a.txt"), "a.b\naxb\n").unwrap();
+
+        let regex = Grep::new(root.clone())
+            .execute(&json!({ "pattern": "a.b" }))
+            .await
+            .unwrap();
+        assert!(regex.contains("axb"), "as a regex the dot matches x: {regex}");
+
+        let literal = Grep::new(root)
+            .execute(&json!({ "pattern": "a.b", "literal": true }))
+            .await
+            .unwrap();
+        assert!(literal.contains("a.b"), "{literal}");
+        assert!(!literal.contains("axb"), "literally, it does not: {literal}");
+    }
+
+    /// Context shows the lines around a match, marked apart from it.
+    #[tokio::test]
+    async fn context_shows_the_lines_around_a_match() {
+        let root = scratch("context");
+        std::fs::write(root.join("a.txt"), "one\ntwo\nneedle\nfour\nfive\n").unwrap();
+
+        let output = Grep::new(root)
+            .execute(&json!({ "pattern": "needle", "context": 1 }))
+            .await
+            .unwrap();
+
+        assert!(output.contains("a.txt-2-two"), "{output}");
+        assert!(output.contains("a.txt:3:needle"), "{output}");
+        assert!(output.contains("a.txt-4-four"), "{output}");
+        assert!(!output.contains("one"), "only one line either side: {output}");
+    }
+
+    /// Without context, only the matching line is shown, as before.
+    #[tokio::test]
+    async fn no_context_shows_only_the_match() {
+        let root = scratch("nocontext");
+        std::fs::write(root.join("a.txt"), "one\nneedle\nthree\n").unwrap();
+
+        let output = Grep::new(root)
+            .execute(&json!({ "pattern": "needle" }))
+            .await
+            .unwrap();
+        assert_eq!(output, "a.txt:2:needle");
     }
 }

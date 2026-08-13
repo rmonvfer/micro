@@ -489,3 +489,165 @@ fn role_of(message: &Message) -> &'static str {
         Message::ToolResult { .. } => "tool_result",
     }
 }
+
+/// A tool that takes a while, so a batch of them shows whether they ran together.
+struct SlowTool {
+    name: String,
+    holds_for: std::time::Duration,
+}
+
+#[async_trait::async_trait]
+impl micro_tools::Tool for SlowTool {
+    fn definition(&self) -> micro_types::ToolDefinition {
+        micro_types::ToolDefinition {
+            name: self.name.clone(),
+            description: "waits".into(),
+            parameters: json!({ "type": "object", "properties": {} }),
+        }
+    }
+
+    async fn execute(&self, _arguments: &serde_json::Value) -> Result<String, String> {
+        tokio::time::sleep(self.holds_for).await;
+        Ok(format!("{} is done", self.name))
+    }
+}
+
+/// The calls in one answer do not depend on each other, so they run together.
+///
+/// Three tools that each hold for 200ms take about 200ms between them when they run
+/// together, and about 600ms when they are run one after another. The bound sits between
+/// the two so the test says which happened without being sensitive to timing noise.
+#[tokio::test]
+async fn the_tools_in_one_answer_run_together() {
+    let hold = std::time::Duration::from_millis(200);
+    let tools: Vec<Arc<dyn micro_tools::Tool>> = ["one", "two", "three"]
+        .into_iter()
+        .map(|name| {
+            Arc::new(SlowTool {
+                name: name.into(),
+                holds_for: hold,
+            }) as Arc<dyn micro_tools::Tool>
+        })
+        .collect();
+
+    let provider = FakeProvider::builder()
+        .turn(
+            Turn::new()
+                .with_tool_call("c1", "one", json!({}))
+                .with_tool_call("c2", "two", json!({}))
+                .with_tool_call("c3", "three", json!({})),
+        )
+        .turn(Turn::text("all done"))
+        .build();
+    let mut agent = agent(&provider, tools);
+
+    let started = std::time::Instant::now();
+    let (messages, _) = run_agent(&mut agent, Message::user("go")).await;
+    let took = started.elapsed();
+
+    assert!(
+        took < hold * 2,
+        "three {hold:?} tools took {took:?}, which is one after another rather than together",
+    );
+
+    // Every call is still answered, in the order the model asked for them.
+    let answered: Vec<String> = messages
+        .iter()
+        .filter_map(|message| match message {
+            Message::ToolResult { tool_call_id, .. } => Some(tool_call_id.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(answered, vec!["c1", "c2", "c3"]);
+}
+
+/// A turn that failed still ends. Anything counting starts against ends would be left
+/// waiting for one that never arrived.
+#[tokio::test]
+async fn a_failed_turn_still_reports_its_end() {
+    let provider = FakeProvider::once(Turn::error("the provider refused"));
+    let mut agent = agent(&provider, Vec::new());
+
+    let (_, events) = run_agent(&mut agent, Message::user("go")).await;
+
+    let starts = events
+        .iter()
+        .filter(|event| matches!(event, micro_types::AgentEvent::TurnStart { .. }))
+        .count();
+    let ends = events
+        .iter()
+        .filter(|event| matches!(event, micro_types::AgentEvent::TurnEnd { .. }))
+        .count();
+    assert_eq!(starts, ends, "every turn that started also ended: {events:?}");
+    assert!(starts > 0, "a turn did start");
+}
+
+/// A message left for a running turn reaches the model at the next turn, without a
+/// second run being started for it.
+#[tokio::test]
+async fn steering_reaches_the_run_that_is_already_going() {
+    let provider = FakeProvider::builder()
+        .turn(Turn::new().with_tool_call("c1", "slow", json!({})))
+        .turn(Turn::text("done"))
+        .build();
+    let tool: Arc<dyn micro_tools::Tool> = Arc::new(SlowTool {
+        name: "slow".into(),
+        holds_for: std::time::Duration::from_millis(150),
+    });
+    let mut agent = agent(&provider, vec![tool]);
+
+    // Taken before the run, since the run borrows the agent for as long as it lasts.
+    let steering = agent.steering();
+    let steering_task = tokio::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        steering.steer(Message::user("actually, stop and summarize"));
+    });
+
+    let (messages, _) = run_agent(&mut agent, Message::user("go")).await;
+    steering_task.await.unwrap();
+
+    let said: Vec<String> = messages
+        .iter()
+        .filter_map(|message| match message {
+            Message::User { .. } => Some(
+                message
+                    .content()
+                    .iter()
+                    .map(micro_types::ContentBlock::as_text)
+                    .collect(),
+            ),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        said.iter().any(|text| text.contains("summarize")),
+        "what was said mid-run joined the conversation: {said:?}",
+    );
+}
+
+/// A follow-up continues the run rather than ending it, so one conversation carries on.
+#[tokio::test]
+async fn a_follow_up_continues_the_same_run() {
+    let provider = FakeProvider::builder()
+        .turn(Turn::text("first"))
+        .turn(Turn::text("second"))
+        .build();
+    let mut agent = agent(&provider, Vec::new());
+
+    let steering = agent.steering();
+    steering.follow_up(Message::user("and another thing"));
+
+    let (_, events) = run_agent(&mut agent, Message::user("go")).await;
+
+    let ends = events
+        .iter()
+        .filter(|event| matches!(event, micro_types::AgentEvent::AgentEnd { .. }))
+        .count();
+    let turns = events
+        .iter()
+        .filter(|event| matches!(event, micro_types::AgentEvent::TurnStart))
+        .count();
+    assert_eq!(ends, 1, "one run, not two");
+    assert_eq!(turns, 2, "and it took two turns to get through both");
+    assert!(steering.is_empty(), "the queue was drained");
+}

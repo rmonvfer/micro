@@ -7,12 +7,62 @@ use async_trait::async_trait;
 use micro_types::ToolDefinition;
 use serde_json::json;
 use serde_json::Value;
+use std::path::Path;
 use std::path::PathBuf;
 use std::process::Stdio;
 use std::time::Duration;
 
-const DEFAULT_TIMEOUT_MS: u64 = 120_000;
-const MAX_TIMEOUT_MS: u64 = 600_000;
+/// The longest a command may be given, which is as long as a millisecond count fits in a
+/// signed 32-bit integer. There is no default: a command runs until it is done, the way
+/// it would in a terminal, and a caller that wants a limit says so.
+const MAX_TIMEOUT_MS: u64 = 2_147_483_647;
+
+/// The shell a command is run in.
+///
+/// A command written for an agent is written for bash, so bash is what runs it where
+/// there is one. `sh` is a last resort rather than the default: on a system where it is
+/// dash or ash, bash-only syntax fails in ways that read as the command being wrong.
+fn shell() -> PathBuf {
+    if Path::new("/bin/bash").exists() {
+        return PathBuf::from("/bin/bash");
+    }
+    if let Some(found) = on_path("bash") {
+        return found;
+    }
+    PathBuf::from("sh")
+}
+
+/// Where an executable sits on `PATH`, if it is on it.
+fn on_path(name: &str) -> Option<PathBuf> {
+    let path = std::env::var_os("PATH")?;
+    std::env::split_paths(&path)
+        .map(|directory| directory.join(name))
+        .find(|candidate| candidate.is_file())
+}
+
+/// How long the command may run, in milliseconds. Nothing asked for means no limit.
+fn timeout_for(arguments: &Value) -> Result<Option<u64>, String> {
+    let Some(seconds) = arguments.get("timeout") else {
+        return Ok(None);
+    };
+    if seconds.is_null() {
+        return Ok(None);
+    }
+    let seconds = seconds
+        .as_f64()
+        .ok_or_else(|| "invalid timeout: must be a number of seconds".to_string())?;
+    if !seconds.is_finite() || seconds <= 0.0 {
+        return Err("invalid timeout: must be a finite number of seconds".to_string());
+    }
+    let milliseconds = (seconds * 1000.0).round() as u64;
+    if milliseconds > MAX_TIMEOUT_MS {
+        return Err(format!(
+            "invalid timeout: maximum is {} seconds",
+            MAX_TIMEOUT_MS / 1000
+        ));
+    }
+    Ok(Some(milliseconds))
+}
 
 pub struct Bash {
     root: PathBuf,
@@ -35,10 +85,10 @@ impl Tool for Bash {
             parameters: json!({
                 "type": "object",
                 "properties": {
-                    "command": { "type": "string", "description": "The command to run" },
-                    "timeout_ms": {
-                        "type": "integer",
-                        "description": "Timeout in milliseconds, default 120000, max 600000",
+                    "command": { "type": "string", "description": "Bash command to execute" },
+                    "timeout": {
+                        "type": "number",
+                        "description": "Timeout in seconds (optional, no default timeout)",
                     },
                 },
                 "required": ["command"],
@@ -57,13 +107,9 @@ impl Tool for Bash {
         progress: &crate::Progress,
     ) -> Result<String, String> {
         let command = required_str(arguments, "command")?;
-        let timeout_ms = arguments
-            .get("timeout_ms")
-            .and_then(Value::as_u64)
-            .unwrap_or(DEFAULT_TIMEOUT_MS)
-            .min(MAX_TIMEOUT_MS);
+        let timeout_ms = timeout_for(arguments)?;
 
-        let child = tokio::process::Command::new("sh")
+        let child = tokio::process::Command::new(shell())
             .arg("-c")
             .arg(&command)
             .current_dir(&self.root)
@@ -89,21 +135,32 @@ impl Tool for Bash {
                 use tokio::io::AsyncBufReadExt as _;
                 let mut out = tokio::io::BufReader::new(stdout.unwrap()).lines();
                 let mut err = tokio::io::BufReader::new(stderr.unwrap()).lines();
-                loop {
+                // One stream ending is not both. A command that prints only to stdout
+                // closes stderr straight away, so an ended stream is retired and the
+                // other keeps being read until it ends too.
+                let (mut out_ended, mut err_ended) = (false, false);
+                while !(out_ended && err_ended) {
                     let line = tokio::select! {
-                        line = out.next_line() => line,
-                        line = err.next_line() => line,
+                        line = out.next_line(), if !out_ended => match line {
+                            Ok(Some(line)) => Some(line),
+                            Ok(None) | Err(_) => {
+                                out_ended = true;
+                                None
+                            }
+                        },
+                        line = err.next_line(), if !err_ended => match line {
+                            Ok(Some(line)) => Some(line),
+                            Ok(None) | Err(_) => {
+                                err_ended = true;
+                                None
+                            }
+                        },
                     };
-                    match line {
-                        Ok(Some(line)) => {
-                            let mut held = collected.lock().await;
-                            held.push_str(&line);
-                            held.push('\n');
-                            progress.report(held.clone());
-                        }
-                        // One stream ending is not both; the other is drained by the
-                        // wait below, and whatever it printed is still collected.
-                        Ok(None) | Err(_) => break,
+                    if let Some(line) = line {
+                        let mut held = collected.lock().await;
+                        held.push_str(&line);
+                        held.push('\n');
+                        progress.report(held.clone());
                     }
                 }
             }
@@ -112,9 +169,19 @@ impl Tool for Bash {
         let waiting = async {
             tokio::join!(reading, child.wait())
         };
-        let status = match tokio::time::timeout(Duration::from_millis(timeout_ms), waiting).await {
-            Ok((_, status)) => status.map_err(|error| format!("command failed: {error}"))?,
-            Err(_) => return Err(format!("command timed out after {timeout_ms}ms: {command}")),
+        let status = match timeout_ms {
+            Some(limit) => match tokio::time::timeout(Duration::from_millis(limit), waiting).await {
+                Ok((_, status)) => status.map_err(|error| format!("command failed: {error}"))?,
+                Err(_) => {
+                    let seconds = limit as f64 / 1000.0;
+                    return Err(format!("command timed out after {seconds}s: {command}"));
+                }
+            },
+            // Nothing was asked for, so the command runs until it is done.
+            None => {
+                let (_, status) = waiting.await;
+                status.map_err(|error| format!("command failed: {error}"))?
+            }
         };
 
         let combined = collected.lock().await.clone();
@@ -178,7 +245,7 @@ mod tests {
     #[tokio::test]
     async fn a_hanging_command_hits_the_timeout() {
         let error = Bash::new(scratch("timeout"))
-            .execute(&json!({ "command": "sleep 30", "timeout_ms": 250 }))
+            .execute(&json!({ "command": "sleep 30", "timeout": 0.25 }))
             .await
             .unwrap_err();
         assert!(error.contains("timed out"));

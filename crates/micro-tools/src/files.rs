@@ -8,7 +8,11 @@ use async_trait::async_trait;
 use micro_types::ToolDefinition;
 use serde_json::json;
 use serde_json::Value;
+use std::path::Path;
 use std::path::PathBuf;
+
+/// How many entries a listing returns when the caller does not say.
+const DEFAULT_LS_LIMIT: usize = 500;
 
 pub struct Read {
     root: PathBuf,
@@ -38,6 +42,33 @@ impl Tool for Read {
                 "required": ["path"],
             }),
         }
+    }
+
+    async fn execute_content(
+        &self,
+        arguments: &Value,
+        _progress: &crate::Progress,
+    ) -> Result<Vec<micro_types::ContentBlock>, String> {
+        let path = resolve_path(&self.root, &required_str(arguments, "path")?)?;
+
+        // An image is something the model looks at, not something it reads. Handing back
+        // the bytes as text would only fail to decode.
+        if let Some(mime_type) = image_mime_type(&path) {
+            let bytes = tokio::fs::read(&path)
+                .await
+                .map_err(|error| format!("cannot read {}: {error}", path.display()))?;
+            return Ok(vec![
+                micro_types::ContentBlock::text(format!("Read image file [{mime_type}]")),
+                micro_types::ContentBlock::Image {
+                    data: base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &bytes),
+                    mime_type: mime_type.to_string(),
+                },
+            ]);
+        }
+
+        self.execute(arguments)
+            .await
+            .map(|text| vec![micro_types::ContentBlock::text(text)])
     }
 
     async fn execute(&self, arguments: &Value) -> Result<String, String> {
@@ -103,6 +134,7 @@ impl Tool for Write {
     async fn execute(&self, arguments: &Value) -> Result<String, String> {
         let path = resolve_path(&self.root, &required_str(arguments, "path")?)?;
         let content = required_str(arguments, "content")?;
+        let _held = crate::mutations::hold(&path).await;
 
         if let Some(parent) = path.parent() {
             tokio::fs::create_dir_all(parent)
@@ -160,13 +192,15 @@ impl Tool for Edit {
             return Err("old_string and new_string are identical".to_string());
         }
 
+        // Read, change and write is one step as far as anything else is concerned.
+        let _held = crate::mutations::hold(&path).await;
         let contents = tokio::fs::read_to_string(&path)
             .await
             .map_err(|error| format!("cannot read {}: {error}", path.display()))?;
 
         // An ambiguous match is a failure, never a guess: replacing the wrong occurrence
         // silently corrupts the file.
-        let occurrences = contents.matches(&old_string).count();
+        let occurrences = crate::fuzzy::count(&contents, &old_string);
         match occurrences {
             0 => return Err(format!("old_string not found in {}", path.display())),
             1 => {}
@@ -179,12 +213,25 @@ impl Tool for Edit {
             }
         }
 
-        let updated = contents.replacen(&old_string, &new_string, 1);
+        let found = crate::fuzzy::find(&contents, &old_string)
+            .ok_or_else(|| format!("old_string not found in {}", path.display()))?;
+        let fuzzy = found.fuzzy;
+        let mut updated = found.haystack;
+        updated.replace_range(found.start..found.start + found.length, &new_string);
+
         tokio::fs::write(&path, &updated)
             .await
             .map_err(|error| format!("cannot write {}: {error}", path.display()))?;
 
-        Ok(format!("Edited {}", path.display()))
+        // Worth saying: matching this way rewrites the file's quotes, dashes and spacing
+        // into their plain forms, which is a change beyond the one that was asked for.
+        Ok(match fuzzy {
+            true => format!(
+                "Edited {} (matched ignoring quote, dash and whitespace differences)",
+                path.display()
+            ),
+            false => format!("Edited {}", path.display()),
+        })
     }
 }
 
@@ -240,6 +287,7 @@ impl Tool for MultiEdit {
             return Err("edits must not be empty".to_string());
         }
 
+        let _held = crate::mutations::hold(&path).await;
         let contents = tokio::fs::read_to_string(&path)
             .await
             .map_err(|error| format!("cannot read {}: {error}", path.display()))?;
@@ -265,7 +313,7 @@ impl Tool for MultiEdit {
 
             // An ambiguous match is a failure, never a guess: replacing the wrong
             // occurrence silently corrupts the file.
-            match updated.matches(&old_string).count() {
+            match crate::fuzzy::count(&updated, &old_string) {
                 0 => {
                     return Err(format!(
                         "edit {position}: old_string not found in {}",
@@ -282,7 +330,14 @@ impl Tool for MultiEdit {
                 }
             }
 
-            updated = updated.replacen(&old_string, &new_string, 1);
+            let found = crate::fuzzy::find(&updated, &old_string).ok_or_else(|| {
+                format!(
+                    "edit {position}: old_string not found in {}",
+                    path.display()
+                )
+            })?;
+            updated = found.haystack;
+            updated.replace_range(found.start..found.start + found.length, &new_string);
         }
 
         tokio::fs::write(&path, &updated)
@@ -308,12 +363,17 @@ impl Tool for Ls {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: "ls".into(),
-            description: "List the entries of a directory. Directories are suffixed with a slash."
+            description: "List directory contents. Returns entries sorted alphabetically, \
+                          with '/' suffix for directories. Includes dotfiles."
                 .into(),
             parameters: json!({
                 "type": "object",
                 "properties": {
-                    "path": { "type": "string", "description": "Directory to list, defaults to the workspace root" },
+                    "path": { "type": "string", "description": "Directory to list (default: current directory)" },
+                    "limit": {
+                        "type": "number",
+                        "description": "Maximum number of entries to return (default: 500)",
+                    },
                 },
             }),
         }
@@ -322,6 +382,12 @@ impl Tool for Ls {
     async fn execute(&self, arguments: &Value) -> Result<String, String> {
         let requested = arguments.get("path").and_then(Value::as_str).unwrap_or(".");
         let path = resolve_path(&self.root, requested)?;
+        let limit = arguments
+            .get("limit")
+            .and_then(Value::as_u64)
+            .map(|limit| limit as usize)
+            .unwrap_or(DEFAULT_LS_LIMIT)
+            .max(1);
 
         let mut entries = tokio::fs::read_dir(&path)
             .await
@@ -342,7 +408,16 @@ impl Tool for Ls {
         if names.is_empty() {
             return Ok(format!("{} is empty", path.display()));
         }
-        Ok(truncate(&names.join("\n")))
+
+        // A directory longer than the limit says so, so the reader knows the listing is
+        // partial rather than complete.
+        let total = names.len();
+        names.truncate(limit);
+        let mut listing = names.join("\n");
+        if total > limit {
+            listing.push_str(&format!("\n\n{limit} entry limit reached, {total} entries total"));
+        }
+        Ok(truncate(&listing))
     }
 }
 
@@ -574,5 +649,163 @@ mod tests {
             .await
             .unwrap_err();
         assert!(error.contains("escapes the workspace"));
+    }
+}
+
+/// What kind of image a path holds, going by its extension.
+///
+/// These are the formats a model is able to look at. Anything else is read as text, and
+/// fails as text if that is not what it is.
+fn image_mime_type(path: &Path) -> Option<&'static str> {
+    let extension = path.extension()?.to_str()?.to_ascii_lowercase();
+    match extension.as_str() {
+        "png" => Some("image/png"),
+        "jpg" | "jpeg" => Some("image/jpeg"),
+        "gif" => Some("image/gif"),
+        "webp" => Some("image/webp"),
+        "bmp" => Some("image/bmp"),
+        _ => None,
+    }
+}
+
+#[cfg(test)]
+mod images {
+    use super::*;
+    use crate::Progress;
+
+    fn scratch(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("micro-image-{name}"));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// The smallest valid PNG, so the test does not depend on a fixture file.
+    const TINY_PNG: &[u8] = &[
+        0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D, 0x49, 0x48, 0x44,
+        0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x06, 0x00, 0x00, 0x00, 0x1F,
+        0x15, 0xC4, 0x89,
+    ];
+
+    /// An image comes back as something the model looks at, not as text that fails to
+    /// decode.
+    #[tokio::test]
+    async fn reading_an_image_hands_back_an_image() {
+        let root = scratch("png");
+        std::fs::write(root.join("shot.png"), TINY_PNG).unwrap();
+
+        let content = Read::new(root)
+            .execute_content(&json!({ "path": "shot.png" }), &Progress::default())
+            .await
+            .expect("an image reads");
+
+        assert!(matches!(
+            content.first(),
+            Some(micro_types::ContentBlock::Text { .. })
+        ));
+        match content.get(1) {
+            Some(micro_types::ContentBlock::Image { mime_type, data }) => {
+                assert_eq!(mime_type, "image/png");
+                assert!(!data.is_empty(), "the bytes travel base64 encoded");
+            }
+            other => panic!("expected an image block, got {other:?}"),
+        }
+    }
+
+    /// Text still reads as text, numbered as before.
+    #[tokio::test]
+    async fn reading_text_is_unchanged() {
+        let root = scratch("text");
+        std::fs::write(root.join("a.txt"), "hello\n").unwrap();
+
+        let content = Read::new(root)
+            .execute_content(&json!({ "path": "a.txt" }), &Progress::default())
+            .await
+            .unwrap();
+
+        assert_eq!(content.len(), 1);
+        let text: String = content.iter().map(micro_types::ContentBlock::as_text).collect();
+        assert!(text.contains("hello"));
+        assert!(text.contains("1\t"), "line numbers are still there: {text}");
+    }
+
+    #[test]
+    fn only_formats_a_model_can_look_at_count_as_images() {
+        for name in ["a.png", "b.JPG", "c.jpeg", "d.gif", "e.webp", "f.bmp"] {
+            assert!(image_mime_type(Path::new(name)).is_some(), "{name}");
+        }
+        for name in ["a.txt", "b.rs", "c.svg", "d.pdf", "noextension"] {
+            assert!(image_mime_type(Path::new(name)).is_none(), "{name}");
+        }
+    }
+}
+
+#[cfg(test)]
+mod forgiving_edits {
+    use super::*;
+
+    fn scratch(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("micro-forgiving-{name}"));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// A model that read the file through a renderer writes back curly quotes. The file
+    /// has straight ones, and the edit is still the edit it meant.
+    #[tokio::test]
+    async fn an_edit_written_with_smart_quotes_still_lands() {
+        let root = scratch("quotes");
+        std::fs::write(root.join("a.rs"), "let name = \"micro\";\n").unwrap();
+
+        let said = Edit::new(root.clone())
+            .execute(&json!({
+                "path": "a.rs",
+                "old_string": "let name = \u{201C}micro\u{201D};",
+                "new_string": "let name = \"pi\";",
+            }))
+            .await
+            .expect("the quotes do not count");
+
+        assert!(said.contains("matched ignoring"), "it says so: {said}");
+        let after = std::fs::read_to_string(root.join("a.rs")).unwrap();
+        assert!(after.contains("let name = \"pi\";"), "{after}");
+    }
+
+    /// An en-dash where the file has a hyphen, which is what a text renderer produces.
+    #[tokio::test]
+    async fn an_edit_written_with_a_dash_still_lands() {
+        let root = scratch("dash");
+        std::fs::write(root.join("run.sh"), "cargo test --workspace\n").unwrap();
+
+        Edit::new(root.clone())
+            .execute(&json!({
+                "path": "run.sh",
+                "old_string": "cargo test \u{2013}-workspace",
+                "new_string": "cargo test --all",
+            }))
+            .await
+            .expect("a dash is a dash");
+
+        let after = std::fs::read_to_string(root.join("run.sh")).unwrap();
+        assert!(after.contains("cargo test --all"), "{after}");
+    }
+
+    /// Text that genuinely is not there still fails, rather than being matched loosely
+    /// enough to hit something else.
+    #[tokio::test]
+    async fn an_edit_for_absent_text_still_fails() {
+        let root = scratch("absent");
+        std::fs::write(root.join("a.rs"), "let a = 1;\n").unwrap();
+
+        let error = Edit::new(root)
+            .execute(&json!({
+                "path": "a.rs",
+                "old_string": "let c = 3;",
+                "new_string": "let d = 4;",
+            }))
+            .await
+            .unwrap_err();
+        assert!(error.contains("not found"), "{error}");
     }
 }

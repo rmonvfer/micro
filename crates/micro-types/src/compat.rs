@@ -57,6 +57,9 @@ pub enum SessionAffinity {
     OpenaiNosession,
     /// `x-session-id`.
     Openrouter,
+    /// `x-affinity`, which is how Mistral routes a conversation back to the machine
+    /// holding its cached prompt.
+    Mistral,
 }
 
 /// How a prompt is marked for caching.
@@ -99,6 +102,17 @@ pub struct Compat {
     pub supports_eager_tool_input_streaming: bool,
     /// Whether a tool definition may carry a cache marker.
     pub supports_cache_control_on_tools: bool,
+    /// How long a tool call's id may be, when the service will not take an arbitrary one.
+    ///
+    /// Mistral accepts exactly nine alphanumeric characters and refuses anything else, so
+    /// an id has to be cut to fit before it is sent and put back on the way in.
+    pub tool_call_id_length: Option<usize>,
+    /// Whether this model decides its own thinking rather than being given a budget.
+    ///
+    /// The newest Claude models are asked for an effort and left to spend it as they see
+    /// fit; the older ones are handed a token budget. Sending one the other's shape is
+    /// not what it expects.
+    pub force_adaptive_thinking: bool,
     /// What each thinking level is called here. A level mapped to nothing is one this
     /// model does not offer, and is left out of the request.
     pub thinking: BTreeMap<String, Option<String>>,
@@ -125,6 +139,8 @@ impl Default for Compat {
             supports_temperature: true,
             supports_eager_tool_input_streaming: true,
             supports_cache_control_on_tools: true,
+            tool_call_id_length: None,
+            force_adaptive_thinking: false,
             thinking: BTreeMap::new(),
         }
     }

@@ -12,6 +12,7 @@ mod meta;
 pub use error::Result;
 pub use error::SessionError;
 pub use meta::SessionMeta;
+pub use tree::Compaction;
 pub use tree::CustomEntry;
 pub use tree::Entry;
 pub use tree::Row;
@@ -425,6 +426,16 @@ impl Session {
     ) -> Result<()> {
         let entry = self.tree.push_custom(custom_type, data);
         self.write_line(&entry).await
+    }
+
+    /// Record that a stretch of the conversation has been summarized.
+    ///
+    /// `kept` is how many of the most recent messages are still part of the conversation.
+    /// Nothing is removed from the log; what is written is where the conversation now
+    /// starts reading from, so reopening the session costs no summarizing.
+    pub async fn compacted(&mut self, summary: &str, kept: usize) -> Result<()> {
+        let compaction = self.tree.push_compaction(summary, kept);
+        self.write_line(&compaction).await
     }
 
     /// Name an entry, or take its name away.

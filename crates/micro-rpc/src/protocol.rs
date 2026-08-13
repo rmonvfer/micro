@@ -120,6 +120,15 @@ pub enum Command {
         id: Option<String>,
         session_path: String,
     },
+    /// Move the open conversation back to an earlier entry. What came after stays in the
+    /// log as another branch.
+    NavigateTree {
+        #[serde(default)]
+        id: Option<String>,
+        entry_id: String,
+    },
+    /// Copy the conversation up to an entry into a session of its own, and carry on in
+    /// the copy. The session it came from is left as it was.
     Fork {
         #[serde(default)]
         id: Option<String>,
@@ -183,6 +192,7 @@ impl Command {
             | Command::AbortBash { id }
             | Command::GetSessionStats { id }
             | Command::SwitchSession { id, .. }
+            | Command::NavigateTree { id, .. }
             | Command::Fork { id, .. }
             | Command::Clone { id }
             | Command::GetEntries { id, .. }
@@ -214,6 +224,7 @@ impl Command {
             Command::AbortBash { .. } => "abort_bash",
             Command::GetSessionStats { .. } => "get_session_stats",
             Command::SwitchSession { .. } => "switch_session",
+            Command::NavigateTree { .. } => "navigate_tree",
             Command::Fork { .. } => "fork",
             Command::Clone { .. } => "clone",
             Command::GetEntries { .. } => "get_entries",
@@ -332,11 +343,29 @@ mod tests {
         assert_eq!(command.name(), "prompt");
         assert_eq!(command.id(), Some("1"));
 
-        let Command::Prompt { message, images, .. } = &command else {
+        let Command::Prompt {
+            message, images, ..
+        } = &command
+        else {
             panic!("a prompt");
         };
         assert_eq!(message, "hello");
         assert!(images.is_empty());
+    }
+
+    /// Forking and moving within the conversation are different things, and a caller
+    /// asking for one must not get the other: a fork leaves the session it came from
+    /// alone, while navigating rewrites where the open session continues from.
+    #[test]
+    fn forking_and_navigating_are_separate_commands() {
+        let forked: Command = serde_json::from_str(r#"{"type":"fork","entry_id":"3"}"#).unwrap();
+        assert_eq!(forked.name(), "fork");
+        assert!(matches!(forked, Command::Fork { .. }));
+
+        let moved: Command =
+            serde_json::from_str(r#"{"type":"navigate_tree","entry_id":"3"}"#).unwrap();
+        assert_eq!(moved.name(), "navigate_tree");
+        assert!(matches!(moved, Command::NavigateTree { .. }));
     }
 
     #[test]
@@ -361,10 +390,7 @@ mod tests {
                 r#"{"type":"set_thinking_level","level":"high"}"#,
                 "set_thinking_level",
             ),
-            (
-                r#"{"type":"cycle_thinking_level"}"#,
-                "cycle_thinking_level",
-            ),
+            (r#"{"type":"cycle_thinking_level"}"#, "cycle_thinking_level"),
             (r#"{"type":"compact"}"#, "compact"),
             (
                 r#"{"type":"set_auto_compaction","enabled":false}"#,
