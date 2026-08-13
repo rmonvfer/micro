@@ -230,6 +230,7 @@ pub async fn install(
             let runtime = crate::host::which_bun()
                 .ok_or("bun is not on the path. Install it from https://bun.sh")?;
             run(&runtime, &["add", spec.as_str()], &root).await?;
+            install_peers(&runtime, &root, &path).await?;
         }
         Source::Git { url, reference, .. } => {
             if path.join(".git").exists() {
@@ -294,6 +295,42 @@ pub fn remove(source: &Source, home: &Path, workspace: &Path, local: bool) -> Re
 ///
 /// No shell is involved: the arguments go to the program as they are written, so a package
 /// name carrying shell punctuation is a package name and nothing else.
+/// Install what a package expects its host to provide.
+///
+/// An extension written for ohm declares ohm's own packages as optional peers: inside ohm
+/// they resolve to what is already running, so nothing installs them. micro is a different
+/// host, and the imports still have to resolve, so they are fetched here. Optional is what
+/// lets a package be installed at all without them; it is not a claim that it runs without
+/// them, and one that imports them at the top of a file does not.
+async fn install_peers(runtime: &Path, root: &Path, package: &Path) -> Result<(), String> {
+    let Ok(raw) = std::fs::read_to_string(package.join("package.json")) else {
+        return Ok(());
+    };
+    let Ok(manifest) = serde_json::from_str::<serde_json::Value>(&raw) else {
+        return Ok(());
+    };
+    let Some(peers) = manifest.get("peerDependencies").and_then(|peers| peers.as_object()) else {
+        return Ok(());
+    };
+
+    let wanted: Vec<String> = peers
+        .iter()
+        .filter(|(name, _)| !root.join("node_modules").join(name).exists())
+        .map(|(name, range)| match range.as_str().unwrap_or("*").trim() {
+            "" | "*" => name.clone(),
+            range => format!("{name}@{range}"),
+        })
+        .collect();
+    if wanted.is_empty() {
+        return Ok(());
+    }
+
+    let mut arguments = vec!["add"];
+    arguments.extend(wanted.iter().map(String::as_str));
+    run(runtime, &arguments, root).await?;
+    Ok(())
+}
+
 async fn run(program: &Path, arguments: &[&str], directory: &Path) -> Result<String, String> {
     let finished = tokio::process::Command::new(program)
         .args(arguments)

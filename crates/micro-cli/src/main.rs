@@ -293,9 +293,10 @@ async fn main() -> Result<()> {
 
     // A project's own extensions and skills are things it asks micro to run, so whether
     // to run them is settled before anything of the project's is loaded.
-    let trusted = project_trusted(&root, &settings, !cli.print && !cli.rpc).await;
+    let has_ui = !cli.print && !cli.rpc;
+    let trusted = project_trusted(&root, &settings, has_ui).await;
     let mut built =
-        runtime::build(&root, &selection, resume.as_deref(), &settings, trusted).await?;
+        runtime::build(&root, &selection, resume.as_deref(), &settings, trusted, has_ui).await?;
     // Extensions are told the session has begun, and told again when it ends, which is
     // where one that holds anything open gets to let go of it.
     let extensions = built.extensions.clone();

@@ -34,6 +34,55 @@ interface Registration {
 	renderers: Map<string, (data: unknown, options: { width: number }) => unknown>;
 }
 
+/**
+ * Messages passed between extensions, and between an extension and itself.
+ *
+ * Separate from the lifecycle events micro announces: nothing here is micro's, it is a
+ * place for extensions to talk. A handler that throws is reported and the rest still run,
+ * so one extension cannot silence another.
+ */
+const bus = new Map<string, Array<(data: unknown) => void>>();
+
+const events = {
+	emit(channel: string, data: unknown): void {
+		for (const handler of bus.get(channel) ?? []) {
+			try {
+				handler(data);
+			} catch (error) {
+				console.error(`an ${channel} handler failed: ${error}`);
+			}
+		}
+	},
+
+	/** Listen, and take the returned function to stop listening. */
+	on(channel: string, handler: (data: unknown) => void): () => void {
+		const handlers = bus.get(channel) ?? [];
+		handlers.push(handler);
+		bus.set(channel, handlers);
+		return () => {
+			const remaining = (bus.get(channel) ?? []).filter((kept) => kept !== handler);
+			bus.set(channel, remaining);
+		};
+	},
+};
+
+/**
+ * Where this host is running, for the context handed to every handler.
+ *
+ * An extension is written against a workspace and against whether there is anyone to ask,
+ * and both are the host's to say. Filled in when the extensions are loaded, which is
+ * before anything can be called.
+ */
+const where = { cwd: process.cwd(), hasUI: false };
+
+/** The context every tool, command and handler is called with. */
+function contextFor(): Record<string, unknown> {
+	return {
+		cwd: where.cwd,
+		hasUI: where.hasUI,
+	};
+}
+
 const loaded: Registration[] = [];
 const failures: Array<{ path: string; error: string }> = [];
 const flagValues = new Map<string, boolean | string>();
@@ -58,6 +107,8 @@ function ask(request: Json): Promise<Json> {
 /** The API an extension is handed. Every entry either records something or asks micro. */
 function apiFor(registration: Registration) {
 	return {
+		events,
+
 		on(event: string, handler: (event: Json, ctx: unknown) => unknown): void {
 			const handlers = registration.handlers.get(event) ?? [];
 			handlers.push(handler);
@@ -280,7 +331,7 @@ async function runTool(id: string, name: string, args: Json): Promise<void> {
 			continue;
 		}
 		try {
-			const output = await tool.execute(args, {});
+			const output = await tool.execute(args, contextFor());
 			send({ type: "tool_result", id, output: normalizeToolOutput(output) });
 		} catch (error) {
 			send({
@@ -327,7 +378,7 @@ async function runCommand(id: string, name: string, args: string): Promise<void>
 			continue;
 		}
 		try {
-			const output = await command.handler(args, {});
+			const output = await command.handler(args, contextFor());
 			send({ type: "command_result", id, output: output === undefined ? null : output });
 		} catch (error) {
 			send({
@@ -347,7 +398,7 @@ async function dispatchEvent(id: string | undefined, event: string, payload: Jso
 	for (const registration of loaded) {
 		for (const handler of registration.handlers.get(event) ?? []) {
 			try {
-				const result = await handler(payload, {});
+				const result = await handler(payload, contextFor());
 				if (result !== undefined && result !== null) {
 					results.push(result);
 				}
@@ -377,6 +428,8 @@ async function handle(line: string): Promise<void> {
 
 	switch (message.type) {
 		case "load": {
+			where.cwd = (message.cwd as string) ?? process.cwd();
+			where.hasUI = message.has_ui === true;
 			const paths = (message.paths as string[]) ?? [];
 			for (const path of paths) {
 				await load(path);
@@ -397,7 +450,7 @@ async function handle(line: string): Promise<void> {
 					const shortcut = registration.shortcuts.get(key);
 					if (shortcut) {
 						try {
-							await shortcut.handler({});
+							await shortcut.handler(contextFor());
 						} catch (error) {
 							send({
 								type: "extension_error",

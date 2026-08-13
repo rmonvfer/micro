@@ -116,6 +116,7 @@ pub async fn build(
     resume: Option<&str>,
     settings: &micro_config::Settings,
     trusted: bool,
+    has_ui: bool,
 ) -> Result<Runtime> {
     // Set before any provider is built, since a client carries the timeout it was made
     // with.
@@ -127,7 +128,7 @@ pub async fn build(
     // serves it: a provider an extension declares is in the catalog by the time the
     // catalog is read. What the project itself ships is loaded only once the project has
     // been trusted; what the user installed for themselves always is.
-    let extensions = load_extensions(root, settings, trusted).await;
+    let extensions = load_extensions(root, settings, trusted, has_ui).await;
     let declared = apply_declared_providers(&mut catalog, extensions.as_deref(), settings);
     // A workspace that has been given a shortlist may only use what is on it, so a model
     // outside it cannot be reached by cycling or by a stale config.
@@ -435,6 +436,7 @@ async fn load_extensions(
     root: &Path,
     settings: &micro_config::Settings,
     trusted: bool,
+    has_ui: bool,
 ) -> Option<Arc<micro_extensions::Host>> {
     let home = micro_context::micro_home().unwrap_or_default();
     // A configured entry is a source rather than a path: `npm:thing` is installed
@@ -455,7 +457,7 @@ async fn load_extensions(
         return None;
     }
 
-    match micro_extensions::Host::start(&home, &paths).await {
+    match micro_extensions::Host::start(&home, &paths, root, has_ui).await {
         Ok(host) => {
             if !settings.quiet_startup {
                 for failure in &host.loaded().errors {

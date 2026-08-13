@@ -151,7 +151,12 @@ impl Host {
     /// `bun` is looked for on the path. Without it there are no extensions and the run
     /// carries on: an extension is an addition, and a missing runtime is not a reason to
     /// refuse to start.
-    pub async fn start(home: &Path, paths: &[PathBuf]) -> Result<Host, String> {
+    pub async fn start(
+        home: &Path,
+        paths: &[PathBuf],
+        workspace: &Path,
+        has_ui: bool,
+    ) -> Result<Host, String> {
         if paths.is_empty() {
             return Err("no extensions to load".to_string());
         }
@@ -191,7 +196,12 @@ impl Host {
             .collect();
         write_line(
             &mut stdin,
-            &serde_json::json!({ "type": "load", "paths": listed }),
+            &serde_json::json!({
+                "type": "load",
+                "paths": listed,
+                "cwd": workspace.display().to_string(),
+                "has_ui": has_ui,
+            }),
         )
         .await?;
 
@@ -605,7 +615,7 @@ mod tests {
     #[tokio::test]
     async fn nothing_to_load_is_not_a_host() {
         let home = std::env::temp_dir().join("micro-host-empty");
-        let error = match Host::start(&home, &[]).await {
+        let error = match Host::start(&home, &[], &home, false).await {
             Err(error) => error,
             Ok(_) => panic!("nothing to load is not a host"),
         };
@@ -680,7 +690,7 @@ export default (micro) => {
         )
         .unwrap();
 
-        let host = Host::start(&root, std::slice::from_ref(&extension))
+        let host = Host::start(&root, std::slice::from_ref(&extension), &root, false)
             .await
             .expect("the host starts");
 
@@ -733,7 +743,7 @@ export default (micro) => {
         )
         .unwrap();
 
-        let host = Host::start(&root, &[extension]).await.expect("the host starts");
+        let host = Host::start(&root, &[extension], &root, false).await.expect("the host starts");
 
         let error = host
             .call_tool("explode", &serde_json::json!({}))
@@ -765,7 +775,7 @@ export default (micro) => {
         )
         .unwrap();
 
-        let host = Host::start(&root, &[broken.clone(), working])
+        let host = Host::start(&root, &[broken.clone(), working], &root, false)
             .await
             .expect("the host starts");
 
@@ -787,7 +797,7 @@ export default (micro) => {
         let extension = root.join("empty.ts");
         std::fs::write(&extension, "export default () => {};").unwrap();
 
-        let host = Host::start(&root, &[extension]).await.expect("the host starts");
+        let host = Host::start(&root, &[extension], &root, false).await.expect("the host starts");
         let error = host
             .call_tool("nothing-like-this", &serde_json::json!({}))
             .await

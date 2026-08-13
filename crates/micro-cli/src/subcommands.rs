@@ -199,7 +199,15 @@ pub async fn install(source: &str, local: bool, workspace: &Path) -> Result<()> 
     println!("Installed {} to {}", installed.source, installed.path.display());
 
     // What it registered is worth seeing now rather than at the next start.
-    match micro_extensions::Host::start(&home, std::slice::from_ref(&installed.path)).await {
+    let workspace = std::env::current_dir().unwrap_or_default();
+    match micro_extensions::Host::start(
+        &home,
+        std::slice::from_ref(&installed.path),
+        &workspace,
+        false,
+    )
+    .await
+    {
         Ok(host) => {
             for extension in &host.loaded().extensions {
                 for tool in &extension.tools {
