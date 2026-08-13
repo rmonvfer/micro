@@ -94,11 +94,12 @@ The channel also decouples the two rates. The agent never waits on a filesystem 
 the writer never holds up a turn. Dropping the agent closes the sender, which ends the
 writer, which is how the process knows every message reached the log before it exits.
 
-The same separation explains why compaction does not touch the log. When a conversation
-approaches the context window, `micro-context` replaces its older half with a summary, but
-only in the agent's live message list — what was already recorded stays recorded. The
-transcript on disk is a full record; compaction is a property of the process's context.
-A resumed session gets the whole history back and compacts again from scratch.
+Compaction is written down rather than only applied. When a conversation approaches the
+context window, `micro-context` replaces its older half with a summary, and the summary is
+recorded beside the log along with where the conversation now starts reading from. Nothing
+is deleted — every message stays on disk, and the tree still shows the stretch the summary
+stands for — but a resumed session opens on the summary instead of paying to write the
+same one again.
 
 ## Stream events carry deltas
 

@@ -21,8 +21,10 @@ differs, ohm wins and the difference is called out.
 Values quoted as hex, glyphs, key names, and integers are transcribed from source. Anything
 inferred rather than read is marked **(inferred)**.
 
-A note on names: ohm's `APP_NAME` defaults to `"ohm"` and `APP_TITLE` to `"Ω"`; both are
-overridable by config. Substitute `micro` wherever a literal app name appears.
+A note on names: the reference tree is published as `pi` and was read here under the name
+`ohm`, which is what this document calls it throughout. Upstream renamed `APP_NAME` from
+`"ohm"` to `"pi"` and `APP_TITLE` from `"Ω"` to `"π"`; both are overridable by config.
+Substitute `micro` wherever a literal app name appears.
 
 ---
 
@@ -295,8 +297,10 @@ without ever showing a menu (`editor.ts:2253`).
 
 ohm themes are JSON, validated against `theme/theme-schema.json`, and loaded from
 `theme/dark.json`, `theme/light.json`, plus any user file in the custom themes directory. A
-theme has an optional `vars` block of reusable colours and a required `colors` block of 50
-semantic tokens (49 required + optional `thinkingMax`, which falls back to `thinkingXhigh`).
+theme has an optional `vars` block of reusable colours and a `colors` block of 55 semantic
+tokens: 51 required, plus four optional ones — `thinkingMax`, which falls back to
+`thinkingXhigh`, and `scrollbarThumb`, `searchMatchBg` and `searchMatchText`, which belong
+to the alt-screen surface micro does not have.
 
 A token value is one of: a `#RRGGBB` hex string, the name of an entry in `vars`, an integer
 `0–255` (a 256-colour palette index), or `""` meaning "the terminal's default". Empty string
@@ -631,11 +635,10 @@ Streaming detail worth copying: a partially-arrived closing code fence is trimme
 block does not shrink and flicker when the final backtick lands
 (`markdown.ts:25 trimPartialClosingFences`).
 
-micro's `markdown.rs` covers headings, code fences, quotes, bullets, and `**`/`__`/backtick
-inline. It lacks: heading levels behaving differently, `*`/`_` single-marker emphasis, links,
-strikethrough, tables, task lists, nested lists, ordered-list numbering from `start`, syntax
-highlighting, and the fence lines themselves (micro drops the fence and tints the body; ohm
-prints the fences and does **not** tint).
+micro's `markdown.rs` covers headings and their levels, code fences, quotes, bullets,
+links, strikethrough, task lists, nested lists, ordered-list numbering from `start`, and
+syntax highlighting over six hand-lexed languages. It still lacks tables, and it drops the
+fence line and tints the body where ohm prints the fences and does not tint.
 
 ### 5.3 Tool execution
 
@@ -754,8 +757,9 @@ Line format, where `W` is the width of the largest line number in the file:
   than one line on either side are printed plainly, all removals then all additions.
 - Anything that does not parse as a diff line is printed in `toolDiffContext` verbatim.
 
-micro's `diff.rs` / `Row::*` produce `+`/`-`/` ` with no line numbers, no elision widths, and
-no intra-line inverse. `Row::Divider` renders `⋯`; ohm renders `...` in the number column.
+micro's `diff.rs` matches this: line numbers, the four-line context rule with its
+eight-line whole-gap threshold, `...` in the number column for an elision, and word-level
+reverse video when a change is one removed line followed by one added line.
 
 ### 5.6 Thinking block
 

@@ -145,3 +145,38 @@ applies to a group of them, and the workspace's own file wins where they disagre
 An `@import` directive inside one of these pulls in another file, resolved relative to the
 file that imported it and followed up to five levels deep before a directive is left as
 written.
+
+## The system prompt
+
+A `SYSTEM.md` replaces what the model is told about what it is; an `APPEND_SYSTEM.md` is
+added to it. Both are looked for in the project's `.micro/` first and in micro's home
+directory second, so a project can speak for itself where it needs to and the user's own
+applies everywhere else. The project's copies are read only once the project is trusted:
+replacing what the model is told is exactly the kind of thing that decision is about.
+
+Project instructions and the list of available skills are appended after both, so a
+`SYSTEM.md` changes the opening of the prompt rather than everything in it.
+
+## prompts/
+
+A markdown file in `prompts/` becomes a slash command named after the file. Running
+`/review 42` reads `review.md`, substitutes the arguments into its body, and sends the
+result as the prompt.
+
+```markdown
+---
+description: Review a pull request
+argument-hint: <number> [branch]
+---
+Review PR $1 against ${2:-main} and list anything that would block a merge.
+```
+
+Arguments are substituted the way a shell substitutes them: `$1` for the first, `$@` or
+`$ARGUMENTS` for all of them, `${1:-default}` for one that may be missing, and `${@:2}` or
+`${@:2:3}` for a run of them. What a user typed is text — a `$1` inside an argument stays a
+`$1` rather than being substituted again.
+
+A name micro already answers to keeps its meaning: built-in commands are matched first, so
+a file called `quit.md` does not take over `/quit`. Prompts are read from micro's home
+directory and from a trusted project's `.micro/prompts`, with the project's winning where
+both offer the same name.

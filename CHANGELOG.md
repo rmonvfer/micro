@@ -12,8 +12,9 @@ device sign-in, and switches between them mid-conversation without losing what w
 Every conversation is recorded as it happens and reopens exactly as it was left, branches
 included: going back to an earlier point keeps the answer that was there before.
 
-Tool calls pass through a policy that asks before anything is changed or run, and a
-project can be vouched for once with `/trust` instead of every time.
+A project is vouched for once with `/trust` rather than every time, and that one decision
+is what settles whether micro will run the code the project ships. Tool calls themselves
+are not gated after that: once micro is running, it acts.
 
 Skills are read from the workspace and from `~/.micro/skills`, announced to the model by
 name so it reaches for one only when it applies.

@@ -1,7 +1,7 @@
 # micro
 
-A coding agent that runs in a terminal. It reads and edits files in a workspace you choose,
-runs shell commands when you let it, and asks before doing anything it cannot take back.
+A coding agent that runs in a terminal. It reads and edits files in a workspace you choose
+and runs shell commands there, once you have said the project may run its own code.
 One native binary, no runtime to install.
 
 ```bash
@@ -72,7 +72,9 @@ is most of them. One that does is answered by whatever was decided about it befo
 the `default_project_trust` setting (`ask`, `always` or `never`), and only then by asking.
 With nobody at a terminal there is nobody to ask, so `--print` and `--rpc` leave an
 undecided project alone rather than running its code unasked. `/trust` settles it either
-way, and the decision is remembered in `~/.micro/trust.json`.
+way, and the decision is remembered in `~/.micro/trust.json`. `--approve` trusts the
+project for one run and `--no-approve` refuses it for one run; neither is written down,
+which is what a scripted run wants.
 
 Tool calls themselves are not gated: once micro is running, it acts. `--tools` narrows what
 the model is offered to a named list, and `--exclude-tools` withholds particular ones.
