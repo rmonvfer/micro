@@ -4,6 +4,7 @@ use crate::CommandContext;
 use crate::CommandOutcome;
 use crate::Picker;
 use crate::PickerItem;
+use crate::PickerLayout;
 use micro_models::ModelDef;
 use micro_models::Resolution;
 
@@ -64,15 +65,24 @@ pub(crate) fn model(argument: Option<&str>, context: &CommandContext<'_>) -> Com
                 "no provider is signed in - run `/login` to add one".to_string(),
             );
         }
+        let all: Vec<_> = ordered(&offered, context.model)
+            .iter()
+            .map(|model| item(model, context.model))
+            .collect();
+        // A workspace's shortlist is what the list opens on; the whole catalog is a key
+        // away. A shortlist matching nothing is one nobody could use, so it is ignored.
+        let shortlist: Vec<_> = ordered(&on_shortlist(&offered, context.scoped_models), context.model)
+            .iter()
+            .map(|model| item(model, context.model))
+            .collect();
+
         return CommandOutcome::Choose(
-            Picker::new(
-                "Select a model",
-                offered
-                    .iter()
-                    .map(|model| item(model, context.model))
-                    .collect(),
-            )
-            .saying(ONLY_CONFIGURED),
+            Picker::new("Select a model", all)
+                .refreshing()
+                .scoping(shortlist)
+                .saying(ONLY_CONFIGURED)
+                .searchable()
+                .laid_out(PickerLayout::Badges),
         );
     };
 
@@ -93,13 +103,17 @@ pub(crate) fn model(argument: Option<&str>, context: &CommandContext<'_>) -> Com
         },
         // Several models match equally well, so the choice is handed back rather than
         // guessed at.
-        Resolution::Ambiguous(candidates) => CommandOutcome::Choose(Picker::new(
-            format!("{} models match \"{query}\"", candidates.len()),
-            candidates
-                .iter()
-                .map(|model| item(model, context.model))
-                .collect(),
-        )),
+        Resolution::Ambiguous(candidates) => CommandOutcome::Choose(
+            Picker::new(
+                format!("{} models match \"{query}\"", candidates.len()),
+                candidates
+                    .iter()
+                    .map(|model| item(model, context.model))
+                    .collect(),
+            )
+            .searchable()
+            .laid_out(PickerLayout::Badges),
+        ),
         Resolution::NotFound => CommandOutcome::error(format!(
             "no model matches \"{query}\" - /model on its own lists them"
         )),
@@ -121,7 +135,8 @@ pub(crate) fn provider(argument: Option<&str>, context: &CommandContext<'_>) -> 
                     .current(info.id == context.provider)
                 })
                 .collect(),
-        ));
+        )
+        .searchable());
     };
 
     match micro_provider::provider_info(name) {
@@ -140,17 +155,71 @@ fn item(model: &ModelDef, current: Option<&ModelDef>) -> PickerItem {
     let qualified = model.qualified_id();
     let is_current = current.is_some_and(|model| model.qualified_id() == qualified);
 
-    PickerItem::new(
-        &qualified,
-        format!(
-            "{} · {} context · {}",
-            model.name,
-            tokens(model.context_window),
-            price(model)
-        ),
+    // The id is what a reader is looking for, so it is the row; who serves it is a badge
+    // beside it, because the same model is often offered by several providers.
+    let item = PickerItem::new(
+        &model.id,
+        format!("[{}]", model.provider),
         format!("/model {qualified}"),
     )
     .current(is_current)
+    // A model is looked up by whichever of its names comes to mind, and its maker's name
+    // for it is on none of them. The provider leads so that a query naming one ranks its
+    // own models above a proxy that resells them under a longer id.
+    .found_by(search_text(model));
+
+    match model.name.is_empty() {
+        true => item,
+        false => item.noting(format!("Model Name: {}", model.name)),
+    }
+}
+
+/// What a query for a model is matched against.
+///
+/// More than the row shows: the provider, the qualified id, the bare id, and the name its
+/// maker gave it, so any of them finds it.
+fn search_text(model: &ModelDef) -> String {
+    let provider = &model.provider;
+    let id = &model.id;
+    let name = match model.name.is_empty() {
+        true => String::new(),
+        false => format!(" {}", model.name),
+    };
+    format!("{provider} {provider}/{id} {provider} {id}{name}")
+}
+
+/// The models a workspace named, matched by prefix so a pattern can name a provider, a
+/// family, or one exact model.
+fn on_shortlist(models: &[ModelDef], patterns: &[String]) -> Vec<ModelDef> {
+    if patterns.is_empty() {
+        return Vec::new();
+    }
+    models
+        .iter()
+        .filter(|model| {
+            patterns.iter().any(|pattern| {
+                model.qualified_id().starts_with(pattern.as_str())
+                    || model.id.starts_with(pattern.as_str())
+            })
+        })
+        .cloned()
+        .collect()
+}
+
+/// The models a picker offers, in the order they should be read: whatever is running
+/// first, then grouped by who serves it.
+fn ordered(models: &[ModelDef], current: Option<&ModelDef>) -> Vec<ModelDef> {
+    let mut ordered = models.to_vec();
+    let current = current.map(ModelDef::qualified_id);
+    ordered.sort_by(|left, right| {
+        let is_current = |model: &ModelDef| current.as_deref() == Some(&model.qualified_id());
+        match (is_current(left), is_current(right)) {
+            (true, false) => std::cmp::Ordering::Less,
+            (false, true) => std::cmp::Ordering::Greater,
+            _ => left.provider.cmp(&right.provider),
+        }
+    });
+    ordered
 }
 
 /// How a provider's credential stands, in a few words for a picker line.
@@ -161,26 +230,6 @@ fn credential_note(provider: &str, context: &CommandContext<'_>) -> String {
         micro_auth::CredentialSource::Environment { variable } => format!("via {variable}"),
         micro_auth::CredentialSource::Missing => "not signed in".to_string(),
     }
-}
-
-/// A round token count, the way a person says it.
-fn tokens(count: u32) -> String {
-    match count {
-        0 => "unknown".to_string(),
-        count if count >= 1_000_000 => format!("{}M", count / 1_000_000),
-        count if count >= 1_000 => format!("{}k", count / 1_000),
-        count => count.to_string(),
-    }
-}
-
-fn price(model: &ModelDef) -> String {
-    if model.cost.is_free() {
-        return "included".to_string();
-    }
-    format!(
-        "${:.2}/${:.2} per Mtok",
-        model.cost.input, model.cost.output
-    )
 }
 
 #[cfg(test)]
@@ -210,11 +259,11 @@ mod tests {
             .iter()
             .all(|item| item.command.starts_with("/model ")));
         assert!(
-            picker.items.iter().any(|item| item.label.starts_with("anthropic/")),
+            picker.items.iter().any(|item| item.detail == "[anthropic]"),
             "the signed-in provider is offered"
         );
         for item in &picker.items {
-            let provider = item.label.split('/').next().unwrap_or_default();
+            let provider = item.detail.trim_matches(['[', ']']);
             assert!(
                 harness.auth.status_of(provider).is_authenticated(),
                 "{} is offered without a credential",
@@ -263,7 +312,7 @@ mod tests {
         let providers: Vec<&str> = picker
             .items
             .iter()
-            .map(|item| item.label.split('/').next().unwrap())
+            .map(|item| item.detail.trim_matches(['[', ']']))
             .collect();
         assert!(providers.contains(&"anthropic"));
     }
@@ -300,7 +349,7 @@ mod tests {
             .filter(|item| item.current)
             .map(|item| item.label.as_str())
             .collect();
-        assert_eq!(marked, vec!["anthropic/claude-opus-5"]);
+        assert_eq!(marked, vec!["claude-opus-5"]);
     }
 
     #[tokio::test]
@@ -348,17 +397,11 @@ mod tests {
         assert!(text(&outcome).contains("openrouter"), "{outcome:?}");
     }
 
+    /// A row reads the way pi's does: the id, with who serves it beside it, because the
+    /// same model is often offered by several providers.
     #[test]
-    fn token_counts_are_written_the_way_people_say_them() {
-        assert_eq!(tokens(200_000), "200k");
-        assert_eq!(tokens(1_000_000), "1M");
-        assert_eq!(tokens(512), "512");
-        assert_eq!(tokens(0), "unknown");
-    }
-
-    #[test]
-    fn a_subscription_model_shows_no_price() {
-        let mut model = ModelDef {
+    fn a_model_row_names_the_model_and_who_serves_it() {
+        let model = ModelDef {
             id: "gpt-5".into(),
             name: "GPT-5".into(),
             provider: "github-copilot".into(),
@@ -374,10 +417,46 @@ mod tests {
             compat: Default::default(),
             thinking: Default::default(),
         };
-        assert_eq!(price(&model), "included");
 
-        model.cost.input = 3.0;
-        model.cost.output = 15.0;
-        assert_eq!(price(&model), "$3.00/$15.00 per Mtok");
+        let row = item(&model, None);
+        assert_eq!(row.label, "gpt-5");
+        assert_eq!(row.detail, "[github-copilot]");
+        assert!(!row.current);
+
+        let row = item(&model, Some(&model));
+        assert!(row.current, "the one running is marked");
+    }
+
+    /// Whatever is running is offered first, and the rest are grouped by who serves them.
+    #[test]
+    fn the_running_model_is_offered_first() {
+        let make = |id: &str, provider: &str| ModelDef {
+            id: id.into(),
+            name: id.into(),
+            provider: provider.into(),
+            api: micro_models::WireApi::OpenaiCompletions,
+            base_url: "https://example.invalid".into(),
+            context_window: 1000,
+            max_output_tokens: 100,
+            reasoning: false,
+            input: Vec::new(),
+            headers: Default::default(),
+            aliases: Vec::new(),
+            cost: Default::default(),
+            compat: Default::default(),
+            thinking: Default::default(),
+        };
+
+        let models = vec![
+            make("a", "zed"),
+            make("b", "acme"),
+            make("c", "middle"),
+        ];
+        let running = make("c", "middle");
+
+        let sorted = ordered(&models, Some(&running));
+        assert_eq!(sorted[0].id, "c", "what is running comes first");
+        assert_eq!(sorted[1].provider, "acme", "then grouped by provider");
+        assert_eq!(sorted[2].provider, "zed");
     }
 }

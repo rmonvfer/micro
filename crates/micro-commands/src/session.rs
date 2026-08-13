@@ -45,7 +45,7 @@ pub(crate) async fn resume(argument: Option<&str>, context: &CommandContext<'_>)
         },
         several => {
             let title = format!("{} sessions start with \"{query}\"", several.len());
-            CommandOutcome::Choose(Picker::new(title, items(several.to_vec(), context)))
+            CommandOutcome::Choose(Picker::new(title, items(several.to_vec(), context)).searchable())
         }
     }
 }
@@ -95,7 +95,7 @@ async fn listing(context: &CommandContext<'_>) -> Result<Vec<SessionMeta>, Strin
 }
 
 fn session_picker(sessions: Vec<SessionMeta>, context: &CommandContext<'_>) -> Picker {
-    Picker::new("Resume a session", items(sessions, context))
+    Picker::new("Resume a session", items(sessions, context)).searchable()
 }
 
 fn items(sessions: Vec<SessionMeta>, context: &CommandContext<'_>) -> Vec<PickerItem> {
@@ -175,7 +175,7 @@ pub(crate) async fn tree(
         })
         .collect();
 
-    CommandOutcome::Choose(Picker::new("Session Tree", items))
+    CommandOutcome::Choose(Picker::new("Session Tree", items).searchable())
 }
 
 /// What an entry is to the conversation as it stands: where it continues from, what it is

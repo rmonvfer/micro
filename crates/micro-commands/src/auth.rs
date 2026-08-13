@@ -12,7 +12,7 @@ use micro_auth::ProviderStatus;
 pub(crate) async fn login(argument: Option<&str>, context: &CommandContext<'_>) -> CommandOutcome {
     let Some(name) = argument else {
         return CommandOutcome::Choose(Picker::new(
-            "Sign in to a provider",
+            "Select provider to configure:",
             micro_auth::provider_table()
                 .iter()
                 .map(|entry| {
@@ -24,7 +24,8 @@ pub(crate) async fn login(argument: Option<&str>, context: &CommandContext<'_>) 
                     .current(entry.id == context.provider)
                 })
                 .collect(),
-        ));
+        )
+        .searchable());
     };
 
     let Some(provider) = known(name) else {
@@ -67,7 +68,7 @@ pub(crate) fn logout(argument: Option<&str>, context: &CommandContext<'_>) -> Co
         if signed_in.is_empty() {
             return CommandOutcome::info("no provider has a stored credential");
         }
-        return CommandOutcome::Choose(Picker::new("Sign out of a provider", signed_in));
+        return CommandOutcome::Choose(Picker::new("Select provider to logout:", signed_in).searchable());
     };
 
     let Some(provider) = known(name) else {
@@ -279,7 +280,15 @@ mod tests {
     fn only_providers_micro_knows_are_accepted() {
         assert_eq!(known("copilot"), Some("github-copilot"));
         assert_eq!(known("GEMINI"), Some("google"));
-        // A service micro cannot speak to is not offered a login.
-        assert_eq!(known("mistral"), None);
+        // Azure hosts a protocol micro speaks, so it is offered a login like any other.
+        assert_eq!(known("azure-openai-responses"), Some("azure-openai-responses"));
+        // Mistral serves the completions shape under its own name, so it is offered too.
+        assert_eq!(known("mistral"), Some("mistral"));
+        // Bedrock is signed rather than keyed, and is offered like any other.
+        assert_eq!(known("amazon-bedrock"), Some("amazon-bedrock"));
+        // Vertex is the Gemini shape under a project, and is offered like any other.
+        assert_eq!(known("google-vertex"), Some("google-vertex"));
+        // A name that is nobody's is still nobody's.
+        assert_eq!(known("not-a-service"), None);
     }
 }

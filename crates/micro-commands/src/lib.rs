@@ -26,6 +26,7 @@ pub use outcome::CommandOutcome;
 pub use outcome::MessageKind;
 pub use outcome::Picker;
 pub use outcome::PickerItem;
+pub use outcome::PickerLayout;
 pub use outcome::ThemeChoice;
 pub use parse::parse;
 pub use parse::suggest;
@@ -271,6 +272,9 @@ pub struct CommandContext<'a> {
     pub usage: micro_types::Usage,
     /// Show only the newest entry when the changelog is asked for.
     pub collapse_changelog: bool,
+    /// The models a workspace put on its shortlist, as the patterns it named them by. The
+    /// model list opens on these; everything else is a keystroke away.
+    pub scoped_models: &'a [String],
 }
 
 /// Run a submitted line. `None` means it was ordinary text for the model.
@@ -431,7 +435,10 @@ fn theme(argument: Option<&str>) -> CommandOutcome {
                 PickerItem::new("light", "ohm's light palette", "/theme light"),
                 PickerItem::new("auto", "follow the terminal", "/theme auto"),
             ],
-        ));
+        )
+        // A palette's name is short, so its column is held narrow: padding three names out
+        // to the width a model id needs would leave the descriptions stranded.
+        .columns(12, 32));
     };
 
     match argument.trim().to_ascii_lowercase().as_str() {
@@ -1056,6 +1063,7 @@ pub(crate) mod testing {
                 message_count: 0,
                 usage: micro_types::Usage::default(),
             collapse_changelog: false,
+            scoped_models: &[],
             }
         }
     }
@@ -1145,6 +1153,7 @@ mod tests {
             message_count: 1,
             usage: micro_types::Usage::default(),
             collapse_changelog: false,
+            scoped_models: &[],
         };
 
         // An argument each command will accept, for the ones that need one. A command that
@@ -1262,6 +1271,7 @@ mod tests {
             message_count: 0,
             usage: micro_types::Usage::default(),
             collapse_changelog: false,
+            scoped_models: &[],
         };
 
         let CommandOutcome::Choose(picker) = settings(&context) else {
@@ -1414,6 +1424,7 @@ mod tests {
             message_count: 4,
             usage: micro_types::Usage::default(),
             collapse_changelog: false,
+            scoped_models: &[],
             ..harness.context()
         };
         assert!(matches!(

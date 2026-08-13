@@ -30,6 +30,11 @@ pub enum CommandOutcome {
         kind: MessageKind,
         text: String,
     },
+    /// Send this to the model in place of what was typed, which is what running a prompt
+    /// written for the purpose does.
+    Send {
+        prompt: String,
+    },
     /// Use this model from the next turn on.
     SetModel {
         model: Box<ModelDef>,
@@ -153,6 +158,41 @@ pub struct Picker {
     pub items: Vec<PickerItem>,
     /// Something to say about what the list leaves out.
     pub hint: Option<String>,
+    /// Whether the list has a query line to narrow it. A short list of settled choices is
+    /// read rather than searched, and a line to type into would only be another row.
+    pub searchable: bool,
+    /// Whether the list names itself and says which keys work. A list opened in place of
+    /// the prompt needs neither: what it is, is plain, and the keys are the ones that were
+    /// already working. A question put by an extension is not opened by the reader and does
+    /// need both.
+    pub titled: bool,
+    /// How a row is put together.
+    pub layout: PickerLayout,
+    /// How narrow and how wide the label's column may be. A list whose labels are all short
+    /// still lines its details up somewhere sensible rather than against the labels.
+    pub column: (usize, usize),
+    /// The same choices cut down to what the workspace put on its shortlist, when it has
+    /// one. The list opens on these and can be switched to the whole of it.
+    pub scoped: Vec<PickerItem>,
+    /// Whether this list is of models, and so worth asking the providers about while it is
+    /// open: what they serve changes between releases, and the bundled catalog does not.
+    pub refreshes: bool,
+}
+
+/// How wide a label's column is when the picker says nothing else.
+pub const DEFAULT_COLUMN: usize = 32;
+
+/// How a picker's rows are laid out.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum PickerLayout {
+    /// The label in a column of its own, the detail lined up after it. What a list of
+    /// settings or themes wants: the second column is read down, not across.
+    #[default]
+    Columns,
+    /// The label, then the detail as a badge one space after it, and the chosen row's
+    /// note beneath the list. What a list of models wants: an id is as long as it is, and
+    /// padding it to a column leaves a gulf in every row.
+    Badges,
 }
 
 impl Picker {
@@ -161,7 +201,49 @@ impl Picker {
             title: title.into(),
             items,
             hint: None,
+            searchable: false,
+            titled: false,
+            layout: PickerLayout::default(),
+            column: (DEFAULT_COLUMN, DEFAULT_COLUMN),
+            scoped: Vec::new(),
+            refreshes: false,
         }
+    }
+
+    /// The same list, with a line to narrow it by.
+    pub fn searchable(mut self) -> Self {
+        self.searchable = true;
+        self
+    }
+
+    /// The same list, naming itself and saying which keys work.
+    pub fn titled(mut self) -> Self {
+        self.titled = true;
+        self
+    }
+
+    /// The same list, with the label's column held between these widths.
+    pub fn columns(mut self, min: usize, max: usize) -> Self {
+        self.column = (min.min(max).max(1), max.max(min).max(1));
+        self
+    }
+
+    /// The same list, kept up to date by asking the providers while it is open.
+    pub fn refreshing(mut self) -> Self {
+        self.refreshes = true;
+        self
+    }
+
+    /// The same list, opening on a workspace's shortlist with the whole of it a key away.
+    pub fn scoping(mut self, scoped: Vec<PickerItem>) -> Self {
+        self.scoped = scoped;
+        self
+    }
+
+    /// The same list, laid out the given way.
+    pub fn laid_out(mut self, layout: PickerLayout) -> Self {
+        self.layout = layout;
+        self
     }
 
     /// The same list, with a line saying what it is not showing.
@@ -186,6 +268,13 @@ pub struct PickerItem {
     pub command: String,
     /// This item is what is in use now, so a caller can mark it.
     pub current: bool,
+    /// What a query is matched against, when that is more than what is on the row. A model
+    /// is looked up by the name its maker gave it as readily as by its id, and the name is
+    /// not on the row.
+    pub search: Option<String>,
+    /// A line shown under the list while this row is the chosen one, for what does not fit
+    /// on the row itself.
+    pub note: Option<String>,
 }
 
 impl PickerItem {
@@ -199,11 +288,25 @@ impl PickerItem {
             detail: detail.into(),
             command: command.into(),
             current: false,
+            search: None,
+            note: None,
         }
     }
 
     pub fn current(mut self, current: bool) -> Self {
         self.current = current;
+        self
+    }
+
+    /// What a query is matched against, in place of the row's own text.
+    pub fn found_by(mut self, search: impl Into<String>) -> Self {
+        self.search = Some(search.into());
+        self
+    }
+
+    /// What is said under the list while this row is chosen.
+    pub fn noting(mut self, note: impl Into<String>) -> Self {
+        self.note = Some(note.into());
         self
     }
 }
@@ -284,6 +387,7 @@ impl fmt::Debug for CommandOutcome {
                 formatter.debug_struct("Import").field("path", path).finish()
             }
             CommandOutcome::Share => formatter.write_str("Share"),
+            CommandOutcome::Send { .. } => formatter.write_str("Send"),
             CommandOutcome::Compact => formatter.write_str("Compact"),
             CommandOutcome::Clear => formatter.write_str("Clear"),
             CommandOutcome::Quit => formatter.write_str("Quit"),
