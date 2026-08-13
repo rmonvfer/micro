@@ -26,6 +26,14 @@ const CODE_INDENT: &str = "  ";
 /// Widest a horizontal rule is drawn, however wide the terminal is. ohm's own cap.
 const MAX_RULE: usize = 80;
 
+/// Widest a single table column grows before its cells start losing characters. Without a
+/// cap one verbose column would starve every other column in a narrow terminal.
+const MAX_COLUMN: usize = 24;
+
+/// A table narrower than this is not rendered as a table, because nothing but its border
+/// would be left; the source lines are shown as they arrived instead.
+const MIN_TABLE_WIDTH: usize = 8;
+
 /// One source line, styled and ready to wrap.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Block {
@@ -69,6 +77,12 @@ pub fn render_linked(
 ) -> Vec<Block> {
     let mut blocks = Vec::new();
     let mut fence: Option<Fence> = None;
+    // Rows accumulate until the table ends, because how wide a column should be is only
+    // known once every row has been read.
+    let mut table: Option<Table> = None;
+    // Display maths, gathering until its closing delimiter: it is set over several rows, so
+    // nothing of it can be drawn until all of it has arrived.
+    let mut maths: Option<Maths> = None;
     // Where a numbered list has got to, so it counts on rather than echoing the source.
     let mut ordinal: Option<usize> = None;
 
@@ -85,6 +99,21 @@ pub fn render_linked(
             quote(trimmed).is_some() && quote(next).is_some()
         });
 
+        if let Some(open) = &mut maths {
+            match trimmed.starts_with(open.closer) {
+                true => {
+                    blocks.extend(open.drawn(theme));
+                    maths = None;
+                }
+                false => open.lines.push(line.to_string()),
+            }
+            continue;
+        }
+        if let Some(open) = opens_maths(trimmed) {
+            maths = Some(open);
+            continue;
+        }
+
         match &mut fence {
             // A fence closes on its own marker, so a `~~~` inside a ``` block is content.
             Some(open) if trimmed.starts_with(open.marker) => {
@@ -100,6 +129,11 @@ pub fn render_linked(
             Some(open) => blocks.push(code_line(line, open, theme)),
             None => match fence_marker(trimmed) {
                 Some(marker) => {
+                    // A table cannot run into a code block, so it is finished here rather
+                    // than left open to be drawn after the block it precedes.
+                    if let Some(open) = table.take() {
+                        blocks.extend(open.render(theme, width, links));
+                    }
                     // The fence line is shown with its language, as ohm shows it, rather
                     // than being swallowed.
                     blocks.push(Block::plain(vec![Span::styled(
@@ -113,17 +147,52 @@ pub fn render_linked(
                     });
                 }
                 None => {
-                    let block = block_for(line, trimmed, theme, width, links, &mut ordinal);
-                    let spaced = block.spaced_after;
-                    blocks.push(block);
-                    // A heading, a quote or a rule is followed by a blank row, which is what
-                    // sets it apart from the paragraph after it.
-                    if spaced && !followed_by_blank && !continues {
-                        blocks.push(Block::plain(Vec::new()));
+                    // A table swallows the lines that belong to it and is drawn once, at
+                    // the line that ends it: a column's width is not known before then.
+                    match table.take() {
+                        Some(open) => match open.take_line(trimmed) {
+                            Continued::Taken(open) => table = Some(open),
+                            Continued::Ended(open) => {
+                                blocks.extend(open.render(theme, width, links));
+                                let block =
+                                    block_for(line, trimmed, theme, width, links, &mut ordinal);
+                                let spaced = block.spaced_after;
+                                blocks.push(block);
+                                if spaced && !followed_by_blank && !continues {
+                                    blocks.push(Block::plain(Vec::new()));
+                                }
+                            }
+                        },
+                        None => match starts_table(trimmed) {
+                            Some(started) => table = Some(started),
+                            None => {
+                                let block =
+                                    block_for(line, trimmed, theme, width, links, &mut ordinal);
+                                let spaced = block.spaced_after;
+                                blocks.push(block);
+                                // A heading, a quote or a rule is followed by a blank row,
+                                // which is what sets it apart from the paragraph after it.
+                                if spaced && !followed_by_blank && !continues {
+                                    blocks.push(Block::plain(Vec::new()));
+                                }
+                            }
+                        },
                     }
                 }
             },
         }
+    }
+
+    // Maths the text ends in the middle of is drawn with what it has, so a half-streamed
+    // answer shows the expression rather than the source it was written in.
+    if let Some(open) = maths {
+        blocks.extend(open.drawn(theme));
+    }
+
+    // A table the text ends in the middle of is drawn with what it has, so a half-streamed
+    // answer shows its rows rather than nothing.
+    if let Some(open) = table {
+        blocks.extend(open.render(theme, width, links));
     }
 
     // A fence the text never closed is closed here, so a half-written answer still reads as
@@ -349,6 +418,18 @@ fn inline(text: &str, base: Style, theme: &Theme, links: &mut Links) -> Vec<Span
             }
         }
 
+        // Maths reads as maths only once it is drawn: `\alpha` is a word, α is a letter.
+        if matches!(characters[index], '$' | '\\') {
+            if let Some((rendered, next)) = math(&characters, index) {
+                if !buffer.is_empty() {
+                    spans.push(Span::styled(std::mem::take(&mut buffer), base));
+                }
+                spans.push(Span::styled(rendered, base));
+                index = next;
+                continue;
+            }
+        }
+
         if characters[index] == '[' {
             if let Some((rendered, next)) = link(&characters, index, base, theme, links) {
                 if !buffer.is_empty() {
@@ -479,6 +560,306 @@ fn find(characters: &[char], from: usize, wanted: char) -> Option<usize> {
     (from..characters.len()).find(|index| characters[*index] == wanted)
 }
 
+/// Display maths in progress: what closes it, and the source gathered so far.
+struct Maths {
+    closer: &'static str,
+    lines: Vec<String>,
+}
+
+/// Whether a line opens display maths, and what will close it.
+///
+/// `$$` and `\[` on a line of their own. Written on the same line as the expression they
+/// open, the expression is the rest of that line.
+fn opens_maths(trimmed: &str) -> Option<Maths> {
+    let (opener, closer) = match trimmed {
+        line if line.starts_with("$$") => ("$$", "$$"),
+        line if line.starts_with("\\[") => ("\\[", "\\]"),
+        _ => return None,
+    };
+    let rest = trimmed[opener.len()..].trim();
+    // A closer on the same line makes it one line of maths rather than a block to gather.
+    if rest.ends_with(closer) && !rest.is_empty() {
+        return Some(Maths {
+            closer,
+            lines: vec![rest[..rest.len() - closer.len()].to_string()],
+        });
+    }
+    Some(Maths {
+        closer,
+        lines: match rest.is_empty() {
+            true => Vec::new(),
+            false => vec![rest.to_string()],
+        },
+    })
+}
+
+impl Maths {
+    /// The expression, set out over as many rows as it needs.
+    ///
+    /// What cannot be drawn is shown as it was written: an expression micro does not
+    /// understand is still something the reader asked to see.
+    fn drawn(&self, theme: &Theme) -> Vec<Block> {
+        let source = self.lines.join("\n");
+        let style = theme.body();
+        let drawn = crate::latex::render_display(&source).unwrap_or_else(|| source.clone());
+        let mut blocks = vec![Block::plain(Vec::new())];
+        for line in drawn.split('\n') {
+            blocks.push(Block::plain(vec![Span::styled(line.to_string(), style)]));
+        }
+        blocks.push(Block::plain(Vec::new()));
+        blocks
+    }
+}
+
+/// A table in progress. Rows accumulate until the table ends, because a column's width is
+/// only known once every row has been read.
+enum Table {
+    /// A line that contains a pipe but whose delimiter has not arrived yet. It may be a
+    /// header, or it may be prose with a pipe in it — the next line decides.
+    Pending { header: String },
+    /// A header whose delimiter confirmed it, and every row read since. The first entry in
+    /// `cells` is the header row.
+    Building {
+        cells: Vec<Vec<String>>,
+        alignments: Vec<Align>,
+    },
+}
+
+/// The alignment a delimiter column declares, as ohm reads it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Align {
+    Left,
+    Center,
+    Right,
+}
+
+/// The start of a table: a line that holds more than one cell. Anything further is decided
+/// once the next line either delivers a delimiter or does not.
+fn starts_table(trimmed: &str) -> Option<Table> {
+    contains_cell(trimmed).then(|| Table::Pending {
+        header: trimmed.to_string(),
+    })
+}
+
+/// Whether a line holds more than one cell. A pipe on its own in prose — `a | b` — is not
+/// a table; ohm makes the same demand of two cells before committing.
+fn contains_cell(trimmed: &str) -> bool {
+    trimmed.contains('|') && split_cells(trimmed).len() >= 2
+}
+
+/// The cells of a table row, without the outer pipes. Interior pipes split; spaces around
+/// a cell are the source's own spacing and are not part of the value.
+fn split_cells(trimmed: &str) -> Vec<String> {
+    let inner = trimmed.strip_prefix('|').unwrap_or(trimmed);
+    let inner = inner.strip_suffix('|').unwrap_or(inner);
+    inner.split('|').map(|cell| cell.trim().to_string()).collect()
+}
+
+/// The delimiter row that confirms a table, as the alignment of each of its columns. A run
+/// of dashes alone, with no pipe, is a rule and is left to the rule renderer.
+fn delimiter(trimmed: &str) -> Option<Vec<Align>> {
+    let cells = split_cells(trimmed);
+    let mut alignments = Vec::with_capacity(cells.len());
+    for cell in &cells {
+        let dashes = cell.trim_matches(':');
+        if dashes.len() < 3 || !dashes.chars().all(|c| c == '-') {
+            return None;
+        }
+        alignments.push(match (cell.starts_with(':'), cell.ends_with(':')) {
+            (true, true) => Align::Center,
+            (false, true) => Align::Right,
+            _ => Align::Left,
+        });
+    }
+    (!alignments.is_empty()).then_some(alignments)
+}
+
+/// What became of a line offered to a table.
+enum Continued {
+    /// The line belonged to the table, which carries on.
+    Taken(Table),
+    /// The line was not part of it, so the table is finished and the line is still to be
+    /// dealt with.
+    Ended(Table),
+}
+
+impl Table {
+    /// Offer the next line to the table.
+    ///
+    /// A header waits for a delimiter naming as many columns as it has; anything else means
+    /// the pipe was prose. Once building, a line goes on taking rows until one arrives with
+    /// no cells in it.
+    fn take_line(self, trimmed: &str) -> Continued {
+        match self {
+            Table::Pending { header } => {
+                let header_cells = split_cells(&header);
+                match delimiter(trimmed).filter(|widths| widths.len() == header_cells.len()) {
+                    Some(alignments) => Continued::Taken(Table::Building {
+                        cells: vec![header_cells],
+                        alignments,
+                    }),
+                    None => Continued::Ended(Table::Pending { header }),
+                }
+            }
+            Table::Building { mut cells, alignments } => match contains_cell(trimmed) {
+                true => {
+                    cells.push(split_cells(trimmed));
+                    Continued::Taken(Table::Building { cells, alignments })
+                }
+                false => Continued::Ended(Table::Building { cells, alignments }),
+            },
+        }
+    }
+
+    /// Draw the table as one block per row, in the space `width` leaves for it.
+    ///
+    /// Columns are sized to their widest cell, up to a cap, and the widest columns are
+    /// shortened with an ellipsis until the whole row fits. A table too wide to say
+    /// anything in is not drawn as a table at all; its rows fall back to the text they
+    /// arrived as.
+    fn render(self, theme: &Theme, width: usize, links: &mut Links) -> Vec<Block> {
+        let Self::Building { cells, alignments } = self else {
+            // A pending header never became a table, so it is the text it always was.
+            let Table::Pending { header } = self else {
+                unreachable!()
+            };
+            return vec![Block::plain(inline(&header, theme.body(), theme, links))];
+        };
+
+        let columns = alignments.len();
+        let mut widths: Vec<usize> = (0..columns)
+            .map(|column| {
+                cells
+                    .iter()
+                    .map(|row| row.get(column).map_or(0, |cell| crate::wrap::text_width(cell)))
+                    .max()
+                    .unwrap_or(0)
+                    .min(MAX_COLUMN)
+            })
+            .collect();
+
+        // The widest columns give up columns until the row fits. An empty cell asks for
+        // nothing, so the floor of 1 is never the thing being shortened.
+        while row_width(&widths) > width {
+            match widths.iter().position(|w| *w == *widths.iter().max().unwrap()) {
+                Some(widest) if widths[widest] > 1 => widths[widest] -= 1,
+                _ => break,
+            }
+        }
+
+        if width < MIN_TABLE_WIDTH || row_width(&widths) > width {
+            return cells
+                .into_iter()
+                .map(|row| Block::plain(inline(&row.join(" | "), theme.body(), theme, links)))
+                .collect();
+        }
+
+        let border = Style::new().fg(theme.md_hr);
+        let header_style = Style::new()
+            .fg(theme.md_heading)
+            .add_modifier(Modifier::BOLD)
+            .add_modifier(Modifier::UNDERLINED);
+        let body = theme.body();
+
+        let mut blocks = Vec::with_capacity(cells.len());
+        for (index, row) in cells.iter().enumerate() {
+            let style = match index {
+                0 => header_style,
+                _ => body,
+            };
+            let mut spans = Vec::new();
+            for (column, cell_width) in widths.iter().enumerate() {
+                if column > 0 {
+                    spans.push(Span::styled(" │ ", border));
+                }
+                let cell = row.get(column).map_or("", String::as_str);
+                let fitted = crate::wrap::truncate(cell, *cell_width);
+                let used = crate::wrap::text_width(&fitted);
+                let padding = cell_width - used;
+                let (before, after) = match alignments[column] {
+                    Align::Left => (0, padding),
+                    Align::Right => (padding, 0),
+                    Align::Center => (padding / 2, padding - padding / 2),
+                };
+                if before > 0 {
+                    spans.push(Span::styled(" ".repeat(before), style));
+                }
+                spans.extend(inline(&fitted, style, theme, links));
+                if after > 0 {
+                    spans.push(Span::styled(" ".repeat(after), style));
+                }
+            }
+            blocks.push(Block {
+                spans,
+                indent: 0,
+                filled: false,
+                spaced_after: false,
+            });
+        }
+        blocks
+    }
+}
+
+/// The columns a row spans: every cell, plus the ` │ ` between each pair.
+fn row_width(widths: &[usize]) -> usize {
+    let cells: usize = widths.iter().sum();
+    cells + 3 * widths.len().saturating_sub(1)
+}
+
+/// Inline maths, drawn as the characters it stands for, and the index past its closer.
+///
+/// The delimiters ohm reads: `$...$`, `$$...$$` and `\(...\)`. A lone `$` before a space,
+/// or one that never closes on the same line, is a dollar sign and is left alone — a price
+/// in the middle of a sentence must not swallow the rest of it.
+fn math(characters: &[char], start: usize) -> Option<(String, usize)> {
+    let (opener, closer) = match (characters[start], characters.get(start + 1)) {
+        ('$', Some('$')) => ("$$", "$$"),
+        ('\\', Some('(')) => ("\\(", "\\)"),
+        ('$', Some(next)) if !next.is_whitespace() => ("$", "$"),
+        _ => return None,
+    };
+
+    let (source, next) = marker(characters, start, opener)
+        .filter(|(source, _)| !source.is_empty())?;
+    // A single `$` is also a currency sign and a shell variable, so it has to earn being
+    // read as maths: what follows a price is a digit, what precedes the closing `$` of a
+    // sum of money is a space, and `$PATH` is a name rather than an expression.
+    if opener == "$" && !is_math(&source, characters.get(next)) {
+        return None;
+    }
+    // `marker` closes on the opener, which is the closer for every delimiter but `\(`.
+    let next = match closer == opener {
+        true => next,
+        false => {
+            let text: String = characters[start + opener.len()..].iter().collect();
+            let end = text.find(closer)?;
+            return crate::latex::render(&text[..end])
+                .map(|drawn| (drawn, start + opener.len() + end + closer.len()));
+        }
+    };
+    crate::latex::render(&source).map(|drawn| (drawn, next))
+}
+
+/// Whether what a lone `$` fenced is maths rather than money or a variable.
+///
+/// `$5 and $10` closes on the second dollar with `5 and ` between them: it ends in a space,
+/// and a digit follows the closer. Either is enough to say this was never an expression.
+fn is_math(source: &str, after: Option<&char>) -> bool {
+    if source.ends_with(char::is_whitespace) || source.contains('`') {
+        return false;
+    }
+    if after.is_some_and(char::is_ascii_digit) {
+        return false;
+    }
+    // `$PATH` followed by a word: a name being spelled out, not a product being written.
+    let shouted = !source.is_empty()
+        && source
+            .trim_end_matches(|c: char| !c.is_alphanumeric() && c != '_')
+            .chars()
+            .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_');
+    !(shouted && after.is_some_and(|c| c.is_alphanumeric() || *c == '_'))
+}
+
 /// The text delimited by `delimiter` starting at `start`, and the index past the closer.
 fn marker(characters: &[char], start: usize, delimiter: &str) -> Option<(String, usize)> {
     let opener: Vec<char> = delimiter.chars().collect();
@@ -497,6 +878,56 @@ fn marker(characters: &[char], start: usize, delimiter: &str) -> Option<(String,
 
 #[cfg(test)]
 mod tests {
+    /// A table is drawn as a table: columns sized to what is in them, aligned as the
+    /// delimiter asked, with the header set apart.
+    #[test]
+    fn a_table_is_drawn_as_one() {
+        let rows = drawn("| Model | Context |\n| --- | ---: |\n| opus | 200k |\n| gemini | 1M |");
+        assert_eq!(rows[0], "Model  \u{2502} Context");
+        assert_eq!(rows[1], "opus   \u{2502}    200k", "right-aligned, as the delimiter asked");
+        assert_eq!(rows[2], "gemini \u{2502}      1M");
+    }
+
+    /// A pipe in prose is a pipe: without a delimiter row beneath it, nothing is a table.
+    #[test]
+    fn a_pipe_in_prose_is_not_a_table() {
+        assert_eq!(drawn("a | b\nand more"), vec!["a | b", "and more"]);
+    }
+
+    /// Maths reads as maths only once it is drawn.
+    #[test]
+    fn inline_maths_is_drawn_as_the_characters_it_stands_for() {
+        assert_eq!(
+            drawn("The set $\\alpha_1 + \\beta^2$ holds."),
+            vec!["The set \u{3b1}\u{2081} + \u{3b2}\u{b2} holds."]
+        );
+    }
+
+    /// A dollar is money and a shell variable more often than it is maths, so it has to
+    /// earn being read as an expression.
+    #[test]
+    fn a_dollar_sign_is_left_alone() {
+        assert_eq!(drawn("costs $5 and $10 here."), vec!["costs $5 and $10 here."]);
+        assert_eq!(drawn("set $PATH and $HOME now"), vec!["set $PATH and $HOME now"]);
+        assert_eq!(drawn("a lone $ sign"), vec!["a lone $ sign"]);
+    }
+
+    /// Every row of a block, as plain text.
+    fn drawn(source: &str) -> Vec<String> {
+        let mut links = Links::default();
+        render_linked(source, &Theme::dark(), 60, &mut links)
+            .iter()
+            .map(|block| {
+                block
+                    .spans
+                    .iter()
+                    .map(|span| span.content.as_ref())
+                    .collect::<String>()
+            })
+            .filter(|row: &String| !row.is_empty())
+            .collect()
+    }
+
     use super::*;
 
     fn theme() -> Theme {

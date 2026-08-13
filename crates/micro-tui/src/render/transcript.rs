@@ -76,6 +76,7 @@ pub fn lines(transcript: &Transcript, theme: &Theme, display: &Display) -> Rende
 
         match entry {
             Entry::User(text) => push_user(&mut out, text, theme, display),
+            Entry::Bash { command, shared } => push_bash(&mut out, command, *shared, theme, display),
             Entry::Assistant(assistant) => {
                 push_thinking(&mut out, &assistant.thinking, theme, display);
                 // An answer arriving is marked by the spinner in the status rows, not by a
@@ -169,6 +170,42 @@ fn push_user(out: &mut Vec<Line<'static>>, text: &str, theme: &Theme, display: &
         rows.extend(wrap_spans(&spans, display.width, 0));
     }
     out.extend(band(rows, display.width, theme.user_message_bg));
+}
+
+/// A command the user ran themselves, written the way they typed it.
+///
+/// A shared one is banded like anything else the user said, because that is what it is:
+/// the model is being told. One kept back is dim and unbanded, so that at a glance the
+/// conversation shows which of the two it was — the difference is invisible otherwise, and
+/// it decides what the model knows.
+fn push_bash(
+    out: &mut Vec<Line<'static>>,
+    command: &str,
+    shared: bool,
+    theme: &Theme,
+    display: &Display,
+) {
+    if command.trim().is_empty() {
+        return;
+    }
+    let (prefix, style) = match shared {
+        true => ("!", Style::new().fg(theme.user_message_text)),
+        false => ("!!", Style::new().fg(theme.dim)),
+    };
+
+    let mut rows: Vec<Line<'static>> = Vec::new();
+    for (index, line) in command.split('\n').enumerate() {
+        let text = match index {
+            0 => format!("{prefix} {line}"),
+            _ => line.to_string(),
+        };
+        rows.extend(wrap_spans(&[Span::styled(text, style)], display.width, 0));
+    }
+
+    match shared {
+        true => out.extend(band(rows, display.width, theme.user_message_bg)),
+        false => out.extend(rows),
+    }
 }
 
 /// Reasoning is background information: folded behind a label unless asked for.
@@ -310,8 +347,19 @@ fn push_notice(
         true => text.to_string(),
         false => format!("{prefix}{text}"),
     };
-    let spans = vec![Span::styled(body, Style::new().fg(color))];
-    out.extend(wrap_spans(&spans, display.width, 0));
+    // Wrapped line by line, because the text arrives with its own breaks in it: `/help`
+    // is a command per row, and wrapping the whole of it at once runs them all together
+    // into one paragraph.
+    for line in body.split('\n') {
+        match line.is_empty() {
+            true => out.push(Line::default()),
+            false => out.extend(wrap_spans(
+                &[Span::styled(line.to_string(), Style::new().fg(color))],
+                display.width,
+                0,
+            )),
+        }
+    }
 }
 
 
