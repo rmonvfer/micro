@@ -58,14 +58,24 @@ pub fn client_for(api: WireApi, provider: &str) -> Arc<dyn Provider> {
     match api {
         WireApi::AnthropicMessages => Arc::new(Anthropic::new()),
         WireApi::GoogleGenerativeAi => Arc::new(Gemini::new()),
+        WireApi::BedrockConverseStream => Arc::new(crate::bedrock::Bedrock::new()),
+        WireApi::GoogleVertex => Arc::new(Gemini::vertex()),
         // Codex is the Responses protocol reached with a subscription token, which it
         // presents differently from a platform key.
         WireApi::OpenaiResponses if canonical_provider(provider) == micro_auth::OPENAI_CODEX => {
             Arc::new(Codex::new())
         }
-        WireApi::OpenaiResponses | WireApi::OpenaiCompletions => {
-            Arc::new(OpenAi::for_provider(canonical_provider(provider)))
+        // Azure hosts the same protocol, addressed by deployment and authenticated with
+        // its own header.
+        WireApi::OpenaiResponses if canonical_provider(provider) == crate::codex::AZURE_PROVIDER => {
+            Arc::new(Codex::azure())
         }
+        // Every other service declaring the Responses protocol gets it, under its own
+        // name and with its own headers. Sending one a completion instead works by
+        // accident and loses what the protocol is for: reasoning replayed between turns,
+        // which is how a model keeps its thread across tool calls.
+        WireApi::OpenaiResponses => Arc::new(Codex::for_provider(canonical_provider(provider))),
+        WireApi::OpenaiCompletions => Arc::new(OpenAi::for_provider(canonical_provider(provider))),
     }
 }
 
@@ -78,6 +88,9 @@ pub fn client_for_model(model: &ModelDef) -> Arc<dyn Provider> {
 pub struct ResolvedProvider {
     pub client: Arc<dyn Provider>,
     pub api_key: String,
+    /// Where this credential's account is served, when it is somewhere other than what
+    /// the catalog records. A Copilot token names its own host.
+    pub base_url: Option<String>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -90,10 +103,20 @@ pub enum ResolveError {
 /// token on the way. This is what a CLI or TUI calls when the user names a model.
 pub async fn resolve(store: &AuthStore, model: &ModelDef) -> Result<ResolvedProvider, ResolveError> {
     let credential = store.resolve(&model.provider).await?;
+    let token = credential.token().to_string();
+
+    // A Copilot token says which host answers for its account. A Business or Enterprise
+    // plan is not served by the host an individual one is, and the catalog cannot know
+    // which the credential belongs to.
+    let base_url = match canonical_provider(&model.provider) == micro_auth::GITHUB_COPILOT {
+        true => micro_auth::copilot::base_url_from_token(&token),
+        false => None,
+    };
 
     Ok(ResolvedProvider {
         client: client_for_model(model),
-        api_key: credential.token().to_string(),
+        api_key: token,
+        base_url,
     })
 }
 
@@ -113,6 +136,8 @@ mod tests {
                 WireApi::GoogleGenerativeAi => "google-generative-ai",
                 WireApi::OpenaiResponses => "openai-responses",
                 WireApi::OpenaiCompletions => "openai-completions",
+                WireApi::BedrockConverseStream => "bedrock-converse-stream",
+                WireApi::GoogleVertex => "google-vertex",
             }
         ))
         .unwrap();
@@ -127,13 +152,22 @@ mod tests {
             client_for_model(&model(copilot, WireApi::AnthropicMessages)).name(),
             "anthropic"
         );
+        // Copilot serves GPT models over the Responses shape, under its own name.
         assert_eq!(
             client_for_model(&model(copilot, WireApi::OpenaiResponses)).name(),
             copilot
         );
         assert_eq!(
+            client_for_model(&model(copilot, WireApi::OpenaiCompletions)).name(),
+            copilot
+        );
+        assert_eq!(
             client_for_model(&model("google", WireApi::GoogleGenerativeAi)).name(),
             "gemini"
+        );
+        assert_eq!(
+            client_for_model(&model("amazon-bedrock", WireApi::BedrockConverseStream)).name(),
+            "amazon-bedrock"
         );
     }
 

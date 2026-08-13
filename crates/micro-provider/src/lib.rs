@@ -4,7 +4,11 @@
 //! [`registry`] is the way in for a caller that picks a provider at runtime.
 
 mod anthropic;
+mod bedrock;
 mod codex;
+mod eventstream;
+mod sigv4;
+mod vertex;
 mod gemini;
 mod json;
 mod openai;

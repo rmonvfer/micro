@@ -77,7 +77,45 @@ impl Catalog {
             }
         }
 
-        Resolution::NotFound
+        // Nothing matched as written. A name typed from memory is usually close rather
+        // than exact — letters in the right order with the rest left out — so the last
+        // reading is the forgiving one, ranked best first.
+        match self.match_fuzzy(query).as_slice() {
+            [] => Resolution::NotFound,
+            [single] => Resolution::Match(single),
+            several => Resolution::Ambiguous(several.to_vec()),
+        }
+    }
+
+    /// Models whose id or name contains the query's characters in order, best first.
+    fn match_fuzzy(&self, query: &str) -> Vec<&ModelDef> {
+        let mut scored: Vec<(f64, &ModelDef)> = self
+            .models()
+            .iter()
+            .filter_map(|model| {
+                // Judged on whichever spelling reads better, since a user may type either
+                // the id or the name.
+                let qualified = model.qualified_id();
+                [
+                    crate::fuzzy::match_score(query, &model.id),
+                    crate::fuzzy::match_score(query, &model.name),
+                    crate::fuzzy::match_score(query, &qualified),
+                ]
+                .into_iter()
+                .flatten()
+                .map(|found| found.score)
+                .reduce(f64::min)
+                .map(|score| (score, model))
+            })
+            .collect();
+
+        // Lower is better, and a tie is broken by the order the catalog presents.
+        scored.sort_by(|left, right| {
+            left.0
+                .partial_cmp(&right.0)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        scored.into_iter().map(|(_, model)| model).collect()
     }
 
     fn match_qualified(&self, query: &str) -> Option<&ModelDef> {
@@ -332,5 +370,54 @@ mod tests {
 
         let model = catalog.resolve("coder").model().unwrap();
         assert_eq!(model.id, "coder");
+    }
+}
+
+#[cfg(test)]
+mod forgiving {
+    use super::*;
+
+    fn catalog() -> Catalog {
+        Catalog::bundled()
+    }
+
+    /// A name typed from memory finds the model, with the letters in order and the rest
+    /// left out.
+    #[test]
+    fn letters_in_order_are_enough() {
+        let held = catalog();
+        let found = held.resolve("opus5");
+        assert!(
+            found.model().is_some() || matches!(found, Resolution::Ambiguous(_)),
+            "opus5 finds something",
+        );
+
+        let held = catalog();
+        let best = match held.resolve("clopus5") {
+            Resolution::Match(model) => model.id.clone(),
+            Resolution::Ambiguous(candidates) => candidates[0].id.clone(),
+            Resolution::NotFound => panic!("clopus5 should find claude-opus-5"),
+        };
+        assert!(best.contains("opus"), "got {best}");
+    }
+
+    /// The exact spellings still win: a forgiving reading is the last resort, never the
+    /// first, so an id typed in full is never beaten by something that merely resembles it.
+    #[test]
+    fn an_exact_name_still_wins() {
+        let catalog = catalog();
+        let model = catalog
+            .resolve("anthropic/claude-opus-5")
+            .model()
+            .expect("the qualified form resolves");
+        assert_eq!(model.id, "claude-opus-5");
+        assert_eq!(model.provider, "anthropic");
+    }
+
+    /// Nonsense still finds nothing rather than the whole catalog.
+    #[test]
+    fn nonsense_finds_nothing() {
+        let held = catalog();
+        assert!(matches!(held.resolve("zzqqxxjjvv"), Resolution::NotFound));
     }
 }

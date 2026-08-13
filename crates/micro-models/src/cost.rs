@@ -111,6 +111,7 @@ mod tests {
             output: 25.0,
             cache_read: 0.5,
             cache_write: 6.25,
+            tiers: Vec::new(),
         };
 
         let priced = cost.price(TokenUsage {
@@ -182,5 +183,106 @@ mod tests {
         assert_eq!(usage.total(), 33_000);
         // 30k input at $2/M plus 3k output at $10/M.
         assert_close(spent.total(), 0.06 + 0.03);
+    }
+}
+
+#[cfg(test)]
+mod tiers {
+    use super::*;
+    use crate::catalog::{Catalog, ModelCost, ModelCostTier, Rates};
+
+    fn assert_close(actual: f64, expected: f64) {
+        assert!(
+            (actual - expected).abs() < 1e-9,
+            "expected {expected}, got {actual}"
+        );
+    }
+
+    fn tiered() -> ModelCost {
+        ModelCost {
+            input: 5.0,
+            output: 30.0,
+            cache_read: 0.5,
+            cache_write: 0.0,
+            tiers: vec![ModelCostTier {
+                input_tokens_above: 272_000,
+                rates: Rates {
+                    input: 10.0,
+                    output: 45.0,
+                    cache_read: 1.0,
+                    cache_write: 0.0,
+                },
+            }],
+        }
+    }
+
+    /// A request under the threshold is billed at the standard rates.
+    #[test]
+    fn a_short_request_pays_the_standard_rate() {
+        let priced = tiered().price(TokenUsage {
+            input: 100_000,
+            output: 0,
+            cache_read: 0,
+            cache_write: 0,
+        });
+        assert_close(priced.input, 0.5);
+    }
+
+    /// Past the threshold the whole request is billed at the tier, not only the part
+    /// above it.
+    #[test]
+    fn a_long_request_pays_the_tier_on_everything() {
+        let priced = tiered().price(TokenUsage {
+            input: 1_000_000,
+            output: 1_000_000,
+            cache_read: 0,
+            cache_write: 0,
+        });
+        assert_close(priced.input, 10.0);
+        assert_close(priced.output, 45.0);
+    }
+
+    /// Everything the model read counts towards the threshold, cached or not. A request
+    /// that is mostly cache still reaches the tier.
+    #[test]
+    fn cached_tokens_count_towards_the_threshold() {
+        let priced = tiered().price(TokenUsage {
+            input: 1_000,
+            output: 0,
+            cache_read: 300_000,
+            cache_write: 0,
+        });
+        assert_close(priced.cache_read, 0.3);
+    }
+
+    /// The bundled catalog carries the tiers, so a long request against a real model is
+    /// priced the way the service charges for it.
+    #[test]
+    fn the_catalog_carries_long_context_pricing() {
+        let catalog = Catalog::bundled();
+        let model = catalog
+            .get("openai", "gpt-5.5")
+            .expect("the bundled catalog lists gpt-5.5");
+        assert!(
+            !model.cost.tiers.is_empty(),
+            "gpt-5.5 is charged more past a long context",
+        );
+
+        let short = model.price(TokenUsage {
+            input: 1_000,
+            output: 0,
+            cache_read: 0,
+            cache_write: 0,
+        });
+        let long = model.price(TokenUsage {
+            input: 300_000,
+            output: 0,
+            cache_read: 0,
+            cache_write: 0,
+        });
+        assert!(
+            long.input / 300.0 > short.input * 1.5,
+            "the longer request is charged at a higher rate per token",
+        );
     }
 }

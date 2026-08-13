@@ -171,7 +171,12 @@ impl AuthStore {
             })?;
 
         let mut entries = Vec::new();
-        let mut credentials = self.lock();
+        let mut cache = self.lock();
+        // Importing writes the file like any other change, so it takes the same lock and
+        // works from what is on disk now rather than what was there at startup.
+        let _held = crate::lockfile::FileLock::acquire(&self.path)
+            .map_err(|error| crate::storage_error(&self.path, error))?;
+        let mut credentials = crate::load(&self.path)?;
         let mut changed = false;
 
         for (name, value) in source {
@@ -203,8 +208,10 @@ impl AuthStore {
 
         if changed {
             save(&self.path, &credentials)?;
+            cache.revision = crate::revision_of(&self.path);
         }
-        drop(credentials);
+        cache.credentials = credentials;
+        drop(cache);
 
         entries.sort_by(|left, right| left.provider.cmp(&right.provider));
         Ok(ImportReport {
@@ -355,13 +362,13 @@ mod tests {
         let fixture = fixture(
             "unsupported",
             r#"{
-                "mistral": { "type": "api_key", "key": "fixture-mistral" },
+                "not-a-service": { "type": "api_key", "key": "fixture" },
                 "openrouter": { "type": "api_key", "key": "fixture-openrouter" }
             }"#,
         );
         let report = fixture.store.import_from(&fixture.source, false).unwrap();
 
-        assert_eq!(outcome(&report, "mistral"), ImportOutcome::Unsupported);
+        assert_eq!(outcome(&report, "not-a-service"), ImportOutcome::Unsupported);
         assert_eq!(report.imported(), 1);
         assert_eq!(fixture.store.providers(), vec!["openrouter"]);
     }
@@ -425,7 +432,7 @@ mod tests {
     fn nothing_is_written_when_nothing_is_imported() {
         let fixture = fixture(
             "no-write",
-            r#"{ "mistral": { "type": "api_key", "key": "x" } }"#,
+            r#"{ "not-a-service": { "type": "api_key", "key": "x" } }"#,
         );
         fixture.store.import_from(&fixture.source, false).unwrap();
 

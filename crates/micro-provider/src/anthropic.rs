@@ -27,6 +27,8 @@ const API_VERSION: &str = "2023-06-01";
 /// What an Anthropic subscription credential looks like. A plan's own token is an OAuth
 /// token, and it is sent as a bearer rather than as an API key.
 const OAUTH_PREFIX: &str = "sk-ant-oat";
+/// What every credential Anthropic issues starts with.
+const ANTHROPIC_KEY_PREFIX: &str = "sk-ant-";
 
 /// Lets a thinking model keep thinking between tool calls instead of starting over each
 /// time. Without it the thinking blocks around a tool call are refused.
@@ -141,13 +143,15 @@ async fn run(
         .header("anthropic-dangerous-direct-browser-access", "true")
         .header("anthropic-beta", betas(&api_key, &model, &context).join(","));
     // A subscription credential is a bearer token issued to a named client, and is
-    // refused when it is sent as an API key.
-    let request = match subscription {
-        true => request
+    // refused when it is sent as an API key. A gateway's token is a bearer too, but
+    // carries none of that client's identity.
+    let request = match scheme_for(&api_key) {
+        AuthScheme::Subscription => request
             .header("authorization", format!("Bearer {api_key}"))
             .header("user-agent", format!("claude-cli/{CLAUDE_CODE_VERSION}"))
             .header("x-app", "cli"),
-        false => request.header("x-api-key", api_key),
+        AuthScheme::Bearer => request.header("authorization", format!("Bearer {api_key}")),
+        AuthScheme::ApiKey => request.header("x-api-key", api_key),
     };
     let response = crate::with_carried_headers(request, &context)
         .json(&payload)
@@ -472,6 +476,35 @@ fn is_oauth(api_key: &str) -> bool {
     api_key.starts_with(OAUTH_PREFIX)
 }
 
+/// How a credential is presented to the service.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AuthScheme {
+    /// A subscription token issued to Claude Code, sent as a bearer under that client's
+    /// name.
+    Subscription,
+    /// A bearer token that is nobody's client in particular, which is what an
+    /// Anthropic-compatible gateway issues.
+    Bearer,
+    /// A platform API key.
+    ApiKey,
+}
+
+/// Which scheme a credential is for, read from the credential itself.
+///
+/// Anthropic's own credentials are prefixed: `sk-ant-oat` for a subscription token and
+/// `sk-ant-` for a platform key. A value with neither prefix did not come from Anthropic,
+/// so it belongs to a gateway answering the same protocol, and those take a plain bearer
+/// token with none of Claude Code's identity attached to it.
+fn scheme_for(api_key: &str) -> AuthScheme {
+    if is_oauth(api_key) {
+        AuthScheme::Subscription
+    } else if api_key.starts_with(ANTHROPIC_KEY_PREFIX) {
+        AuthScheme::ApiKey
+    } else {
+        AuthScheme::Bearer
+    }
+}
+
 /// The beta features this request needs, in the order ohm sends them.
 ///
 /// A subscription credential names what it is being used for; everything else is asked for
@@ -502,6 +535,17 @@ fn name_for(name: &str, subscription: bool) -> String {
     }
 }
 
+/// What a thinking level is called when the model is asked for an effort rather than a
+/// budget. `Off` never reaches here — a model told not to think is sent `disabled`.
+fn effort_for(level: micro_types::ThinkingLevel) -> &'static str {
+    match level {
+        micro_types::ThinkingLevel::Off => "low",
+        micro_types::ThinkingLevel::Low => "low",
+        micro_types::ThinkingLevel::Medium => "medium",
+        micro_types::ThinkingLevel::High => "high",
+    }
+}
+
 pub(crate) fn build_payload(model: &Model, context: &Context, subscription: bool) -> Value {
     let mut payload = Map::new();
     payload.insert("model".into(), json!(model.id));
@@ -509,6 +553,19 @@ pub(crate) fn build_payload(model: &Model, context: &Context, subscription: bool
     payload.insert("stream".into(), json!(true));
 
     match model.thinking.budget_tokens() {
+        // A model that decides its own thinking is asked for an effort instead of a
+        // budget, and spends it as it sees fit. Sending it a budget asks for a shape it
+        // does not use.
+        Some(_) if model.compat.force_adaptive_thinking => {
+            payload.insert(
+                "thinking".into(),
+                json!({ "type": "adaptive", "display": "summarized" }),
+            );
+            payload.insert(
+                "output_config".into(),
+                json!({ "effort": effort_for(model.thinking) }),
+            );
+        }
         Some(budget) => {
             payload.insert(
                 "thinking".into(),
@@ -963,5 +1020,65 @@ mod tests {
         let payload = build_payload(&thinking, &context_with(vec![Message::user("hi")]), false);
         assert_eq!(payload["thinking"]["type"], "enabled");
         assert!(payload["thinking"]["budget_tokens"].as_u64().unwrap() > 0);
+    }
+
+    /// A model that decides its own thinking is asked for an effort. The budget shape is
+    /// what older models take, and sending it to a newer one asks for something it does
+    /// not use.
+    #[test]
+    fn a_model_that_decides_its_own_thinking_is_asked_for_an_effort() {
+        let mut model =
+            Model::anthropic("claude-opus-5").with_thinking(micro_types::ThinkingLevel::High);
+        model.compat.force_adaptive_thinking = true;
+
+        let payload = build_payload(&model, &context_with(vec![Message::user("hi")]), false);
+        assert_eq!(payload["thinking"]["type"], "adaptive");
+        assert_eq!(payload["thinking"]["display"], "summarized");
+        assert_eq!(payload["output_config"]["effort"], "high");
+        assert!(
+            payload["thinking"].get("budget_tokens").is_none(),
+            "a budget is not what this model takes",
+        );
+    }
+
+    /// Turning thinking off is the same for both shapes: said outright, with no effort
+    /// alongside it to argue with.
+    #[test]
+    fn an_adaptive_model_still_turns_thinking_off_outright() {
+        let mut model = Model::anthropic("claude-opus-5");
+        model.compat.force_adaptive_thinking = true;
+
+        let payload = build_payload(&model, &context_with(vec![Message::user("hi")]), false);
+        assert_eq!(payload["thinking"]["type"], "disabled");
+        assert!(payload.get("output_config").is_none());
+    }
+}
+
+#[cfg(test)]
+mod auth_scheme {
+    use super::*;
+
+    /// Each kind of credential is presented the way the service expects it.
+    #[test]
+    fn a_credential_is_presented_by_what_it_is() {
+        assert_eq!(scheme_for("sk-ant-oat01-abc"), AuthScheme::Subscription);
+        assert_eq!(scheme_for("sk-ant-api03-abc"), AuthScheme::ApiKey);
+        // Neither prefix: a gateway answering the same protocol, which takes a plain
+        // bearer token with none of Claude Code's identity on it.
+        assert_eq!(scheme_for("glsa_abc123"), AuthScheme::Bearer);
+        assert_eq!(scheme_for("eyJhbGciOi.payload.sig"), AuthScheme::Bearer);
+    }
+
+    /// Only a subscription credential carries the client's name and betas.
+    #[test]
+    fn only_a_subscription_names_the_client() {
+        let model = Model::anthropic("claude-opus-5");
+        let context = micro_types::Context {
+            messages: vec![Message::user("hi")],
+            ..Default::default()
+        };
+        assert!(betas("sk-ant-oat01-abc", &model, &context).contains(&CLAUDE_CODE_BETA));
+        assert!(!betas("glsa_abc123", &model, &context).contains(&CLAUDE_CODE_BETA));
+        assert!(!betas("sk-ant-api03-abc", &model, &context).contains(&CLAUDE_CODE_BETA));
     }
 }

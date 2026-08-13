@@ -7,6 +7,7 @@
 
 pub mod copilot;
 mod import;
+mod lockfile;
 
 pub use import::agent47_available;
 pub use import::agent47_path;
@@ -257,10 +258,27 @@ impl ProviderStatus {
     }
 }
 
+/// What was read from the file, and the state of the file it was read from.
+///
+/// The revision is how a read notices that another process has written since, so a
+/// long-lived session sees a credential stored by `micro auth login` beside it.
+#[derive(Default)]
+struct Cache {
+    credentials: BTreeMap<String, Credential>,
+    revision: Option<Revision>,
+}
+
+/// Enough of the file's state to tell one version of it from the next.
+#[derive(PartialEq, Eq, Clone, Copy)]
+struct Revision {
+    modified: Option<std::time::SystemTime>,
+    length: u64,
+}
+
 /// The credential file, kept in memory and rewritten whenever an entry changes.
 pub struct AuthStore {
     path: PathBuf,
-    credentials: Mutex<BTreeMap<String, Credential>>,
+    cache: Mutex<Cache>,
     http: reqwest::Client,
 }
 
@@ -273,9 +291,13 @@ impl AuthStore {
     pub fn open_at(path: impl Into<PathBuf>) -> Result<Self> {
         let path = path.into();
         let credentials = load(&path)?;
+        let revision = revision_of(&path);
         Ok(AuthStore {
             path,
-            credentials: Mutex::new(credentials),
+            cache: Mutex::new(Cache {
+                credentials,
+                revision,
+            }),
             http: reqwest::Client::new(),
         })
     }
@@ -285,24 +307,48 @@ impl AuthStore {
     }
 
     pub fn get(&self, provider: &str) -> Option<Credential> {
-        self.lock().get(canonical_provider(provider)).cloned()
+        let mut cache = self.lock();
+        refresh(&self.path, &mut cache);
+        cache.credentials.get(canonical_provider(provider)).cloned()
     }
 
     pub fn set(&self, provider: &str, credential: Credential) -> Result<()> {
-        let mut credentials = self.lock();
-        credentials.insert(canonical_provider(provider).to_string(), credential);
-        save(&self.path, &credentials)
+        let provider = canonical_provider(provider).to_string();
+        self.mutate(move |credentials| {
+            credentials.insert(provider, credential);
+        })
     }
 
     pub fn remove(&self, provider: &str) -> Result<()> {
-        let mut credentials = self.lock();
-        credentials.remove(canonical_provider(provider));
-        save(&self.path, &credentials)
+        let provider = canonical_provider(provider).to_string();
+        self.mutate(move |credentials| {
+            credentials.remove(&provider);
+        })
     }
 
     /// Every provider with a stored credential, sorted.
     pub fn providers(&self) -> Vec<String> {
-        self.lock().keys().cloned().collect()
+        let mut cache = self.lock();
+        refresh(&self.path, &mut cache);
+        cache.credentials.keys().cloned().collect()
+    }
+
+    /// Change the file while holding it against every other process.
+    ///
+    /// The file is read again inside the lock rather than trusted from startup, so a
+    /// credential stored since then is carried forward instead of being written over.
+    fn mutate(&self, change: impl FnOnce(&mut BTreeMap<String, Credential>)) -> Result<()> {
+        let mut cache = self.lock();
+        let _held = lockfile::FileLock::acquire(&self.path)
+            .map_err(|error| storage_error(&self.path, error))?;
+
+        let mut latest = load(&self.path)?;
+        change(&mut latest);
+        save(&self.path, &latest)?;
+
+        cache.credentials = latest;
+        cache.revision = revision_of(&self.path);
+        Ok(())
     }
 
     /// A credential ready to send: stored if present, otherwise from the environment,
@@ -459,10 +505,35 @@ impl AuthStore {
         }
     }
 
-    fn lock(&self) -> std::sync::MutexGuard<'_, BTreeMap<String, Credential>> {
-        self.credentials
+    fn lock(&self) -> std::sync::MutexGuard<'_, Cache> {
+        self.cache
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+}
+
+/// The file's current state, or nothing when there is no file yet.
+fn revision_of(path: &Path) -> Option<Revision> {
+    let metadata = fs::metadata(path).ok()?;
+    Some(Revision {
+        modified: metadata.modified().ok(),
+        length: metadata.len(),
+    })
+}
+
+/// Read the file again if another process has written it since it was last read.
+///
+/// A failed read leaves what is already held rather than emptying it: a file being
+/// replaced by another process is briefly unreadable, and that is not the same as a
+/// credential having been removed.
+fn refresh(path: &Path, cache: &mut Cache) {
+    let current = revision_of(path);
+    if current == cache.revision {
+        return;
+    }
+    if let Ok(latest) = load(path) {
+        cache.credentials = latest;
+        cache.revision = current;
     }
 }
 
@@ -668,6 +739,53 @@ mod tests {
         })
     }
 
+    /// Two processes writing different providers both keep their work.
+    ///
+    /// Each store reads the file when it opens. Without a lock and a fresh read at write
+    /// time, the second one writes the map it read at startup and the first one's
+    /// credential is gone with nothing to show that it ever arrived.
+    #[test]
+    fn a_write_carries_forward_what_another_store_wrote() {
+        let path = scratch("concurrent").join("auth.json");
+
+        let session = AuthStore::open_at(&path).unwrap();
+        let login = AuthStore::open_at(&path).unwrap();
+
+        session.set("anthropic", Credential::api_key("from-session")).unwrap();
+        login.set("openai", Credential::api_key("from-login")).unwrap();
+
+        let read_back = AuthStore::open_at(&path).unwrap();
+        assert_eq!(
+            read_back.get("anthropic"),
+            Some(Credential::api_key("from-session")),
+            "the first write survived the second",
+        );
+        assert_eq!(
+            read_back.get("openai"),
+            Some(Credential::api_key("from-login")),
+        );
+    }
+
+    /// A store that has been open a while notices a credential stored beside it.
+    #[test]
+    fn a_read_sees_what_another_store_wrote() {
+        let path = scratch("reload").join("auth.json");
+
+        let session = AuthStore::open_at(&path).unwrap();
+        assert_eq!(session.get("anthropic"), None);
+
+        AuthStore::open_at(&path)
+            .unwrap()
+            .set("anthropic", Credential::api_key("signed-in"))
+            .unwrap();
+
+        assert_eq!(
+            session.get("anthropic"),
+            Some(Credential::api_key("signed-in")),
+            "the long-lived store re-read rather than serving its startup snapshot",
+        );
+    }
+
     #[test]
     fn micro_dir_overrides_the_home_directory() {
         assert_eq!(
@@ -800,11 +918,16 @@ mod tests {
         assert_eq!(env_names(OPENROUTER), vec!["OPENROUTER_API_KEY"]);
         assert_eq!(env_names(GOOGLE), vec!["GEMINI_API_KEY"]);
         assert_eq!(env_names(GITHUB_COPILOT), vec!["COPILOT_GITHUB_TOKEN"]);
-        // A subscription token is tried before a platform key, as it is the one a
-        // signed-in plan issues.
+        // A bearer token is tried first, since it is what points micro at a gateway and
+        // is set deliberately; then a subscription token, which a signed-in plan issues;
+        // then a platform key.
         assert_eq!(
             env_names(ANTHROPIC),
-            vec!["ANTHROPIC_OAUTH_TOKEN", "ANTHROPIC_API_KEY"]
+            vec![
+                "ANTHROPIC_AUTH_TOKEN",
+                "ANTHROPIC_OAUTH_TOKEN",
+                "ANTHROPIC_API_KEY"
+            ]
         );
         // A provider the table does not name still has a conventional variable.
         assert_eq!(env_names("z-ai"), vec!["Z_AI_API_KEY"]);

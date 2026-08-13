@@ -65,10 +65,31 @@ impl Transport {
     }
 }
 
+/// Which service answers the Responses protocol.
+///
+/// The protocol is the same either way. What differs is where it lives, what the
+/// credential is, and how the request identifies itself: the ChatGPT backend expects a
+/// subscription token and Codex's own client identity, the platform expects an API key
+/// and nothing else.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Backend {
+    /// `chatgpt.com/backend-api/codex`, reached with a ChatGPT subscription token.
+    ChatGpt,
+    /// The OpenAI platform, reached with an API key.
+    Platform,
+    /// Azure's hosting of the same protocol. The credential is presented as an
+    /// `api-key` header rather than a bearer, the version is named in the query, and a
+    /// model is reached through whatever the resource calls its deployment.
+    Azure,
+}
+
 #[derive(Clone)]
 pub struct Codex {
     client: reqwest::Client,
     transport: Transport,
+    backend: Backend,
+    /// Which service is answering, for the headers it expects to be told about.
+    provider: String,
 }
 
 impl Default for Codex {
@@ -82,6 +103,39 @@ impl Codex {
         Codex {
             client: crate::http_client(),
             transport: Transport::default(),
+            backend: Backend::ChatGpt,
+            provider: micro_auth::OPENAI_CODEX.to_string(),
+        }
+    }
+
+    /// The same protocol against the OpenAI platform rather than the ChatGPT backend.
+    pub fn platform() -> Self {
+        Codex {
+            client: crate::http_client(),
+            transport: Transport::default(),
+            backend: Backend::Platform,
+            provider: micro_auth::OPENAI.to_string(),
+        }
+    }
+
+    /// The same protocol as Azure hosts it.
+    pub fn azure() -> Self {
+        Codex {
+            client: crate::http_client(),
+            transport: Transport::default(),
+            backend: Backend::Azure,
+            provider: AZURE_PROVIDER.to_string(),
+        }
+    }
+
+    /// The platform's protocol as a named service serves it — a gateway answering the
+    /// Responses shape under its own name, with its own headers.
+    pub fn for_provider(provider: impl Into<String>) -> Self {
+        Codex {
+            client: crate::http_client(),
+            transport: Transport::default(),
+            backend: Backend::Platform,
+            provider: provider.into(),
         }
     }
 
@@ -99,7 +153,7 @@ impl Codex {
 
 impl Provider for Codex {
     fn name(&self) -> &str {
-        "openai-codex"
+        &self.provider
     }
 
     fn stream(
@@ -110,9 +164,13 @@ impl Provider for Codex {
     ) -> UnboundedReceiver<StreamEvent> {
         let (sender, receiver) = mpsc::unbounded_channel();
         let client = self.client.clone();
+        let backend = self.backend;
+        let provider = self.provider.clone();
 
         tokio::spawn(async move {
-            if let Err(message) = run(client, model, context, api_key, &sender).await {
+            if let Err(message) =
+                run(client, backend, provider, model, context, api_key, &sender).await
+            {
                 let _ = sender.send(StreamEvent::Error { message });
             }
         });
@@ -123,38 +181,72 @@ impl Provider for Codex {
 
 async fn run(
     client: reqwest::Client,
+    backend: Backend,
+    provider: String,
     model: Model,
     context: Context,
     api_key: String,
     sender: &UnboundedSender<StreamEvent>,
 ) -> Result<(), String> {
-    let account = account_id(&api_key)?;
-    // One id for the request, sent as both the session and the client request id, which is
-    // what lets the backend tie a retry to the attempt it repeats.
-    let request_id = format!("micro-{}", now_ms());
+    let service = provider.clone();
 
     let request = client
-        .post(endpoint(&model.base_url))
-        .header("authorization", format!("Bearer {api_key}"))
-        .header("chatgpt-account-id", account)
-        .header("originator", "micro")
-        .header("user-agent", user_agent())
-        .header("openai-beta", "responses=experimental")
-        .header("session-id", &request_id)
-        .header("x-client-request-id", &request_id)
+        .post(endpoint_for(backend, &model.base_url))
         .header("accept", "text/event-stream")
         .header("content-type", "application/json");
+    // Azure takes the credential as its own header; everywhere else it is a bearer.
+    let request = match backend {
+        Backend::Azure => request.header("api-key", &api_key),
+        _ => request.header("authorization", format!("Bearer {api_key}")),
+    };
+
+    // The ChatGPT backend answers a named client on a named account; the platform takes
+    // an API key and asks for nothing else.
+    let request = match backend {
+        Backend::ChatGpt => {
+            // One id for the request, sent as both the session and the client request id,
+            // which is what lets the backend tie a retry to the attempt it repeats.
+            let request_id = format!("micro-{}", now_ms());
+            request
+                .header("chatgpt-account-id", account_id(&api_key)?)
+                .header("originator", "micro")
+                .header("user-agent", user_agent())
+                .header("openai-beta", "responses=experimental")
+                .header("session-id", &request_id)
+                .header("x-client-request-id", request_id)
+        }
+        // The platform and Azure both take the credential and nothing else.
+        Backend::Platform | Backend::Azure => request,
+    };
+
+    // Whatever the service asks to be told about the client it is talking to, which the
+    // catalog records per model.
+    let mut request = request;
+    for (name, value) in &model.headers {
+        request = request.header(name.as_str(), value.as_str());
+    }
+    // Copilot bills and rate-limits differently depending on who started the request, and
+    // refuses an image unless the request says one is coming.
+    if crate::openai::is_copilot(&provider, &model.base_url) {
+        request = request
+            .header("x-initiator", crate::openai::initiator(&context.messages))
+            .header("openai-intent", "conversation-edits");
+        if crate::openai::carries_images(&context.messages) {
+            request = request.header("copilot-vision-request", "true");
+        }
+    }
+
     let response = crate::with_carried_headers(request, &context)
-        .json(&build_payload(&model, &context))
+        .json(&build_payload(backend, &model, &context))
         .send()
         .await
-        .map_err(|error| format!("Codex request failed: {error}"))?;
+        .map_err(|error| format!("{service} request failed: {error}"))?;
 
     let status = response.status();
     if !status.is_success() {
         let body = response.text().await.unwrap_or_default();
         return Err(format!(
-            "Codex returned {}: {}",
+            "{service} returned {}: {}",
             status.as_u16(),
             body.trim()
         ));
@@ -174,6 +266,76 @@ async fn run(
             Ok(())
         }
     }
+}
+
+/// Where a Responses request goes, which depends on which service is answering.
+fn endpoint_for(backend: Backend, base_url: &str) -> String {
+    match backend {
+        Backend::ChatGpt => endpoint(base_url),
+        Backend::Platform => {
+            let trimmed = base_url.trim_end_matches('/');
+            match trimmed.ends_with("/responses") {
+                true => trimmed.to_string(),
+                false => format!("{trimmed}/responses"),
+            }
+        }
+        Backend::Azure => azure_endpoint(base_url),
+    }
+}
+
+/// Where an Azure resource answers.
+///
+/// A resource is named by its host, and the protocol lives under `/openai/v1` on it. A
+/// base URL that already says so is left alone; one that names only the resource is
+/// completed. The version is asked for in the query, which is how Azure versions it.
+fn azure_endpoint(base_url: &str) -> String {
+    // A resource is one customer's own, so the catalog cannot record it. Naming it is
+    // what turns the placeholder address into a real one.
+    let named = std::env::var(AZURE_RESOURCE_ENV)
+        .ok()
+        .map(|resource| resource.trim().to_string())
+        .filter(|resource| !resource.is_empty())
+        .map(|resource| format!("https://{resource}.openai.azure.com/openai/v1"));
+    let base_url = named.as_deref().unwrap_or(base_url);
+    let trimmed = base_url.trim().trim_end_matches('/');
+    let (address, _) = trimmed.split_once('?').unwrap_or((trimmed, ""));
+    let address = address.trim_end_matches('/');
+
+    let root = if address.ends_with("/openai/v1") {
+        address.to_string()
+    } else if address.ends_with("/openai") {
+        format!("{address}/v1")
+    } else if address.ends_with("/responses") {
+        address.trim_end_matches("/responses").trim_end_matches('/').to_string()
+    } else {
+        format!("{address}/openai/v1")
+    };
+
+    let version = std::env::var(AZURE_API_VERSION_ENV)
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| AZURE_API_VERSION.to_string());
+    format!("{root}/responses?api-version={version}")
+}
+
+/// What the resource calls the deployment serving a model.
+///
+/// Azure addresses a deployment rather than a model, and a resource may name one
+/// anything. The map says which is which; a model the map does not mention is assumed to
+/// be deployed under its own name.
+fn azure_deployment(model_id: &str) -> String {
+    let Ok(map) = std::env::var(AZURE_DEPLOYMENT_MAP_ENV) else {
+        return model_id.to_string();
+    };
+    for pair in map.split(',') {
+        let Some((id, deployment)) = pair.trim().split_once('=') else {
+            continue;
+        };
+        if id.trim() == model_id {
+            return deployment.trim().to_string();
+        }
+    }
+    model_id.to_string()
 }
 
 fn endpoint(base_url: &str) -> String {
@@ -241,7 +403,21 @@ fn base64_url_decode(text: &str) -> Option<Vec<u8>> {
 }
 
 /// The request, in the Responses shape the backend expects.
-fn build_payload(model: &Model, context: &Context) -> Value {
+/// The smallest output limit the platform accepts. Below this a request is refused
+/// rather than answered briefly.
+const MIN_OUTPUT_TOKENS: u32 = 16;
+
+/// The provider id Azure's hosting is listed under.
+pub const AZURE_PROVIDER: &str = "azure-openai-responses";
+/// Which version of the protocol Azure is asked for, when nothing says otherwise.
+const AZURE_API_VERSION: &str = "v1";
+/// Maps a model id to what the resource calls its deployment, as `id=deployment` pairs.
+const AZURE_DEPLOYMENT_MAP_ENV: &str = "AZURE_OPENAI_DEPLOYMENT_NAME_MAP";
+const AZURE_API_VERSION_ENV: &str = "AZURE_OPENAI_API_VERSION";
+/// The resource serving this account, which is what the address is built from.
+const AZURE_RESOURCE_ENV: &str = "AZURE_OPENAI_RESOURCE_NAME";
+
+fn build_payload(backend: Backend, model: &Model, context: &Context) -> Value {
     let mut payload = json!({
         "model": model.id,
         // The backend refuses anything else: a conversation it stored would be one micro
@@ -278,6 +454,16 @@ fn build_payload(model: &Model, context: &Context) -> Value {
 
     if let Some(effort) = reasoning_effort(model.thinking) {
         payload["reasoning"] = json!({ "effort": effort, "summary": "auto" });
+    }
+
+    // The ChatGPT backend decides its own output limit; the platform takes one, and
+    // refuses a request asking for less than it will produce.
+    if matches!(backend, Backend::Platform | Backend::Azure) {
+        payload["max_output_tokens"] = json!(model.max_tokens.max(MIN_OUTPUT_TOKENS));
+    }
+    // Azure is asked for a deployment, which is what a resource calls the model it serves.
+    if backend == Backend::Azure {
+        payload["model"] = json!(azure_deployment(&model.id));
     }
 
     payload
@@ -871,7 +1057,7 @@ mod tests {
             headers: Vec::new(),
             cache_key: None,
         };
-        let payload = build_payload(&model(), &context);
+        let payload = build_payload(Backend::ChatGpt, &model(), &context);
 
         assert_eq!(payload["store"], false);
         assert_eq!(payload["stream"], true);
@@ -888,6 +1074,7 @@ mod tests {
         let mut model = model();
         model.thinking = ThinkingLevel::High;
         let payload = build_payload(
+            Backend::ChatGpt,
             &model,
             &Context {
                 system_prompt: None,
@@ -1077,5 +1264,139 @@ mod tests {
             Codex::new().with_transport(Transport::Auto).transport(),
             Transport::Auto
         );
+    }
+}
+
+#[cfg(test)]
+mod platform {
+    use super::*;
+
+    fn platform_model() -> Model {
+        Model {
+            id: "gpt-5.5".into(),
+            provider: "openai".into(),
+            base_url: "https://api.openai.com/v1".into(),
+            max_tokens: 32_000,
+            thinking: ThinkingLevel::Off,
+            reasoning: true,
+            compat: Default::default(),
+            headers: Default::default(),
+        }
+    }
+
+    /// The platform answers at `/responses`, not at the ChatGPT backend's path.
+    #[test]
+    fn the_platform_endpoint_is_responses() {
+        assert_eq!(
+            endpoint_for(Backend::Platform, "https://api.openai.com/v1"),
+            "https://api.openai.com/v1/responses"
+        );
+        // A base that already names it is left alone.
+        assert_eq!(
+            endpoint_for(Backend::Platform, "https://api.openai.com/v1/responses"),
+            "https://api.openai.com/v1/responses"
+        );
+        // The ChatGPT backend keeps its own path.
+        assert!(endpoint_for(Backend::ChatGpt, "https://chatgpt.com/backend-api")
+            .ends_with("/codex/responses"));
+    }
+
+    /// The platform takes an output limit and refuses one below its floor.
+    #[test]
+    fn the_platform_is_given_an_output_limit() {
+        let payload = build_payload(
+            Backend::Platform,
+            &platform_model(),
+            &Context {
+                system_prompt: None,
+                messages: vec![Message::user("hi")],
+                tools: Vec::new(),
+                ..Default::default()
+            },
+        );
+        assert_eq!(payload["max_output_tokens"], 32_000);
+
+        let mut tiny = platform_model();
+        tiny.max_tokens = 1;
+        let payload = build_payload(
+            Backend::Platform,
+            &tiny,
+            &Context {
+                system_prompt: None,
+                messages: vec![Message::user("hi")],
+                tools: Vec::new(),
+                ..Default::default()
+            },
+        );
+        assert_eq!(
+            payload["max_output_tokens"], MIN_OUTPUT_TOKENS,
+            "raised to what the service will accept",
+        );
+    }
+
+    /// Both backends ask for the reasoning to come back encrypted, which is what lets it
+    /// be replayed on the next turn.
+    #[test]
+    fn reasoning_is_replayed_on_both_backends() {
+        for backend in [Backend::ChatGpt, Backend::Platform] {
+            let payload = build_payload(
+                backend,
+                &platform_model(),
+                &Context {
+                    system_prompt: None,
+                    messages: vec![Message::user("hi")],
+                    tools: Vec::new(),
+                    ..Default::default()
+                },
+            );
+            assert_eq!(payload["include"][0], "reasoning.encrypted_content");
+            assert_eq!(payload["store"], false, "nothing is stored either way");
+        }
+    }
+
+    /// The client says which service it speaks for, so an error names the right one.
+    #[test]
+    fn each_backend_names_itself() {
+        assert_eq!(Codex::new().name(), "openai-codex");
+        assert_eq!(Codex::platform().name(), "openai");
+    }
+}
+
+#[cfg(test)]
+mod azure {
+    use super::*;
+
+    /// A resource is named by its host; the protocol lives under `/openai/v1` on it, and
+    /// the version is asked for in the query.
+    #[test]
+    fn the_endpoint_is_completed_from_the_resource() {
+        assert_eq!(
+            azure_endpoint("https://my-resource.openai.azure.com"),
+            "https://my-resource.openai.azure.com/openai/v1/responses?api-version=v1"
+        );
+        // A base that already names the path is not given it twice.
+        assert_eq!(
+            azure_endpoint("https://my-resource.openai.azure.com/openai/v1"),
+            "https://my-resource.openai.azure.com/openai/v1/responses?api-version=v1"
+        );
+        assert_eq!(
+            azure_endpoint("https://my-resource.openai.azure.com/openai"),
+            "https://my-resource.openai.azure.com/openai/v1/responses?api-version=v1"
+        );
+    }
+
+    /// A model reaches a deployment, and a resource may call its deployment anything.
+    #[test]
+    fn a_model_is_addressed_by_its_deployment() {
+        // Nothing said, so the deployment is assumed to share the model's name.
+        assert_eq!(azure_deployment("gpt-5.5"), "gpt-5.5");
+    }
+
+    /// Azure takes the credential as its own header rather than as a bearer, and is asked
+    /// for a deployment rather than a model name.
+    #[test]
+    fn azure_is_told_apart_from_the_platform() {
+        assert_eq!(Codex::azure().name(), AZURE_PROVIDER);
+        assert_ne!(Codex::azure().name(), Codex::platform().name());
     }
 }

@@ -15,7 +15,12 @@ use serde::Serialize;
 use std::collections::BTreeMap;
 
 /// What one catalog entry states about its service, where it differs from the protocol.
+///
+/// These keys are written the way the generator writes them, which is the way ohm names
+/// them: in camel case, unlike the surrounding entry. Spelling them any other way here
+/// means none of them are read and every model quietly falls back to the inference.
 #[derive(Debug, Clone, Default, PartialEq, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct CompatOverrides {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub supports_store: Option<bool>,
@@ -49,6 +54,14 @@ pub struct CompatOverrides {
     pub supports_eager_tool_input_streaming: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub supports_cache_control_on_tools: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub force_adaptive_thinking: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_call_id_length: Option<usize>,
+    /// Whether the service offers the model a search over its own tools. micro has no
+    /// such tool, so this is carried rather than acted on, and survives a round trip.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub supports_tool_search: Option<bool>,
 }
 
 impl CompatOverrides {
@@ -116,6 +129,12 @@ pub fn resolve(
     if let Some(value) = stated.supports_cache_control_on_tools {
         compat.supports_cache_control_on_tools = value;
     }
+    if let Some(value) = stated.force_adaptive_thinking {
+        compat.force_adaptive_thinking = value;
+    }
+    if let Some(value) = stated.tool_call_id_length {
+        compat.tool_call_id_length = Some(value);
+    }
 
     compat.thinking = thinking.clone();
     compat
@@ -141,6 +160,7 @@ fn detect(provider: &str, base_url: &str, model_id: &str) -> Compat {
     let is_ant_ling = provider == "ant-ling" || base_url.contains("api.ant-ling.com");
     let is_grok = provider == "xai" || base_url.contains("api.x.ai");
     let is_deepseek = provider == "deepseek" || base_url.contains("deepseek.com");
+    let is_mistral = provider == "mistral" || base_url.contains("api.mistral.ai");
 
     let is_nonstandard = is_nvidia
         || provider == "cerebras"
@@ -204,10 +224,13 @@ fn detect(provider: &str, base_url: &str, model_id: &str) -> Compat {
             true => Some(CacheControlFormat::Anthropic),
             false => None,
         },
-        send_session_affinity_headers: false,
-        session_affinity_format: match is_openrouter {
-            true => SessionAffinity::Openrouter,
-            false => SessionAffinity::Openai,
+        send_session_affinity_headers: is_mistral,
+        session_affinity_format: if is_mistral {
+            SessionAffinity::Mistral
+        } else if is_openrouter {
+            SessionAffinity::Openrouter
+        } else {
+            SessionAffinity::Openai
         },
         supports_long_cache_retention: !(is_together
             || is_cloudflare_workers
@@ -217,8 +240,29 @@ fn detect(provider: &str, base_url: &str, model_id: &str) -> Compat {
         supports_temperature: true,
         supports_eager_tool_input_streaming: true,
         supports_cache_control_on_tools: true,
+        force_adaptive_thinking: decides_its_own_thinking(model_id),
+        // Mistral routes a conversation back to the machine holding its cached prompt,
+        // and takes a tool call's id only in a shape of its own.
+        tool_call_id_length: is_mistral.then_some(MISTRAL_TOOL_CALL_ID_LENGTH),
         thinking: BTreeMap::new(),
     }
+}
+
+/// Whether a model is asked for an effort and left to decide how much to think.
+///
+/// Claude models from Opus 4.6 and Sonnet 4.6 onwards, and Fable 5, take an effort and
+/// spend it themselves. Everything before them is handed a token budget. The id is what
+/// says which, and it is written several ways depending on the service listing it, so
+/// both the hyphenated and dotted spellings count.
+/// How long Mistral will take a tool call's id.
+const MISTRAL_TOOL_CALL_ID_LENGTH: usize = 9;
+
+fn decides_its_own_thinking(model_id: &str) -> bool {
+    const ADAPTIVE: &[&str] = &[
+        "opus-4-6", "opus-4.6", "opus-4-7", "opus-4.7", "opus-4-8", "opus-4.8", "opus-5", "opus.5",
+        "sonnet-4-6", "sonnet-4.6", "sonnet-5", "sonnet.5", "fable-5",
+    ];
+    ADAPTIVE.iter().any(|name| model_id.contains(name))
 }
 
 #[cfg(test)]
@@ -308,5 +352,159 @@ mod tests {
             compat.level(micro_types::ThinkingLevel::High),
             Some("high".to_string())
         );
+    }
+
+    /// Which Claude models decide their own thinking is read from the id, both spellings.
+    #[test]
+    fn the_newest_claude_models_decide_their_own_thinking() {
+        let adaptive = [
+            "claude-opus-4-6",
+            "claude-opus-4.6-20260101",
+            "claude-opus-4-7",
+            "claude-opus-4-8",
+            "claude-opus-5",
+            "claude-sonnet-4-6",
+            "claude-sonnet-5",
+            "claude-fable-5",
+            "anthropic/claude-opus-5",
+        ];
+        for id in adaptive {
+            assert!(
+                decides_its_own_thinking(id),
+                "{id} is asked for an effort",
+            );
+        }
+
+        let budgeted = [
+            "claude-opus-4-1",
+            "claude-3-5-sonnet-20241022",
+            "claude-sonnet-4-5",
+            "claude-haiku-4-5",
+        ];
+        for id in budgeted {
+            assert!(!decides_its_own_thinking(id), "{id} is given a budget");
+        }
+    }
+
+    /// The flag reaches the resolved compat, and the catalog can still say otherwise.
+    #[test]
+    fn the_catalog_can_override_how_a_model_is_asked_to_think() {
+        let compat = resolve(
+            "anthropic",
+            "https://api.anthropic.com/v1",
+            "claude-opus-5",
+            &Default::default(),
+            &BTreeMap::new(),
+        );
+        assert!(compat.force_adaptive_thinking);
+
+        let stated = CompatOverrides {
+            force_adaptive_thinking: Some(false),
+            ..Default::default()
+        };
+        let compat = resolve(
+            "anthropic",
+            "https://api.anthropic.com/v1",
+            "claude-opus-5",
+            &stated,
+            &BTreeMap::new(),
+        );
+        assert!(!compat.force_adaptive_thinking);
+    }
+}
+
+#[cfg(test)]
+mod catalog_probe {
+    /// Every override the catalog states must survive being read.
+    ///
+    /// The catalog writes its keys the way the generator does; a struct that spells them
+    /// differently parses none of them and silently uses defaults for every model.
+    #[test]
+    fn what_the_catalog_states_about_a_model_is_read() {
+        let catalog = crate::Catalog::bundled();
+        let model = catalog
+            .get("github-copilot", "claude-fable-5")
+            .expect("the bundled catalog lists this model");
+        let compat = model.to_runtime(micro_types::ThinkingLevel::Off).compat;
+        assert!(!compat.supports_store, "the catalog says it does not store");
+        assert!(!compat.supports_developer_role);
+        assert!(!compat.supports_reasoning_effort);
+    }
+
+    /// No key the catalog states may be dropped on the way in.
+    ///
+    /// A key this struct has no field for parses to nothing and vanishes, taking a
+    /// correction with it and leaving no sign that it was ever stated. Reading the whole
+    /// bundled catalog back out is what notices.
+    #[test]
+    fn no_compat_key_in_the_catalog_is_silently_dropped() {
+        let file: serde_json::Value =
+            serde_json::from_str(crate::bundled::CATALOG_JSON).expect("the catalog parses");
+
+        let mut unread: std::collections::BTreeSet<String> = Default::default();
+        let providers = file["providers"].as_object().expect("providers");
+        for provider in providers.values() {
+            let Some(models) = provider["models"].as_array() else {
+                continue;
+            };
+            for model in models {
+                let Some(stated) = model.get("compat").and_then(|compat| compat.as_object()) else {
+                    continue;
+                };
+                let parsed: super::CompatOverrides =
+                    serde_json::from_value(serde_json::Value::Object(stated.clone()))
+                        .expect("a compat block parses");
+                let read_back = serde_json::to_value(&parsed).expect("and serializes");
+                for key in stated.keys() {
+                    if read_back.get(key).is_none() {
+                        unread.insert(key.clone());
+                    }
+                }
+            }
+        }
+
+        assert!(
+            unread.is_empty(),
+            "the catalog states these and nothing reads them: {unread:?}",
+        );
+    }
+}
+
+#[cfg(test)]
+mod mistral {
+    use super::*;
+
+    /// Mistral serves the completions shape, but routes a conversation with a header of
+    /// its own and will only take a tool call's id in a shape of its own.
+    #[test]
+    fn mistral_is_spoken_to_the_way_it_expects() {
+        let catalog = crate::Catalog::bundled();
+        let model = catalog
+            .models()
+            .iter()
+            .find(|model| model.provider == "mistral")
+            .expect("the bundled catalog serves Mistral");
+
+        let compat = model.to_runtime(micro_types::ThinkingLevel::Off).compat;
+        assert!(compat.send_session_affinity_headers);
+        assert_eq!(
+            compat.session_affinity_format,
+            micro_types::SessionAffinity::Mistral
+        );
+        assert_eq!(compat.tool_call_id_length, Some(9));
+    }
+
+    /// Everyone else is left alone: an id limit is Mistral's rule, not the protocol's.
+    #[test]
+    fn nobody_else_is_given_mistrals_rules() {
+        let compat = resolve(
+            "openai",
+            "https://api.openai.com/v1",
+            "gpt-5.5",
+            &Default::default(),
+            &BTreeMap::new(),
+        );
+        assert_eq!(compat.tool_call_id_length, None);
+        assert!(!compat.send_session_affinity_headers);
     }
 }

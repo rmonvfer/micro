@@ -12,6 +12,7 @@ members = [
     "crates/micro-session",
     "crates/micro-context",
     "crates/micro-skills",
+    "crates/micro-prompts",
     "crates/micro-commands",
     "crates/micro-agent",
     "crates/micro-testkit",
@@ -36,6 +37,7 @@ micro-tools = { path = "crates/micro-tools" }
 micro-session = { path = "crates/micro-session" }
 micro-context = { path = "crates/micro-context" }
 micro-skills = { path = "crates/micro-skills" }
+micro-prompts = { path = "crates/micro-prompts" }
 micro-commands = { path = "crates/micro-commands" }
 micro-agent = { path = "crates/micro-agent" }
 micro-testkit = { path = "crates/micro-testkit" }
@@ -43,6 +45,9 @@ micro-tui = { path = "crates/micro-tui" }
 
 anyhow = "1"
 async-trait = "0.1"
+base64 = "0.22"
+hmac = "0.12"
+sha2 = "0.10"
 clap = { version = "4", features = ["derive", "env"] }
 crossterm = { version = "0.29", features = ["bracketed-paste", "event-stream"] }
 futures = "0.3"
@@ -51,6 +56,7 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "str
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"
+unicode-normalization = "0.1"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "fs", "io-util", "sync", "time", "signal", "net", "io-std"] }
 
 [profile.release]

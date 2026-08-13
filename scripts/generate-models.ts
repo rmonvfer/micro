@@ -2252,6 +2252,18 @@ async function generateModels() {
 		"google-generative-ai": "google-generative-ai",
 		// Codex is the Responses API at another address, reached with a subscription token.
 		"openai-codex-responses": "openai-responses",
+		// Azure hosts the same Responses protocol, addressed by deployment and
+		// authenticated with its own header.
+		"azure-openai-responses": "openai-responses",
+		// Mistral's own name for what it serves at /v1/chat/completions. What differs is
+		// the affinity header and the shape of a tool call's id, both of which travel
+		// with the model rather than with the protocol.
+		"mistral-conversations": "openai-completions",
+		// Bedrock's Converse Stream: signed rather than keyed, and answered in a binary
+		// event stream.
+		"bedrock-converse-stream": "bedrock-converse-stream",
+		// Vertex is the Gemini shape, addressed under a project and a location.
+		"google-vertex": "google-vertex",
 	};
 
 	/**
@@ -2260,7 +2272,11 @@ async function generateModels() {
 	 * as they are here: the model listings are generated, the providers serving them are not.
 	 */
 	const DESCRIBED: { id: string; name: string; env: string[]; oauth?: true; label?: string }[] = [
-		{ id: "anthropic", name: "Anthropic", env: ["ANTHROPIC_OAUTH_TOKEN", "ANTHROPIC_API_KEY"], oauth: true, label: "Anthropic API key" },
+		{ id: "anthropic", name: "Anthropic", env: ["ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_OAUTH_TOKEN", "ANTHROPIC_API_KEY"], oauth: true, label: "Anthropic API key" },
+		{ id: "amazon-bedrock", name: "Amazon Bedrock", env: ["AWS_BEARER_TOKEN_BEDROCK"], label: "Amazon Bedrock bearer token" },
+		{ id: "azure-openai-responses", name: "Azure OpenAI", env: ["AZURE_OPENAI_API_KEY"], label: "Azure OpenAI API key" },
+		{ id: "google-vertex", name: "Google Vertex AI", env: ["GOOGLE_APPLICATION_CREDENTIALS"], label: "Google Cloud credentials" },
+		{ id: "mistral", name: "Mistral", env: ["MISTRAL_API_KEY"], label: "Mistral API key" },
 		{ id: "openai", name: "OpenAI", env: ["OPENAI_API_KEY"], label: "OpenAI API key" },
 		{ id: "openai-codex", name: "OpenAI Codex", env: [], oauth: true },
 		{ id: "google", name: "Google", env: ["GEMINI_API_KEY"], label: "Gemini API key" },
@@ -2344,6 +2360,19 @@ async function generateModels() {
 						output: model.cost.output,
 						cache_read: model.cost.cacheRead,
 						cache_write: model.cost.cacheWrite,
+						// A service that charges more for a long context says so per tier, and
+						// bills the whole request at the tier it reaches.
+						...(model.cost.tiers?.length
+							? {
+									tiers: model.cost.tiers.map((tier) => ({
+										input_tokens_above: tier.inputTokensAbove,
+										input: tier.input,
+										output: tier.output,
+										cache_read: tier.cacheRead,
+										cache_write: tier.cacheWrite,
+									})),
+								}
+							: {}),
 					},
 				};
 				if (SPOKEN[model.api] !== api) entry.api = SPOKEN[model.api];
@@ -2355,7 +2384,13 @@ async function generateModels() {
 			});
 
 		const entry: Record<string, unknown> = { name: described.name, models };
-		if (baseUrl) entry.base_url = baseUrl;
+		// Azure is one resource per customer, so there is no address to record. The
+		// placeholder is what a resource name replaces at request time.
+		const resolvedBaseUrl =
+			described.id === "azure-openai-responses"
+				? "https://RESOURCE.openai.azure.com/openai/v1"
+				: baseUrl;
+		if (resolvedBaseUrl) entry.base_url = resolvedBaseUrl;
 		if (api) entry.api = api;
 		catalog[described.id] = entry;
 		table.push({

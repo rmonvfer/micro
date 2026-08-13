@@ -14,7 +14,13 @@ use serde_json::Value;
 use std::time::Duration;
 use std::time::Instant;
 
-const CLIENT_ID: &str = "Ov23li8tweQw6odWQebz";
+/// The client the device flow signs in as.
+///
+/// Copilot is granted to an application, not to a token: a token issued to an app the
+/// account has no Copilot entitlement for is refused at the exchange below, with a 403
+/// whose body is GitHub's generic scraping notice rather than anything about Copilot.
+/// This is the editor client Copilot is granted to.
+const CLIENT_ID: &str = "Iv1.b507a08c87ecfe98";
 const SCOPE: &str = "read:user";
 const DEVICE_CODE_URL: &str = "https://github.com/login/device/code";
 const ACCESS_TOKEN_URL: &str = "https://github.com/login/oauth/access_token";
@@ -24,6 +30,8 @@ const API_TOKEN_URL: &str = "https://api.github.com/copilot_internal/v2/token";
 pub const USER_AGENT: &str = "GitHubCopilotChat/0.35.0";
 pub const EDITOR_VERSION: &str = "vscode/1.107.0";
 pub const EDITOR_PLUGIN_VERSION: &str = "copilot-chat/0.35.0";
+/// Which Copilot integration is asking, which the service expects to be told.
+pub const INTEGRATION_ID: &str = "vscode-chat";
 
 /// GitHub's polling interval is a floor, not a target; a small margin keeps a slow clock
 /// from tripping `slow_down`.
@@ -138,6 +146,27 @@ pub async fn poll_for_token(
     }
 }
 
+/// Where a Copilot token says its account is served from.
+///
+/// The token carries a `proxy-ep=` claim naming the host that answers for this account.
+/// An individual plan gets the default host; a Business or Enterprise account gets its
+/// own, and sending its requests to the default one is refused. The proxy host and the
+/// API host differ only in their first label.
+pub fn base_url_from_token(token: &str) -> Option<String> {
+    let proxy = token
+        .split(';')
+        .find_map(|claim| claim.trim().strip_prefix("proxy-ep="))?
+        .trim();
+    if proxy.is_empty() {
+        return None;
+    }
+    let host = match proxy.strip_prefix("proxy.") {
+        Some(rest) => format!("api.{rest}"),
+        None => proxy.to_string(),
+    };
+    Some(format!("https://{host}"))
+}
+
 /// Trade a GitHub token for a Copilot API token.
 pub async fn exchange_token(http: &reqwest::Client, github_token: &str) -> Result<OAuthCredential> {
     if github_token.is_empty() {
@@ -153,6 +182,7 @@ pub async fn exchange_token(http: &reqwest::Client, github_token: &str) -> Resul
         .header("user-agent", USER_AGENT)
         .header("editor-version", EDITOR_VERSION)
         .header("editor-plugin-version", EDITOR_PLUGIN_VERSION)
+        .header("copilot-integration-id", INTEGRATION_ID)
         .send()
         .await
         .map_err(|error| AuthError::TokenExchange(error.to_string()))?;
@@ -164,6 +194,17 @@ pub async fn exchange_token(http: &reqwest::Client, github_token: &str) -> Resul
         .map_err(|error| AuthError::TokenExchange(error.to_string()))?;
 
     if !status.is_success() {
+        // A refused exchange is almost always a credential from an application Copilot
+        // is not granted to, and GitHub answers that with a notice about scraping that
+        // explains none of it. Say what actually has to happen instead.
+        if status.as_u16() == 403 {
+            return Err(AuthError::TokenExchange(
+                "this GitHub credential is not entitled to Copilot. Sign in again with \
+                 `micro auth login github-copilot`; a credential stored by an older \
+                 micro was issued to an application Copilot does not answer to."
+                    .to_string(),
+            ));
+        }
         return Err(AuthError::TokenExchange(format!(
             "GitHub returned {}: {}",
             status.as_u16(),
@@ -397,5 +438,38 @@ mod tests {
             .await
             .unwrap_err();
         assert!(matches!(error, AuthError::TokenExchange(_)), "{error}");
+    }
+}
+
+#[cfg(test)]
+mod endpoints {
+    use super::*;
+
+    /// A Business or Enterprise account is served somewhere other than the default host,
+    /// and the token is what says where.
+    #[test]
+    fn the_token_says_where_the_account_is_served() {
+        let token = "tid=abc;exp=1234;proxy-ep=proxy.business.githubcopilot.com;other=1";
+        assert_eq!(
+            base_url_from_token(token).as_deref(),
+            Some("https://api.business.githubcopilot.com")
+        );
+    }
+
+    #[test]
+    fn a_host_that_is_not_prefixed_is_used_as_it_is() {
+        let token = "tid=abc;proxy-ep=copilot-api.example.com";
+        assert_eq!(
+            base_url_from_token(token).as_deref(),
+            Some("https://copilot-api.example.com")
+        );
+    }
+
+    /// A token saying nothing about it leaves the caller to use the default.
+    #[test]
+    fn a_token_without_the_claim_says_nothing() {
+        assert_eq!(base_url_from_token("tid=abc;exp=1234"), None);
+        assert_eq!(base_url_from_token(""), None);
+        assert_eq!(base_url_from_token("proxy-ep="), None);
     }
 }

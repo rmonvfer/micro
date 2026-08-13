@@ -132,6 +132,15 @@ async fn run(
             request = request.header("copilot-vision-request", "true");
         }
     }
+    // A service that keeps a cached prompt on one machine needs the next request in the
+    // conversation to reach that machine. Which headers say so differs by service.
+    if model.compat.send_session_affinity_headers {
+        if let Some(key) = context.cache_key.as_deref().filter(|key| !key.is_empty()) {
+            for (name, value) in affinity_headers(model.compat.session_affinity_format, key) {
+                request = request.header(name, value);
+            }
+        }
+    }
     // Anything the caller added wins, which is how an extension changes a header the
     // provider would otherwise set for itself.
     for (name, value) in &context.headers {
@@ -166,7 +175,7 @@ async fn run(
 }
 
 /// Whether this is Copilot, which wants to be told who started a request.
-fn is_copilot(provider: &str, base_url: &str) -> bool {
+pub(crate) fn is_copilot(provider: &str, base_url: &str) -> bool {
     provider == micro_auth::GITHUB_COPILOT || base_url.contains("githubcopilot.com")
 }
 
@@ -616,7 +625,10 @@ pub(crate) fn build_payload(model: &Model, context: &Context) -> Value {
     let compat = &model.compat;
     let mut payload = Map::new();
     payload.insert("model".into(), json!(model.id));
-    payload.insert("messages".into(), Value::Array(build_messages(context)));
+    payload.insert(
+        "messages".into(),
+        Value::Array(build_messages_for(context, model.compat.tool_call_id_length)),
+    );
     payload.insert("stream".into(), json!(true));
     payload.insert(
         match compat.max_tokens_field {
@@ -682,7 +694,7 @@ pub(crate) fn build_payload(model: &Model, context: &Context) -> Value {
 ///
 /// Anything other than the user having just spoken is the agent continuing, which is what
 /// Copilot means by an agent-initiated request.
-fn initiator(messages: &[Message]) -> &'static str {
+pub(crate) fn initiator(messages: &[Message]) -> &'static str {
     match messages.last() {
         Some(Message::User { .. }) => "user",
         _ => "agent",
@@ -690,7 +702,7 @@ fn initiator(messages: &[Message]) -> &'static str {
 }
 
 /// Whether the conversation carries an image, in a prompt or in a tool's result.
-fn carries_images(messages: &[Message]) -> bool {
+pub(crate) fn carries_images(messages: &[Message]) -> bool {
     let has_image = |content: &[micro_types::ContentBlock]| {
         content
             .iter()
@@ -714,7 +726,20 @@ fn has_tool_history(messages: &[Message]) -> bool {
 
 /// Convert the conversation to the chat-completions shape: the system prompt as the
 /// leading message, and every tool result as its own `tool` turn keyed by call id.
-fn build_messages(context: &Context) -> Vec<Value> {
+/// The same, with a limit on how long a tool call's id may be.
+///
+/// Mistral takes an id of exactly nine alphanumeric characters and refuses anything else.
+/// The ids are rewritten on the way out and the calls and their results are rewritten to
+/// match, so a conversation stays consistent with itself.
+fn build_messages_for(context: &Context, id_length: Option<usize>) -> Vec<Value> {
+    let mut wire = build_messages_inner(context);
+    if let Some(length) = id_length {
+        shorten_tool_call_ids(&mut wire, length);
+    }
+    wire
+}
+
+fn build_messages_inner(context: &Context) -> Vec<Value> {
     let mut wire: Vec<Value> = Vec::new();
 
     if let Some(system) = &context.system_prompt {
@@ -1043,7 +1068,7 @@ mod tests {
             headers: Vec::new(),
             cache_key: None,
         };
-        let wire = build_messages(&context);
+        let wire = build_messages_for(&context, None);
 
         assert_eq!(wire[0]["role"], "system");
         assert_eq!(wire[1]["role"], "user");
@@ -1404,5 +1429,158 @@ mod tests {
             is_error: false,
             timestamp: 0,
         }]));
+    }
+}
+
+/// The headers that tie a request to the conversation it belongs to.
+///
+/// A service caching a prompt holds it on one machine; these are how the next request in
+/// the same conversation reaches that machine rather than a cold one. Each service spells
+/// it differently, and sending the wrong spelling simply misses the cache.
+pub(crate) fn affinity_headers(
+    format: micro_types::SessionAffinity,
+    key: &str,
+) -> Vec<(&'static str, String)> {
+    use micro_types::SessionAffinity;
+    match format {
+        SessionAffinity::Openai => vec![
+            ("session_id", key.to_string()),
+            ("x-client-request-id", key.to_string()),
+            ("x-session-affinity", key.to_string()),
+        ],
+        SessionAffinity::OpenaiNosession => vec![
+            ("x-client-request-id", key.to_string()),
+            ("x-session-affinity", key.to_string()),
+        ],
+        SessionAffinity::Openrouter => vec![("x-session-id", key.to_string())],
+        SessionAffinity::Mistral => vec![("x-affinity", key.to_string())],
+    }
+}
+
+#[cfg(test)]
+mod affinity {
+    use super::*;
+    use micro_types::SessionAffinity;
+
+    /// Each service spells it its own way, and the wrong spelling just misses the cache.
+    #[test]
+    fn each_service_is_told_in_its_own_words() {
+        let named = |format| {
+            affinity_headers(format, "session-7")
+                .into_iter()
+                .map(|(name, _)| name)
+                .collect::<Vec<_>>()
+        };
+
+        assert_eq!(
+            named(SessionAffinity::Openai),
+            vec!["session_id", "x-client-request-id", "x-session-affinity"]
+        );
+        assert_eq!(
+            named(SessionAffinity::OpenaiNosession),
+            vec!["x-client-request-id", "x-session-affinity"]
+        );
+        assert_eq!(named(SessionAffinity::Openrouter), vec!["x-session-id"]);
+        assert_eq!(named(SessionAffinity::Mistral), vec!["x-affinity"]);
+    }
+
+    #[test]
+    fn the_conversation_is_what_is_named() {
+        let sent = affinity_headers(SessionAffinity::Mistral, "session-7");
+        assert_eq!(sent[0].1, "session-7");
+    }
+}
+
+/// Cut every tool call id down to what the service will take.
+///
+/// A call and the result answering it have to keep naming each other, so both sides are
+/// rewritten together. Two ids that shorten to the same thing would break that pairing, so
+/// a collision is given a different suffix until it is its own.
+fn shorten_tool_call_ids(wire: &mut [Value], length: usize) {
+    let mut mapped: std::collections::BTreeMap<String, String> = Default::default();
+    let mut taken: std::collections::BTreeSet<String> = Default::default();
+
+    let mut shorten = |id: &str| -> String {
+        if let Some(known) = mapped.get(id) {
+            return known.clone();
+        }
+        let plain: String = id.chars().filter(|c| c.is_ascii_alphanumeric()).collect();
+        let mut candidate: String = plain.chars().take(length).collect();
+        let mut attempt = 0u32;
+        while candidate.len() < length || taken.contains(&candidate) {
+            attempt += 1;
+            let seed = format!("{plain}{attempt}");
+            candidate = seed.chars().rev().take(length).collect();
+        }
+        taken.insert(candidate.clone());
+        mapped.insert(id.to_string(), candidate.clone());
+        candidate
+    };
+
+    for message in wire.iter_mut() {
+        if let Some(id) = message.get("tool_call_id").and_then(Value::as_str) {
+            let short = shorten(id);
+            message["tool_call_id"] = Value::String(short);
+        }
+        let Some(calls) = message.get_mut("tool_calls").and_then(Value::as_array_mut) else {
+            continue;
+        };
+        for call in calls {
+            if let Some(id) = call.get("id").and_then(Value::as_str) {
+                let short = shorten(id);
+                call["id"] = Value::String(short);
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod short_ids {
+    use super::*;
+
+    /// A call and the result answering it keep naming each other after both are cut down.
+    #[test]
+    fn a_call_and_its_result_stay_paired() {
+        let mut wire = vec![
+            json!({ "role": "assistant", "tool_calls": [{ "id": "call_abc123def456", "type": "function" }] }),
+            json!({ "role": "tool", "tool_call_id": "call_abc123def456", "content": "done" }),
+        ];
+        shorten_tool_call_ids(&mut wire, 9);
+
+        let called = wire[0]["tool_calls"][0]["id"].as_str().unwrap();
+        let answered = wire[1]["tool_call_id"].as_str().unwrap();
+        assert_eq!(called, answered, "still the same call");
+        assert_eq!(called.len(), 9);
+        assert!(called.chars().all(|c| c.is_ascii_alphanumeric()));
+    }
+
+    /// Two ids that would cut down to the same thing are kept apart, or the model would
+    /// see one call answered twice.
+    #[test]
+    fn two_calls_never_become_one() {
+        let mut wire = vec![
+            json!({ "role": "assistant", "tool_calls": [
+                { "id": "call_same_prefix_one" },
+                { "id": "call_same_prefix_two" }
+            ] }),
+        ];
+        shorten_tool_call_ids(&mut wire, 9);
+
+        let first = wire[0]["tool_calls"][0]["id"].as_str().unwrap();
+        let second = wire[0]["tool_calls"][1]["id"].as_str().unwrap();
+        assert_ne!(first, second);
+        assert_eq!(first.len(), 9);
+        assert_eq!(second.len(), 9);
+    }
+
+    /// A service that takes any id is left alone.
+    #[test]
+    fn an_unlimited_service_keeps_its_ids() {
+        let context = Context {
+            messages: vec![Message::tool_result("call_abc123def456", "read", "ok", false)],
+            ..Default::default()
+        };
+        let wire = build_messages_for(&context, None);
+        assert_eq!(wire[0]["tool_call_id"], "call_abc123def456");
     }
 }

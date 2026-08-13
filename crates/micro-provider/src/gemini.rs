@@ -52,9 +52,24 @@ const UNSUPPORTED_SCHEMA_FIELDS: &[&str] = &[
     "title",
 ];
 
+/// Which service is answering the Gemini shape.
+///
+/// The request and the stream are the same either way. What differs is the address — a
+/// Vertex model lives under a project and a location — and how the credential is
+/// presented: an API key to Google's own endpoint, a bearer token to Vertex.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Backend {
+    /// Google's own `generativelanguage` endpoint, reached with an API key.
+    #[default]
+    Google,
+    /// Vertex AI, reached with a Google Cloud credential.
+    Vertex,
+}
+
 #[derive(Clone, Default)]
 pub struct Gemini {
     client: reqwest::Client,
+    backend: Backend,
     /// Where the next synthesized call id continues from. Shared across every request this
     /// provider serves, which is what keeps ids unique for a whole conversation rather
     /// than only within one response.
@@ -65,6 +80,16 @@ impl Gemini {
     pub fn new() -> Self {
         Gemini {
             client: crate::http_client(),
+            backend: Backend::Google,
+            next_call: Arc::new(AtomicUsize::new(0)),
+        }
+    }
+
+    /// The same shape as Vertex AI serves it.
+    pub fn vertex() -> Self {
+        Gemini {
+            client: crate::http_client(),
+            backend: Backend::Vertex,
             next_call: Arc::new(AtomicUsize::new(0)),
         }
     }
@@ -72,7 +97,10 @@ impl Gemini {
 
 impl Provider for Gemini {
     fn name(&self) -> &str {
-        "gemini"
+        match self.backend {
+            Backend::Google => "gemini",
+            Backend::Vertex => crate::vertex::PROVIDER,
+        }
     }
 
     fn stream(
@@ -83,6 +111,7 @@ impl Provider for Gemini {
     ) -> UnboundedReceiver<StreamEvent> {
         let (sender, receiver) = mpsc::unbounded_channel();
         let client = self.client.clone();
+        let backend = self.backend;
 
         // Two things have to hold for an id to stay unique across a whole conversation, and
         // they cover different failures. Starting from the calls the history already holds
@@ -94,7 +123,9 @@ impl Provider for Gemini {
         counter.fetch_max(tool_calls_so_far(&context.messages), Ordering::Relaxed);
 
         tokio::spawn(async move {
-            if let Err(message) = run(client, model, context, api_key, counter, &sender).await {
+            if let Err(message) =
+                run(client, backend, model, context, api_key, counter, &sender).await
+            {
                 let _ = sender.send(StreamEvent::Error { message });
             }
         });
@@ -131,6 +162,7 @@ fn tool_calls_so_far(messages: &[Message]) -> usize {
 
 async fn run(
     client: reqwest::Client,
+    backend: Backend,
     model: Model,
     context: Context,
     api_key: String,
@@ -138,10 +170,21 @@ async fn run(
     sender: &UnboundedSender<StreamEvent>,
 ) -> Result<(), String> {
     let payload = build_payload(&model, &context);
-    let request = client
-        .post(endpoint(&model.base_url, &model.id))
-        .header("x-goog-api-key", api_key)
-        .header("content-type", "application/json");
+    let request = match backend {
+        Backend::Google => client
+            .post(endpoint(&model.base_url, &model.id))
+            .header("x-goog-api-key", api_key),
+        Backend::Vertex => {
+            let account = crate::vertex::account(&model.base_url)?;
+            // A Vertex credential is a bearer token, minted from whatever the account
+            // was set up with; a plain API key is sent as one too.
+            let token = crate::vertex::access_token(&client, &api_key).await?;
+            client
+                .post(crate::vertex::endpoint(&account, &model.id))
+                .header("authorization", format!("Bearer {token}"))
+        }
+    }
+    .header("content-type", "application/json");
     let response = crate::with_carried_headers(request, &context)
         .json(&payload)
         .send()

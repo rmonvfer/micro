@@ -24,6 +24,7 @@
 //! # Ok::<(), micro_models::Error>(())
 //! ```
 
+pub mod fuzzy;
 mod bundled;
 mod catalog;
 mod compat;

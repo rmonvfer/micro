@@ -3,10 +3,43 @@
 		"id": "anthropic",
 		"name": "Anthropic",
 		"env": [
+			"ANTHROPIC_AUTH_TOKEN",
 			"ANTHROPIC_OAUTH_TOKEN",
 			"ANTHROPIC_API_KEY"
 		],
 		"key": "Anthropic API key"
+	},
+	{
+		"id": "amazon-bedrock",
+		"name": "Amazon Bedrock",
+		"env": [
+			"AWS_BEARER_TOKEN_BEDROCK"
+		],
+		"key": "Amazon Bedrock bearer token"
+	},
+	{
+		"id": "azure-openai-responses",
+		"name": "Azure OpenAI",
+		"env": [
+			"AZURE_OPENAI_API_KEY"
+		],
+		"key": "Azure OpenAI API key"
+	},
+	{
+		"id": "google-vertex",
+		"name": "Google Vertex AI",
+		"env": [
+			"GOOGLE_APPLICATION_CREDENTIALS"
+		],
+		"key": "Google Cloud credentials"
+	},
+	{
+		"id": "mistral",
+		"name": "Mistral",
+		"env": [
+			"MISTRAL_API_KEY"
+		],
+		"key": "Mistral API key"
 	},
 	{
 		"id": "openai",
