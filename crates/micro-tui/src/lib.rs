@@ -188,7 +188,10 @@ async fn drive(
                 .await?
             }
             None => match next_event(&mut input, &mut refreshing, &mut app, &mut commands).await {
-                Some(Ok(event)) => {
+                // Work finished behind the interface rather than something the user did:
+                // the frame is drawn again at the top of the loop and nothing else changes.
+                Next::Redrawn => continue,
+                Next::Event(event) => {
                     if offer_shortcut(&mut commands, &event).await {
                         continue;
                     }
@@ -209,7 +212,7 @@ async fn drive(
                     }
                 }
                 // The terminal went away; there is nothing left to read.
-                Some(Err(_)) | None => return Ok(()),
+                Next::Ended => return Ok(()),
             },
         }
     }
@@ -295,12 +298,22 @@ fn suspend(_screen: &mut Screen, app: &mut App) -> Result<()> {
 /// Waiting on both at once is what lets a list of models be drawn from what is known and
 /// then corrected in place, rather than either blocking on the network or never hearing
 /// back from it.
+/// What the loop got back from waiting.
+enum Next {
+    /// Something the user did.
+    Event(Event),
+    /// Something finished behind the interface. Draw again and carry on waiting.
+    Redrawn,
+    /// The input ended, so the session is over.
+    Ended,
+}
+
 async fn next_event(
     input: &mut EventStream,
     refreshing: &mut Option<tokio::sync::oneshot::Receiver<Listings>>,
     app: &mut App,
     commands: &mut Option<Box<dyn Commands + 'static>>,
-) -> Option<std::result::Result<Event, std::io::Error>> {
+) -> Next {
     // Nothing in flight, and a list open that wants asking about: start now.
     if refreshing.is_none() && app.picker_mut().is_some_and(|open| open.refreshes()) {
         if let Some(commands) = commands.as_deref_mut() {
@@ -309,12 +322,12 @@ async fn next_event(
     }
 
     let Some(pending) = refreshing.as_mut() else {
-        return input.next().await;
+        return arrived(input.next().await);
     };
 
     tokio::select! {
         biased;
-        event = input.next() => event,
+        event = input.next() => arrived(event),
         listings = pending => {
             *refreshing = None;
             let listings = listings.unwrap_or_default();
@@ -341,8 +354,16 @@ async fn next_event(
                     ),
                 }
             }
-            None
+            Next::Redrawn
         }
+    }
+}
+
+/// What the event stream handed back, as the loop reads it.
+fn arrived(event: Option<std::result::Result<Event, std::io::Error>>) -> Next {
+    match event {
+        Some(Ok(event)) => Next::Event(event),
+        Some(Err(_)) | None => Next::Ended,
     }
 }
 
@@ -1019,4 +1040,25 @@ fn install_panic_hook() {
             previous(info);
         }));
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Waiting answers three different ways, and two of them are not the end of the
+    /// session. Work finishing behind an open list once read as the input stream closing,
+    /// which quit micro the moment the catalogs came back.
+    #[test]
+    fn only_the_input_ending_ends_the_session() {
+        assert!(matches!(arrived(None), Next::Ended));
+        assert!(matches!(
+            arrived(Some(Err(std::io::Error::other("gone")))),
+            Next::Ended
+        ));
+        assert!(matches!(
+            arrived(Some(Ok(Event::FocusGained))),
+            Next::Event(_)
+        ));
+    }
 }
