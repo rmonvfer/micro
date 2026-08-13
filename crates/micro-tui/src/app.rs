@@ -42,6 +42,46 @@ use std::time::Instant;
 const PAGE_OVERLAP: usize = 2;
 
 /// How the interface is set up before it runs.
+/// One kind of thing that was loaded before the session started.
+///
+/// A name is enough to know a skill is there; where it came from is what a reader wants
+/// when two shelves offer the same name and it matters which one answered. So both are
+/// carried, and `ctrl+o` chooses between them.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ResourceSection {
+    /// What the section is called, written as `[Context]`, `[Skills]` and so on.
+    pub name: String,
+    /// What is in it, by name.
+    pub names: Vec<String>,
+    /// Where each of them was read from, in the same order.
+    pub paths: Vec<String>,
+}
+
+/// Everything the first screen says was loaded.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Resources {
+    pub sections: Vec<ResourceSection>,
+}
+
+impl Resources {
+    /// Add a section, unless nothing was found for it. An empty heading says less than no
+    /// heading at all.
+    pub fn add(&mut self, name: &str, names: Vec<String>, paths: Vec<String>) {
+        if names.is_empty() {
+            return;
+        }
+        self.sections.push(ResourceSection {
+            name: name.to_string(),
+            names,
+            paths,
+        });
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.sections.is_empty()
+    }
+}
+
 pub struct TuiOptions {
     /// The workspace the agent is working in, which is also where a `!` command runs.
     pub cwd: PathBuf,
@@ -61,6 +101,21 @@ pub struct TuiOptions {
     /// Something to say before anything else happens, such as that nobody is signed in
     /// to the service serving the chosen model.
     pub notice: Option<String>,
+    /// The provider serving the model, named in the footer when the model does not say.
+    pub provider: String,
+    /// Whether the credential in use bills a plan rather than each request.
+    pub subscription: bool,
+    /// Whether the conversation summarizes itself once it fills the window.
+    pub auto_compact: bool,
+    /// What the model charges, for the session's running cost.
+    pub price: Option<micro_models::ModelCost>,
+    /// Whether this run has experimental behavior turned on, which is worth showing
+    /// because it changes what micro does.
+    pub experimental: bool,
+    /// How much of the terminal to take.
+    pub tui_mode: crate::TuiMode,
+    /// What was loaded before the session started, named on the first screen.
+    pub resources: Resources,
 }
 
 impl Default for TuiOptions {
@@ -73,6 +128,13 @@ impl Default for TuiOptions {
             theme: None,
             questions: None,
             notice: None,
+            provider: String::new(),
+            subscription: false,
+            auto_compact: true,
+            price: None,
+            experimental: false,
+            tui_mode: Default::default(),
+            resources: Default::default(),
             commands: None,
             settings: Preferences::default(),
         }
@@ -212,6 +274,22 @@ pub struct App {
     key_prompt: Option<KeyPrompt>,
     /// A question an extension asked, waiting for whatever overlay is showing it.
     question: Option<crate::ui::UiRequest>,
+    /// What each extension is reporting, by the key it reports under.
+    pub extension_status: std::collections::BTreeMap<String, String>,
+    /// The workspace's files, for completing a name after `@`. Worked out on first use.
+    file_index: Option<Vec<String>>,
+    /// How many rows of the conversation the terminal has been given, when the interface
+    /// is drawing inline rather than taking the whole screen.
+    handed_over: usize,
+    /// Whether the credential in use bills a plan rather than each request, which is why
+    /// a session against it shows no running cost.
+    pub subscription: bool,
+    /// Whether the conversation summarizes itself once it fills the window.
+    pub auto_compact: bool,
+    /// The provider serving the model, named in the footer when the model does not say.
+    pub provider: String,
+    /// What a million tokens costs, for the running total. Absent when nothing is charged.
+    pub price: Option<micro_models::ModelCost>,
     /// Images taken off the clipboard, riding with the next prompt.
     attachments: Vec<ContentBlock>,
     /// The tool result the reader has selected, as an index into the transcript.
@@ -232,6 +310,15 @@ pub struct App {
     images: Option<ImageProtocol>,
     /// What the user settled in `/settings`, honoured wherever it applies.
     settings: Preferences,
+    /// What was loaded before the session started.
+    resources: Resources,
+    /// How much of the terminal this run took, which decides whether the spinner's rows
+    /// are held open while nothing is running.
+    tui_mode: crate::TuiMode,
+    /// Whether the first screen shows the whole of what it knows: every key rather than
+    /// the five worth knowing, and where each resource was read from rather than its name.
+    /// The same key that opens every tool result opens this.
+    startup_expanded: bool,
 }
 
 impl App {
@@ -260,6 +347,13 @@ impl App {
             picker: None,
             key_prompt: None,
             question: None,
+            extension_status: Default::default(),
+            file_index: None,
+            handed_over: 0,
+            subscription: options.subscription,
+            auto_compact: options.auto_compact,
+            provider: options.provider,
+            price: options.price,
             attachments: Vec::new(),
             focus: None,
             scroll: 0,
@@ -277,6 +371,9 @@ impl App {
                 false => None,
             },
             settings: options.settings,
+            resources: options.resources,
+            tui_mode: options.tui_mode,
+            startup_expanded: false,
         };
 
         // Said before the first frame, so the reason nothing can be sent is on screen
@@ -298,7 +395,16 @@ impl App {
     /// yet sits close to the input the way ohm's does; once a turn has run, the rows stay
     /// held whether or not one is running, so the input never jumps as turns come and go.
     pub fn reserves_activity_rows(&self) -> bool {
-        self.worked
+        match self.tui_mode {
+            // Inline, the region is only as tall as the interface, and letting it shrink
+            // between turns would scroll away rows the terminal has already been given. So
+            // once something has run the rows stay held.
+            crate::TuiMode::Inline => self.worked,
+            // On a screen of its own there is nothing to lose by giving the rows back, and
+            // holding two blank rows above the prompt while nothing is running only pushes
+            // the conversation away from it.
+            crate::TuiMode::Fullscreen => self.is_running(),
+        }
     }
 
     /// The model as the footer names it.
@@ -356,6 +462,32 @@ impl App {
 
     pub fn lines(&self) -> &[Line<'static>] {
         &self.cache.lines
+    }
+
+    /// The conversation the terminal should keep, which the live region no longer needs.
+    ///
+    /// Drawing inline means the interface occupies only the rows it is using, so what the
+    /// conversation has finished with is handed to the terminal itself: the shell's own
+    /// scrollback, search and selection reach it there, which is the point of not taking
+    /// the whole screen. Nothing is handed over while a turn is running — what is still
+    /// being written is still being redrawn.
+    pub fn take_scrolled_out(&mut self) -> Vec<Line<'static>> {
+        if self.turn.is_some() {
+            return Vec::new();
+        }
+        let settled = self.cache.lines.len();
+        if settled <= self.handed_over {
+            return Vec::new();
+        }
+        let taken = self.cache.lines[self.handed_over..settled].to_vec();
+        self.handed_over = settled;
+        taken
+    }
+
+    /// Forget what has been handed over, for a conversation that was replaced rather than
+    /// continued: a resumed session or a fork is not the one that was on screen.
+    pub fn forget_scrolled_out(&mut self) {
+        self.handed_over = 0;
     }
 
     pub fn links(&self) -> &Links {
@@ -465,6 +597,43 @@ impl App {
         self.picker = Some(Picker::new(choices));
     }
 
+    /// The open list, for whoever is keeping it up to date.
+    pub fn picker_mut(&mut self) -> Option<&mut Picker> {
+        self.picker.as_mut()
+    }
+
+    /// What the session has cost so far, priced against the model it is running.
+    ///
+    /// Absent when there is no price to apply, which is what a subscription-backed
+    /// provider reports.
+    pub fn session_cost(&self) -> Option<f64> {
+        let price = self.price.as_ref()?;
+        if price.is_free() {
+            return None;
+        }
+        let total = self.transcript.total_usage();
+        Some(
+            price
+                .price(micro_models::TokenUsage {
+                    input: total.input as u64,
+                    output: total.output as u64,
+                    cache_read: total.cache_read as u64,
+                    cache_write: total.cache_write as u64,
+                })
+                .total(),
+        )
+    }
+
+    /// The provider to name in the footer, which is nothing when the model already says
+    /// which one is serving it.
+    pub fn footer_provider(&self) -> Option<&str> {
+        let provider = self.provider.trim();
+        if provider.is_empty() || self.model_id().starts_with(provider) {
+            return None;
+        }
+        Some(provider)
+    }
+
     /// Show a question an extension asked, in whatever suits it.
     ///
     /// The question is held until it is answered or closed, so however the overlay ends,
@@ -493,6 +662,21 @@ impl App {
                 request.answer(serde_json::json!({}));
                 return;
             }
+            // Not a question: a line an extension keeps in the footer until it changes
+            // it. Text it does not give takes the line away again.
+            "set_status" => {
+                let mut request = request;
+                match request.detail.clone() {
+                    Some(text) if !text.trim().is_empty() => {
+                        self.extension_status.insert(request.title.clone(), text);
+                    }
+                    _ => {
+                        self.extension_status.remove(&request.title);
+                    }
+                }
+                request.answer(serde_json::json!({ "ok": true }));
+                return;
+            }
             "select" => {
                 let items = request
                     .options
@@ -501,7 +685,9 @@ impl App {
                         micro_commands::PickerItem::new(option.clone(), String::new(), option.clone())
                     })
                     .collect();
-                self.open_picker(micro_commands::Picker::new(request.title.clone(), items));
+                self.open_picker(
+                    micro_commands::Picker::new(request.title.clone(), items).titled(),
+                );
             }
             "confirm" => {
                 let detail = request.detail.clone().unwrap_or_default();
@@ -509,7 +695,9 @@ impl App {
                     micro_commands::PickerItem::new("Yes", detail.clone(), "yes"),
                     micro_commands::PickerItem::new("No", detail, "no"),
                 ];
-                self.open_picker(micro_commands::Picker::new(request.title.clone(), items));
+                self.open_picker(
+                    micro_commands::Picker::new(request.title.clone(), items).titled(),
+                );
             }
             // Anything else is asked in words.
             _ => self.open_input(request.title.clone(), request.detail.clone()),
@@ -573,8 +761,11 @@ impl App {
 
     /// Record a command the user ran themselves, so the transcript shows it where it
     /// happened rather than only in what the model was told.
-    pub fn push_bash(&mut self, command: &str) {
-        self.transcript.push_user(format!("! {command}"));
+    ///
+    /// `shared` is whether the model is being told: a command run with `!!` is shown to the
+    /// user and to nobody else.
+    pub fn push_bash(&mut self, command: &str, shared: bool) {
+        self.transcript.push_bash(command, shared);
     }
 
     /// Take a submitted line and make the message the agent will be given.
@@ -686,6 +877,9 @@ impl App {
                 crate::transcript::Entry::User(text) => {
                     out.push_str(&format!("## Prompt\n\n{text}\n\n"))
                 }
+                crate::transcript::Entry::Bash { command, .. } => {
+                    out.push_str(&format!("## Command\n\n```\n$ {command}\n```\n\n"))
+                }
                 crate::transcript::Entry::Assistant(assistant) => {
                     if !assistant.text.trim().is_empty() {
                         out.push_str(&format!("## Answer\n\n{}\n\n", assistant.text));
@@ -795,7 +989,13 @@ impl App {
                 Outcome::Handled
             }
 
-            Action::Quit => Outcome::Quit,
+            Action::QuitOrDelete => {
+                if self.editor.is_empty() {
+                    Outcome::Quit
+                } else {
+                    self.edit(|editor| editor.delete())
+                }
+            }
             Action::Interrupt => self.interrupt(),
 
             Action::Submit => self.submit(),
@@ -858,6 +1058,14 @@ impl App {
             }
             Action::PageDown => {
                 self.scroll_by(-(self.page() as isize));
+                Outcome::Handled
+            }
+            Action::ScrollUp => {
+                self.scroll_by(3);
+                Outcome::Handled
+            }
+            Action::ScrollDown => {
+                self.scroll_by(-3);
                 Outcome::Handled
             }
 
@@ -1005,13 +1213,19 @@ impl App {
     }
 
     /// Up: through the menu when one is open, through the prompt while it has rows above
-    /// the cursor, and through what was typed before once it does not.
+    /// the cursor, and back through the conversation once the prompt is empty.
     fn move_up(&mut self) -> Outcome {
         if let Some(menu) = self.menu.as_mut() {
             menu.select_previous();
             return Outcome::Handled;
         }
         if self.editor.move_up(self.width) {
+            return Outcome::Handled;
+        }
+        // An empty prompt reads back through the conversation first. Once it is at its
+        // start there is nothing further to show, and the same key reaches what was typed
+        // before — so one key does both without the reader choosing between them.
+        if self.editor.is_empty() && !self.editor.is_browsing_history() && self.scroll_by(1) {
             return Outcome::Handled;
         }
         self.editor.history_previous();
@@ -1024,6 +1238,9 @@ impl App {
             return Outcome::Handled;
         }
         if self.editor.move_down(self.width) {
+            return Outcome::Handled;
+        }
+        if self.editor.is_empty() && !self.editor.is_browsing_history() && self.scroll_by(-1) {
             return Outcome::Handled;
         }
         self.editor.history_next();
@@ -1068,10 +1285,33 @@ impl App {
             .cloned()
             .unwrap_or_default();
         // Only the first line can hold a command, and only when nothing precedes it.
-        self.menu = match row {
-            0 => Menu::open_for(&line, column),
-            _ => None,
+        if row == 0 {
+            if let Some(menu) = Menu::open_for(&line, column) {
+                self.menu = Some(menu);
+                return;
+            }
+        }
+        // A file can be named anywhere in the prompt, so `@` is looked for on every line.
+        self.menu = match wants_file_menu(&line, column) {
+            true => Menu::files_for(&line, column, self.workspace_files()),
+            false => None,
         };
+    }
+
+    /// Every file in the workspace, worked out the first time one is asked for.
+    ///
+    /// Walking is not free and the answer barely changes within a session, so it is done
+    /// once. `/reload` is what re-reads the workspace.
+    fn workspace_files(&mut self) -> &[String] {
+        if self.file_index.is_none() {
+            self.file_index = Some(walk_workspace(std::path::Path::new(&self.cwd)));
+        }
+        self.file_index.as_deref().unwrap_or_default()
+    }
+
+    /// Forget the file listing, so the next completion walks the workspace again.
+    pub fn forget_workspace_files(&mut self) {
+        self.file_index = None;
     }
 
     fn handle_key_prompt(&mut self, action: Action) -> Outcome {
@@ -1101,7 +1341,8 @@ impl App {
                     question.cancel();
                 }
             }
-            Action::Quit => return Outcome::Quit,
+            // Nothing is written in an overlay, so this is only ever the leaving half.
+            Action::QuitOrDelete => return Outcome::Quit,
             _ => {}
         }
         Outcome::Handled
@@ -1114,6 +1355,8 @@ impl App {
         match action {
             Action::MoveUp => picker.select_previous(),
             Action::MoveDown => picker.select_next(),
+            // Between the workspace's shortlist and the whole of it.
+            Action::Tab => picker.toggle_scope(),
             Action::Insert(text) => picker.push(&text),
             Action::Backspace => picker.backspace(),
             Action::Submit => {
@@ -1144,7 +1387,8 @@ impl App {
                     question.cancel();
                 }
             }
-            Action::Quit => return Outcome::Quit,
+            // Nothing is written in an overlay, so this is only ever the leaving half.
+            Action::QuitOrDelete => return Outcome::Quit,
             _ => {}
         }
         Outcome::Handled
@@ -1184,11 +1428,24 @@ impl App {
                 self.transcript.toggle_expanded(index);
             }
             None => {
-                let opening = self.transcript.any_collapsed();
+                // Nothing is singled out, so this opens everything at once — including the
+                // first screen, which is all there is to open before a conversation exists.
+                let opening = self.transcript.any_collapsed() || !self.startup_expanded;
                 self.transcript.set_all_expanded(opening);
+                self.startup_expanded = opening;
             }
         }
         Outcome::Handled
+    }
+
+    /// What was loaded before the session started, for the first screen.
+    pub fn resources(&self) -> &Resources {
+        &self.resources
+    }
+
+    /// Whether the first screen is showing everything it knows.
+    pub fn startup_expanded(&self) -> bool {
+        self.startup_expanded
     }
 
     fn paste_image(&mut self) -> Outcome {
@@ -1214,10 +1471,15 @@ impl App {
     }
 
     /// Move the window back through the conversation. Positive is toward the start.
-    fn scroll_by(&mut self, lines: isize) {
+    ///
+    /// Answers whether it moved, so a caller that scrolls before it does anything else can
+    /// tell when the conversation has no more to give.
+    fn scroll_by(&mut self, lines: isize) -> bool {
+        let before = self.scroll;
         let scroll = self.scroll as isize + lines;
         self.scroll = scroll.max(0) as usize;
         self.clamp_scroll();
+        self.scroll != before
     }
 
     /// Scrolling stops at the first line: past it there is nothing to show, and the window
@@ -1271,6 +1533,20 @@ mod tests {
 
     fn type_text(app: &mut App, text: &str) {
         app.handle(Action::Insert(text.to_string()));
+    }
+
+    /// Press up until the conversation has no more to show and the key reaches the history.
+    ///
+    /// Counted rather than fixed, because how many presses that takes is how tall the
+    /// conversation renders, which is not what either test is about.
+    fn press_up_until_history(app: &mut App) {
+        for _ in 0..500 {
+            app.handle(Action::MoveUp);
+            if !app.editor.text().is_empty() {
+                return;
+            }
+        }
+        panic!("up never reached the history");
     }
 
     fn transcript_text(app: &mut App) -> String {
@@ -1541,8 +1817,21 @@ mod tests {
     #[test]
     fn a_prompt_is_remembered_and_can_be_recalled() {
         let mut app = app();
+        for index in 0..20 {
+            app.transcript.push_user(format!("message number {index}"));
+        }
         app.begin_turn("the first thing asked");
+        app.set_frame(60, 24);
+        app.set_viewport(10);
+        app.refresh_lines();
+
+        // With the prompt empty, up reads back through the conversation; once it is at
+        // its start the same key reaches what was typed before.
         app.handle(Action::MoveUp);
+        assert!(app.scroll() > 0);
+        assert_eq!(app.editor.text(), "");
+
+        press_up_until_history(&mut app);
         assert_eq!(app.editor.text(), "the first thing asked");
     }
 
@@ -1668,6 +1957,57 @@ mod tests {
         assert_eq!(app.scroll(), furthest, "the start is as far back as it goes");
     }
 
+    #[test]
+    fn wheel_and_arrow_keys_scroll_the_conversation() {
+        let mut app = app();
+        for index in 0..40 {
+            app.transcript.push_user(format!("prompt number {index}"));
+        }
+        app.set_frame(60, 24);
+        app.set_viewport(10);
+        app.refresh_lines();
+
+        // Wheel up moves back a few lines.
+        app.handle(Action::ScrollUp);
+        assert_eq!(app.scroll(), 3);
+        app.handle(Action::ScrollUp);
+        assert_eq!(app.scroll(), 6);
+
+        // Arrow keys on an empty prompt scroll line by line.
+        app.handle(Action::MoveUp);
+        assert_eq!(app.scroll(), 7);
+        app.handle(Action::MoveUp);
+        assert_eq!(app.scroll(), 8);
+
+        // Arrow keys scroll back down.
+        app.handle(Action::MoveDown);
+        assert_eq!(app.scroll(), 7);
+        app.handle(Action::ScrollDown);
+        assert_eq!(app.scroll(), 4);
+    }
+
+    #[test]
+    fn a_typed_prompt_still_browses_history() {
+        let mut app = app();
+        app.begin_turn("the first thing asked");
+        type_text(&mut app, "half written");
+
+        app.handle(Action::MoveUp);
+        assert_eq!(app.editor.text(), "the first thing asked");
+        assert_eq!(app.scroll(), 0, "typing kept the arrows in history");
+    }
+
+    #[test]
+    fn arrows_with_a_menu_open_still_choose_from_it() {
+        let mut app = app();
+        type_text(&mut app, "/c");
+
+        app.handle(Action::MoveDown);
+        assert_eq!(app.menu().unwrap().selected(), 1);
+        app.handle(Action::MoveUp);
+        assert_eq!(app.menu().unwrap().selected(), 0);
+    }
+
     /// Someone reading back through the conversation stays where they are when an answer
     /// arrives beneath them.
     #[test]
@@ -1755,8 +2095,17 @@ mod tests {
     #[test]
     fn a_bash_line_joins_the_conversation_where_it_was_run() {
         let mut app = app();
-        app.push_bash("ls -la");
+        app.push_bash("ls -la", true);
         assert!(transcript_text(&mut app).contains("! ls -la"));
+    }
+
+    /// A command run with `!!` is shown, and shown as the one the model was not told about:
+    /// the two are the same keystrokes apart, and which it was decides what the model knows.
+    #[test]
+    fn a_command_kept_back_is_marked_as_one() {
+        let mut app = app();
+        app.push_bash("cat ~/.ssh/config", false);
+        assert!(transcript_text(&mut app).contains("!! cat ~/.ssh/config"));
     }
 
     /// The arrow keys stop at the edge of the prompt rather than wrapping around it.
@@ -2122,10 +2471,18 @@ mod tests {
     #[test]
     fn browsing_history_walks_back_through_what_was_sent() {
         let mut app = app();
+        for index in 0..20 {
+            app.transcript.push_user(format!("message number {index}"));
+        }
         app.begin_turn("first thing");
         app.begin_turn("second thing");
+        app.set_frame(60, 24);
+        app.set_viewport(10);
+        app.refresh_lines();
 
-        app.handle(Action::MoveUp);
+        // The up-presses read back through the conversation until it is at its start;
+        // then the same key walks back through what was sent.
+        press_up_until_history(&mut app);
         assert_eq!(app.editor.text(), "second thing");
         app.handle(Action::MoveUp);
         assert_eq!(app.editor.text(), "first thing");
@@ -2236,4 +2593,54 @@ mod tests {
         assert_eq!(human_size(2048), "2 KB");
         assert_eq!(human_size(5 * 1_048_576), "5.0 MB");
     }
+}
+
+/// Whether the word under the cursor is asking for a file.
+fn wants_file_menu(line: &str, cursor: usize) -> bool {
+    let Some(typed) = line.get(..cursor) else {
+        return false;
+    };
+    let start = typed
+        .rfind(char::is_whitespace)
+        .map(|index| index + 1)
+        .unwrap_or(0);
+    typed.get(start..).is_some_and(|word| word.starts_with('@'))
+}
+
+/// How many files are worth offering to complete against.
+///
+/// A workspace larger than this is one where a name is quicker to type than to pick, and
+/// walking all of it would cost more than the completion is worth.
+const MAX_INDEXED_FILES: usize = 20_000;
+
+/// Every file in the workspace, as paths relative to it.
+///
+/// What the workspace ignores is ignored here too: a completion offering build output
+/// would bury the files someone actually means.
+fn walk_workspace(root: &std::path::Path) -> Vec<String> {
+    let mut builder = ignore::WalkBuilder::new(root);
+    builder
+        .hidden(false)
+        .git_ignore(true)
+        .git_exclude(true)
+        .git_global(false)
+        .require_git(false);
+
+    let mut paths = Vec::new();
+    for entry in builder.build().flatten() {
+        if !entry.file_type().is_some_and(|kind| kind.is_file()) {
+            continue;
+        }
+        let Ok(relative) = entry.path().strip_prefix(root) else {
+            continue;
+        };
+        if let Some(path) = relative.to_str() {
+            paths.push(path.to_string());
+        }
+        if paths.len() >= MAX_INDEXED_FILES {
+            break;
+        }
+    }
+    paths.sort();
+    paths
 }

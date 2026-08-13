@@ -44,6 +44,12 @@ pub struct ToolEntry {
 #[derive(Debug, Clone, PartialEq)]
 pub enum Entry {
     User(String),
+    /// A command the user ran themselves rather than asking the model to run.
+    ///
+    /// `shared` is whether the model was told: `!` records the command and its output into
+    /// the conversation, `!!` runs it and keeps it out, for when the answer is for the user
+    /// and would only crowd the model's context.
+    Bash { command: String, shared: bool },
     /// An image the user attached, drawn by the terminal when it can and described when it
     /// cannot.
     Image { data: String, mime_type: String },
@@ -207,6 +213,15 @@ impl Transcript {
 
     pub fn push_user(&mut self, text: impl Into<String>) {
         self.entries.push(Entry::User(text.into()));
+        self.version += 1;
+    }
+
+    /// Record a command the user ran themselves, and whether the model was told about it.
+    pub fn push_bash(&mut self, command: impl Into<String>, shared: bool) {
+        self.entries.push(Entry::Bash {
+            command: command.into(),
+            shared,
+        });
         self.version += 1;
     }
 

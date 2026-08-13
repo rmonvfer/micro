@@ -8,6 +8,7 @@
 use async_trait::async_trait;
 use micro_auth::AuthStore;
 use micro_commands::CommandContext;
+use micro_commands::Picker;
 use micro_commands::CommandOutcome;
 use micro_models::Catalog;
 use micro_models::ModelDef;
@@ -39,6 +40,7 @@ pub struct CliCommands {
     /// Whether skills are announced to the model at all, so `/reload` rebuilds what the
     /// run was built with rather than something else.
     skills_enabled: bool,
+    scoped_models: Vec<String>,
     /// Show only the newest entry when the changelog is asked for.
     collapse_changelog: bool,
     /// How hard the model is being asked to reason, so a model swap keeps it.
@@ -49,6 +51,8 @@ pub struct CliCommands {
     /// says it: repeating it every model swap would train the reader to skip it.
     anthropic_extra_usage: bool,
     warned_about_extra_usage: bool,
+    /// The user's own prompt files, which become commands named after them.
+    prompts: Vec<micro_prompts::PromptTemplate>,
 }
 
 /// Everything a host is built from. Gathered into one value because a run assembles all
@@ -65,10 +69,13 @@ pub struct HostParts {
     pub session_id: String,
     pub home: PathBuf,
     pub skills_enabled: bool,
+    /// The models the workspace put on its shortlist, which the model list opens on.
+    pub scoped_models: Vec<String>,
     pub collapse_changelog: bool,
     pub thinking: micro_types::ThinkingLevel,
     pub anthropic_extra_usage: bool,
     pub extensions: Option<Arc<micro_extensions::Host>>,
+    pub prompts: Vec<micro_prompts::PromptTemplate>,
 }
 
 impl CliCommands {
@@ -84,11 +91,13 @@ impl CliCommands {
             session_id: parts.session_id,
             home: parts.home,
             skills_enabled: parts.skills_enabled,
+            scoped_models: parts.scoped_models,
             collapse_changelog: parts.collapse_changelog,
             thinking: parts.thinking,
             extensions: parts.extensions,
             anthropic_extra_usage: parts.anthropic_extra_usage,
             warned_about_extra_usage: false,
+            prompts: parts.prompts,
         }
     }
 
@@ -107,6 +116,18 @@ impl CliCommands {
         config
             .save_to(&path)
             .map_err(|error| format!("cannot write the settings: {error}"))
+    }
+
+    /// Run one of the user's own prompt files, if the line names one.
+    fn prompt_command(&self, line: &str) -> Option<CommandOutcome> {
+        let (name, arguments) = command_parts(line)?;
+        let template = self
+            .prompts
+            .iter()
+            .find(|template| template.name == name)?;
+        Some(CommandOutcome::Send {
+            prompt: template.render(arguments),
+        })
     }
 
     /// What a sign-in leaves behind, however the credential was collected.
@@ -179,7 +200,10 @@ impl CliCommands {
                 provider: resolved.client,
                 // The effort the user chose belongs to them, not to the model they were
                 // using when they chose it.
-                model: model.to_runtime(self.thinking),
+                model: crate::runtime::with_host(
+                    model.to_runtime(self.thinking),
+                    resolved.base_url.as_deref(),
+                ),
                 api_key: resolved.api_key,
                 context_window: model.context_window as usize,
             }),
@@ -214,6 +238,7 @@ impl CliCommands {
             message_count: state.message_count,
             usage: state.usage,
             collapse_changelog: self.collapse_changelog,
+            scoped_models: &self.scoped_models,
         }
     }
 
@@ -222,12 +247,15 @@ impl CliCommands {
     /// Nothing is deleted: what came after stays in the log as another branch, and the
     /// next message appended hangs off the entry that was chosen.
     async fn branch(&mut self, entry_id: &str) -> Applied {
-        crate::extensions::announce(
+        if crate::extensions::cancelled(
             self.extensions.as_ref(),
             "session_before_tree",
             serde_json::json!({ "entryId": entry_id }),
         )
-        .await;
+        .await
+        {
+            return Applied::note("An extension stopped the move");
+        }
 
         let mut session = self.session.lock().await;
         if session.tree().head() == Some(entry_id) {
@@ -394,7 +422,7 @@ impl CliCommands {
         let mut note = format!(
             "Reloaded {} and {}.",
             counted(context.instruction_files.len(), "context file"),
-            counted(context.skill_count, "skill")
+            counted(context.skills.len(), "skill")
         );
         for diagnostic in &context.diagnostics {
             note.push('\n');
@@ -412,13 +440,7 @@ impl CliCommands {
     /// What the extension returns is shown as it comes back: a string is the answer, and
     /// anything else is described rather than dropped.
     async fn extension_command(&mut self, line: &str) -> Option<CommandOutcome> {
-        let trimmed = line.trim();
-        let rest = trimmed.strip_prefix('/')?;
-        let (name, arguments) = match rest.split_once(char::is_whitespace) {
-            Some((name, arguments)) => (name, arguments.trim()),
-            None => (rest, ""),
-        };
-
+        let (name, arguments) = command_parts(line)?;
         let host = self.extensions.clone()?;
         if !host.commands().iter().any(|command| command.name == name) {
             return None;
@@ -484,6 +506,22 @@ impl CliCommands {
     /// Copy the conversation up to a point into a session of its own, and carry on in the
     /// copy. The session it came from is left exactly as it was.
     async fn fork(&mut self, session_id: &str, through_index: usize, whole: bool) -> Applied {
+        // Asked before the copy is made, so refusing it leaves the session untouched
+        // rather than reporting a fork that has already happened.
+        if crate::extensions::cancelled(
+            self.extensions.as_ref(),
+            "session_before_fork",
+            serde_json::json!({
+                "session_id": session_id,
+                "position": through_index,
+                "whole": whole,
+            }),
+        )
+        .await
+        {
+            return Applied::note("An extension stopped the fork");
+        }
+
         let forked = match self.sessions.fork(session_id, through_index).await {
             Ok(forked) => forked,
             Err(error) => {
@@ -496,7 +534,7 @@ impl CliCommands {
         *self.session.lock().await = forked;
         crate::extensions::announce(
             self.extensions.as_ref(),
-            "session_before_fork",
+            "session_fork",
             serde_json::json!({ "session_id": self.session_id, "whole": whole }),
         )
         .await;
@@ -573,6 +611,15 @@ impl Commands for CliCommands {
         .await;
     }
 
+    async fn compacting(&mut self) -> bool {
+        !crate::extensions::cancelled(
+            self.extensions.as_ref(),
+            "session_before_compact",
+            serde_json::json!({}),
+        )
+        .await
+    }
+
     async fn compacted(&mut self, summary: &str) {
         crate::extensions::announce(
             self.extensions.as_ref(),
@@ -591,12 +638,80 @@ impl Commands for CliCommands {
         .await;
     }
 
+    /// What a submitted line means, in the order the names are claimed.
+    ///
+    /// Built-in commands are matched first and cannot be taken over: a name micro answers
+    /// to has to keep answering, or an installed extension could quietly replace `/quit`.
+    /// Then the user's own prompt files, then whatever the extensions registered.
+    fn begin_model_refresh(
+        &mut self,
+    ) -> Option<tokio::sync::oneshot::Receiver<micro_tui::Listings>> {
+        let (sender, receiver) = tokio::sync::oneshot::channel();
+        // Copilot lists what an account may reach only when asked with its own token, so
+        // the credential is read here where the store is, not in the task.
+        tokio::spawn(async move {
+            let client = reqwest::Client::new();
+            // Opened again rather than shared: the store is a file, and the task outlives
+            // the borrow that started it. The token says which host serves this account;
+            // only an individual plan is served by the default one.
+            let copilot = match micro_auth::AuthStore::open() {
+                Ok(store) => store
+                    .resolve(micro_auth::GITHUB_COPILOT)
+                    .await
+                    .ok()
+                    .map(|credential| {
+                        let token = credential.token().to_string();
+                        let base = micro_auth::copilot::base_url_from_token(&token)
+                            .unwrap_or_else(|| micro_models::COPILOT_BASE_URL.to_string());
+                        (token, base)
+                    }),
+                Err(_) => None,
+            };
+            let mut listings = micro_tui::Listings::default();
+            match micro_models::fetch_openrouter(&client).await {
+                Ok(models) => listings.models.extend(models),
+                Err(error) => listings.errors.push(error.to_string()),
+            }
+            if let Some((token, base)) = &copilot {
+                match micro_models::fetch_copilot(&client, token, base).await {
+                    Ok(models) => listings.models.extend(models),
+                    Err(error) => listings.errors.push(error.to_string()),
+                }
+            }
+            let _ = sender.send(listings);
+        });
+        Some(receiver)
+    }
+
+    async fn apply_model_refresh(&mut self, listings: micro_tui::Listings) -> Option<Picker> {
+        if !listings.models.is_empty() {
+            self.catalog.merge_listing(listings.models);
+        }
+        // The list is rebuilt the way it was built in the first place, so a model that has
+        // just appeared is in it and everything else reads exactly as it did.
+        let context = self.context(ConversationState::default());
+        match micro_commands::dispatch("/model", &context).await {
+            Some(CommandOutcome::Choose(picker)) => Some(picker),
+            _ => None,
+        }
+    }
+
     async fn dispatch(&mut self, line: &str, state: ConversationState) -> Option<CommandOutcome> {
-        // An extension's command is tried first, so a name it registered is its own rather
-        // than falling through to an unknown-command message.
+        // A name micro answers to is answered by micro. Trying the extensions first would
+        // let an installed one quietly take over `/quit`.
+        let claimed = command_parts(line)
+            .is_some_and(|(name, _)| micro_commands::find(name).is_some());
+        if claimed {
+            return micro_commands::dispatch(line, &self.context(state)).await;
+        }
+        if let Some(outcome) = self.prompt_command(line) {
+            return Some(outcome);
+        }
         if let Some(outcome) = self.extension_command(line).await {
             return Some(outcome);
         }
+        // Nobody claimed it. What comes back is either the unknown-command message or
+        // nothing at all, for a line that was never a command.
         micro_commands::dispatch(line, &self.context(state)).await
     }
 
@@ -734,10 +849,12 @@ mod tests {
             session_id,
             home: root.join("home"),
             skills_enabled: true,
+            scoped_models: Vec::new(),
             collapse_changelog: false,
             thinking: micro_types::ThinkingLevel::Off,
             extensions: None,
             anthropic_extra_usage: true,
+            prompts: Vec::new(),
         });
         (host, root)
     }
@@ -799,13 +916,14 @@ mod tests {
             .filter(|item| item.current)
             .map(|item| item.label.as_str())
             .collect();
-        assert_eq!(current, vec!["anthropic/claude-opus-5"]);
+        assert_eq!(current, vec!["claude-opus-5"]);
 
         // Everything offered is served by something there is a credential for. Which
         // providers those are depends on the environment the test runs in, so the
         // property is asserted rather than the list.
         for item in &picker.items {
-            let provider = item.label.split('/').next().unwrap_or_default();
+            // The row names the model; the badge beside it names who serves it.
+            let provider = item.detail.trim_matches(['[', ']']);
             assert!(
                 host.auth.status_of(provider).is_authenticated(),
                 "{} is offered without a credential",
@@ -1260,4 +1378,13 @@ mod tests {
         assert!(!outcome.is_error(), "{outcome:?}");
         assert!(host.auth.get("openrouter").is_none());
     }
+}
+
+/// The name and arguments of a slash command, or nothing when the line is not one.
+fn command_parts(line: &str) -> Option<(&str, &str)> {
+    let rest = line.trim().strip_prefix('/')?;
+    Some(match rest.split_once(char::is_whitespace) {
+        Some((name, arguments)) => (name, arguments.trim()),
+        None => (rest, ""),
+    })
 }

@@ -13,8 +13,12 @@ pub enum Action {
     Ignored,
     /// Ctrl+C: abort the running turn, or leave when there is nothing to abort.
     Interrupt,
-    /// Ctrl+D: leave.
-    Quit,
+    /// Ctrl+D: leave when there is nothing written, delete forward when there is.
+    ///
+    /// The same key means both because that is what a readline prompt has always meant,
+    /// and a half-written message is not something to lose to a keystroke reaching for
+    /// the character in front of the cursor.
+    QuitOrDelete,
     Submit,
     Insert(String),
     Newline,
@@ -50,7 +54,9 @@ pub enum Action {
     /// Move the conversation a page at a time.
     PageUp,
     PageDown,
-    /// Move it by a few lines, from the wheel.
+    /// Move the conversation by a few lines, from the wheel or arrows.
+    ScrollUp,
+    ScrollDown,
     /// Arm jump-to-char: the next printable key moves the cursor to it.
     ArmJump { forward: bool },
     /// Step to the next or previous model in the catalog.
@@ -88,8 +94,13 @@ pub fn action_for(event: &Event) -> Action {
         // A paste is its own action: it is cleaned, and a large one is held aside behind a
         // marker rather than filling the prompt.
         Event::Paste(text) => Action::Paste(text.clone()),
-        // Nothing asks the terminal to report the mouse, so it selects text with it.
-        Event::Mouse(_) => Action::Ignored,
+        // The wheel is the natural way to read back through a conversation; drags stay
+        // the terminal's to select with, which is why only scrolls are answered.
+        Event::Mouse(mouse) => match mouse.kind {
+            crossterm::event::MouseEventKind::ScrollUp => Action::ScrollUp,
+            crossterm::event::MouseEventKind::ScrollDown => Action::ScrollDown,
+            _ => Action::Ignored,
+        },
         Event::Resize(..) => Action::Resize,
         Event::FocusGained | Event::FocusLost => Action::Ignored,
     }
@@ -157,7 +168,7 @@ fn key_action(key: &KeyEvent) -> Action {
 fn control_action(character: char) -> Action {
     match character.to_ascii_lowercase() {
         'c' => Action::Interrupt,
-        'd' => Action::Quit,
+        'd' => Action::QuitOrDelete,
         'a' => Action::MoveLineStart,
         'e' => Action::MoveLineEnd,
         'b' => Action::MoveLeft,
@@ -321,15 +332,49 @@ mod tests {
         assert_eq!(action_for(&plain(KeyCode::Down)), Action::MoveDown);
     }
 
-    /// The page keys move the cursor inside the prompt, the way ohm binds them. The
-    /// transcript is the terminal's to scroll, with its own wheel and its own keys.
+    /// The page keys move the conversation; the prompt is for editing, not reading.
     #[test]
-    fn the_page_keys_move_within_the_prompt() {
+    fn the_page_keys_scroll_the_conversation() {
         assert_eq!(action_for(&plain(KeyCode::PageUp)), Action::PageUp);
         assert_eq!(action_for(&plain(KeyCode::PageDown)), Action::PageDown);
         assert_eq!(
             action_for(&key(KeyCode::Home, KeyModifiers::CONTROL)),
             Action::MoveLineStart
+        );
+    }
+
+    #[test]
+    fn the_wheel_scrolls_the_conversation() {
+        use crossterm::event::MouseEvent;
+        use crossterm::event::MouseEventKind;
+
+        assert_eq!(
+            action_for(&Event::Mouse(MouseEvent {
+                kind: MouseEventKind::ScrollUp,
+                column: 0,
+                row: 0,
+                modifiers: KeyModifiers::NONE,
+            })),
+            Action::ScrollUp
+        );
+        assert_eq!(
+            action_for(&Event::Mouse(MouseEvent {
+                kind: MouseEventKind::ScrollDown,
+                column: 0,
+                row: 0,
+                modifiers: KeyModifiers::NONE,
+            })),
+            Action::ScrollDown
+        );
+        assert_eq!(
+            action_for(&Event::Mouse(MouseEvent {
+                kind: MouseEventKind::Down(crossterm::event::MouseButton::Left),
+                column: 0,
+                row: 0,
+                modifiers: KeyModifiers::NONE,
+            })),
+            Action::Ignored,
+            "a click is still the terminal's to select with"
         );
     }
 

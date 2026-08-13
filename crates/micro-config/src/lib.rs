@@ -47,6 +47,28 @@ pub const PROVIDER_ENV: &str = "MICRO_PROVIDER";
 pub const THINKING_ENV: &str = "MICRO_THINKING";
 pub const THEME_ENV: &str = "MICRO_THEME";
 pub const LIVE_MODELS_ENV: &str = "MICRO_LIVE_MODELS";
+/// The variable that turns on whatever is being tried out.
+pub const EXPERIMENTAL_ENV: &str = "MICRO_EXPERIMENTAL";
+
+/// How much of the terminal the interface takes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum TuiMode {
+    /// A region at the cursor, as tall as the interface needs, leaving the conversation
+    /// in the terminal's own scrollback.
+    Regular,
+    /// The whole screen, which scrolls internally and leaves the scrollback untouched.
+    #[default]
+    Fullscreen,
+}
+
+/// Whether this run has experimental behavior turned on.
+///
+/// Read from the environment rather than the settings file on purpose: it is a thing to
+/// try for one run, not a preference to carry between them.
+pub fn experimental_enabled() -> bool {
+    std::env::var(EXPERIMENTAL_ENV).is_ok_and(|value| value == "1")
+}
 
 /// The palette to use when the config names none.
 pub const DEFAULT_THEME: &str = "dark";
@@ -125,6 +147,9 @@ pub struct Config {
     pub thinking: Option<Thinking>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub theme: Option<String>,
+    /// How much of the terminal the interface takes: `regular` draws inline, leaving the
+    /// conversation in the terminal's own scrollback; `fullscreen` takes the whole screen.
+    pub tui_mode: Option<TuiMode>,
     /// Merge live provider listings into the model catalog on startup.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub live_models: Option<bool>,
@@ -229,6 +254,7 @@ pub struct Settings {
     pub provider: Option<String>,
     pub thinking: Thinking,
     pub theme: String,
+    pub tui_mode: TuiMode,
     pub live_models: bool,
 
     pub auto_compact: bool,
@@ -275,6 +301,7 @@ impl Default for Settings {
         Settings {
             model: None,
             provider: None,
+            tui_mode: TuiMode::default(),
             thinking: Thinking::default(),
             theme: DEFAULT_THEME.to_string(),
             live_models: false,
@@ -395,6 +422,7 @@ impl Config {
         };
 
         Ok(Settings {
+            tui_mode: self.tui_mode.unwrap_or_default(),
             model: layered(arguments.model.clone(), read(MODEL_ENV), self.model.clone()),
             provider: layered(
                 arguments.provider.clone(),
@@ -477,6 +505,7 @@ impl Config {
         };
 
         let config = Config {
+            tui_mode: take(&mut fields, "tui_mode", path)?,
             model: take(&mut fields, "model", path)?,
             provider: take(&mut fields, "provider", path)?,
             thinking: take(&mut fields, "thinking", path)?,

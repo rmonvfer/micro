@@ -5,12 +5,15 @@
 //! the filter changes. Moving through it wraps at both ends, and committing replaces what
 //! was typed with the command and a trailing space, ready for its argument.
 
-use crate::fuzzy;
+use micro_models::fuzzy;
 use micro_commands::Command;
 use std::ops::Range;
 
 /// Rows the menu shows at once before it scrolls, matching ohm's editor default.
 pub const MAX_VISIBLE: usize = 5;
+
+/// How many files a menu offers at once. Past this the list stops being a list.
+const MAX_FILE_SUGGESTIONS: usize = 50;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MenuItem {
@@ -20,12 +23,23 @@ pub struct MenuItem {
     pub description: String,
 }
 
+/// What the menu is offering, which decides what committing writes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Offering {
+    /// Slash commands. Committing writes `/name ` with a trailing space.
+    Commands,
+    /// Workspace files, reached with `@`. Committing writes `@path ` so the path stays
+    /// attached to the marker that introduced it.
+    Files,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Menu {
     items: Vec<MenuItem>,
-    /// What the user has typed, including the leading slash, which committing replaces.
+    /// What the user has typed, including the leading marker, which committing replaces.
     prefix: String,
     selected: usize,
+    offering: Offering,
 }
 
 impl Menu {
@@ -53,6 +67,41 @@ impl Menu {
             items: candidates.into_iter().map(MenuItem::from).collect(),
             prefix: typed.to_string(),
             selected: 0,
+            offering: Offering::Commands,
+        })
+    }
+
+    /// The file menu belonging to `line` with the cursor at `cursor`, or nothing.
+    ///
+    /// A file menu opens on the word under the cursor when it begins with `@`. Unlike a
+    /// command it may appear anywhere in the line, because naming a file is something a
+    /// sentence does in passing rather than a thing the whole line is.
+    pub fn files_for(line: &str, cursor: usize, paths: &[String]) -> Option<Menu> {
+        let typed = line.get(..cursor)?;
+        let start = typed
+            .rfind(char::is_whitespace)
+            .map(|index| index + 1)
+            .unwrap_or(0);
+        let word = typed.get(start..)?;
+        let query = word.strip_prefix('@')?;
+
+        let candidates = fuzzy::filter(paths.to_vec(), query, |path| path.clone());
+        if candidates.is_empty() {
+            return None;
+        }
+
+        Some(Menu {
+            items: candidates
+                .into_iter()
+                .take(MAX_FILE_SUGGESTIONS)
+                .map(|path| MenuItem {
+                    value: path,
+                    description: String::new(),
+                })
+                .collect(),
+            prefix: word.to_string(),
+            selected: 0,
+            offering: Offering::Files,
         })
     }
 
@@ -90,7 +139,11 @@ impl Menu {
     /// The text the prefix becomes when the selection is committed. The trailing space puts
     /// the cursor where an argument would go, and closes the menu.
     pub fn commit(&self) -> Option<String> {
-        self.selected_item().map(|item| format!("/{} ", item.value))
+        let item = self.selected_item()?;
+        Some(match self.offering {
+            Offering::Commands => format!("/{} ", item.value),
+            Offering::Files => format!("@{} ", item.value),
+        })
     }
 
     /// The slice of items on screen, keeping the selection near the middle of the window.
@@ -252,5 +305,65 @@ mod tests {
     fn a_short_list_needs_no_window() {
         let menu = Menu::open_for("/com", 4).unwrap();
         assert_eq!(menu.window(MAX_VISIBLE), 0..1);
+    }
+}
+
+#[cfg(test)]
+mod files {
+    use super::*;
+
+    fn paths() -> Vec<String> {
+        vec![
+            "src/main.rs".to_string(),
+            "src/app.rs".to_string(),
+            "docs/architecture.md".to_string(),
+            "README.md".to_string(),
+        ]
+    }
+
+    /// A name after `@` offers the workspace's files.
+    #[test]
+    fn an_at_sign_offers_files() {
+        let menu = Menu::files_for("@main", 5, &paths()).expect("it offers something");
+        assert_eq!(menu.selected_item().map(|item| item.value.as_str()), Some("src/main.rs"));
+    }
+
+    /// Committing keeps the marker, so the path stays attached to what introduced it.
+    #[test]
+    fn committing_keeps_the_marker() {
+        let menu = Menu::files_for("@main", 5, &paths()).unwrap();
+        assert_eq!(menu.commit().as_deref(), Some("@src/main.rs "));
+        assert_eq!(menu.prefix(), "@main");
+    }
+
+    /// A file can be named part way through a sentence, not only at the start.
+    #[test]
+    fn a_file_can_be_named_anywhere_in_the_line() {
+        let menu = Menu::files_for("please read @arch", 17, &paths()).expect("it opens");
+        assert_eq!(
+            menu.selected_item().map(|item| item.value.as_str()),
+            Some("docs/architecture.md")
+        );
+        assert_eq!(menu.prefix(), "@arch");
+    }
+
+    /// A word that is not a file reference offers nothing.
+    #[test]
+    fn a_plain_word_offers_nothing() {
+        assert!(Menu::files_for("main", 4, &paths()).is_none());
+        assert!(Menu::files_for("", 0, &paths()).is_none());
+    }
+
+    /// A name matching nothing offers nothing rather than the whole workspace.
+    #[test]
+    fn a_name_matching_nothing_offers_nothing() {
+        assert!(Menu::files_for("@zzzzz", 6, &paths()).is_none());
+    }
+
+    /// A command still opens the command menu, not the file one.
+    #[test]
+    fn a_slash_still_means_a_command() {
+        let menu = Menu::open_for("/mod", 4).expect("commands still work");
+        assert!(menu.commit().is_some_and(|written| written.starts_with('/')));
     }
 }

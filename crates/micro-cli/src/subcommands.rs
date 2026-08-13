@@ -110,11 +110,18 @@ pub async fn models(query: Option<&str>, live: bool) -> Result<()> {
         let store = AuthStore::open()?;
         let client = reqwest::Client::new();
         let copilot = store.resolve(micro_auth::GITHUB_COPILOT).await.ok();
+        // The token says which host serves this account; only an individual plan is
+        // served by the default one.
+        let copilot_base = copilot
+            .as_ref()
+            .and_then(|credential| micro_auth::copilot::base_url_from_token(credential.token()));
         let credentials = copilot
             .as_ref()
             .map(|credential| micro_models::CopilotCredentials {
                 token: credential.token(),
-                base_url: micro_models::COPILOT_BASE_URL,
+                base_url: copilot_base
+                    .as_deref()
+                    .unwrap_or(micro_models::COPILOT_BASE_URL),
             });
         for failure in catalog.merge_live_listings(&client, credentials).await {
             eprintln!("note: {failure}");

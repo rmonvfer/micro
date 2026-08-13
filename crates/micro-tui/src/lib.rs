@@ -31,8 +31,9 @@ mod capabilities;
 mod commands;
 mod diff;
 mod event;
-mod fuzzy;
 mod images;
+mod latex;
+mod layout;
 mod markdown;
 mod menu;
 mod picker;
@@ -47,8 +48,11 @@ pub mod editor;
 pub mod theme;
 pub mod transcript;
 
+pub use app::ResourceSection;
+pub use app::Resources;
 pub use app::TuiOptions;
 pub use commands::Applied;
+pub use commands::Listings;
 pub use commands::Commands;
 pub use commands::ConversationState;
 pub use commands::DoubleEscape;
@@ -63,7 +67,9 @@ use crate::app::App;
 use crate::app::Outcome;
 use anyhow::Result;
 use crossterm::event::DisableBracketedPaste;
+use crossterm::event::DisableMouseCapture;
 use crossterm::event::EnableBracketedPaste;
+use crossterm::event::EnableMouseCapture;
 use crossterm::event::Event;
 use crossterm::event::EventStream;
 use crossterm::execute;
@@ -111,10 +117,13 @@ pub async fn run_with(
     mut options: TuiOptions,
 ) -> Result<Vec<Message>> {
     install_panic_hook();
-    let mut screen = Screen::enter()?;
+    let mut screen = Screen::enter(options.tui_mode)?;
     // Asked for here, between taking the terminal and drawing on it: the reply has to be
     // read before the event stream exists, and the answer has to be known before the first
     // frame, or that frame paints the wrong theme and then corrects itself.
+    // Asked here, while the event stream has not been built and nothing else is reading the
+    // terminal. Whatever it answers is kept, so `/theme auto` later costs no round trip.
+    background::prime();
     options.theme = Some(options.theme.unwrap_or_else(background::detect_theme));
     let result = drive(&mut screen, &mut agent, &history, options).await;
     leave();
@@ -133,6 +142,8 @@ async fn drive(
     let mut commands = options.commands.take();
     let mut app = App::new(history, options);
     let mut input = EventStream::new();
+    // Set while a list of models is open and the providers are being asked what they serve.
+    let mut refreshing: Option<tokio::sync::oneshot::Receiver<Listings>> = None;
 
     loop {
         screen.render(&mut app)?;
@@ -176,7 +187,7 @@ async fn drive(
                 )
                 .await?
             }
-            None => match input.next().await {
+            None => match next_event(&mut input, &mut refreshing, &mut app, &mut commands).await {
                 Some(Ok(event)) => {
                     if offer_shortcut(&mut commands, &event).await {
                         continue;
@@ -279,6 +290,62 @@ fn suspend(_screen: &mut Screen, app: &mut App) -> Result<()> {
     Ok(())
 }
 
+/// The next thing the loop has to answer: a key, or a refresh coming back.
+///
+/// Waiting on both at once is what lets a list of models be drawn from what is known and
+/// then corrected in place, rather than either blocking on the network or never hearing
+/// back from it.
+async fn next_event(
+    input: &mut EventStream,
+    refreshing: &mut Option<tokio::sync::oneshot::Receiver<Listings>>,
+    app: &mut App,
+    commands: &mut Option<Box<dyn Commands + 'static>>,
+) -> Option<std::result::Result<Event, std::io::Error>> {
+    // Nothing in flight, and a list open that wants asking about: start now.
+    if refreshing.is_none() && app.picker_mut().is_some_and(|open| open.refreshes()) {
+        if let Some(commands) = commands.as_deref_mut() {
+            *refreshing = commands.begin_model_refresh();
+        }
+    }
+
+    let Some(pending) = refreshing.as_mut() else {
+        return input.next().await;
+    };
+
+    tokio::select! {
+        biased;
+        event = input.next() => event,
+        listings = pending => {
+            *refreshing = None;
+            let listings = listings.unwrap_or_default();
+            let errors = listings.errors.clone();
+            let rebuilt = match commands.as_deref_mut() {
+                Some(commands) => commands.apply_model_refresh(listings).await,
+                None => None,
+            };
+            if let Some(open) = app.picker_mut() {
+                // Only a list still open is worth correcting; one closed in the meantime is
+                // not brought back.
+                if let Some(rebuilt) = rebuilt {
+                    open.replace_items(rebuilt);
+                }
+                match errors.len() {
+                    0 => open.set_status("Model catalogs refreshed.", true),
+                    1 => open.set_status(
+                        format!("Could not refresh: {}; showing what is known.", errors[0]),
+                        false,
+                    ),
+                    count => open.set_status(
+                        format!("Could not refresh {count} model catalogs; showing what is known."),
+                        false,
+                    ),
+                }
+            }
+            None
+        }
+    }
+}
+
 /// Hand the prompt to `$EDITOR`, and take back whatever it was left as.
 ///
 /// The terminal has to be given up entirely while another program owns it — raw mode off,
@@ -348,10 +415,16 @@ async fn submit(
         None => line,
     };
 
-    // `!` runs a command here instead of asking the model to run one. Its output still
-    // joins the conversation, so the model knows what the user just did.
-    if let Some(command) = line.strip_prefix('!') {
-        return run_bash(screen, app, agent, commands, command.trim()).await;
+    // `!` runs a command here instead of asking the model to run one. Its output joins the
+    // conversation, so the model knows what the user just did. `!!` runs it the same way
+    // and tells nobody: for a command whose answer is for the user, and which would only
+    // take up room in what the model is reading.
+    if let Some(rest) = line.strip_prefix('!') {
+        let (command, shared) = match rest.strip_prefix('!') {
+            Some(private) => (private, false),
+            None => (rest, true),
+        };
+        return run_bash(screen, app, agent, commands, command.trim(), shared).await;
     }
 
     let Some(commands) = commands else {
@@ -374,6 +447,13 @@ async fn submit(
             let prompt = app.begin_turn(&line);
             run_turn(screen, app, agent, input, questions, prompt).await
         }
+        // A prompt written for the purpose becomes the turn, in place of the line that
+        // asked for it.
+        Some(Some(CommandOutcome::Send { prompt })) => {
+            mark_prompt_submitted();
+            let prompt = app.begin_turn(&prompt);
+            run_turn(screen, app, agent, input, questions, prompt).await
+        }
         Some(Some(outcome)) => apply_outcome(screen, app, agent, input, commands, outcome).await,
     }
 }
@@ -388,12 +468,13 @@ async fn run_bash(
     agent: &mut Agent,
     commands: Option<&mut (dyn Commands + 'static)>,
     command: &str,
+    shared: bool,
 ) -> Result<()> {
     if command.is_empty() {
         return Ok(());
     }
 
-    app.push_bash(command);
+    app.push_bash(command, shared);
     app.busy("running");
     screen.render(app)?;
 
@@ -434,10 +515,13 @@ async fn run_bash(
     );
 
     // Tagged rather than pasted in raw, so the model can tell the user's own command from
-    // anything it ran itself.
-    agent.record(Message::user(format!(
-        "<bash command=\"{command}\">\n{output}\n</bash>"
-    )));
+    // anything it ran itself. A command kept back is never recorded, so it is absent from
+    // the next turn and from the session on disk — not merely hidden.
+    if shared {
+        agent.record(Message::user(format!(
+            "<bash command=\"{command}\">\n{output}\n</bash>"
+        )));
+    }
     if let Some(commands) = commands {
         commands.ran_bash(command, &output, failed).await;
     }
@@ -457,7 +541,17 @@ async fn apply_outcome(
     match outcome {
         CommandOutcome::Message { kind, text } => app.notice(text, kind),
         CommandOutcome::Quit => app.should_quit = true,
-        CommandOutcome::Choose(picker) => app.open_picker(picker),
+        CommandOutcome::Choose(picker) => {
+            // A list of models is drawn from what is already known and asked about at the
+            // same time, so it is there the moment it was asked for and right shortly after.
+            let asks = picker.refreshes;
+            app.open_picker(picker);
+            if asks {
+                if let Some(open) = app.picker_mut() {
+                    open.set_status("Refreshing model catalogs…", false);
+                }
+            }
+        }
         CommandOutcome::PromptForApiKey {
             provider,
             env_names,
@@ -501,6 +595,9 @@ async fn apply_outcome(
 
         // Compacting is the agent's own work: it holds the conversation and the model that
         // summarizes it, so nothing about it needs the host.
+        CommandOutcome::Compact if !commands.compacting().await => {
+            app.notice("An extension stopped the compaction", MessageKind::Error);
+        }
         CommandOutcome::Compact => {
             app.busy("compacting");
             let compacted = await_work(screen, app, input, agent.compact_now()).await?;
@@ -549,10 +646,16 @@ async fn apply_outcome(
 fn apply_applied(app: &mut App, agent: &mut Agent, applied: Applied) {
     match applied {
         Applied::Conversation { messages, note } => {
+            // A resumed session or a fork is not the conversation the terminal was handed,
+            // so what it was given is forgotten rather than carried across.
+            app.forget_scrolled_out();
             agent.set_messages(messages.clone());
             app.apply_result(Applied::Conversation { messages, note });
         }
         Applied::SystemPrompt { prompt, note } => {
+            // Reloading re-reads the workspace, so the file listing behind `@` is read
+            // again too rather than describing the workspace as it was at startup.
+            app.forget_workspace_files();
             agent.set_system_prompt(prompt);
             if let Some(note) = note {
                 app.notice(note, MessageKind::Info);
@@ -787,8 +890,25 @@ async fn offer_shortcut(
 /// The region is only as tall as the interface needs. When that changes it is rebuilt at the
 /// new height from the same row, which is what lets the interface grow downward from where
 /// the shell left the cursor instead of taking the screen away.
+/// How much of the terminal the interface takes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum TuiMode {
+    /// A region at the cursor, as tall as the interface needs. What the conversation has
+    /// finished with goes into the terminal's own scrollback, so the shell's history stays
+    /// where it was and the terminal's search and selection reach the conversation.
+    Inline,
+    /// The whole screen, which leaves the scrollback untouched and scrolls internally.
+    #[default]
+    Fullscreen,
+}
+
+/// How tall the inline region starts. It grows to whatever the interface needs on the
+/// first frame; this is only what is reserved before there is anything to measure.
+const INLINE_ROWS: u16 = 8;
+
 struct Screen {
     terminal: Terminal<CrosstermBackend<Stdout>>,
+    mode: TuiMode,
 }
 
 impl Screen {
@@ -796,25 +916,57 @@ impl Screen {
     ///
     /// A terminal that is reporting the mouse hands drags to the program instead of
     /// selecting text with them, and selecting text is worth more than a scroll wheel that
-    /// keys already cover. ohm asks for no mouse reporting either.
-    fn enter() -> Result<Self> {
+    /// keys already cover.
+    ///
+    /// Whether the whole screen is taken or only a region of it is the caller's choice:
+    /// see [`TuiMode`]. Taking the whole screen leaves the shell's scrollback exactly as
+    /// it was; drawing inline puts the conversation into it, where the terminal's own
+    /// search and selection reach it.
+    fn enter(mode: TuiMode) -> Result<Self> {
         enable_raw_mode()?;
-        execute!(
-            std::io::stdout(),
-            EnterAlternateScreen,
-            EnableBracketedPaste
-        )?;
-        let mut terminal = Terminal::new(CrosstermBackend::new(std::io::stdout()))?;
-        terminal.clear()?;
-        Ok(Screen { terminal })
+        match mode {
+            TuiMode::Fullscreen => {
+                execute!(
+                    std::io::stdout(),
+                    EnterAlternateScreen,
+                    EnableBracketedPaste,
+                    EnableMouseCapture
+                )?;
+                let mut terminal = Terminal::new(CrosstermBackend::new(std::io::stdout()))?;
+                terminal.clear()?;
+                Ok(Screen { terminal, mode })
+            }
+            TuiMode::Inline => {
+                execute!(std::io::stdout(), EnableBracketedPaste, EnableMouseCapture)?;
+                // The region is only as tall as the interface needs; what leaves it is
+                // handed to the terminal's own scrollback rather than being redrawn.
+                let terminal = Terminal::with_options(
+                    CrosstermBackend::new(std::io::stdout()),
+                    ratatui::TerminalOptions {
+                        viewport: ratatui::Viewport::Inline(INLINE_ROWS),
+                    },
+                )?;
+                Ok(Screen { terminal, mode })
+            }
+        }
     }
 
     /// Bring the interface up to date: hand whatever has left the live region to the
     /// terminal, size the region to what is left, and paint it.
     fn render(&mut self, app: &mut App) -> Result<()> {
-        // The whole screen is ours, so a frame is drawn where it stands: no region to move,
-        // nothing to hand to the scrollback, and the input stays on the last rows because
-        // the layout puts it there.
+        // Whatever the conversation has finished with leaves the live region and becomes
+        // part of the terminal's own scrollback, where its search and selection reach it.
+        if self.mode == TuiMode::Inline {
+            let finished = app.take_scrolled_out();
+            if !finished.is_empty() {
+                let rows = finished.len() as u16;
+                self.terminal.insert_before(rows, |buffer| {
+                    for (offset, line) in finished.iter().enumerate() {
+                        buffer.set_line(0, offset as u16, line, buffer.area.width);
+                    }
+                })?;
+            }
+        }
         self.terminal.draw(|frame| render::draw(frame, app))?;
         Ok(())
     }
@@ -822,16 +974,20 @@ impl Screen {
     /// Take the terminal back after another program has had it.
     fn reopen(&mut self) -> Result<()> {
         enable_raw_mode()?;
-        execute!(
-            std::io::stdout(),
-            EnterAlternateScreen,
-            EnableBracketedPaste
-        )?;
-        self.terminal.clear()?;
+        match self.mode {
+            TuiMode::Fullscreen => {
+                execute!(
+                    std::io::stdout(),
+                    EnterAlternateScreen,
+                    EnableBracketedPaste,
+                    EnableMouseCapture
+                )?;
+                self.terminal.clear()?;
+            }
+            TuiMode::Inline => execute!(std::io::stdout(), EnableBracketedPaste, EnableMouseCapture)?,
+        }
         Ok(())
     }
-
-
 }
 
 fn leave() {
@@ -847,6 +1003,7 @@ fn leave() {
     let _ = execute!(
         std::io::stdout(),
         DisableBracketedPaste,
+        DisableMouseCapture,
         LeaveAlternateScreen
     );
     let _ = disable_raw_mode();

@@ -330,6 +330,18 @@ async fn show(payload: &Value, asker: Option<&micro_tui::UiAsker>) -> Value {
                 )
                 .await
         }
+        // Not a question: a line an extension keeps in the footer. Clearing it is saying
+        // it with no text.
+        "setStatus" => {
+            asker
+                .ask(
+                    "set_status",
+                    text("statusKey").unwrap_or_default(),
+                    text("statusText"),
+                    Vec::new(),
+                )
+                .await
+        }
         // Anything else has nowhere to be shown, and saying so beats pretending.
         other => json!({ "cancelled": true, "error": format!("micro cannot show `{other}`") }),
     }
@@ -372,6 +384,20 @@ pub async fn consult(host: Option<&Arc<Host>>, event: &str, payload: Value) -> V
         Some(host) => host.ask_event(event, payload).await.unwrap_or_default(),
         None => Vec::new(),
     }
+}
+
+/// Ask the extensions whether something may go ahead, before it does.
+///
+/// One handler answering `{ cancel: true }` stops it. Everything else lets it through:
+/// no answer, an answer without the field, or nobody listening. Refusing has to be said
+/// outright, so a handler that only wanted to watch never blocks anything.
+pub async fn cancelled(host: Option<&Arc<Host>>, event: &str, payload: Value) -> bool {
+    consult(host, event, payload).await.iter().any(|answer| {
+        answer
+            .get("cancel")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+    })
 }
 
 /// Extensions deciding what a tool call may do.

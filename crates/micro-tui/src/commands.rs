@@ -85,6 +85,15 @@ impl Applied {
     }
 }
 
+/// What asking every provider what it serves came back with.
+#[derive(Debug, Default)]
+pub struct Listings {
+    /// Models the providers named, to be merged over what was already known.
+    pub models: Vec<micro_models::ModelDef>,
+    /// Providers that could not be reached, said in their own words.
+    pub errors: Vec<String>,
+}
+
 /// How the interface runs slash commands.
 ///
 /// Implemented by whoever built the agent, since that is who holds the catalog, the
@@ -116,9 +125,32 @@ pub trait Commands: Send {
         let _ = level;
     }
 
+    /// Ask whatever is listening whether the conversation may be summarized.
+    ///
+    /// `false` stops it. Going ahead is the default, so a host that does not care about
+    /// compaction never has to say so.
+    async fn compacting(&mut self) -> bool {
+        true
+    }
+
     /// Tell whatever is listening that the conversation was summarized.
     async fn compacted(&mut self, summary: &str) {
         let _ = summary;
+    }
+
+    /// Start refreshing the model catalogs behind a list that has just opened.
+    ///
+    /// The list is drawn from what is already known and the refresh runs beside it, because
+    /// a list that waits for the network is a list that is not there when it was asked for.
+    /// `None` from a host with nothing to refresh, and the receiver answers once.
+    fn begin_model_refresh(&mut self) -> Option<tokio::sync::oneshot::Receiver<Listings>> {
+        None
+    }
+
+    /// Take in what a refresh found, and say how the list should read now.
+    async fn apply_model_refresh(&mut self, listings: Listings) -> Option<micro_commands::Picker> {
+        let _ = listings;
+        None
     }
 
     /// Run a submitted line. `None` means it was ordinary text for the model.

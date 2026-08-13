@@ -69,6 +69,17 @@ struct Cli {
     #[arg(long = "exclude-tools", short = 'x', value_delimiter = ',')]
     exclude_tools: Vec<String>,
 
+    /// How much of the terminal to take: regular draws inline, fullscreen takes it all.
+    #[arg(long = "tui-mode", value_parser = parse_tui_mode)]
+    tui_mode: Option<micro_config::TuiMode>,
+
+    /// Trust this project for this run, without being asked and without remembering.
+    #[arg(short = 'a', long)]
+    approve: bool,
+
+    /// Do not trust this project for this run, whatever was decided before.
+    #[arg(long = "no-approve", conflicts_with = "approve")]
+    no_approve: bool,
 }
 
 #[derive(Subcommand)]
@@ -143,9 +154,22 @@ enum SessionAction {
 /// Whether this project may run what it ships.
 ///
 /// A project carrying none of it is used without a question. One that does is answered by
-/// whatever was decided about it before, then by the standing answer, and only then by
-/// asking. With nobody at a terminal there is nobody to ask, so it is not trusted.
-async fn project_trusted(root: &std::path::Path, settings: &micro_config::Settings, has_ui: bool) -> bool {
+/// what the run was told outright, then by whatever was decided about it before, then by
+/// the standing answer, and only then by asking. With nobody at a terminal there is
+/// nobody to ask, so it is not trusted.
+async fn project_trusted(
+    root: &std::path::Path,
+    settings: &micro_config::Settings,
+    has_ui: bool,
+    told: Option<bool>,
+) -> bool {
+    // Said on the command line, this settles it for this run alone and is not written
+    // down: a scripted run says what it wants every time rather than leaving a decision
+    // behind on the machine it happened to run on.
+    if let Some(told) = told {
+        return told;
+    }
+
     if !micro_config::requires_decision(root) {
         return true;
     }
@@ -193,6 +217,14 @@ fn ask_about_trust(root: &std::path::Path) -> bool {
         return false;
     }
     matches!(answer.trim().to_ascii_lowercase().as_str(), "y" | "yes")
+}
+
+fn parse_tui_mode(value: &str) -> Result<micro_config::TuiMode, String> {
+    match value {
+        "regular" | "inline" => Ok(micro_config::TuiMode::Regular),
+        "fullscreen" => Ok(micro_config::TuiMode::Fullscreen),
+        other => Err(format!("unknown tui mode: {other}; expected regular or fullscreen")),
+    }
 }
 
 fn parse_thinking(value: &str) -> Result<ThinkingLevel, String> {
@@ -294,7 +326,12 @@ async fn main() -> Result<()> {
     // A project's own extensions and skills are things it asks micro to run, so whether
     // to run them is settled before anything of the project's is loaded.
     let has_ui = !cli.print && !cli.rpc;
-    let trusted = project_trusted(&root, &settings, has_ui).await;
+    let told = match (cli.approve, cli.no_approve) {
+        (true, _) => Some(true),
+        (_, true) => Some(false),
+        _ => None,
+    };
+    let trusted = project_trusted(&root, &settings, has_ui, told).await;
     let mut built =
         runtime::build(&root, &selection, resume.as_deref(), &settings, trusted, has_ui).await?;
     // Extensions are told the session has begun, and told again when it ends, which is
@@ -429,6 +466,17 @@ async fn main() -> Result<()> {
             // Without this every submitted line goes to the model, `/help` included.
             commands: Some(Box::new(built.commands)),
             notice: built.notice,
+            provider: built.model.provider.clone(),
+            subscription: built.subscription,
+            auto_compact: settings.auto_compact,
+            price: Some(built.model.cost.clone()),
+            experimental: micro_config::experimental_enabled(),
+            resources: built.resources,
+            // Said on the command line for this run, otherwise whatever was settled on.
+            tui_mode: match cli.tui_mode.unwrap_or(settings.tui_mode) {
+                micro_config::TuiMode::Regular => micro_tui::TuiMode::Inline,
+                micro_config::TuiMode::Fullscreen => micro_tui::TuiMode::Fullscreen,
+            },
             ..micro_tui::TuiOptions::default()
         };
         // The conversation is persisted through the recorder, so the transcript the
