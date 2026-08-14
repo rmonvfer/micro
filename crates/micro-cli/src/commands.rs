@@ -41,6 +41,9 @@ pub struct CliCommands {
     /// run was built with rather than something else.
     skills_enabled: bool,
     scoped_models: Vec<String>,
+    /// What this run was told to look at beyond the usual places, so a reload looks in the
+    /// same places the first load did.
+    resources: crate::runtime::Resources,
     /// Show only the newest entry when the changelog is asked for.
     collapse_changelog: bool,
     /// How hard the model is being asked to reason, so a model swap keeps it.
@@ -71,6 +74,7 @@ pub struct HostParts {
     pub skills_enabled: bool,
     /// The models the workspace put on its shortlist, which the model list opens on.
     pub scoped_models: Vec<String>,
+    pub resources: crate::runtime::Resources,
     pub collapse_changelog: bool,
     pub thinking: micro_types::ThinkingLevel,
     pub anthropic_extra_usage: bool,
@@ -92,6 +96,7 @@ impl CliCommands {
             home: parts.home,
             skills_enabled: parts.skills_enabled,
             scoped_models: parts.scoped_models,
+            resources: parts.resources,
             collapse_changelog: parts.collapse_changelog,
             thinking: parts.thinking,
             extensions: parts.extensions,
@@ -417,7 +422,13 @@ impl CliCommands {
                 .unwrap_or_default()
                 .is_trusted(&self.workspace);
         let context =
-            crate::runtime::load_context(&self.workspace, self.skills_enabled, trusted).await;
+            crate::runtime::load_context(
+                &self.workspace,
+                self.skills_enabled,
+                trusted,
+                &self.resources,
+            )
+            .await;
 
         let mut note = format!(
             "Reloaded {} and {}.",
@@ -850,6 +861,7 @@ mod tests {
             home: root.join("home"),
             skills_enabled: true,
             scoped_models: Vec::new(),
+            resources: Default::default(),
             collapse_changelog: false,
             thinking: micro_types::ThinkingLevel::Off,
             extensions: None,

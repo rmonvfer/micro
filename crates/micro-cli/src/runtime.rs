@@ -33,6 +33,24 @@ pub struct Selection {
     pub tools: Vec<String>,
     /// Tools to withhold, whatever else is on offer.
     pub exclude_tools: Vec<String>,
+    /// What this run is to look at beyond the usual places, and what it is to leave alone.
+    pub resources: Resources,
+}
+
+/// Where a run looks for what it loads, when the command line says something about it.
+#[derive(Debug, Clone, Default)]
+pub struct Resources {
+    /// Skills from here as well as from the usual two places.
+    pub skills: Vec<PathBuf>,
+    pub no_skills: bool,
+    /// Extensions from here as well as the installed ones.
+    pub extensions: Vec<String>,
+    pub no_extensions: bool,
+    /// Prompt templates from here as well.
+    pub prompt_templates: Vec<PathBuf>,
+    pub no_prompt_templates: bool,
+    /// Whether AGENTS.md and its kind are read at all.
+    pub no_context_files: bool,
 }
 
 /// The two things a run needs from a provider: something to talk to it with, and the
@@ -135,7 +153,7 @@ pub async fn build(
     // serves it: a provider an extension declares is in the catalog by the time the
     // catalog is read. What the project itself ships is loaded only once the project has
     // been trusted; what the user installed for themselves always is.
-    let extensions = load_extensions(root, settings, trusted, has_ui).await;
+    let extensions = load_extensions(root, settings, trusted, has_ui, &selection.resources).await;
     let declared = apply_declared_providers(&mut catalog, extensions.as_deref(), settings);
     // A workspace's shortlist decides what the model list opens on, not what may be run:
     // it is a way of putting the handful you use in front of you, and the whole catalog is
@@ -219,7 +237,13 @@ pub async fn build(
         ),
     };
 
-    let context = load_context(root, settings.skill_commands, trusted).await;
+    let context = load_context(
+        root,
+        settings.skill_commands,
+        trusted,
+        &selection.resources,
+    )
+    .await;
     if !settings.quiet_startup {
         for diagnostic in &context.diagnostics {
             eprintln!("note: {diagnostic}");
@@ -229,11 +253,23 @@ pub async fn build(
     // A prompt file is text the user wrote for themselves; the project's own are offered
     // only once the project has been trusted, like its skills. Discovered once, so what
     // the first screen names and what `/` offers cannot disagree.
-    let prompts = micro_prompts::discover(
-        root,
-        &micro_context::micro_home().unwrap_or_default(),
-        trusted,
-    );
+    let mut prompts = match selection.resources.no_prompt_templates {
+        true => Vec::new(),
+        false => micro_prompts::discover(
+            root,
+            &micro_context::micro_home().unwrap_or_default(),
+            trusted,
+        ),
+    };
+    // A path named on the command line is read as well, and does not displace one already
+    // found under the same name.
+    for path in &selection.resources.prompt_templates {
+        for found in micro_prompts::load_from_path(path) {
+            if !prompts.iter().any(|kept| kept.name == found.name) {
+                prompts.push(found);
+            }
+        }
+    }
     let resources = resources(&context, &prompts, extensions.as_deref());
 
     let mut tools = micro_tools::builtin_tools(root.to_path_buf());
@@ -303,6 +339,7 @@ pub async fn build(
         session_id,
         home: micro_context::micro_home().unwrap_or_default(),
         scoped_models: settings.scoped_models.clone(),
+        resources: selection.resources.clone(),
         skills_enabled: settings.skill_commands,
         collapse_changelog: settings.collapse_changelog,
         thinking: selection.thinking,
@@ -473,10 +510,20 @@ async fn read_prompt_file(
     None
 }
 
-pub async fn load_context(root: &Path, skills_enabled: bool, trusted: bool) -> LoadedContext {
-    let instructions = match InstructionLoader::from_env() {
-        Ok(loader) => loader.load(root).await.unwrap_or_default(),
-        Err(_) => Default::default(),
+pub async fn load_context(
+    root: &Path,
+    skills_enabled: bool,
+    trusted: bool,
+    resources: &Resources,
+) -> LoadedContext {
+    // A run told to read no instruction files reads none: the base prompt is what the
+    // model is given, and nothing the project or the user wrote is added to it.
+    let instructions = match resources.no_context_files {
+        true => Default::default(),
+        false => match InstructionLoader::from_env() {
+            Ok(loader) => loader.load(root).await.unwrap_or_default(),
+            Err(_) => Default::default(),
+        },
     };
 
     let home = micro_context::micro_home().unwrap_or_default();
@@ -484,10 +531,24 @@ pub async fn load_context(root: &Path, skills_enabled: bool, trusted: bool) -> L
     // when it decides one applies, which is what keeps a shelf of them out of the context.
     // A skill is a file the model is told to read and follow, so the project's own are
     // offered only once the project has been trusted.
-    let skills = match skills_enabled {
+    let mut skills = match skills_enabled && !resources.no_skills {
         true => micro_skills::discover(root, &home, trusted).await,
         false => Default::default(),
     };
+    // A path named on the command line is read as well, and named skills win nothing over
+    // the ones already found: first one in keeps the name, as between the usual places.
+    if !resources.no_skills {
+        for path in &resources.skills {
+            let found = micro_skills::load_from_path(path, "path").await;
+            for skill in found.skills {
+                if !skills.skills.iter().any(|kept| kept.name == skill.name) {
+                    skills.skills.push(skill);
+                }
+            }
+            skills.diagnostics.extend(found.diagnostics);
+        }
+        skills.skills.sort_by(|left, right| left.name.cmp(&right.name));
+    }
 
     // A project may replace the base prompt outright, or add to it. Replacing is the
     // stronger of the two, so it is what the base becomes before anything is appended.
@@ -555,7 +616,12 @@ async fn load_extensions(
     settings: &micro_config::Settings,
     trusted: bool,
     has_ui: bool,
+    resources: &Resources,
 ) -> Option<Arc<micro_extensions::Host>> {
+    if resources.no_extensions {
+        return None;
+    }
+    let named = &resources.extensions;
     let home = micro_context::micro_home().unwrap_or_default();
     // A configured entry is a source rather than a path: `npm:thing` is installed
     // somewhere of micro's choosing, and that is where it is loaded from.
@@ -570,7 +636,10 @@ async fn load_extensions(
             Err(_) => source.clone(),
         })
         .collect();
-    let paths = micro_extensions::discover(root, &home, &configured, trusted);
+    let mut paths = micro_extensions::discover(root, &home, &configured, trusted);
+    // A path named on the command line is loaded whether or not it was installed, which is
+    // how an extension is tried before it is committed to.
+    paths.extend(named.iter().map(std::path::PathBuf::from));
     if paths.is_empty() {
         return None;
     }

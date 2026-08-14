@@ -58,6 +58,23 @@ pub struct Loaded {
     pub diagnostics: Vec<Diagnostic>,
 }
 
+/// Read the skills at `path`, which may be a directory of them or one file.
+///
+/// For a path named on the command line rather than found in one of the usual places: a
+/// reader who points at a file means that file, and one who points at a directory means
+/// whatever is in it.
+pub async fn load_from_path(path: impl AsRef<Path>, source: &str) -> Loaded {
+    let path = path.as_ref();
+    if path.is_dir() {
+        return load_from_dir(path, source).await;
+    }
+
+    let mut loaded = Loaded::default();
+    let base = path.parent().unwrap_or(path);
+    read_skill(path, base, source, &mut loaded).await;
+    loaded
+}
+
 /// Read every skill under `dir`.
 ///
 /// A directory containing `SKILL.md` is itself a skill and is not searched further; one
@@ -401,3 +418,4 @@ mod tests {
         assert!(loaded.diagnostics.is_empty());
     }
 }
+

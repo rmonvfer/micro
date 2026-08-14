@@ -73,6 +73,38 @@ struct Cli {
     #[arg(long = "tui-mode", value_parser = parse_tui_mode)]
     tui_mode: Option<micro_config::TuiMode>,
 
+    /// Load skills from this path as well, which may be a directory or one `.md` file.
+    #[arg(long = "skill", value_name = "PATH")]
+    skills: Vec<PathBuf>,
+
+    /// Do not look for skills at all.
+    #[arg(long = "no-skills", visible_short_alias = 's')]
+    no_skills: bool,
+
+    /// Load an extension from this path as well.
+    #[arg(long = "extension", short = 'e', value_name = "PATH")]
+    extensions: Vec<String>,
+
+    /// Do not load any extension.
+    #[arg(long = "no-extensions")]
+    no_extensions: bool,
+
+    /// Load prompt templates from this path as well.
+    #[arg(long = "prompt-template", value_name = "PATH")]
+    prompt_templates: Vec<PathBuf>,
+
+    /// Do not look for prompt templates.
+    #[arg(long = "no-prompt-templates")]
+    no_prompt_templates: bool,
+
+    /// Do not read AGENTS.md or any other instruction file.
+    #[arg(long = "no-context-files")]
+    no_context_files: bool,
+
+    /// Palette to paint in: dark, light, or auto.
+    #[arg(long = "theme", value_name = "NAME")]
+    theme: Option<String>,
+
     /// Trust this project for this run, without being asked and without remembering.
     #[arg(short = 'a', long)]
     approve: bool,
@@ -237,14 +269,52 @@ fn parse_thinking(value: &str) -> Result<ThinkingLevel, String> {
     }
 }
 
+/// Every long flag micro itself declares: those that stand alone, and those that take a
+/// value. Read from the parser, and from every subcommand's parser, so the two can never
+/// disagree about what micro knows.
+fn own_flags() -> (Vec<String>, Vec<String>) {
+    use clap::CommandFactory;
+
+    let mut switches = Vec::new();
+    let mut valued = Vec::new();
+
+    fn walk(command: &clap::Command, switches: &mut Vec<String>, valued: &mut Vec<String>) {
+        for argument in command.get_arguments() {
+            let names = argument
+                .get_long()
+                .into_iter()
+                .chain(argument.get_all_aliases().unwrap_or_default())
+                .chain(argument.get_visible_aliases().unwrap_or_default());
+            let into = match argument.get_action().takes_values() {
+                true => &mut *valued,
+                false => &mut *switches,
+            };
+            into.extend(names.map(str::to_string));
+        }
+        for inner in command.get_subcommands() {
+            walk(inner, switches, valued);
+        }
+    }
+
+    walk(&Cli::command(), &mut switches, &mut valued);
+    // The parser writes these two itself and only names them once it has been built, which
+    // is after this is asked. They are micro's own whatever the parser says.
+    switches.push("help".to_string());
+    switches.push("version".to_string());
+    (switches, valued)
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     // Flags micro does not know are held back rather than refused: an extension may have
-    // declared one, and the extensions have not loaded yet.
+    // declared one, and the extensions have not loaded yet. Which flags micro knows is
+    // asked of the parser rather than listed here, because a list would drift from the
+    // parser the first time a flag was added and take that flag with it.
+    let (switches, valued) = own_flags();
     let (mine, given) = micro_extensions::split_unknown(
         std::env::args(),
-        &["print", "rpc", "quiet", "continue", "local", "live", "all", "overwrite", "help", "version"],
-        &["model", "provider", "thinking", "cwd", "resume", "tools", "exclude-tools"],
+        &switches.iter().map(String::as_str).collect::<Vec<_>>(),
+        &valued.iter().map(String::as_str).collect::<Vec<_>>(),
     );
     let cli = Cli::parse_from(mine);
 
@@ -309,7 +379,17 @@ async fn main() -> Result<()> {
         }
     };
 
+    let resources = runtime::Resources {
+        skills: cli.skills.clone(),
+        no_skills: cli.no_skills,
+        extensions: cli.extensions.clone(),
+        no_extensions: cli.no_extensions,
+        prompt_templates: cli.prompt_templates.clone(),
+        no_prompt_templates: cli.no_prompt_templates,
+        no_context_files: cli.no_context_files,
+    };
     let selection = Selection {
+        resources: resources.clone(),
         model: settings.model.clone(),
         provider: settings.provider.clone(),
         thinking: cli.thinking,
@@ -472,6 +552,8 @@ async fn main() -> Result<()> {
             auto_compact: settings.auto_compact,
             price: Some(built.model.cost.clone()),
             experimental: micro_config::experimental_enabled(),
+            // Named on the command line for this run, in place of whatever was settled on.
+            theme: cli.theme.as_deref().and_then(micro_tui::Theme::named),
             resources: built.resources,
             // Said on the command line for this run, otherwise whatever was settled on.
             tui_mode: match cli.tui_mode.unwrap_or(settings.tui_mode) {
@@ -562,5 +644,43 @@ async fn run_command_headlessly(
         micro_tui::Applied::SystemPrompt { note, .. } => note,
         micro_tui::Applied::Model { note, .. } => note,
         micro_tui::Applied::Nothing => None,
+    }
+}
+
+#[cfg(test)]
+mod flag_tests {
+    use super::*;
+
+    /// Every flag micro declares has to be recognised as micro's own before the extensions
+    /// load, or it is held back as one an extension might have declared and never reaches
+    /// the parser. The list used to be written out by hand beside the parser, and drifted:
+    /// `--tui-mode` was declared, never listed, and so silently did nothing.
+    #[test]
+    fn every_flag_micro_declares_is_known_to_be_its_own() {
+        let (switches, valued) = own_flags();
+        let known = |name: &str| {
+            switches.iter().any(|flag| flag == name) || valued.iter().any(|flag| flag == name)
+        };
+
+        for flag in [
+            "print", "rpc", "model", "provider", "thinking", "cwd", "resume", "continue",
+            "quiet", "tools", "exclude-tools", "tui-mode", "approve", "no-approve", "skill",
+            "no-skills", "extension", "no-extensions", "prompt-template",
+            "no-prompt-templates", "no-context-files", "theme",
+        ] {
+            assert!(known(flag), "`--{flag}` is not recognised as micro's own");
+        }
+
+        // A flag that carries a value has to be in the other list, or the value after it
+        // is read as the prompt.
+        for flag in ["model", "cwd", "skill", "extension", "theme", "tui-mode"] {
+            assert!(valued.iter().any(|known| known == flag), "`--{flag}` takes a value");
+        }
+        for flag in ["print", "rpc", "no-skills", "no-extensions"] {
+            assert!(switches.iter().any(|known| known == flag), "`--{flag}` takes none");
+        }
+
+        // Subcommands declare flags too, and they are held to the same rule.
+        assert!(known("local") && known("live") && known("overwrite"));
     }
 }

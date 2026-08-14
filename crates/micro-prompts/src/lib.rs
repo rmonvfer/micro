@@ -252,6 +252,26 @@ fn derive_description(body: &str) -> String {
 /// The user's own are read first and the project's are laid over them, so a project can
 /// offer a command of its own without the user losing theirs elsewhere. The project's are
 /// read only once it is trusted: a prompt is text put in front of the model.
+/// Read the prompt templates at `path`, which may be a directory of them or one file.
+///
+/// For a path named on the command line rather than found in one of the usual places.
+pub fn load_from_path(path: &Path) -> Vec<PromptTemplate> {
+    if !path.is_dir() {
+        return load(path).into_iter().collect();
+    }
+
+    let Ok(entries) = std::fs::read_dir(path) else {
+        return Vec::new();
+    };
+    let mut paths: Vec<PathBuf> = entries
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| path.extension().is_some_and(|extension| extension == "md"))
+        .collect();
+    paths.sort();
+    paths.iter().filter_map(|path| load(path)).collect()
+}
+
 pub fn discover(root: &Path, home: &Path, trusted: bool) -> Vec<PromptTemplate> {
     let mut found: std::collections::BTreeMap<String, PromptTemplate> = Default::default();
 
