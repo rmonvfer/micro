@@ -17,6 +17,8 @@ members = [
     "crates/micro-agent",
     "crates/micro-testkit",
     "crates/micro-mermaid",
+    "crates/micro-mcp",
+    "crates/micro-remote",
     "crates/micro-tui",
     "crates/micro-cli",
 ]
@@ -42,6 +44,8 @@ micro-prompts = { path = "crates/micro-prompts" }
 micro-commands = { path = "crates/micro-commands" }
 micro-agent = { path = "crates/micro-agent" }
 micro-testkit = { path = "crates/micro-testkit" }
+micro-mcp = { path = "crates/micro-mcp" }
+micro-remote = { path = "crates/micro-remote" }
 micro-tui = { path = "crates/micro-tui" }
 
 anyhow = "1"
@@ -49,6 +53,16 @@ async-trait = "0.1"
 base64 = "0.22"
 hmac = "0.12"
 sha2 = "0.10"
+# The AES-GCM and HKDF generation that shares `digest` 0.10 with hmac and sha2
+# above. The newer releases sit on `digest` 0.11 and will not compose with them.
+aes-gcm = "0.10"
+hkdf = "0.12"
+rand = "0.8"
+# Pinned to the release that speaks rand 0.8, which is the generation the rest of the
+# workspace is on.
+x25519-dalek = { version = "2", features = ["static_secrets"] }
+qrcode = { version = "0.14", default-features = false }
+tokio-tungstenite = { version = "0.30", features = ["rustls-tls-webpki-roots"] }
 clap = { version = "4", features = ["derive", "env"] }
 crossterm = { version = "0.29", features = ["bracketed-paste", "event-stream"] }
 futures = "0.3"
