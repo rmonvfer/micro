@@ -11,6 +11,7 @@
 mod canvas;
 mod gantt;
 mod graph;
+mod journey;
 mod labels;
 mod layout;
 mod layout_seq;
@@ -136,6 +137,7 @@ fn draw(src: &str) -> Option<Drawn> {
         // source too.
         DiagramKind::Mindmap => plain(mindmap::render_mindmap(src)),
         DiagramKind::Timeline => plain(timeline::render_timeline(src)),
+        DiagramKind::Journey => plain(journey::render_journey(src)),
         DiagramKind::Gantt => plain(gantt::render_gantt(src)),
         DiagramKind::Quadrant => plain(quadrant::render_quadrant(src)),
         DiagramKind::Requirement => plain(requirement::render_requirement(src)),

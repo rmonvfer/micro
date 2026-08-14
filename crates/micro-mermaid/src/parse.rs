@@ -101,6 +101,7 @@ pub enum DiagramKind {
     Pie,
     Mindmap,
     Timeline,
+    Journey,
     Gantt,
     Quadrant,
     Requirement,
@@ -135,6 +136,8 @@ pub fn diagram_kind(src: &str) -> Option<DiagramKind> {
         Some(DiagramKind::Mindmap)
     } else if kind == "timeline" {
         Some(DiagramKind::Timeline)
+    } else if kind == "journey" {
+        Some(DiagramKind::Journey)
     } else if kind == "gantt" {
         Some(DiagramKind::Gantt)
     } else if kind == "quadrantchart" {
