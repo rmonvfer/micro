@@ -69,7 +69,6 @@ use anyhow::Result;
 use crossterm::event::DisableBracketedPaste;
 use crossterm::event::DisableMouseCapture;
 use crossterm::event::EnableBracketedPaste;
-use crossterm::event::EnableMouseCapture;
 use crossterm::event::Event;
 use crossterm::event::EventStream;
 use crossterm::execute;
@@ -950,15 +949,14 @@ impl Screen {
                 execute!(
                     std::io::stdout(),
                     EnterAlternateScreen,
-                    EnableBracketedPaste,
-                    EnableMouseCapture
+                    EnableBracketedPaste
                 )?;
                 let mut terminal = Terminal::new(CrosstermBackend::new(std::io::stdout()))?;
                 terminal.clear()?;
                 Ok(Screen { terminal, mode })
             }
             TuiMode::Inline => {
-                execute!(std::io::stdout(), EnableBracketedPaste, EnableMouseCapture)?;
+                execute!(std::io::stdout(), EnableBracketedPaste)?;
                 // The region is only as tall as the interface needs; what leaves it is
                 // handed to the terminal's own scrollback rather than being redrawn.
                 let terminal = Terminal::with_options(
@@ -997,15 +995,10 @@ impl Screen {
         enable_raw_mode()?;
         match self.mode {
             TuiMode::Fullscreen => {
-                execute!(
-                    std::io::stdout(),
-                    EnterAlternateScreen,
-                    EnableBracketedPaste,
-                    EnableMouseCapture
-                )?;
+                execute!(std::io::stdout(), EnterAlternateScreen, EnableBracketedPaste)?;
                 self.terminal.clear()?;
             }
-            TuiMode::Inline => execute!(std::io::stdout(), EnableBracketedPaste, EnableMouseCapture)?,
+            TuiMode::Inline => execute!(std::io::stdout(), EnableBracketedPaste)?,
         }
         Ok(())
     }

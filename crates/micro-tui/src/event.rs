@@ -94,8 +94,11 @@ pub fn action_for(event: &Event) -> Action {
         // A paste is its own action: it is cleaned, and a large one is held aside behind a
         // marker rather than filling the prompt.
         Event::Paste(text) => Action::Paste(text.clone()),
-        // The wheel is the natural way to read back through a conversation; drags stay
-        // the terminal's to select with, which is why only scrolls are answered.
+        // The mouse is the terminal's, so nothing here asks for it. Taking it would buy
+        // the wheel and cost selection, and micro has no selection of its own to put in
+        // its place: a conversation you cannot copy out of is worse than one you scroll
+        // with the keyboard. Wheel events still arrive from a terminal that sends them
+        // unasked, and are answered when they do.
         Event::Mouse(mouse) => match mouse.kind {
             crossterm::event::MouseEventKind::ScrollUp => Action::ScrollUp,
             crossterm::event::MouseEventKind::ScrollDown => Action::ScrollDown,
