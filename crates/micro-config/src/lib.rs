@@ -132,6 +132,71 @@ pub enum FollowUpMode {
     Interrupt,
 }
 
+/// How many queued messages go at once when a turn ends.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum SteeringMode {
+    /// The oldest one, leaving the rest for the turns after it.
+    #[default]
+    OneAtATime,
+    /// Every one of them, as a single message.
+    All,
+}
+
+/// What the conversation tree shows before anything is asked of it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum TreeFilter {
+    /// Prompts and answers, which is what the shape of a conversation is made of.
+    #[default]
+    Default,
+    /// The same, without what the tools did.
+    NoTools,
+    /// Only what the user wrote.
+    UserOnly,
+    /// Only what has been given a name.
+    LabeledOnly,
+    /// Everything there is.
+    All,
+}
+
+/// What is left on the terminal after a full-screen session ends.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ExitOutput {
+    /// The conversation, so it is still there to read and copy from.
+    #[default]
+    Transcript,
+    /// The line that brings it back, and nothing else.
+    ResumeHint,
+}
+
+/// When the conversation shows how far through it you are.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Scrollbar {
+    /// Only when there is more than fits.
+    #[default]
+    Auto,
+    /// Whether or not there is.
+    Always,
+    /// Never.
+    Hidden,
+}
+
+/// Whether a diagram written in a code block is drawn.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Mermaid {
+    /// Left as the code it was written as.
+    Off,
+    /// Drawn once the answer holding it is complete.
+    Final,
+    /// Drawn as it arrives.
+    #[default]
+    Streaming,
+}
+
 /// The config file, as it is written on disk.
 ///
 /// Every field is optional: absent means "no preference", and the default applies. Keys
@@ -184,6 +249,12 @@ pub struct Config {
     /// Columns and rows kept clear between the terminal's edges and the interface.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub interface_padding: Option<u16>,
+    pub steering_mode: Option<SteeringMode>,
+    pub tree_filter_mode: Option<TreeFilter>,
+    pub fullscreen_exit_output: Option<ExitOutput>,
+    pub fullscreen_scrollbar: Option<Scrollbar>,
+    pub clear_on_shrink: Option<bool>,
+    pub mermaid: Option<Mermaid>,
     /// How many completions the command menu offers at once.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub autocomplete_max_items: Option<usize>,
@@ -267,6 +338,12 @@ pub struct Settings {
     pub editor_padding: u16,
     pub output_padding: u16,
     pub interface_padding: u16,
+    pub steering_mode: SteeringMode,
+    pub tree_filter_mode: TreeFilter,
+    pub fullscreen_exit_output: ExitOutput,
+    pub fullscreen_scrollbar: Scrollbar,
+    pub clear_on_shrink: bool,
+    pub mermaid: Mermaid,
     pub autocomplete_max_items: usize,
     pub show_hardware_cursor: bool,
     pub terminal_progress: bool,
@@ -321,6 +398,12 @@ impl Default for Settings {
             editor_padding: 0,
             output_padding: 0,
             interface_padding: 0,
+            steering_mode: SteeringMode::default(),
+            tree_filter_mode: TreeFilter::default(),
+            fullscreen_exit_output: ExitOutput::default(),
+            fullscreen_scrollbar: Scrollbar::default(),
+            clear_on_shrink: false,
+            mermaid: Mermaid::default(),
             autocomplete_max_items: DEFAULT_AUTOCOMPLETE_MAX_ITEMS,
             show_hardware_cursor: false,
             terminal_progress: true,
@@ -428,6 +511,16 @@ impl Config {
 
         Ok(Settings {
             tui_mode: self.tui_mode.unwrap_or_default(),
+            steering_mode: self.steering_mode.unwrap_or(defaults.steering_mode),
+            tree_filter_mode: self.tree_filter_mode.unwrap_or(defaults.tree_filter_mode),
+            fullscreen_exit_output: self
+                .fullscreen_exit_output
+                .unwrap_or(defaults.fullscreen_exit_output),
+            fullscreen_scrollbar: self
+                .fullscreen_scrollbar
+                .unwrap_or(defaults.fullscreen_scrollbar),
+            clear_on_shrink: self.clear_on_shrink.unwrap_or(defaults.clear_on_shrink),
+            mermaid: self.mermaid.unwrap_or(defaults.mermaid),
             model: layered(arguments.model.clone(), read(MODEL_ENV), self.model.clone()),
             provider: layered(
                 arguments.provider.clone(),
@@ -511,6 +604,12 @@ impl Config {
 
         let config = Config {
             tui_mode: take(&mut fields, "tui_mode", path)?,
+            steering_mode: take(&mut fields, "steering_mode", path)?,
+            tree_filter_mode: take(&mut fields, "tree_filter_mode", path)?,
+            fullscreen_exit_output: take(&mut fields, "fullscreen_exit_output", path)?,
+            fullscreen_scrollbar: take(&mut fields, "fullscreen_scrollbar", path)?,
+            clear_on_shrink: take(&mut fields, "clear_on_shrink", path)?,
+            mermaid: take(&mut fields, "mermaid", path)?,
             model: take(&mut fields, "model", path)?,
             provider: take(&mut fields, "provider", path)?,
             thinking: take(&mut fields, "thinking", path)?,

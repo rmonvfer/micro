@@ -220,8 +220,44 @@ pub enum DoubleEscape {
 ///
 /// Held here rather than reaching for [`micro_config`] so this crate stays a drawing
 /// crate: a caller with its own idea of where settings come from can still fill this in.
+/// When the conversation shows how far through it you are.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Scrollbar {
+    #[default]
+    Auto,
+    Always,
+    Hidden,
+}
+
+/// What is left on the terminal after a full-screen session ends.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ExitOutput {
+    /// The conversation, so it is still there to read and copy from.
+    #[default]
+    Transcript,
+    /// The line that brings it back, and nothing else.
+    ResumeHint,
+}
+
+/// Whether a diagram written in a code block is drawn.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Mermaid {
+    Off,
+    Final,
+    #[default]
+    Streaming,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct Preferences {
+    /// Send every queued message at once when a turn ends, rather than the oldest alone.
+    pub steer_all_at_once: bool,
+    /// When the conversation shows how far through it you are.
+    pub scrollbar: Scrollbar,
+    /// Whether a diagram written in a code block is drawn.
+    pub mermaid: Mermaid,
+    /// What a full screen leaves behind when it goes.
+    pub exit_output: ExitOutput,
     /// Keep the model's reasoning folded away until it is asked for.
     pub hide_thinking: bool,
     /// Draw images in the terminal, where the terminal can.
@@ -259,13 +295,17 @@ pub struct Preferences {
 impl Default for Preferences {
     fn default() -> Self {
         Preferences {
+            steer_all_at_once: false,
+            scrollbar: Scrollbar::default(),
+            mermaid: Mermaid::default(),
+            exit_output: ExitOutput::default(),
             hide_thinking: true,
             show_images: true,
             image_width_cells: 60,
             auto_resize_images: true,
             block_images: false,
             editor_padding: 0,
-            output_padding: 1,
+            output_padding: 0,
             interface_padding: 1,
             autocomplete_max_items: crate::menu::MAX_VISIBLE,
             show_hardware_cursor: false,
@@ -305,6 +345,21 @@ impl From<&micro_config::Settings> for Preferences {
                 settings.follow_up_mode,
                 micro_config::FollowUpMode::Interrupt
             ),
+            steer_all_at_once: matches!(settings.steering_mode, micro_config::SteeringMode::All),
+            scrollbar: match settings.fullscreen_scrollbar {
+                micro_config::Scrollbar::Auto => Scrollbar::Auto,
+                micro_config::Scrollbar::Always => Scrollbar::Always,
+                micro_config::Scrollbar::Hidden => Scrollbar::Hidden,
+            },
+            mermaid: match settings.mermaid {
+                micro_config::Mermaid::Off => Mermaid::Off,
+                micro_config::Mermaid::Final => Mermaid::Final,
+                micro_config::Mermaid::Streaming => Mermaid::Streaming,
+            },
+            exit_output: match settings.fullscreen_exit_output {
+                micro_config::ExitOutput::Transcript => ExitOutput::Transcript,
+                micro_config::ExitOutput::ResumeHint => ExitOutput::ResumeHint,
+            },
         }
     }
 }

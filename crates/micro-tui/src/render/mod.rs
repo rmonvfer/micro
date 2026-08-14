@@ -895,18 +895,23 @@ mod tests {
         assert!(logo > 30, "the opening sits above the input, at row {logo}");
     }
 
+    /// Nothing on the first screen is cut off: a line too long for the terminal takes
+    /// another row instead of losing its end.
     #[test]
     fn the_opening_screen_wraps_rather_than_being_cut() {
-        let mut app = App::new(&[], unpadded());
-        let rows = paint(&mut app, 80, 50);
+        for width in [40u16, 56, 80] {
+            let mut app = App::new(&[], unpadded());
+            let rows = paint(&mut app, width, 50);
+            let said = rows.join(" ");
 
-        // Two lines that do not fit at this width take a second row each.
-        let logo = rows
-            .iter()
-            .position(|row| row.trim().starts_with("micro v"))
-            .expect("the logo is drawn");
-        assert_eq!(rows[logo + 2].trim(), "more");
-        assert_eq!(rows[logo + 6].trim(), "extend micro.");
+            assert!(
+                rows.iter().all(|row| text_width(row) <= width as usize),
+                "a row ran past {width}: {rows:#?}"
+            );
+            for ending in ["ctrl+o more", "loaded resources.", "extend micro."] {
+                assert!(said.contains(ending), "`{ending}` was cut at {width}: {said}");
+            }
+        }
     }
 
     #[test]

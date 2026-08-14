@@ -773,10 +773,21 @@ impl App {
     }
 
     /// The next prompt to send, if one has been submitted.
+    /// The next prompt to send, if one has been submitted.
+    ///
+    /// A line the interface queued for itself always goes on its own — it is a command,
+    /// and running two at once would mean neither saw what the other did. What the user
+    /// queued while a turn ran goes one at a time, or all of it as a single message, as
+    /// they asked: a train of thought written in three messages is often one message.
     pub fn take_submission(&mut self) -> Option<String> {
-        self.injected
-            .pop_front()
-            .or_else(|| self.pending.pop_front())
+        if let Some(line) = self.injected.pop_front() {
+            return Some(line);
+        }
+        if !self.settings.steer_all_at_once || self.pending.len() < 2 {
+            return self.pending.pop_front();
+        }
+        let all: Vec<String> = self.pending.drain(..).collect();
+        Some(all.join("\n\n"))
     }
 
     /// Send a line as though the user had typed it. Used where the interface knows the
@@ -1462,6 +1473,26 @@ impl App {
             }
         }
         Outcome::Handled
+    }
+
+    /// The conversation as it was drawn, as plain rows.
+    ///
+    /// For handing back to the terminal when a full screen goes: what a reader keeps is
+    /// what they were looking at, folded the way they folded it.
+    pub fn plain_lines(&mut self) -> Vec<String> {
+        self.refresh_lines();
+        self.cache
+            .lines
+            .iter()
+            .map(|line| {
+                line.spans
+                    .iter()
+                    .map(|span| span.content.as_ref())
+                    .collect::<String>()
+                    .trim_end()
+                    .to_string()
+            })
+            .collect()
     }
 
     /// What was loaded before the session started, for the first screen.

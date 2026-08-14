@@ -124,28 +124,68 @@ pub async fn run_with(
     // terminal. Whatever it answers is kept, so `/theme auto` later costs no round trip.
     background::prime();
     options.theme = Some(options.theme.unwrap_or_else(background::detect_theme));
-    let result = drive(&mut screen, &mut agent, &history, options).await;
+    let mode = options.tui_mode;
+    let exit_output = options.settings.exit_output;
+    let mut said = Vec::new();
+    let result = drive(&mut screen, &mut agent, &history, options, &mut said).await;
     leave();
+    // The alternate screen takes the conversation with it when it goes. Written out again
+    // here, after the terminal is back, it stays where a reader left it — which is what
+    // drawing inline gives for nothing and what a full screen has to be asked for.
+    if mode == TuiMode::Fullscreen && exit_output == commands::ExitOutput::Transcript {
+        use std::io::Write as _;
+        let mut out = std::io::stdout();
+        for line in said {
+            let _ = writeln!(out, "{line}");
+        }
+    }
     result?;
 
     Ok(agent.messages().to_vec())
 }
 
+/// Run the interface, and hand back the conversation as it was left on screen.
+///
+/// The conversation is taken from the interface rather than from the agent because it is
+/// what was drawn that a reader is being given back: the tool calls folded as they were
+/// folded, the answers wrapped as they were wrapped.
 async fn drive(
     screen: &mut Screen,
     agent: &mut Agent,
     history: &[Message],
     mut options: TuiOptions,
+    said: &mut Vec<String>,
 ) -> Result<()> {
     let mut questions = options.questions.take();
     let mut commands = options.commands.take();
     let mut app = App::new(history, options);
+    let outcome = run_loop(
+        screen,
+        agent,
+        &mut app,
+        &mut questions,
+        &mut commands,
+        said,
+    )
+    .await;
+    *said = app.plain_lines();
+    outcome
+}
+
+async fn run_loop(
+    screen: &mut Screen,
+    agent: &mut Agent,
+    app: &mut App,
+    questions: &mut Option<crate::ui::UiRequests>,
+    commands: &mut Option<Box<dyn Commands + 'static>>,
+    _said: &mut Vec<String>,
+) -> Result<()> {
     let mut input = EventStream::new();
     // Set while a list of models is open and the providers are being asked what they serve.
     let mut refreshing: Option<tokio::sync::oneshot::Receiver<Listings>> = None;
 
     loop {
-        screen.render(&mut app)?;
+        screen.render(app)?;
         if app.should_quit {
             return Ok(());
         }
@@ -155,10 +195,10 @@ async fn drive(
             if let Some(commands) = commands.as_mut() {
                 app.busy("signing in");
                 let stored = commands.store_api_key(provider, key);
-                let applied = await_host(screen, &mut app, &mut input, stored).await?;
+                let applied = await_host(screen, app, &mut input, stored).await?;
                 app.idle();
                 if let Some(applied) = applied {
-                    apply_applied(&mut app, agent, applied);
+                    apply_applied(app, agent, applied);
                 }
             }
             continue;
@@ -176,27 +216,27 @@ async fn drive(
                 submit(
                     Turn {
                         screen,
-                        app: &mut app,
+                        app,
                         agent,
                         input: &mut input,
-                        questions: &mut questions,
+                        questions: questions,
                     },
                     commands.as_deref_mut(),
                     line,
                 )
                 .await?
             }
-            None => match next_event(&mut input, &mut refreshing, &mut app, &mut commands).await {
+            None => match next_event(&mut input, &mut refreshing, app, commands).await {
                 // Work finished behind the interface rather than something the user did:
                 // the frame is drawn again at the top of the loop and nothing else changes.
                 Next::Redrawn => continue,
                 Next::Event(event) => {
-                    if offer_shortcut(&mut commands, &event).await {
+                    if offer_shortcut(commands, &event).await {
                         continue;
                     }
-                    match handle(&mut app, event) {
+                    match handle(app, event) {
                     Outcome::Quit => return Ok(()),
-                    Outcome::ExternalEditor => external_editor(screen, &mut app)?,
+                    Outcome::ExternalEditor => external_editor(screen, app)?,
                     Outcome::ThinkingChanged(level) => agent.set_thinking(level),
                     // Cycling is `/model` with a direction, so it goes the same way every
                     // other model change does rather than reaching for the catalog here.
@@ -206,7 +246,7 @@ async fn drive(
                             false => "/model previous",
                         });
                     }
-                    Outcome::Suspend => suspend(screen, &mut app)?,
+                    Outcome::Suspend => suspend(screen, app)?,
                     _ => {}
                     }
                 }

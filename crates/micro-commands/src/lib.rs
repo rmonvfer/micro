@@ -498,6 +498,18 @@ async fn skills(context: &CommandContext<'_>) -> CommandOutcome {
 ///
 /// Every row here is honoured somewhere: a setting that controlled nothing would read as a
 /// feature and behave as a decoration.
+/// A variant's name as it is written on the command line: `OneAtATime` is `one-at-a-time`.
+fn kebab(name: &str) -> String {
+    let mut out = String::new();
+    for (index, character) in name.chars().enumerate() {
+        if character.is_uppercase() && index > 0 {
+            out.push('-');
+        }
+        out.extend(character.to_lowercase());
+    }
+    out
+}
+
 fn settings(context: &CommandContext<'_>) -> CommandOutcome {
     let home = micro_context::micro_home().unwrap_or_default();
     let file = home.join(micro_config::FILE_NAME);
@@ -634,6 +646,36 @@ fn settings(context: &CommandContext<'_>) -> CommandOutcome {
             "/set tui_mode",
         ),
         PickerItem::new(
+            "Steering mode",
+            kebab(&format!("{:?}", now.steering_mode)),
+            "/set steering_mode",
+        ),
+        PickerItem::new(
+            "Tree filter mode",
+            kebab(&format!("{:?}", now.tree_filter_mode)),
+            "/set tree_filter_mode",
+        ),
+        PickerItem::new(
+            "Mermaid diagrams",
+            kebab(&format!("{:?}", now.mermaid)),
+            "/set mermaid",
+        ),
+        PickerItem::new(
+            "Fullscreen exit output",
+            kebab(&format!("{:?}", now.fullscreen_exit_output)),
+            "/set fullscreen_exit_output",
+        ),
+        PickerItem::new(
+            "Fullscreen scrollbar",
+            kebab(&format!("{:?}", now.fullscreen_scrollbar)),
+            "/set fullscreen_scrollbar",
+        ),
+        PickerItem::new(
+            "Clear on shrink",
+            on_off(now.clear_on_shrink),
+            "/set clear_on_shrink",
+        ),
+        PickerItem::new(
             "Where everything is kept",
             home.display().to_string(),
             "/debug",
@@ -746,6 +788,47 @@ fn settable(config: &micro_config::Config, name: &str) -> Option<Vec<PickerItem>
             vec![
                 ("regular", "draw inline, leaving the scrollback", now == "regular"),
                 ("fullscreen", "take the whole terminal", now == "fullscreen"),
+            ]
+        }
+        "clear_on_shrink" => switch(now.clear_on_shrink),
+        "steering_mode" => {
+            let now = kebab(&format!("{:?}", now.steering_mode));
+            vec![
+                ("one-at-a-time", "the oldest, and the rest after it", now == "one-at-a-time"),
+                ("all", "every one of them, as one message", now == "all"),
+            ]
+        }
+        "tree_filter_mode" => {
+            let now = kebab(&format!("{:?}", now.tree_filter_mode));
+            vec![
+                ("default", "prompts and answers", now == "default"),
+                ("no-tools", "without what the tools did", now == "no-tools"),
+                ("user-only", "only what was written", now == "user-only"),
+                ("labeled-only", "only what has a name", now == "labeled-only"),
+                ("all", "everything there is", now == "all"),
+            ]
+        }
+        "fullscreen_exit_output" => {
+            let now = kebab(&format!("{:?}", now.fullscreen_exit_output));
+            vec![
+                ("transcript", "leave the conversation on screen", now == "transcript"),
+                ("resume-hint", "leave only the line that brings it back", now == "resume-hint"),
+            ]
+        }
+        "fullscreen_scrollbar" => {
+            let now = kebab(&format!("{:?}", now.fullscreen_scrollbar));
+            vec![
+                ("auto", "when there is more than fits", now == "auto"),
+                ("always", "whether or not there is", now == "always"),
+                ("hidden", "never", now == "hidden"),
+            ]
+        }
+        "mermaid" => {
+            let now = kebab(&format!("{:?}", now.mermaid));
+            vec![
+                ("off", "leave it as the code it was written as", now == "off"),
+                ("final", "draw it once the answer is complete", now == "final"),
+                ("streaming", "draw it as it arrives", now == "streaming"),
             ]
         }
         "transport" => vec![("sse", "how the Codex backend answers", true)],
@@ -958,6 +1041,51 @@ fn assign(config: &mut micro_config::Config, name: &str, value: &str) -> Result<
             })
         }
         "http_idle_timeout" => config.http_idle_timeout = Some(number(3600)?),
+        "steering_mode" => {
+            config.steering_mode = Some(match value.to_ascii_lowercase().as_str() {
+                "one-at-a-time" => micro_config::SteeringMode::OneAtATime,
+                "all" => micro_config::SteeringMode::All,
+                other => return Err(format!("`{other}` is not one-at-a-time or all")),
+            })
+        }
+        "tree_filter_mode" => {
+            config.tree_filter_mode = Some(match value.to_ascii_lowercase().as_str() {
+                "default" => micro_config::TreeFilter::Default,
+                "no-tools" => micro_config::TreeFilter::NoTools,
+                "user-only" => micro_config::TreeFilter::UserOnly,
+                "labeled-only" => micro_config::TreeFilter::LabeledOnly,
+                "all" => micro_config::TreeFilter::All,
+                other => {
+                    return Err(format!(
+                        "`{other}` is not default, no-tools, user-only, labeled-only or all"
+                    ))
+                }
+            })
+        }
+        "fullscreen_exit_output" => {
+            config.fullscreen_exit_output = Some(match value.to_ascii_lowercase().as_str() {
+                "transcript" => micro_config::ExitOutput::Transcript,
+                "resume-hint" => micro_config::ExitOutput::ResumeHint,
+                other => return Err(format!("`{other}` is not transcript or resume-hint")),
+            })
+        }
+        "fullscreen_scrollbar" => {
+            config.fullscreen_scrollbar = Some(match value.to_ascii_lowercase().as_str() {
+                "auto" => micro_config::Scrollbar::Auto,
+                "always" => micro_config::Scrollbar::Always,
+                "hidden" => micro_config::Scrollbar::Hidden,
+                other => return Err(format!("`{other}` is not auto, always or hidden")),
+            })
+        }
+        "clear_on_shrink" => config.clear_on_shrink = Some(flag()?),
+        "mermaid" => {
+            config.mermaid = Some(match value.to_ascii_lowercase().as_str() {
+                "off" => micro_config::Mermaid::Off,
+                "final" => micro_config::Mermaid::Final,
+                "streaming" => micro_config::Mermaid::Streaming,
+                other => return Err(format!("`{other}` is not off, final or streaming")),
+            })
+        }
         "tui_mode" => {
             config.tui_mode = Some(match value.to_ascii_lowercase().as_str() {
                 "regular" => micro_config::TuiMode::Regular,
