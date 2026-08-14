@@ -592,15 +592,11 @@ fn find(characters: &[char], from: usize, wanted: char) -> Option<usize> {
 /// drawing. What cannot be drawn is still shown, because the words in it say what was meant.
 fn diagram_blocks(source: &[String], theme: &Theme, width: usize) -> Vec<Block> {
     let text = source.join("\n");
-    let drawn = micro_mermaid::render(&text).filter(|art| art.width <= width);
-
-    let Some(art) = drawn else {
-        let style = Style::new().fg(theme.md_code_block);
-        return source
-            .iter()
-            .map(|line| Block::plain(vec![Span::styled(line.clone(), style)]))
-            .collect();
-    };
+    // What cannot be drawn is framed as the source it was written as, which is what the
+    // drawing would have been made from: still readable, and still saying what was meant.
+    let art = micro_mermaid::render(&text)
+        .filter(|art| art.width <= width)
+        .unwrap_or_else(|| micro_mermaid::source_box(&text, width));
 
     art.styled
         .iter()
@@ -1080,15 +1076,21 @@ mod tests {
         assert!(rows.iter().any(|row| row.contains("graph TD")), "{rows:?}");
     }
 
-    /// A diagram too wide for the terminal is shown as the text it was written as, which
-    /// still says what was meant where a drawing cut in half would not.
+    /// A diagram too wide for the terminal is framed as the text it was written as, named
+    /// by what it was going to be: still readable, where a drawing cut in half would not be.
     #[test]
-    fn a_diagram_too_wide_to_draw_falls_back_to_its_source() {
+    fn a_diagram_too_wide_to_draw_is_framed_as_its_source() {
         let rows = drawn_at(
             "```mermaid\ngraph LR\n  A[A very long label indeed] --> B[Another long one here]\n```",
             20,
         );
-        assert!(rows.iter().any(|row| row.contains("A very long label")), "{rows:?}");
+        let framed = rows.join("\n");
+        assert!(framed.contains("mermaid: graph"), "it says what it was: {framed}");
+        assert!(framed.contains("graph LR"), "and holds the source: {framed}");
+        assert!(
+            rows.iter().all(|row| text_width(row) <= 20),
+            "inside the terminal: {rows:?}"
+        );
     }
 
     /// Every row of a block at a given width, as plain text.
