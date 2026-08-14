@@ -99,6 +99,7 @@ pub enum DiagramKind {
     Er,
     Sequence,
     Pie,
+    Mindmap,
 }
 
 /// The kind of diagram `src` declares, or `None` if its header names no type
@@ -126,6 +127,8 @@ pub fn diagram_kind(src: &str) -> Option<DiagramKind> {
         Some(DiagramKind::Sequence)
     } else if kind == "pie" {
         Some(DiagramKind::Pie)
+    } else if kind == "mindmap" {
+        Some(DiagramKind::Mindmap)
     } else {
         None
     }

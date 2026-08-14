@@ -13,6 +13,7 @@ mod graph;
 mod labels;
 mod layout;
 mod layout_seq;
+mod mindmap;
 mod parse;
 mod pie;
 mod source_box;
@@ -127,6 +128,9 @@ fn draw(src: &str) -> Option<Drawn> {
         // A pie reads its own source: it is rows of values rather than a graph, and has
         // nothing to gain from the node-and-edge model the others share.
         DiagramKind::Pie => plain(pie::render_pie(src)),
+        // A mind map is written as indentation rather than as edges, so it reads its own
+        // source too.
+        DiagramKind::Mindmap => plain(mindmap::render_mindmap(src)),
         DiagramKind::State => {
             let state = parse_state(src)?;
             plain(layout_flowchart(&state))
