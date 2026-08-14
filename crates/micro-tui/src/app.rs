@@ -22,6 +22,7 @@ use crate::render::links::Links;
 use crate::render::pictures::Pictures;
 use crate::render::status::shorten_home;
 use crate::render::transcript::Display;
+use crate::render::transcript::Rendered;
 use crate::theme::Theme;
 use crate::transcript::NoticeLevel;
 use crate::transcript::Transcript;
@@ -225,16 +226,20 @@ struct Turn {
 /// answer would otherwise pay for it once per token.
 #[derive(Default)]
 struct Cache {
-    /// What the cached rows were wrapped for. `None` forces the next frame to rebuild.
-    pub key: Option<CacheKey>,
-    lines: Vec<Line<'static>>,
-    links: Links,
-    pictures: Pictures,
+    /// What the kept rows were drawn for. `None` forces the next frame to draw it all.
+    shape: Option<Shape>,
+    rendered: Rendered,
+    /// Where each entry's rows begin, so a conversation can be redrawn from the middle.
+    starts: Vec<usize>,
+    /// Where each entry's links and images begin, for the same reason.
+    links_from: Vec<usize>,
+    pictures_from: Vec<usize>,
 }
 
+/// What every entry's rows depend on beyond the entry itself. A change to any of these
+/// means the conversation is drawn again from the start; nothing else does.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct CacheKey {
-    version: u64,
+struct Shape {
     width: usize,
     show_thinking: bool,
     focus: Option<usize>,
@@ -259,6 +264,8 @@ pub struct App {
     /// Whether anything has been worked on yet, which is what decides whether the rows the
     /// spinner draws in are held open. See [`App::reserves_activity_rows`].
     worked: bool,
+    /// Whether the previous action was escape, so two escapes can clear the prompt.
+    escape_pending: bool,
     /// Whether ctrl+c has been pressed once on an empty prompt, so the next one leaves.
     quitting: bool,
     pub should_quit: bool,
@@ -358,6 +365,7 @@ impl App {
             context_window: options.context_window,
             worked: false,
             quitting: false,
+            escape_pending: false,
             cwd: shorten_home(&workspace.display().to_string()),
             workspace,
             tick: 0,
@@ -442,7 +450,7 @@ impl App {
 
     pub fn set_theme(&mut self, theme: Theme) {
         self.theme = theme;
-        self.cache.key = None;
+        self.cache.shape = None;
     }
 
     pub fn set_thinking(&mut self, level: ThinkingLevel) {
@@ -453,9 +461,12 @@ impl App {
     pub fn thinking_color(&self) -> Color {
         match self.thinking {
             ThinkingLevel::Off => self.theme.thinking_off,
+            ThinkingLevel::Minimal => self.theme.thinking_low,
             ThinkingLevel::Low => self.theme.thinking_low,
             ThinkingLevel::Medium => self.theme.thinking_medium,
             ThinkingLevel::High => self.theme.thinking_high,
+            ThinkingLevel::XHigh => self.theme.thinking_high,
+            ThinkingLevel::Max => self.theme.thinking_high,
         }
     }
 
@@ -485,7 +496,7 @@ impl App {
     }
 
     pub fn lines(&self) -> &[Line<'static>] {
-        &self.cache.lines
+        &self.cache.rendered.lines
     }
 
     /// The conversation the terminal should keep, which the live region no longer needs.
@@ -499,11 +510,11 @@ impl App {
         if self.turn.is_some() {
             return Vec::new();
         }
-        let settled = self.cache.lines.len();
+        let settled = self.cache.rendered.lines.len();
         if settled <= self.handed_over {
             return Vec::new();
         }
-        let taken = self.cache.lines[self.handed_over..settled].to_vec();
+        let taken = self.cache.rendered.lines[self.handed_over..settled].to_vec();
         self.handed_over = settled;
         taken
     }
@@ -515,11 +526,11 @@ impl App {
     }
 
     pub fn links(&self) -> &Links {
-        &self.cache.links
+        &self.cache.rendered.links
     }
 
     pub fn pictures(&self) -> &Pictures {
-        &self.cache.pictures
+        &self.cache.rendered.pictures
     }
 
     pub fn menu(&self) -> Option<&Menu> {
@@ -877,7 +888,7 @@ impl App {
                 // The conversation is the host's to define; the scrollback is rebuilt from
                 // whatever it says the conversation now is.
                 self.transcript = Transcript::from_messages(&messages);
-                self.cache.key = None;
+                self.cache.shape = None;
                 self.focus = None;
                 // A replaced conversation is read from its end, like any new one.
                 self.scroll = 0;
@@ -955,45 +966,111 @@ impl App {
     /// Wrap the transcript for the frame about to be drawn, reusing the last frame's rows
     /// when nothing that affects them has changed.
     pub fn refresh_lines(&mut self) {
-        let key = CacheKey {
-            version: self.transcript.version(),
+        let shape = Shape {
             width: self.width,
             show_thinking: self.show_thinking,
             focus: self.focus,
         };
-        if self.cache.key == Some(key) {
+        // Anything that changes how every entry is drawn — the width it wraps to, whether
+        // reasoning is shown, which result is picked out — means starting again. Otherwise
+        // only what the conversation itself has changed is drawn again.
+        let from = match self.cache.shape == Some(shape) {
+            true => self.transcript.dirty_from().min(self.cache.starts.len()),
+            false => 0,
+        };
+        if self.cache.shape == Some(shape) && from >= self.transcript.entries().len() {
+            self.transcript.settled();
             return;
         }
 
-        let rendered = crate::render::transcript::lines(
+        // Everything before the first changed entry is exactly as it was drawn, so its rows
+        // stay and the rest are thrown away. A link is numbered by the order it was drawn
+        // in, so the ones belonging to the rows being replaced go with them, and the ones
+        // before keep the numbers already written into their rows.
+        // How tall the conversation was before this, for keeping a reader who has scrolled
+        // back over the same lines as more arrive below them.
+        let was = self.cache.rendered.lines.len();
+        // An entry added at the end starts where the conversation currently ends, so there
+        // is nothing to throw away and everything already drawn is kept.
+        let kept_rows = self
+            .cache
+            .starts
+            .get(from)
+            .copied()
+            .unwrap_or(self.cache.rendered.lines.len());
+        let kept_links = self
+            .cache
+            .links_from
+            .get(from)
+            .copied()
+            .unwrap_or(self.cache.rendered.links.len());
+        let kept_pictures = self
+            .cache
+            .pictures_from
+            .get(from)
+            .copied()
+            .unwrap_or(self.cache.rendered.pictures.len());
+        let mut rendered = match from {
+            0 => Rendered {
+                lines: Vec::new(),
+                links: match self.hyperlinks {
+                    true => Links::new(),
+                    false => Links::disabled(),
+                },
+                pictures: Pictures::new(self.images)
+                    .sized(self.settings.image_width_cells as usize, self.settings.auto_resize_images),
+            },
+            _ => {
+                let mut kept = std::mem::take(&mut self.cache.rendered);
+                kept.lines.truncate(kept_rows);
+                kept.links.truncate(kept_links);
+                kept.pictures.truncate(kept_pictures);
+                kept
+            }
+        };
+        self.cache.starts.truncate(from);
+        self.cache.links_from.truncate(from);
+        self.cache.pictures_from.truncate(from);
+
+        crate::render::transcript::append(
             &self.transcript,
             &self.theme,
             &Display {
                 width: self.width,
                 show_thinking: self.show_thinking,
                 focus: self.focus,
-                from: 0,
+                from,
                 hyperlinks: self.hyperlinks,
                 images: self.images,
                 image_width: self.settings.image_width_cells as usize,
                 resize_images: self.settings.auto_resize_images,
             },
+            &mut rendered,
+            &mut self.cache.starts,
         );
+        // Where each entry's links and images begin, so the next redraw can cut back to it.
+        while self.cache.links_from.len() < self.cache.starts.len() {
+            self.cache.links_from.push(rendered.links.len());
+            self.cache.pictures_from.push(rendered.pictures.len());
+        }
+
         // A reader who has scrolled back stays over the same lines when more arrive
         // below them, rather than being carried along by the conversation growing.
-        let before = self.cache.lines.len();
-        self.cache.key = Some(key);
-        self.cache.lines = rendered.lines;
+        let grew = rendered.lines.len().saturating_sub(was);
+        self.cache.shape = Some(shape);
+        self.cache.rendered = rendered;
         if self.scroll > 0 {
-            self.scroll += self.cache.lines.len().saturating_sub(before);
+            self.scroll += grew;
         }
-        self.cache.links = rendered.links;
-        self.cache.pictures = rendered.pictures;
+        self.transcript.settled();
         self.clamp_scroll();
     }
 
     /// Answer one action.
     pub fn handle(&mut self, action: Action) -> Outcome {
+        if !matches!(action, Action::Cancel) {
+            self.escape_pending = false;
+        }
         // Asking again only counts while it is still the question being answered.
         if !matches!(action, Action::Interrupt | Action::Resize | Action::Ignored) {
             self.quitting = false;
@@ -1022,7 +1099,7 @@ impl App {
         match action {
             Action::Ignored => Outcome::Handled,
             Action::Resize => {
-                self.cache.key = None;
+                self.cache.shape = None;
                 Outcome::Handled
             }
 
@@ -1287,26 +1364,36 @@ impl App {
     /// Escape. It backs out of one thing at a time, nearest first.
     fn cancel(&mut self) -> Outcome {
         if self.menu.take().is_some() {
+            self.escape_pending = false;
             return Outcome::Handled;
         }
         if self.is_running() {
+            self.escape_pending = false;
             return self.interrupt();
         }
         if self.focus.take().is_some() {
+            self.escape_pending = false;
             return Outcome::Handled;
         }
         if self.scroll != 0 {
             self.scroll = 0;
+            self.escape_pending = false;
             return Outcome::Handled;
         }
-        // Nothing was open and nothing was scrolled, and the prompt is empty: this is the
-        // second escape, which is how ohm offers a way back to an earlier point.
-        if self.editor.is_empty() {
+        if self.escape_pending {
+            self.escape_pending = false;
+            if !self.editor.is_empty() {
+                self.editor.clear();
+                self.menu = None;
+                return Outcome::Handled;
+            }
             match self.settings.double_escape {
                 crate::commands::DoubleEscape::Tree => self.queue_line("/tree"),
                 crate::commands::DoubleEscape::Fork => self.queue_line("/fork"),
                 crate::commands::DoubleEscape::None => {}
             }
+        } else {
+            self.escape_pending = true;
         }
         Outcome::Handled
     }
@@ -1454,7 +1541,7 @@ impl App {
                 .unwrap_or(positions[positions.len() - 1]),
         };
         self.focus = Some(next);
-        self.cache.key = None;
+        self.cache.shape = None;
         Outcome::Handled
     }
 
@@ -1482,6 +1569,7 @@ impl App {
     pub fn plain_lines(&mut self) -> Vec<String> {
         self.refresh_lines();
         self.cache
+            .rendered
             .lines
             .iter()
             .map(|line| {
@@ -1542,7 +1630,7 @@ impl App {
     /// Scrolling stops at the first line: past it there is nothing to show, and the window
     /// would drift off the top of the conversation.
     fn clamp_scroll(&mut self) {
-        let furthest = self.cache.lines.len().saturating_sub(self.viewport);
+        let furthest = self.cache.rendered.lines.len().saturating_sub(self.viewport);
         self.scroll = self.scroll.min(furthest);
     }
 }
@@ -1550,10 +1638,13 @@ impl App {
 /// The next reasoning level, wrapping at the top.
 fn next_level(level: ThinkingLevel) -> ThinkingLevel {
     match level {
-        ThinkingLevel::Off => ThinkingLevel::Low,
+        ThinkingLevel::Off => ThinkingLevel::Minimal,
+        ThinkingLevel::Minimal => ThinkingLevel::Low,
         ThinkingLevel::Low => ThinkingLevel::Medium,
         ThinkingLevel::Medium => ThinkingLevel::High,
-        ThinkingLevel::High => ThinkingLevel::Off,
+        ThinkingLevel::High => ThinkingLevel::XHigh,
+        ThinkingLevel::XHigh => ThinkingLevel::Max,
+        ThinkingLevel::Max => ThinkingLevel::Off,
     }
 }
 
@@ -1561,9 +1652,12 @@ fn next_level(level: ThinkingLevel) -> ThinkingLevel {
 pub fn thinking_name(level: ThinkingLevel) -> &'static str {
     match level {
         ThinkingLevel::Off => "off",
+        ThinkingLevel::Minimal => "minimal",
         ThinkingLevel::Low => "low",
         ThinkingLevel::Medium => "medium",
         ThinkingLevel::High => "high",
+        ThinkingLevel::XHigh => "xhigh",
+        ThinkingLevel::Max => "max",
     }
 }
 
@@ -1988,10 +2082,10 @@ mod tests {
         let mut app = app();
         assert_eq!(
             app.handle(Action::CycleThinking),
-            Outcome::ThinkingChanged(ThinkingLevel::Low)
+            Outcome::ThinkingChanged(ThinkingLevel::Minimal)
         );
-        assert_eq!(app.thinking, ThinkingLevel::Low);
-        assert_eq!(thinking_name(app.thinking), "low");
+        assert_eq!(app.thinking, ThinkingLevel::Minimal);
+        assert_eq!(thinking_name(app.thinking), "minimal");
     }
 
     #[test]
@@ -2149,6 +2243,70 @@ mod tests {
         assert_eq!(app.transcript.last_answer().as_deref(), Some("the answer"));
     }
 
+    /// A turn writes to the entry it is on and nothing else, so the rows already drawn for
+    /// everything before it are kept. Without that a long conversation is drawn again from
+    /// the beginning on every frame, and the cost of showing it grows with its length until
+    /// a frame takes longer than a frame is allowed to.
+    #[test]
+    fn a_long_conversation_redraws_only_what_changed() {
+        let conversation = |count: usize| {
+            let mut app = App::new(&[], TuiOptions::default());
+            for n in 0..count {
+                app.transcript.push_user(format!("prompt {n}"));
+                app.apply_event(AgentEvent::ToolStart {
+                    id: format!("c{n}"),
+                    name: "edit".into(),
+                    arguments: serde_json::json!({
+                        "path": format!("src/f{n}.rs"),
+                        "old_string": "one\ntwo\nthree\n",
+                        "new_string": "one\ntwo!\nthree\n",
+                    }),
+                });
+                app.apply_event(AgentEvent::ToolEnd {
+                    id: format!("c{n}"),
+                    name: "edit".into(),
+                    output: "Edited".into(),
+                    is_error: false,
+                });
+            }
+            app.set_frame(100, 40);
+            app.refresh_lines();
+            app
+        };
+
+        let mut short = conversation(5);
+        let mut long = conversation(80);
+        assert!(
+            long.lines().len() > short.lines().len() * 5,
+            "the long conversation really is longer"
+        );
+
+        // One update to the last entry, which is what a running tool does.
+        let update = |app: &mut App, count: usize| {
+            app.apply_event(AgentEvent::ToolUpdate {
+                id: format!("c{}", count - 1),
+                name: "edit".into(),
+                output: "still going".into(),
+            });
+            let started = std::time::Instant::now();
+            app.refresh_lines();
+            started.elapsed()
+        };
+
+        // Warm both, then compare: the work is the one entry that changed, so the long one
+        // costs about what the short one does rather than sixteen times as much.
+        let _ = update(&mut short, 5);
+        let _ = update(&mut long, 80);
+        let brief: std::time::Duration = (0..20).map(|_| update(&mut short, 5)).sum();
+        let lengthy: std::time::Duration = (0..20).map(|_| update(&mut long, 80)).sum();
+
+        assert!(
+            lengthy < brief * 8,
+            "redrawing a conversation of 80 took {lengthy:?} against {brief:?} for one of 5, \
+             which means it is being drawn again from the beginning"
+        );
+    }
+
     #[test]
     fn a_bash_line_joins_the_conversation_where_it_was_run() {
         let mut app = app();
@@ -2302,14 +2460,14 @@ mod tests {
         app.transcript.push_user("something to wrap");
         app.set_frame(60, 24);
         app.refresh_lines();
-        let key = app.cache.key;
+        let key = app.cache.shape;
 
         app.refresh_lines();
-        assert_eq!(app.cache.key, key, "nothing changed, so nothing rewrapped");
+        assert_eq!(app.cache.shape, key, "nothing changed, so nothing rewrapped");
 
         app.set_frame(40, 24);
         app.refresh_lines();
-        assert_ne!(app.cache.key, key, "a new width wraps again");
+        assert_ne!(app.cache.shape, key, "a new width wraps again");
     }
 
     fn app_with(settings: Preferences) -> App {
@@ -2369,11 +2527,27 @@ mod tests {
     }
 
     #[test]
+    fn double_escape_clears_written_input() {
+        let mut app = app_with(Preferences {
+            double_escape: crate::commands::DoubleEscape::Tree,
+            ..Preferences::default()
+        });
+        type_text(&mut app, "discard this");
+
+        app.handle(Action::Cancel);
+        app.handle(Action::Cancel);
+
+        assert!(app.editor.is_empty());
+        assert_eq!(app.take_submission(), None);
+    }
+
+    #[test]
     fn a_second_escape_does_what_the_setting_says() {
         let mut app = app_with(Preferences {
             double_escape: crate::commands::DoubleEscape::Tree,
             ..Preferences::default()
         });
+        app.handle(Action::Cancel);
         app.handle(Action::Cancel);
         assert_eq!(app.take_submission().as_deref(), Some("/tree"));
 
@@ -2381,6 +2555,7 @@ mod tests {
             double_escape: crate::commands::DoubleEscape::None,
             ..Preferences::default()
         });
+        app.handle(Action::Cancel);
         app.handle(Action::Cancel);
         assert_eq!(app.take_submission(), None);
     }
@@ -2519,10 +2694,10 @@ mod tests {
         app.transcript.push_user("something to wrap");
         app.set_frame(60, 24);
         app.refresh_lines();
-        assert!(app.cache.key.is_some());
+        assert!(app.cache.shape.is_some());
 
         app.handle(Action::Resize);
-        assert!(app.cache.key.is_none(), "the next frame rewraps");
+        assert!(app.cache.shape.is_none(), "the next frame rewraps");
     }
 
     #[test]
@@ -2573,15 +2748,15 @@ mod tests {
     fn every_reasoning_level_has_its_own_colour() {
         let mut app = app();
         let mut seen = Vec::new();
-        for _ in 0..4 {
+        for _ in 0..7 {
             seen.push(app.thinking_color());
             app.handle(Action::CycleThinking);
         }
-        assert_eq!(app.thinking, ThinkingLevel::Off, "four steps wraps around");
+        assert_eq!(app.thinking, ThinkingLevel::Off, "seven steps wraps around");
 
         let mut unique = seen.clone();
         unique.dedup();
-        assert_eq!(unique.len(), seen.len(), "no two levels look the same");
+        assert_eq!(unique.len(), 4, "levels share the available thinking colours");
     }
 
     #[test]

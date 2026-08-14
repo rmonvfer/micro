@@ -74,6 +74,13 @@ pub struct Transcript {
     active: Option<usize>,
     tools: HashMap<String, usize>,
     version: u64,
+    /// The earliest entry that has changed since a reader last saw the conversation drawn.
+    ///
+    /// Everything before it is exactly as it was, so a frame can keep the rows it already
+    /// has for those and redraw only from here on. A turn changes the entry it is writing
+    /// and nothing else, which is what makes a long conversation cost no more to keep on
+    /// screen than a short one.
+    dirty_from: usize,
     last_usage: Usage,
     total_usage: Usage,
     model: Option<String>,
@@ -96,6 +103,26 @@ impl Transcript {
         }
         transcript.close();
         transcript
+    }
+
+    /// The earliest entry whose rows have to be drawn again.
+    pub fn dirty_from(&self) -> usize {
+        self.dirty_from
+    }
+
+    /// Say that everything on screen matches the conversation as it stands.
+    pub fn settled(&mut self) {
+        self.dirty_from = self.entries.len();
+    }
+
+    /// Note that `index` no longer looks the way it was drawn.
+    fn touched(&mut self, index: usize) {
+        self.dirty_from = self.dirty_from.min(index);
+    }
+
+    /// Note that an entry was added, which is a change at the end and nowhere else.
+    fn appended(&mut self) {
+        self.touched(self.entries.len().saturating_sub(1));
     }
 
     pub fn entries(&self) -> &[Entry] {
@@ -145,6 +172,7 @@ impl Transcript {
         if tool.expanded != expanded {
             tool.expanded = expanded;
             self.version += 1;
+            self.touched(index);
         }
         true
     }
@@ -189,6 +217,8 @@ impl Transcript {
         }
         if changed {
             self.version += 1;
+            // Opening or closing every result at once changes all of them.
+            self.touched(0);
         }
     }
 
@@ -209,11 +239,13 @@ impl Transcript {
             expanded: false,
         });
         self.version += 1;
+        self.appended();
     }
 
     pub fn push_user(&mut self, text: impl Into<String>) {
         self.entries.push(Entry::User(text.into()));
         self.version += 1;
+        self.appended();
     }
 
     /// Record a command the user ran themselves, and whether the model was told about it.
@@ -223,6 +255,7 @@ impl Transcript {
             shared,
         });
         self.version += 1;
+        self.appended();
     }
 
     /// Show an image the user attached, which is drawn where it was attached rather than
@@ -233,6 +266,7 @@ impl Transcript {
             mime_type: mime_type.into(),
         });
         self.version += 1;
+        self.appended();
     }
 
     /// Show something an extension drew.
@@ -242,6 +276,7 @@ impl Transcript {
             lines,
         });
         self.version += 1;
+        self.appended();
     }
 
     pub fn push_notice(&mut self, text: impl Into<String>, level: NoticeLevel) {
@@ -250,10 +285,22 @@ impl Transcript {
             level,
         });
         self.version += 1;
+        self.appended();
     }
 
     /// Fold one agent event into the scrollback.
     pub fn apply(&mut self, event: &AgentEvent) {
+        // An event that changes nothing on screen leaves the drawing alone: a turn starting
+        // or settling is worth knowing about, but there is nothing new to look at.
+        if matches!(
+            event,
+            AgentEvent::AgentStart
+                | AgentEvent::TurnStart
+                | AgentEvent::TurnEnd { .. }
+                | AgentEvent::AgentSettled
+        ) {
+            return;
+        }
         self.version += 1;
         match event {
             // The prompt is echoed the moment it is submitted, and a tool result is already
@@ -341,11 +388,15 @@ impl Transcript {
             }
         }
         self.version += 1;
+        self.touched(0);
     }
 
     fn apply_delta(&mut self, event: &StreamEvent) {
         let index = match self.active {
-            Some(index) => index,
+            Some(index) => {
+                self.touched(index);
+                index
+            }
             None => self.begin_assistant(),
         };
         let Some(Entry::Assistant(entry)) = self.entries.get_mut(index) else {
@@ -375,7 +426,10 @@ impl Transcript {
 
     fn finish_assistant(&mut self, message: &AssistantMessage) {
         let index = match self.active.take() {
-            Some(index) => index,
+            Some(index) => {
+                self.touched(index);
+                index
+            }
             None => {
                 self.entries.push(Entry::Assistant(AssistantEntry {
                     text: String::new(),
@@ -416,6 +470,7 @@ impl Transcript {
         let Some(index) = self.tools.get(id).copied() else {
             return;
         };
+        self.touched(index);
         if let Some(Entry::Tool(tool)) = self.entries.get_mut(index) {
             if tool.output.is_none() {
                 tool.output = Some(output.to_string());
@@ -428,6 +483,7 @@ impl Transcript {
     fn update_tool(&mut self, id: &str, name: &str, output: &str) {
         match self.tools.get(id).copied() {
             Some(index) => {
+                self.touched(index);
                 if let Some(Entry::Tool(tool)) = self.entries.get_mut(index) {
                     tool.output = Some(output.to_string());
                 }
@@ -441,6 +497,7 @@ impl Transcript {
     fn finish_tool(&mut self, id: &str, name: &str, output: &str, is_error: bool) {
         match self.tools.get(id).copied() {
             Some(index) => {
+                self.touched(index);
                 if let Some(Entry::Tool(tool)) = self.entries.get_mut(index) {
                     tool.output = Some(output.to_string());
                     tool.is_error = is_error;
@@ -469,6 +526,8 @@ impl Transcript {
         );
         if empty && index + 1 == self.entries.len() {
             self.entries.pop();
+            // The rows drawn for it have to go with it.
+            self.touched(index);
         }
     }
 
@@ -482,6 +541,7 @@ impl Transcript {
                             mime_type: mime_type.clone(),
                         });
                         self.version += 1;
+                        self.appended();
                     }
                 }
                 let text = text_of(content);

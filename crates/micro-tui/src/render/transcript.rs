@@ -54,18 +54,45 @@ pub struct Rendered {
 }
 
 /// Render the transcript into display lines, from [`Display::from`] onward.
+/// Draw a conversation from nothing, which is what a caller with no rows to keep wants.
+#[cfg(test)]
 pub fn lines(transcript: &Transcript, theme: &Theme, display: &Display) -> Rendered {
-    let mut out: Vec<Line<'static>> = Vec::new();
-    let mut pictures = crate::render::pictures::Pictures::new(display.images)
-        .sized(display.image_width, display.resize_images);
-    let mut links = match display.hyperlinks {
-        true => crate::render::links::Links::new(),
-        false => crate::render::links::Links::disabled(),
+    let mut rendered = Rendered {
+        lines: Vec::new(),
+        links: match display.hyperlinks {
+            true => crate::render::links::Links::new(),
+            false => crate::render::links::Links::disabled(),
+        },
+        pictures: crate::render::pictures::Pictures::new(display.images)
+            .sized(display.image_width, display.resize_images),
     };
+    append(transcript, theme, display, &mut rendered, &mut Vec::new());
+    rendered
+}
+
+/// Draw the entries from `display.from` onward, adding them to what is already there.
+///
+/// Rows for the entries before that are left exactly as they were, which is what makes a
+/// long conversation cost no more to keep on screen than a short one: a turn writes to its
+/// own entry, so only that entry is drawn again.
+///
+/// `starts` grows by one row offset per entry drawn, so the caller can find where an entry
+/// begins when it has to be drawn again.
+pub fn append(
+    transcript: &Transcript,
+    theme: &Theme,
+    display: &Display,
+    rendered: &mut Rendered,
+    starts: &mut Vec<usize>,
+) {
+    let mut out = &mut rendered.lines;
+    let mut links = &mut rendered.links;
+    let mut pictures = &mut rendered.pictures;
     let entries = transcript.entries();
     let from = display.from.min(entries.len());
 
     for (index, entry) in entries.iter().enumerate().skip(from) {
+        starts.push(out.len());
         let before = out.len();
         // An entry keeps the blank row above it whether the entry before it is on screen or
         // in the scrollback, so a block reads the same either way.
@@ -117,11 +144,6 @@ pub fn lines(transcript: &Transcript, theme: &Theme, display: &Display) -> Rende
         }
     }
 
-    Rendered {
-        lines: out,
-        links,
-        pictures,
-    }
 }
 
 /// Wrap `rows` in the box ohm draws around a message: a blank row above and below, and
@@ -222,12 +244,14 @@ fn push_thinking(out: &mut Vec<Line<'static>>, thinking: &str, theme: &Theme, di
             let spans = vec![Span::styled(line.to_string(), style)];
             out.extend(wrap_spans(&spans, display.width, 0));
         }
+        out.push(Line::default());
         return;
     }
 
     // Hidden, a whole run collapses to one fixed label rather than the latest line. A live
     // tail reads as content the model produced; a label reads as what it is, a fold.
     out.push(Line::from(vec![Span::styled("Thinking...", style)]));
+    out.push(Line::default());
 }
 
 /// An image, given the rows it needs and drawn into them by the terminal.
@@ -581,7 +605,7 @@ mod tests {
                 delta: "first thought\nsecond thought".into(),
             },
         });
-        assert_eq!(rendered(&transcript, &display(60))[0], "Thinking...");
+        assert_eq!(rendered(&transcript, &display(60)), ["Thinking...", ""]);
     }
 
     #[test]

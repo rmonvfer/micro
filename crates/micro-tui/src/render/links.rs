@@ -76,6 +76,20 @@ impl Links {
         style.underline_color(sentinel(index))
     }
 
+    /// How many links have been recorded, which is the number the next one will be given.
+    pub fn len(&self) -> usize {
+        self.urls.len()
+    }
+
+    /// Forget every link recorded after `kept`.
+    ///
+    /// A link's number is written into the rows that point at it, so throwing rows away
+    /// means throwing away the links they carried — and keeping the ones before them, whose
+    /// numbers are still written into rows that are staying.
+    pub fn truncate(&mut self, kept: usize) {
+        self.urls.truncate(kept);
+    }
+
     pub fn url(&self, index: usize) -> Option<&str> {
         self.urls.get(index).map(String::as_str)
     }
