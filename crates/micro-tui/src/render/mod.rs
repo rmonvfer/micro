@@ -537,7 +537,7 @@ fn draw_activity(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
 fn footer_for(app: &App) -> status::Footer<'_> {
     status::Footer {
         cwd: &app.cwd,
-        branch: None,
+        branch: app.branch(),
         session: None,
         total: app.transcript.total_usage(),
         last: app.transcript.last_usage(),

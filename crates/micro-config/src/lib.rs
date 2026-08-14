@@ -288,7 +288,12 @@ pub struct Settings {
 pub const DEFAULT_IMAGE_WIDTH_CELLS: u16 = 60;
 /// Columns of breathing room on each side of the conversation, which is what ohm leaves.
 /// The input gets none by default, also as ohm has it.
-pub const DEFAULT_PADDING: u16 = 1;
+/// How far in from the terminal's edges the interface sits when nothing says otherwise.
+///
+/// None. ohm draws to the edge — a rule spans the whole width and the conversation starts
+/// in the first column — and a margin micro added of its own accord read as an interface
+/// wrapped in whitespace. The settings are still there for anyone who wants the room.
+pub const DEFAULT_PADDING: u16 = 0;
 /// How many completions the command menu offers at once.
 pub const DEFAULT_AUTOCOMPLETE_MAX_ITEMS: usize = 5;
 /// How long a request may go without producing anything before it is given up on.
@@ -314,8 +319,8 @@ impl Default for Settings {
             block_images: false,
             skill_commands: true,
             editor_padding: 0,
-            output_padding: DEFAULT_PADDING,
-            interface_padding: DEFAULT_PADDING,
+            output_padding: 0,
+            interface_padding: 0,
             autocomplete_max_items: DEFAULT_AUTOCOMPLETE_MAX_ITEMS,
             show_hardware_cursor: false,
             terminal_progress: true,

@@ -208,15 +208,13 @@ impl<'a> Footer<'a> {
                 Style::new().fg(theme.warning).bold(),
             ));
         }
-        if let Some(context) = self.context() {
-            if !spans.is_empty() {
-                spans.push(Span::styled(" ".to_string(), dim));
-            }
-            spans.push(Span::styled(
-                context,
-                Style::new().fg(self.context_color(theme)),
-            ));
+        if !spans.is_empty() {
+            spans.push(Span::styled(" ".to_string(), dim));
         }
+        spans.push(Span::styled(
+            self.context(),
+            Style::new().fg(self.context_color(theme)),
+        ));
         spans
     }
 
@@ -255,14 +253,23 @@ impl<'a> Footer<'a> {
         (prompt > 0).then(|| (self.last.cache_read as f64 / prompt as f64) * 100.0)
     }
 
-    fn context(&self) -> Option<String> {
-        let percent = self.context_percent()?;
+    /// How much of the window the conversation is using.
+    ///
+    /// Always said, because how much room is left is worth knowing before any of it has
+    /// been used as well as after. A share that cannot be worked out yet — nothing has come
+    /// back, or a compaction has just moved the ground — reads `?` rather than going away,
+    /// so the line does not change shape between turns.
+    fn context(&self) -> String {
         let window = format_tokens(self.context_window);
+        let share = match self.context_percent() {
+            Some(percent) => format!("{percent:.1}%"),
+            None => "?".to_string(),
+        };
         // Worth saying alongside the reading: what happens when it runs out.
-        Some(match self.auto_compact {
-            true => format!("{percent:.1}%/{window} (auto)"),
-            false => format!("{percent:.1}%/{window}"),
-        })
+        match self.auto_compact {
+            true => format!("{share}/{window} (auto)"),
+            false => format!("{share}/{window}"),
+        }
     }
 
     fn context_percent(&self) -> Option<f64> {
@@ -283,9 +290,14 @@ impl<'a> Footer<'a> {
             true => NO_MODEL,
             false => self.model,
         };
-        // The provider is named only when the model does not say which one is serving it.
+        // The model by its own name, with who is serving it in front: the same model is
+        // offered by several providers, and which one is answering is what the footer is
+        // there to say.
         let model = match self.provider.filter(|provider| !provider.is_empty()) {
-            Some(provider) => format!("({provider}) {model}"),
+            Some(provider) => format!(
+                "({provider}) {}",
+                model.strip_prefix(&format!("{provider}/")).unwrap_or(model)
+            ),
             None => model.to_string(),
         };
         match self.thinking.filter(|level| !level.is_empty()) {
@@ -324,14 +336,15 @@ pub fn activity_line(
 }
 
 /// Fraction of the context window a turn occupied, if it can be known.
+/// The share of the window in use, or nothing when there is no window to measure against.
+///
+/// A conversation that has used none of it has used none of it: that is nought per cent,
+/// not an unknown. Only a window nobody has said the size of leaves the share unanswerable.
 fn context_percent(usage: &Usage, window: u32) -> Option<f64> {
     if window == 0 {
         return None;
     }
     let used = usage.input + usage.cache_read + usage.cache_write + usage.output;
-    if used == 0 {
-        return None;
-    }
     Some((used as f64 / window as f64) * 100.0)
 }
 
@@ -676,14 +689,25 @@ mod tests {
         }
     }
 
+    /// How much of the window is left is said from the first frame, before anything has
+    /// been used. A share that cannot be worked out yet reads `?` rather than going away,
+    /// so the line does not change shape the moment the first answer lands.
     #[test]
-    fn a_fresh_session_reports_nothing_it_does_not_know() {
-        let footer = Footer {
+    fn how_much_room_is_left_is_said_before_any_of_it_is_used() {
+        let unmeasured = Footer {
             context_window: 0,
             ..footer()
         };
-        let text = rendered(&footer.rows(&Theme::dark(), 60)[1]);
-        assert_eq!(text.trim(), "claude-opus-5");
+        let text = rendered(&unmeasured.rows(&Theme::dark(), 60)[1]);
+        assert!(text.starts_with("?/0"), "no window to measure against: {text}");
+        assert!(text.trim_end().ends_with("claude-opus-5"), "{text}");
+
+        let fresh = Footer {
+            context_window: 200_000,
+            ..footer()
+        };
+        let text = rendered(&fresh.rows(&Theme::dark(), 60)[1]);
+        assert!(text.starts_with("0.0%/200k"), "none of it used yet: {text}");
     }
 
     #[test]

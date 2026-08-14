@@ -315,16 +315,39 @@ pub struct App {
     /// How much of the terminal this run took, which decides whether the spinner's rows
     /// are held open while nothing is running.
     tui_mode: crate::TuiMode,
+    /// The branch the workspace is on, for the footer. Read once: a session that changes
+    /// branch under itself is rarer than a frame, and this is drawn on every one of them.
+    branch: Option<String>,
     /// Whether the first screen shows the whole of what it knows: every key rather than
     /// the five worth knowing, and where each resource was read from rather than its name.
     /// The same key that opens every tool result opens this.
     startup_expanded: bool,
 }
 
+/// The branch a workspace is on, or nothing when it is not a repository.
+///
+/// Asked of git rather than read out of `.git` by hand: a worktree, a submodule and a
+/// detached head all live somewhere different, and git already knows which.
+fn git_branch(workspace: &std::path::Path) -> Option<String> {
+    let asked = std::process::Command::new("git")
+        .args(["rev-parse", "--abbrev-ref", "HEAD"])
+        .current_dir(workspace)
+        .stdin(std::process::Stdio::null())
+        .output()
+        .ok()?;
+    if !asked.status.success() {
+        return None;
+    }
+    let branch = String::from_utf8_lossy(&asked.stdout).trim().to_string();
+    // A detached head answers `HEAD`, which names nothing a reader would recognise.
+    (!branch.is_empty() && branch != "HEAD").then_some(branch)
+}
+
 impl App {
     pub fn new(history: &[Message], options: TuiOptions) -> Self {
         let capabilities = crate::capabilities::detect();
         let workspace = options.cwd;
+        let branch = git_branch(&workspace);
         let notice = options.notice;
         let mut app = App {
             transcript: Transcript::from_messages(history),
@@ -373,6 +396,7 @@ impl App {
             settings: options.settings,
             resources: options.resources,
             tui_mode: options.tui_mode,
+            branch,
             startup_expanded: false,
         };
 
@@ -626,12 +650,14 @@ impl App {
 
     /// The provider to name in the footer, which is nothing when the model already says
     /// which one is serving it.
+    /// The branch the workspace is on, when it is a repository at all.
+    pub fn branch(&self) -> Option<&str> {
+        self.branch.as_deref()
+    }
+
     pub fn footer_provider(&self) -> Option<&str> {
         let provider = self.provider.trim();
-        if provider.is_empty() || self.model_id().starts_with(provider) {
-            return None;
-        }
-        Some(provider)
+        (!provider.is_empty()).then_some(provider)
     }
 
     /// Show a question an extension asked, in whatever suits it.
