@@ -6,18 +6,18 @@
 //! being written and [`SessionStore::load`] skips whatever it cannot parse.
 
 mod error;
-mod tree;
 mod meta;
+mod tree;
 
 pub use error::Result;
 pub use error::SessionError;
 pub use meta::SessionMeta;
+pub use meta::MAX_TITLE_CHARS;
 pub use tree::Compaction;
 pub use tree::CustomEntry;
 pub use tree::Entry;
 pub use tree::Row;
 pub use tree::Tree;
-pub use meta::MAX_TITLE_CHARS;
 
 use micro_types::Message;
 use std::io::ErrorKind;
@@ -112,9 +112,11 @@ impl SessionStore {
         }
 
         // A crash between the log write and the metadata write, or a skipped line, leaves
-        // the recorded count ahead of what the log actually yields. The log is the truth.
-        if session.meta.message_count != messages.len() {
-            session.meta.message_count = messages.len();
+        // the recorded count out of step with what the log yields. The count describes all
+        // recorded conversation entries, including entries left on another branch.
+        let entry_count = session.tree.entries().len();
+        if session.meta.message_count != entry_count {
+            session.meta.message_count = entry_count;
             session.write_meta().await?;
         }
 
@@ -264,19 +266,65 @@ impl SessionStore {
     }
 
     /// Reads a session's metadata, rebuilding it from the log when the sidecar is missing
-    /// or unreadable so a lost sidecar never hides a session.
+    /// or unreadable and reconciling stale listing fields when valid entries remain in the
+    /// log. A damaged log leaves its last readable metadata intact.
     async fn meta_for(&self, id: &str) -> Result<SessionMeta> {
         let path = self.meta_path(id);
         match tokio::fs::read(&path).await {
             Ok(raw) => {
                 if let Ok(meta) = serde_json::from_slice::<SessionMeta>(&raw) {
-                    return Ok(meta);
+                    return self.reconcile_meta(id, meta).await;
                 }
             }
             Err(error) if error.kind() == ErrorKind::NotFound => {}
             Err(source) => return Err(SessionError::io(path, source)),
         }
         self.rebuild_meta(id).await
+    }
+
+    /// Bring a readable log's derived title and entry count back into step with its sidecar.
+    ///
+    /// A title supplied through `/name` wins over the title derived from the first prompt.
+    /// When no valid entry is left in the log, metadata is retained because it is the only
+    /// trustworthy record remaining.
+    async fn reconcile_meta(&self, id: &str, mut meta: SessionMeta) -> Result<SessionMeta> {
+        let raw = self.read_log(id).await?;
+        let (lines, _) = parse_log(&raw);
+        let tree = Tree::from_lines(lines);
+        if tree.entries().is_empty() {
+            return Ok(meta);
+        }
+
+        let mut derived = SessionMeta::new(
+            id.to_string(),
+            meta.workspace.clone(),
+            meta.model_id.clone(),
+        );
+        for entry in tree.entries() {
+            derived.record(&entry.message);
+        }
+
+        let mut changed = false;
+        if meta.message_count != derived.message_count {
+            meta.message_count = derived.message_count;
+            changed = true;
+        }
+        if meta.title.trim().is_empty() && !derived.title.is_empty() {
+            meta.title = derived.title;
+            changed = true;
+        }
+        if let Ok(file_meta) = tokio::fs::metadata(self.log_path(id)).await {
+            if let Some(modified) = file_meta.modified().ok().map(to_millis) {
+                if modified > meta.updated_at {
+                    meta.updated_at = modified;
+                    changed = true;
+                }
+            }
+        }
+        if changed {
+            write_meta(&self.meta_path(id), &meta).await?;
+        }
+        Ok(meta)
     }
 
     /// Reconstructs what the log and the filesystem still know: the title, the message
@@ -409,6 +457,13 @@ impl Session {
         &self.meta
     }
 
+    /// Record the model that will serve future turns in this session.
+    pub async fn set_model_id(&mut self, model_id: impl Into<String>) -> Result<()> {
+        self.meta.model_id = model_id.into();
+        self.meta.updated_at = micro_types::now_ms();
+        self.write_meta().await
+    }
+
     /// Give the session a title of its own, in place of the one taken from the first
     /// message. It sticks, because a title that is set is never derived over.
     pub async fn rename(&mut self, title: &str) -> Result<()> {
@@ -453,8 +508,8 @@ impl Session {
 
     /// Append one line to the log, whatever kind of line it is.
     async fn write_line(&mut self, value: &impl serde::Serialize) -> Result<()> {
-        let mut line =
-            serde_json::to_vec(value).map_err(|source| SessionError::json(&self.log_path, source))?;
+        let mut line = serde_json::to_vec(value)
+            .map_err(|source| SessionError::json(&self.log_path, source))?;
         line.push(b'\n');
         self.log
             .write_all(&line)
@@ -701,12 +756,21 @@ mod tests {
     async fn a_branch_survives_being_reopened() {
         let store = SessionStore::new(scratch("branching"));
         let mut session = store.create("/work", "m").await.expect("created");
-        session.append(&Message::user("question")).await.expect("wrote");
-        session.append(&Message::user("first answer")).await.expect("wrote");
+        session
+            .append(&Message::user("question"))
+            .await
+            .expect("wrote");
+        session
+            .append(&Message::user("first answer"))
+            .await
+            .expect("wrote");
 
         // Go back to the question and answer it differently.
         assert!(session.branch_from("1"));
-        session.append(&Message::user("second answer")).await.expect("wrote");
+        session
+            .append(&Message::user("second answer"))
+            .await
+            .expect("wrote");
         let id = session.id().to_string();
         drop(session);
 
@@ -964,6 +1028,39 @@ mod tests {
         assert_eq!(listed[0].model_id, "claude-opus-5");
         assert_eq!(listed[0].workspace, PathBuf::from("/work"));
         assert!(listed[0].updated_at >= listed[0].created_at);
+    }
+
+    #[tokio::test]
+    async fn listing_repairs_stale_title_and_message_count() {
+        let store = SessionStore::new(scratch("reconcile-metadata"));
+        let mut session = store.create("/work", "claude-opus-5").await.unwrap();
+        let id = session.id().to_string();
+        session
+            .append(&Message::user("repair the explorer"))
+            .await
+            .unwrap();
+        session.append(&assistant("done")).await.unwrap();
+
+        let stale = SessionMeta {
+            id: id.clone(),
+            created_at: 1,
+            updated_at: 1,
+            workspace: PathBuf::from("/work"),
+            model_id: "claude-opus-5".into(),
+            title: String::new(),
+            message_count: 0,
+            parent: None,
+        };
+        write_meta(&store.meta_path(&id), &stale).await.unwrap();
+
+        let listed = store.list().await.unwrap();
+        assert_eq!(listed[0].title, "repair the explorer");
+        assert_eq!(listed[0].message_count, 2);
+
+        let repaired: SessionMeta =
+            serde_json::from_slice(&std::fs::read(store.meta_path(&id)).unwrap()).unwrap();
+        assert_eq!(repaired.title, "repair the explorer");
+        assert_eq!(repaired.message_count, 2);
     }
 
     #[tokio::test]

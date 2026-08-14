@@ -583,7 +583,9 @@ pub fn env_names(provider: &str) -> Vec<String> {
         Some(entry) if !entry.env.is_empty() => entry.env.clone(),
         _ => vec![format!(
             "{}_API_KEY",
-            canonical_provider(provider).to_uppercase().replace('-', "_")
+            canonical_provider(provider)
+                .to_uppercase()
+                .replace('-', "_")
         )],
     }
 }
@@ -751,8 +753,12 @@ mod tests {
         let session = AuthStore::open_at(&path).unwrap();
         let login = AuthStore::open_at(&path).unwrap();
 
-        session.set("anthropic", Credential::api_key("from-session")).unwrap();
-        login.set("openai", Credential::api_key("from-login")).unwrap();
+        session
+            .set("anthropic", Credential::api_key("from-session"))
+            .unwrap();
+        login
+            .set("openai", Credential::api_key("from-login"))
+            .unwrap();
 
         let read_back = AuthStore::open_at(&path).unwrap();
         assert_eq!(
@@ -1037,7 +1043,10 @@ mod tests {
     fn the_environment_is_read_in_order_and_blanks_are_skipped() {
         let environment = HashMap::from([
             ("ANTHROPIC_OAUTH_TOKEN".to_string(), "  ".to_string()),
-            ("ANTHROPIC_API_KEY".to_string(), "sk-ant-from-env".to_string()),
+            (
+                "ANTHROPIC_API_KEY".to_string(),
+                "sk-ant-from-env".to_string(),
+            ),
         ]);
         let get = |name: &str| environment.get(name).cloned();
 

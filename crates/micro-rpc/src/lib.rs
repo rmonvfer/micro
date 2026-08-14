@@ -766,9 +766,12 @@ fn summary_text(message: &Message) -> String {
 
 fn next_level(level: ThinkingLevel) -> ThinkingLevel {
     match level {
-        ThinkingLevel::Off => ThinkingLevel::Low,
+        ThinkingLevel::Off => ThinkingLevel::Minimal,
+        ThinkingLevel::Minimal => ThinkingLevel::Low,
         ThinkingLevel::Low => ThinkingLevel::Medium,
         ThinkingLevel::Medium => ThinkingLevel::High,
-        ThinkingLevel::High => ThinkingLevel::Off,
+        ThinkingLevel::High => ThinkingLevel::XHigh,
+        ThinkingLevel::XHigh => ThinkingLevel::Max,
+        ThinkingLevel::Max => ThinkingLevel::Off,
     }
 }

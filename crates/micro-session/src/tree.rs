@@ -151,6 +151,13 @@ impl Tree {
         &self.customs
     }
 
+    /// Every compaction recorded, oldest first. Most callers want [`Tree::path`], which
+    /// already reads the conversation through whichever of these is active; this is for a
+    /// reader that wants the record of compactions itself, not just its effect.
+    pub fn compactions(&self) -> &[Compaction] {
+        &self.compactions
+    }
+
     /// What an entry has been named, if anything.
     pub fn label(&self, entry_id: &str) -> Option<&str> {
         self.labels.get(entry_id).map(String::as_str)
@@ -436,10 +443,7 @@ mod tests {
     /// A log written before sessions had a tree reads as the straight line it was.
     #[test]
     fn an_older_log_reads_as_one_branch() {
-        let tree = Tree::from_lines(vec![
-            Line::Bare(user("one")),
-            Line::Bare(user("two")),
-        ]);
+        let tree = Tree::from_lines(vec![Line::Bare(user("one")), Line::Bare(user("two"))]);
         assert_eq!(tree.entries().len(), 2);
         assert_eq!(tree.path().len(), 2);
         assert_eq!(tree.entries()[1].parent_id.as_deref(), Some("1"));
@@ -469,7 +473,10 @@ mod tests {
 
         assert!(tree.set_label("1", None));
         assert_eq!(tree.label("1"), None);
-        assert!(!tree.set_label("nowhere", Some("x".into())), "a stale id is harmless");
+        assert!(
+            !tree.set_label("nowhere", Some("x".into())),
+            "a stale id is harmless"
+        );
     }
 
     /// Everything written to the log comes back, each kind as what it was.
@@ -574,7 +581,10 @@ mod compaction {
 
         let path = tree.path();
         assert!(text(&path[0]).contains("second summary"));
-        assert!(!path.iter().skip(1).any(|message| text(message).contains("first summary")));
+        assert!(!path
+            .iter()
+            .skip(1)
+            .any(|message| text(message).contains("first summary")));
     }
 
     /// A compaction recorded on a branch that was left behind says nothing about the one
