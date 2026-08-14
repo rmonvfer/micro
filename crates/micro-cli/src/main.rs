@@ -397,6 +397,7 @@ async fn main() -> Result<()> {
     }
 
     let session = std::sync::Arc::clone(&built.session);
+    let session_id = session.lock().await.id().to_string();
     let writer = runtime::persist(built.session, built.recorder);
     let prompt = cli.prompt.join(" ");
 
@@ -481,9 +482,15 @@ async fn main() -> Result<()> {
         };
         // The conversation is persisted through the recorder, so the transcript the
         // interface hands back on exit is already on disk.
-        micro_tui::run_with(built.agent, built.history, options)
+        let ran = micro_tui::run_with(built.agent, built.history, options)
             .await
-            .map(|_| ())
+            .map(|_| ());
+        // Said on the way out, where a shell keeps it: the id is the one thing a reader
+        // needs to come back, and it is not worth going and looking for.
+        if ran.is_ok() {
+            say_how_to_resume(&session_id);
+        }
+        ran
     };
 
     // The agent has been dropped by now, which closes the recorder and ends the writer.
@@ -491,6 +498,18 @@ async fn main() -> Result<()> {
     let _ = writer.await;
     shut_down_extensions(extensions).await;
     result
+}
+
+/// Leave the line that brings this conversation back.
+///
+/// Only where a person will see it: piped into something else, it would be one more line
+/// for that to deal with.
+fn say_how_to_resume(session_id: &str) {
+    use std::io::IsTerminal;
+    if session_id.is_empty() || !std::io::stdout().is_terminal() {
+        return;
+    }
+    println!("To resume this session: micro --resume {session_id}");
 }
 
 /// Let the extension host go, once nothing else needs it.

@@ -629,6 +629,11 @@ fn settings(context: &CommandContext<'_>) -> CommandOutcome {
             "/set anthropic_extra_usage",
         ),
         PickerItem::new(
+            "TUI mode",
+            format!("{:?}", now.tui_mode).to_lowercase(),
+            "/set tui_mode",
+        ),
+        PickerItem::new(
             "Where everything is kept",
             home.display().to_string(),
             "/debug",
@@ -658,6 +663,11 @@ fn set(argument: Option<&str>) -> CommandOutcome {
     };
 
     let Some(value) = value else {
+        // Named on its own, a setting offers what it may be rather than only saying what
+        // it is: a list you cannot change from is a list of things to go and type.
+        if let Some(choices) = settable(&config, name) {
+            return CommandOutcome::Choose(Picker::new(name.to_string(), choices).titled());
+        }
         return match describe(&config, name) {
             Some(text) => CommandOutcome::info(text),
             None => CommandOutcome::error(format!("There is no setting called `{name}`.")),
@@ -674,6 +684,123 @@ fn set(argument: Option<&str>) -> CommandOutcome {
 }
 
 /// One setting as it stands, and what it will take.
+/// What a setting may be set to, as a list to choose from.
+///
+/// Every setting that has a settled few values offers them; one that takes free text — a
+/// shortlist of models — has none to offer and is described instead.
+fn settable(config: &micro_config::Config, name: &str) -> Option<Vec<PickerItem>> {
+    let now = config
+        .resolve(&micro_config::Overrides::default(), |_| None)
+        .ok()?;
+
+    let on_off = |value: bool| match value {
+        true => "on",
+        false => "off",
+    };
+    let switch = |current: bool| {
+        vec![
+            ("on", "", current),
+            ("off", "", !current),
+        ]
+    };
+
+    let described: Vec<(&str, &str, bool)> = match name {
+        "auto_compact" => switch(now.auto_compact),
+        "hide_thinking" => switch(now.hide_thinking),
+        "show_images" => switch(now.show_images),
+        "auto_resize_images" => switch(now.auto_resize_images),
+        "block_images" => switch(now.block_images),
+        "skill_commands" => switch(now.skill_commands),
+        "show_hardware_cursor" => switch(now.show_hardware_cursor),
+        "terminal_progress" => switch(now.terminal_progress),
+        "quiet_startup" => switch(now.quiet_startup),
+        "collapse_changelog" => switch(now.collapse_changelog),
+        "warnings" => switch(now.warnings),
+        "cache_miss_notices" => switch(now.cache_miss_notices),
+        "anthropic_extra_usage" => switch(now.anthropic_extra_usage),
+        "double_escape" => {
+            let now = format!("{:?}", now.double_escape).to_lowercase();
+            vec![
+                ("tree", "show the conversation's branches", now == "tree"),
+                ("fork", "branch from a message", now == "fork"),
+                ("none", "do nothing", now == "none"),
+            ]
+        }
+        "follow_up_mode" => {
+            let now = format!("{:?}", now.follow_up_mode).to_lowercase();
+            vec![
+                ("queue", "wait for the turn to finish", now == "queue"),
+                ("interrupt", "stop the turn and send", now == "interrupt"),
+            ]
+        }
+        "default_project_trust" => {
+            let now = format!("{:?}", now.default_project_trust).to_lowercase();
+            vec![
+                ("ask", "ask about each project", now == "ask"),
+                ("always", "trust every project", now == "always"),
+                ("never", "trust no project", now == "never"),
+            ]
+        }
+        "tui_mode" => {
+            let now = format!("{:?}", now.tui_mode).to_lowercase();
+            vec![
+                ("regular", "draw inline, leaving the scrollback", now == "regular"),
+                ("fullscreen", "take the whole terminal", now == "fullscreen"),
+            ]
+        }
+        "transport" => vec![("sse", "how the Codex backend answers", true)],
+        _ => return numbered(name, &now),
+    };
+
+    let _ = on_off;
+    Some(
+        described
+            .into_iter()
+            .map(|(value, detail, current)| {
+                PickerItem::new(value, detail, format!("/set {name} {value}")).current(current)
+            })
+            .collect(),
+    )
+}
+
+/// A setting counted in columns, rows, cells or seconds, offered over the range it takes.
+fn numbered(name: &str, now: &micro_config::Settings) -> Option<Vec<PickerItem>> {
+    let (range, unit, current): (Vec<u64>, &str, u64) = match name {
+        "editor_padding" => ((0..=3).collect(), "columns", now.editor_padding as u64),
+        "output_padding" => ((0..=3).collect(), "columns", now.output_padding as u64),
+        "interface_padding" => (
+            (0..=3).collect(),
+            "columns and rows",
+            now.interface_padding as u64,
+        ),
+        "autocomplete_max_items" => (
+            (3..=20).collect(),
+            "rows",
+            now.autocomplete_max_items as u64,
+        ),
+        "image_width_cells" => (
+            (10..=100).step_by(10).collect(),
+            "cells",
+            now.image_width_cells as u64,
+        ),
+        "http_idle_timeout" => (
+            vec![30, 60, 120, 300, 600, 1200, 3600],
+            "seconds",
+            now.http_idle_timeout,
+        ),
+        _ => return None,
+    };
+    Some(
+        range
+            .into_iter()
+            .map(|value| {
+                PickerItem::new(value.to_string(), unit, format!("/set {name} {value}"))
+                    .current(value == current)
+            })
+            .collect(),
+    )
+}
+
 fn describe(config: &micro_config::Config, name: &str) -> Option<String> {
     let now = config
         .resolve(&micro_config::Overrides::default(), |_| None)
@@ -831,6 +958,13 @@ fn assign(config: &mut micro_config::Config, name: &str, value: &str) -> Result<
             })
         }
         "http_idle_timeout" => config.http_idle_timeout = Some(number(3600)?),
+        "tui_mode" => {
+            config.tui_mode = Some(match value.to_ascii_lowercase().as_str() {
+                "regular" => micro_config::TuiMode::Regular,
+                "fullscreen" => micro_config::TuiMode::Fullscreen,
+                other => return Err(format!("`{other}` is not regular or fullscreen")),
+            })
+        }
         "anthropic_extra_usage" => config.anthropic_extra_usage = Some(flag()?),
         "transport" => {
             let chosen = micro_provider::Transport::named(value).ok_or_else(|| {
