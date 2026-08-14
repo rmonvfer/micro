@@ -93,6 +93,7 @@ impl Tool for Bash {
                 },
                 "required": ["command"],
             }),
+            constrained_sampling: None,
         }
     }
 
@@ -166,17 +167,19 @@ impl Tool for Bash {
             }
         };
 
-        let waiting = async {
-            tokio::join!(reading, child.wait())
-        };
+        let waiting = async { tokio::join!(reading, child.wait()) };
         let status = match timeout_ms {
-            Some(limit) => match tokio::time::timeout(Duration::from_millis(limit), waiting).await {
-                Ok((_, status)) => status.map_err(|error| format!("command failed: {error}"))?,
-                Err(_) => {
-                    let seconds = limit as f64 / 1000.0;
-                    return Err(format!("command timed out after {seconds}s: {command}"));
+            Some(limit) => {
+                match tokio::time::timeout(Duration::from_millis(limit), waiting).await {
+                    Ok((_, status)) => {
+                        status.map_err(|error| format!("command failed: {error}"))?
+                    }
+                    Err(_) => {
+                        let seconds = limit as f64 / 1000.0;
+                        return Err(format!("command timed out after {seconds}s: {command}"));
+                    }
                 }
-            },
+            }
             // Nothing was asked for, so the command runs until it is done.
             None => {
                 let (_, status) = waiting.await;
@@ -277,7 +280,10 @@ mod tests {
         // Each report is everything so far, not only the newest line.
         assert!(seen.last().unwrap().contains("first"));
         assert!(seen.last().unwrap().contains("third"));
-        assert!(output.contains("first") && output.contains("third"), "{output}");
+        assert!(
+            output.contains("first") && output.contains("third"),
+            "{output}"
+        );
 
         let _ = std::fs::remove_dir_all(&root);
     }

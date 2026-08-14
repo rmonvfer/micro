@@ -1,12 +1,15 @@
 //! The tools the model can call, and the trait every tool implements.
 
 mod bash;
+mod deferred;
 mod files;
 mod fuzzy;
 mod mutations;
 mod search;
 
 pub use bash::Bash;
+pub use deferred::Deferred;
+pub use deferred::ToolSearch;
 pub use files::Edit;
 pub use files::Ls;
 pub use files::MultiEdit;
@@ -18,6 +21,7 @@ pub use search::Grep;
 use async_trait::async_trait;
 use micro_types::ContentBlock;
 use micro_types::ToolDefinition;
+use micro_types::ToolExecutionMode;
 use serde_json::Value;
 use std::path::Path;
 use std::path::PathBuf;
@@ -31,6 +35,24 @@ pub const MAX_OUTPUT_CHARS: usize = 30_000;
 #[async_trait]
 pub trait Tool: Send + Sync {
     fn definition(&self) -> ToolDefinition;
+
+    /// Whether this tool is left out of the list the model is given, to be found by
+    /// searching instead. Almost everything is worth describing up front, which is the
+    /// default; see [`Deferred`] for when it is not.
+    fn deferred(&self) -> bool {
+        false
+    }
+
+    /// Whether this tool must run alone among a turn's tool calls, or may run alongside
+    /// them.
+    ///
+    /// `None` is the common case: the tool has no opinion, and whichever default the
+    /// turn's own caller runs a batch under applies. A tool overrides this only when
+    /// running it at the same time as something else in the same turn would be wrong —
+    /// two calls that would race over the same state, say.
+    fn execution_mode(&self) -> Option<ToolExecutionMode> {
+        None
+    }
 
     async fn execute(&self, arguments: &Value) -> Result<String, String>;
 

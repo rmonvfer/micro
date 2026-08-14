@@ -1,17 +1,23 @@
 //! End-to-end tests of the agent loop, driven entirely against the testkit doubles.
 
 use std::sync::Arc;
+use std::sync::Mutex;
+use std::time::Duration;
 
 use micro_agent::Agent;
+use micro_provider::Provider;
 use micro_testkit::run_agent;
 use micro_testkit::FakeProvider;
 use micro_testkit::FakeTool;
 use micro_testkit::Turn;
+use micro_types::Context;
 use micro_types::Message;
 use micro_types::Model;
 use micro_types::StopReason;
+use micro_types::StreamEvent;
 use micro_types::ThinkingLevel;
 use serde_json::json;
+use tokio::sync::mpsc::UnboundedReceiver;
 
 fn model() -> Model {
     Model {
@@ -494,6 +500,28 @@ fn role_of(message: &Message) -> &'static str {
 struct SlowTool {
     name: String,
     holds_for: std::time::Duration,
+    /// What this tool asks for via pi's `executionMode`. `None` is the common case: the
+    /// tool has no opinion, and the batch's own default decides.
+    execution_mode: Option<micro_types::ToolExecutionMode>,
+}
+
+impl SlowTool {
+    fn new(name: impl Into<String>, holds_for: std::time::Duration) -> Self {
+        SlowTool {
+            name: name.into(),
+            holds_for,
+            execution_mode: None,
+        }
+    }
+
+    fn sequential(self) -> Self {
+        self.with_execution_mode(micro_types::ToolExecutionMode::Sequential)
+    }
+
+    fn with_execution_mode(mut self, mode: micro_types::ToolExecutionMode) -> Self {
+        self.execution_mode = Some(mode);
+        self
+    }
 }
 
 #[async_trait::async_trait]
@@ -503,7 +531,12 @@ impl micro_tools::Tool for SlowTool {
             name: self.name.clone(),
             description: "waits".into(),
             parameters: json!({ "type": "object", "properties": {} }),
+            constrained_sampling: None,
         }
+    }
+
+    fn execution_mode(&self) -> Option<micro_types::ToolExecutionMode> {
+        self.execution_mode
     }
 
     async fn execute(&self, _arguments: &serde_json::Value) -> Result<String, String> {
@@ -523,10 +556,7 @@ async fn the_tools_in_one_answer_run_together() {
     let tools: Vec<Arc<dyn micro_tools::Tool>> = ["one", "two", "three"]
         .into_iter()
         .map(|name| {
-            Arc::new(SlowTool {
-                name: name.into(),
-                holds_for: hold,
-            }) as Arc<dyn micro_tools::Tool>
+            Arc::new(SlowTool::new(name, hold)) as Arc<dyn micro_tools::Tool>
         })
         .collect();
 
@@ -561,6 +591,132 @@ async fn the_tools_in_one_answer_run_together() {
     assert_eq!(answered, vec!["c1", "c2", "c3"]);
 }
 
+/// A tool with no opinion on how it is scheduled is explicitly `Parallel`, not merely the
+/// absence of `Sequential` — asking every call for it changes nothing next to the default.
+#[tokio::test]
+async fn tools_explicitly_marked_parallel_still_run_together() {
+    let hold = std::time::Duration::from_millis(200);
+    let tools: Vec<Arc<dyn micro_tools::Tool>> = ["one", "two", "three"]
+        .into_iter()
+        .map(|name| {
+            Arc::new(SlowTool::new(name, hold).with_execution_mode(micro_types::ToolExecutionMode::Parallel))
+                as Arc<dyn micro_tools::Tool>
+        })
+        .collect();
+
+    let provider = FakeProvider::builder()
+        .turn(
+            Turn::new()
+                .with_tool_call("c1", "one", json!({}))
+                .with_tool_call("c2", "two", json!({}))
+                .with_tool_call("c3", "three", json!({})),
+        )
+        .turn(Turn::text("all done"))
+        .build();
+    let mut agent = agent(&provider, tools);
+
+    let started = std::time::Instant::now();
+    run_agent(&mut agent, Message::user("go")).await;
+    let took = started.elapsed();
+
+    assert!(
+        took < hold * 2,
+        "three {hold:?} tools explicitly marked parallel took {took:?}, which is one after \
+         another rather than together",
+    );
+}
+
+/// A tool that asks to run alone never overlaps another call from the same turn, even one
+/// that has no opinion on how it is scheduled itself.
+///
+/// Three 200ms tools running one after another take about 600ms; running together they
+/// take about 200ms. The bound sits between the two, the same way the parallel case above
+/// checks the opposite bound.
+#[tokio::test]
+async fn a_sequential_tool_does_not_overlap_another() {
+    let hold = std::time::Duration::from_millis(200);
+    let one = SlowTool::new("one", hold);
+    let two = SlowTool::new("two", hold).sequential();
+    let three = SlowTool::new("three", hold);
+    let tools: Vec<Arc<dyn micro_tools::Tool>> =
+        vec![Arc::new(one), Arc::new(two), Arc::new(three)];
+
+    let provider = FakeProvider::builder()
+        .turn(
+            Turn::new()
+                .with_tool_call("c1", "one", json!({}))
+                .with_tool_call("c2", "two", json!({}))
+                .with_tool_call("c3", "three", json!({})),
+        )
+        .turn(Turn::text("all done"))
+        .build();
+    let mut agent = agent(&provider, tools);
+
+    let started = std::time::Instant::now();
+    let (messages, events) = run_agent(&mut agent, Message::user("go")).await;
+    let took = started.elapsed();
+
+    assert!(
+        took >= hold * 3 - std::time::Duration::from_millis(30),
+        "three {hold:?} tools, one of them sequential, took {took:?}, which is together \
+         rather than one after another",
+    );
+
+    // A mixed batch still preserves the order the model asked for, one call fully
+    // answered before the next starts.
+    let ends: Vec<&str> = events
+        .tool_ends()
+        .into_iter()
+        .map(|(id, ..)| id)
+        .collect();
+    assert_eq!(ends, vec!["c1", "c2", "c3"]);
+
+    let answered: Vec<String> = messages
+        .iter()
+        .filter_map(|message| match message {
+            Message::ToolResult { tool_call_id, .. } => Some(tool_call_id.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(answered, vec!["c1", "c2", "c3"]);
+}
+
+/// One sequential tool in a batch forces every call in that batch to run one at a time —
+/// not only the sequential one against the others, but the whole batch against itself —
+/// which is what pi's own `executionMode` scheduling does with a mixed batch.
+#[tokio::test]
+async fn a_mixed_batch_runs_every_call_one_at_a_time_not_only_the_sequential_one() {
+    let hold = std::time::Duration::from_millis(150);
+    // None of "one" and "three" ask for anything; "two" is the one call that forces the
+    // whole batch to stop running together.
+    let tools: Vec<Arc<dyn micro_tools::Tool>> = vec![
+        Arc::new(SlowTool::new("one", hold)),
+        Arc::new(SlowTool::new("two", hold).sequential()),
+        Arc::new(SlowTool::new("three", hold)),
+    ];
+
+    let provider = FakeProvider::builder()
+        .turn(
+            Turn::new()
+                .with_tool_call("c1", "one", json!({}))
+                .with_tool_call("c2", "two", json!({}))
+                .with_tool_call("c3", "three", json!({})),
+        )
+        .turn(Turn::text("all done"))
+        .build();
+    let mut agent = agent(&provider, tools);
+
+    let started = std::time::Instant::now();
+    run_agent(&mut agent, Message::user("go")).await;
+    let took = started.elapsed();
+
+    assert!(
+        took >= hold * 3 - std::time::Duration::from_millis(30),
+        "one sequential tool in the batch took {took:?}, which is not every call waiting \
+         its turn",
+    );
+}
+
 /// A turn that failed still ends. Anything counting starts against ends would be left
 /// waiting for one that never arrived.
 #[tokio::test]
@@ -578,7 +734,10 @@ async fn a_failed_turn_still_reports_its_end() {
         .iter()
         .filter(|event| matches!(event, micro_types::AgentEvent::TurnEnd { .. }))
         .count();
-    assert_eq!(starts, ends, "every turn that started also ended: {events:?}");
+    assert_eq!(
+        starts, ends,
+        "every turn that started also ended: {events:?}"
+    );
     assert!(starts > 0, "a turn did start");
 }
 
@@ -590,10 +749,10 @@ async fn steering_reaches_the_run_that_is_already_going() {
         .turn(Turn::new().with_tool_call("c1", "slow", json!({})))
         .turn(Turn::text("done"))
         .build();
-    let tool: Arc<dyn micro_tools::Tool> = Arc::new(SlowTool {
-        name: "slow".into(),
-        holds_for: std::time::Duration::from_millis(150),
-    });
+    let tool: Arc<dyn micro_tools::Tool> = Arc::new(SlowTool::new(
+        "slow",
+        std::time::Duration::from_millis(150),
+    ));
     let mut agent = agent(&provider, vec![tool]);
 
     // Taken before the run, since the run borrows the agent for as long as it lasts.
@@ -650,4 +809,238 @@ async fn a_follow_up_continues_the_same_run() {
     assert_eq!(ends, 1, "one run, not two");
     assert_eq!(turns, 2, "and it took two turns to get through both");
     assert!(steering.is_empty(), "the queue was drained");
+}
+
+/// A hook that answers every call the same way, so a test can state one decision and see
+/// what the loop does with it.
+struct Deciding(micro_agent::ToolDecision);
+
+#[async_trait::async_trait]
+impl micro_agent::Hooks for Deciding {
+    async fn before_tool(
+        &self,
+        _id: &str,
+        _name: &str,
+        _arguments: &serde_json::Value,
+    ) -> micro_agent::ToolDecision {
+        self.0.clone()
+    }
+}
+
+/// Rewritten arguments are the ones the tool is handed, not the ones the model wrote.
+#[tokio::test]
+async fn a_hook_can_rewrite_a_call_before_it_runs() {
+    let provider = FakeProvider::builder()
+        .turn(Turn::new().with_tool_call("c1", "read", json!({ "path": "asked.txt" })))
+        .turn(Turn::text("done"))
+        .build();
+    let read = FakeTool::new("read").returning("contents");
+
+    let mut agent = agent(&provider, vec![Arc::new(read.clone())]).with_hooks(Arc::new(Deciding(
+        micro_agent::ToolDecision::Rewrite(json!({ "path": "instead.txt" })),
+    )));
+
+    let (_, events) = run_agent(&mut agent, Message::user("read it")).await;
+
+    assert_eq!(read.call_count(), 1, "the call still ran");
+    assert_eq!(
+        read.call(0),
+        json!({ "path": "instead.txt" }),
+        "the tool was handed the rewritten arguments"
+    );
+
+    // What is announced is what runs, so anything watching is not shown a call that never
+    // happened.
+    let announced = events
+        .events()
+        .iter()
+        .find_map(|event| match event {
+            micro_types::AgentEvent::ToolStart { arguments, .. } => Some(arguments.clone()),
+            _ => None,
+        })
+        .expect("the call was announced");
+    assert_eq!(announced, json!({ "path": "instead.txt" }));
+}
+
+/// A refusal stops the call and takes the place of the output the tool would have given.
+#[tokio::test]
+async fn a_hook_can_refuse_a_call() {
+    let provider = FakeProvider::builder()
+        .turn(Turn::new().with_tool_call("c1", "read", json!({ "path": "secret.txt" })))
+        .turn(Turn::text("understood"))
+        .build();
+    let read = FakeTool::new("read").returning("contents");
+
+    let mut agent = agent(&provider, vec![Arc::new(read.clone())]).with_hooks(Arc::new(Deciding(
+        micro_agent::ToolDecision::Refuse("not that one".to_string()),
+    )));
+
+    let (messages, _) = run_agent(&mut agent, Message::user("read it")).await;
+
+    assert_eq!(read.call_count(), 0, "the tool never ran");
+    assert!(
+        messages
+            .iter()
+            .any(|message| tool_result_text(message).contains("not that one")),
+        "the model was told why instead of getting output"
+    );
+}
+
+/// Doing nothing is the default, and leaves the call exactly as the model wrote it.
+#[tokio::test]
+async fn a_hook_that_proceeds_changes_nothing() {
+    let provider = FakeProvider::builder()
+        .turn(Turn::new().with_tool_call("c1", "read", json!({ "path": "asked.txt" })))
+        .turn(Turn::text("done"))
+        .build();
+    let read = FakeTool::new("read").returning("contents");
+
+    let mut agent = agent(&provider, vec![Arc::new(read.clone())])
+        .with_hooks(Arc::new(Deciding(micro_agent::ToolDecision::Proceed)));
+
+    run_agent(&mut agent, Message::user("read it")).await;
+
+    assert_eq!(read.call_count(), 1);
+    assert_eq!(read.call(0), json!({ "path": "asked.txt" }));
+}
+
+/// A credential is read for every request rather than copied once when the agent was
+/// built. A Copilot API token lives about half an hour, so a session that runs longer
+/// than that has to send the token the store has since minted, not the one it started on.
+#[tokio::test]
+async fn every_request_carries_the_credential_the_store_holds_now() {
+    let root = std::env::temp_dir().join("micro-testkit-credential-per-request");
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).unwrap();
+
+    let store = Arc::new(micro_auth::AuthStore::open_at(root.join("auth.json")).unwrap());
+    store
+        .set("anthropic", micro_auth::Credential::api_key("first"))
+        .unwrap();
+
+    let provider = FakeProvider::builder()
+        .turn(Turn::text("one"))
+        .turn(Turn::text("two"))
+        .build();
+    let mut agent = Agent::new(
+        Arc::new(provider.clone()),
+        Vec::new(),
+        model(),
+        micro_provider::ApiKey::Stored {
+            store: Arc::clone(&store),
+            provider: "anthropic".into(),
+            resolved: "first".into(),
+        },
+    );
+
+    run_agent(&mut agent, Message::user("before")).await;
+    store
+        .set("anthropic", micro_auth::Credential::api_key("second"))
+        .unwrap();
+    run_agent(&mut agent, Message::user("after")).await;
+
+    assert_eq!(provider.call(0).api_key, "first");
+    assert_eq!(provider.call(1).api_key, "second");
+}
+
+/// A deferred tool is not described to the model and is still callable, which is the whole
+/// point: the model learns of it by searching and then calls it by name like any other.
+#[tokio::test]
+async fn a_deferred_tool_is_hidden_from_the_model_but_still_runs() {
+    let provider = FakeProvider::builder()
+        .turn(Turn::new().with_tool_call("c1", "hidden", json!({})))
+        .turn(Turn::text("done"))
+        .build();
+    let hidden = FakeTool::new("hidden").returning("it ran anyway");
+    let plain = FakeTool::new("plain").returning("ordinary");
+
+    let mut agent = agent(
+        &provider,
+        vec![
+            Arc::new(micro_tools::Deferred::new(Arc::new(hidden.clone()))),
+            Arc::new(plain.clone()),
+        ],
+    );
+
+    let (messages, _) = run_agent(&mut agent, Message::user("use it")).await;
+
+    let calls = provider.calls();
+    let advertised = calls[0].tool_names();
+    assert!(
+        !advertised.contains(&"hidden"),
+        "a deferred tool is not described: {advertised:?}"
+    );
+    assert!(advertised.contains(&"plain"), "{advertised:?}");
+
+    assert_eq!(hidden.call_count(), 1, "and it still ran when asked for");
+    assert!(
+        messages
+            .iter()
+            .any(|message| tool_result_text(message).contains("it ran anyway")),
+        "its output reached the model"
+    );
+}
+
+/// A provider whose stream a test controls by hand, so a turn can be held open at a
+/// precise point rather than run to completion the way [`FakeProvider`] always does.
+struct PausedProvider {
+    stream: Mutex<Option<UnboundedReceiver<StreamEvent>>>,
+}
+
+impl Provider for PausedProvider {
+    fn name(&self) -> &str {
+        "paused"
+    }
+
+    fn stream(&self, _model: Model, _context: Context, _api_key: String) -> UnboundedReceiver<StreamEvent> {
+        self.stream
+            .lock()
+            .expect("stream lock")
+            .take()
+            .expect("stream() is called once per turn")
+    }
+}
+
+/// A turn abandoned mid-answer still reports that the run ended.
+///
+/// `run_turn` in the TUI and `Command::Abort` in the RPC mode both stop an interrupted
+/// turn the same way: by dropping the future `Agent::run()` returns, mid-poll, well before
+/// it reaches its own `AgentEnd`/`AgentSettled` at the end of the function. Nothing
+/// forwarding those two events to an extension host — or to anything else watching this
+/// run from outside — ever hears them for that turn unless something else says so.
+#[tokio::test]
+async fn an_interrupted_turn_still_settles() {
+    let (stream_tx, stream_rx) = tokio::sync::mpsc::unbounded_channel();
+    let provider = Arc::new(PausedProvider {
+        stream: Mutex::new(Some(stream_rx)),
+    });
+    let mut agent = Agent::new(provider, Vec::new(), model(), "test-key");
+
+    let (events_tx, mut events_rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut turn = Box::pin(agent.run(Message::user("go"), &events_tx));
+
+    // The response has begun; nothing sent after this would let the turn finish, so
+    // driving it further only ever waits on the next event from the stream.
+    stream_tx.send(StreamEvent::Start).expect("the agent is still listening");
+
+    tokio::select! {
+        _ = &mut turn => panic!("the turn should not be able to finish without more from the stream"),
+        _ = tokio::time::sleep(Duration::from_millis(50)) => {}
+    }
+
+    // Interrupted: the same as a reader's Ctrl+C, or an extension's `ctx.abort()` once
+    // that reaches this far — the future is abandoned, not awaited to completion.
+    drop(turn);
+
+    let mut settled = false;
+    let mut ended = false;
+    while let Ok(event) = events_rx.try_recv() {
+        match event {
+            micro_types::AgentEvent::AgentEnd { .. } => ended = true,
+            micro_types::AgentEvent::AgentSettled => settled = true,
+            _ => {}
+        }
+    }
+    assert!(ended, "an interrupted turn should still report AgentEnd");
+    assert!(settled, "an interrupted turn should still report AgentSettled");
 }

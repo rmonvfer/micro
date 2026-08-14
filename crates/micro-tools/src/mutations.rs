@@ -27,7 +27,9 @@ fn locks() -> &'static Mutex<HashMap<PathBuf, Arc<tokio::sync::Mutex<()>>>> {
 /// Wait for this file to be nobody else's, and hold it until the guard is dropped.
 pub async fn hold(path: &Path) -> tokio::sync::OwnedMutexGuard<()> {
     let lock = {
-        let mut held = locks().lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut held = locks()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         Arc::clone(held.entry(path.to_path_buf()).or_default())
     };
     lock.lock_owned().await

@@ -41,6 +41,7 @@ impl Tool for Read {
                 },
                 "required": ["path"],
             }),
+            constrained_sampling: None,
         }
     }
 
@@ -60,7 +61,10 @@ impl Tool for Read {
             return Ok(vec![
                 micro_types::ContentBlock::text(format!("Read image file [{mime_type}]")),
                 micro_types::ContentBlock::Image {
-                    data: base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &bytes),
+                    data: base64::Engine::encode(
+                        &base64::engine::general_purpose::STANDARD,
+                        &bytes,
+                    ),
                     mime_type: mime_type.to_string(),
                 },
             ]);
@@ -128,6 +132,7 @@ impl Tool for Write {
                 },
                 "required": ["path", "content"],
             }),
+            constrained_sampling: None,
         }
     }
 
@@ -180,6 +185,7 @@ impl Tool for Edit {
                 },
                 "required": ["path", "old_string", "new_string"],
             }),
+            constrained_sampling: None,
         }
     }
 
@@ -274,6 +280,7 @@ impl Tool for MultiEdit {
                 },
                 "required": ["path", "edits"],
             }),
+            constrained_sampling: None,
         }
     }
 
@@ -376,6 +383,7 @@ impl Tool for Ls {
                     },
                 },
             }),
+            constrained_sampling: None,
         }
     }
 
@@ -415,7 +423,9 @@ impl Tool for Ls {
         names.truncate(limit);
         let mut listing = names.join("\n");
         if total > limit {
-            listing.push_str(&format!("\n\n{limit} entry limit reached, {total} entries total"));
+            listing.push_str(&format!(
+                "\n\n{limit} entry limit reached, {total} entries total"
+            ));
         }
         Ok(truncate(&listing))
     }
@@ -724,7 +734,10 @@ mod images {
             .unwrap();
 
         assert_eq!(content.len(), 1);
-        let text: String = content.iter().map(micro_types::ContentBlock::as_text).collect();
+        let text: String = content
+            .iter()
+            .map(micro_types::ContentBlock::as_text)
+            .collect();
         assert!(text.contains("hello"));
         assert!(text.contains("1\t"), "line numbers are still there: {text}");
     }

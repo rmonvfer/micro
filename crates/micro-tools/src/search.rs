@@ -84,6 +84,7 @@ impl Tool for Grep {
                 },
                 "required": ["pattern"],
             }),
+            constrained_sampling: None,
         }
     }
 
@@ -174,6 +175,7 @@ impl Tool for Find {
                 },
                 "required": ["pattern"],
             }),
+            constrained_sampling: None,
         }
     }
 
@@ -794,14 +796,20 @@ mod literal_and_context {
             .execute(&json!({ "pattern": "a.b" }))
             .await
             .unwrap();
-        assert!(regex.contains("axb"), "as a regex the dot matches x: {regex}");
+        assert!(
+            regex.contains("axb"),
+            "as a regex the dot matches x: {regex}"
+        );
 
         let literal = Grep::new(root)
             .execute(&json!({ "pattern": "a.b", "literal": true }))
             .await
             .unwrap();
         assert!(literal.contains("a.b"), "{literal}");
-        assert!(!literal.contains("axb"), "literally, it does not: {literal}");
+        assert!(
+            !literal.contains("axb"),
+            "literally, it does not: {literal}"
+        );
     }
 
     /// Context shows the lines around a match, marked apart from it.
@@ -818,7 +826,10 @@ mod literal_and_context {
         assert!(output.contains("a.txt-2-two"), "{output}");
         assert!(output.contains("a.txt:3:needle"), "{output}");
         assert!(output.contains("a.txt-4-four"), "{output}");
-        assert!(!output.contains("one"), "only one line either side: {output}");
+        assert!(
+            !output.contains("one"),
+            "only one line either side: {output}"
+        );
     }
 
     /// Without context, only the matching line is shown, as before.

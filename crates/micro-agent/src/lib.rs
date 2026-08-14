@@ -8,6 +8,7 @@ pub use summarizer::ProviderSummarizer;
 use micro_context::CompactionConfig;
 use micro_context::Compactor;
 use micro_context::Summarizer;
+use micro_provider::ApiKey;
 use micro_provider::Provider;
 use micro_tools::Tool;
 use micro_types::now_ms;
@@ -21,6 +22,7 @@ use micro_types::StopReason;
 use micro_types::StreamEvent;
 use micro_types::ThinkingLevel;
 use micro_types::ToolDefinition;
+use micro_types::ToolExecutionMode;
 use micro_types::Usage;
 use serde_json::Value;
 use std::fmt;
@@ -48,7 +50,7 @@ pub const DEFAULT_CONTEXT_WINDOW: usize = 200_000;
 pub struct ModelSwap {
     pub provider: Arc<dyn Provider>,
     pub model: Model,
-    pub api_key: String,
+    pub api_key: ApiKey,
     pub context_window: usize,
 }
 
@@ -85,7 +87,10 @@ pub enum Record {
     Message(Message),
     /// A stretch replaced by a summary, with how many of the most recent messages are
     /// still part of the conversation.
-    Compacted { summary: String, kept: usize },
+    Compacted {
+        summary: String,
+        kept: usize,
+    },
 }
 
 /// A way to reach a run that is already going.
@@ -158,7 +163,7 @@ pub struct Agent {
     provider: Arc<dyn Provider>,
     tools: Vec<Arc<dyn Tool>>,
     model: Model,
-    api_key: String,
+    api_key: ApiKey,
     system_prompt: Option<String>,
     messages: Vec<Message>,
     recorder: Option<UnboundedSender<Record>>,
@@ -173,6 +178,12 @@ pub struct Agent {
     context_window: usize,
     /// What has been said to the run while it was running.
     steering: Steering,
+    /// Which tools the model is told about, when something has narrowed them.
+    ///
+    /// An extension may choose a subset for the turns that follow, so this is read each
+    /// time the model is told what exists rather than settled when the agent is built.
+    /// `None` inside means nobody has narrowed anything and every tool is offered.
+    offered: Option<Arc<std::sync::RwLock<Option<Vec<String>>>>>,
 }
 
 impl Agent {
@@ -180,7 +191,7 @@ impl Agent {
         provider: Arc<dyn Provider>,
         tools: Vec<Arc<dyn Tool>>,
         model: Model,
-        api_key: impl Into<String>,
+        api_key: impl Into<ApiKey>,
     ) -> Self {
         let api_key = api_key.into();
         let summarizer = Arc::new(ProviderSummarizer::new(
@@ -204,6 +215,7 @@ impl Agent {
             compaction: Some(CompactionConfig::default()),
             context_window: DEFAULT_CONTEXT_WINDOW,
             steering: Steering::default(),
+            offered: None,
         }
     }
 
@@ -308,6 +320,19 @@ impl Agent {
         self
     }
 
+    /// Read which tools to tell the model about from `offered`, rather than telling it
+    /// about all of them.
+    ///
+    /// Shared rather than given once, because whoever narrows the list does it while the
+    /// run is already built — an extension choosing the tools for the turns that follow.
+    pub fn with_offered_tools(
+        mut self,
+        offered: Arc<std::sync::RwLock<Option<Vec<String>>>>,
+    ) -> Self {
+        self.offered = Some(offered);
+        self
+    }
+
     /// Let something decide what the run may do.
     ///
     /// The one place anything outside the agent is allowed to change what happens rather
@@ -388,9 +413,12 @@ impl Agent {
         self.messages.push(message);
     }
 
-    /// Whether something watching the run refuses this call, and why.
-    async fn blocked(&self, id: &str, name: &str, arguments: &Value) -> Option<String> {
-        self.hooks.as_ref()?.before_tool(id, name, arguments).await
+    /// What anything watching the run has decided about this call.
+    async fn decide(&self, id: &str, name: &str, arguments: &Value) -> ToolDecision {
+        match &self.hooks {
+            Some(hooks) => hooks.before_tool(id, name, arguments).await,
+            None => ToolDecision::Proceed,
+        }
     }
 
     /// The result as it should reach the model, after anything watching has had it.
@@ -405,6 +433,55 @@ impl Agent {
             Some(hooks) => hooks.after_tool(id, name, output, is_error).await,
             None => (output, is_error),
         }
+    }
+
+    /// Carry a prepared call to its tool result: what preflight already settled, or a
+    /// tool's own run, rewritten by anything watching before the model sees it.
+    ///
+    /// Shared by both ways a batch is scheduled — one call at a time, or every runnable
+    /// call together — so a result is put together identically either way; only when this
+    /// runs relative to the rest of the batch differs.
+    async fn finish_call(
+        &self,
+        id: String,
+        name: String,
+        arguments: Value,
+        settled: Option<(String, bool)>,
+        runnable: Option<Arc<dyn Tool>>,
+        events: &Fan<'_>,
+    ) -> Message {
+        let (content, is_error) = match (settled, runnable) {
+            (Some((text, is_error)), _) => (vec![ContentBlock::text(text)], is_error),
+            (None, Some(tool)) => run_tool(tool, &id, &name, &arguments, events).await,
+            // Neither answered nor runnable cannot happen: the preflight sets one or the
+            // other for every call.
+            (None, None) => (
+                vec![ContentBlock::text(format!("tool not found: {name}"))],
+                true,
+            ),
+        };
+
+        // What ran can be rewritten before the model sees it, which is how a result is
+        // redacted or replaced by something watching. Only the text is offered: a rewrite
+        // is a decision about what the model should be told, so anything else the tool
+        // returned goes with it.
+        let said: String = content.iter().map(ContentBlock::as_text).collect();
+        let (output, is_error) = self.rewritten(&id, &name, said.clone(), is_error).await;
+        let content = match output == said {
+            true => content,
+            false => vec![ContentBlock::text(output.clone())],
+        };
+
+        // Reported the moment this call is done rather than when the whole batch is, so a
+        // quick tool is not held behind a slow one.
+        events.send(AgentEvent::ToolEnd {
+            id: id.clone(),
+            name: name.clone(),
+            output,
+            is_error,
+        });
+
+        Message::tool_result_content(id, name, content, is_error)
     }
 
     /// Both places an event goes, as one thing to send to.
@@ -440,8 +517,29 @@ impl Agent {
         produced.push(message);
     }
 
+    /// The tools the model is told about.
+    ///
+    /// A deferred tool is left out of this and still found by [`Agent::find_tool`], so the
+    /// model can call one it learned of by searching rather than by being told up front.
     fn tool_definitions(&self) -> Vec<ToolDefinition> {
-        self.tools.iter().map(|tool| tool.definition()).collect()
+        // Narrowing says which tools the model hears about, not which ones exist: a name
+        // that is not offered is still found by `find_tool`, the same way a deferred tool
+        // is, so a call already in flight when the list changed still runs.
+        let offered = self.offered.as_ref().and_then(|offered| {
+            offered
+                .read()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .clone()
+        });
+        self.tools
+            .iter()
+            .filter(|tool| !tool.deferred())
+            .map(|tool| tool.definition())
+            .filter(|definition| match &offered {
+                Some(names) => names.iter().any(|name| name == &definition.name),
+                None => true,
+            })
+            .collect()
     }
 
     fn find_tool(&self, name: &str) -> Option<&Arc<dyn Tool>> {
@@ -458,6 +556,13 @@ impl Agent {
         events: &UnboundedSender<AgentEvent>,
     ) -> Vec<Message> {
         let events = &self.fan(events);
+        // Armed for the rest of this call, and disarmed only once `AgentEnd`/
+        // `AgentSettled` are actually sent below. A turn abandoned before then — Ctrl+C,
+        // or a caller that simply stops polling — drops this future along with everything
+        // it owns, this guard included, and a `Drop` runs on that the same as it would on
+        // a normal return. See its own doc comment for why that is what a caller watching
+        // from outside this run needs.
+        let mut settle = SettleGuard::armed(events.clone_for_updates());
         let prompt = match &self.hooks {
             Some(hooks) => hooks.before_agent_start(&prompt).await.unwrap_or(prompt),
             None => prompt,
@@ -562,19 +667,25 @@ impl Agent {
             // arguments happen to parse but are silently incomplete. None are safe to run.
             let truncated = assistant.stop_reason == StopReason::Length;
 
-            // Every call is announced and vetted in the order the model asked for it, so
-            // whatever is watching sees a stable order and a refusal is decided before
-            // anything runs.
+            // A tool asking to run alone forces the whole batch to run one call at a time:
+            // there would be nothing for "alone" to mean if everything else in the same
+            // turn kept going around it. Looked up by name against the registered tools
+            // rather than against what preflight below decides, so a call that ends up
+            // refused or unresolved still counts — the model asked for that tool by name,
+            // and that is what the batch is scheduled around.
+            let sequential = calls.iter().any(|(_, name, _)| {
+                self.find_tool(name)
+                    .is_some_and(|tool| tool.execution_mode() == Some(ToolExecutionMode::Sequential))
+            });
+
+            // Every call is vetted and then announced, in the order the model asked for it,
+            // so whatever is watching sees a stable order and what it is shown is the call
+            // that actually runs.
             let mut prepared = Vec::with_capacity(calls.len());
             for (id, name, arguments) in calls {
-                events.send(AgentEvent::ToolStart {
-                    id: id.clone(),
-                    name: name.clone(),
-                    arguments: arguments.clone(),
-                });
-
                 // Either the call is already answered — refused, or never runnable — or a
                 // tool is held ready to run it.
+                let mut arguments = arguments;
                 let mut settled = None;
                 let mut runnable = None;
                 if truncated {
@@ -586,82 +697,75 @@ impl Agent {
                         ),
                         true,
                     ));
-                } else if let Some(refusal) = self.blocked(&id, &name, &arguments).await {
-                    // Something watching the run refused the call. The model is told why,
-                    // in the same shape a tool's own failure takes.
-                    settled = Some((refusal, true));
                 } else {
-                    match self.find_tool(&name) {
-                        Some(tool) => runnable = Some(Arc::clone(tool)),
-                        None => settled = Some((format!("tool not found: {name}"), true)),
+                    match self.decide(&id, &name, &arguments).await {
+                        // Something watching the run refused the call. The model is told
+                        // why, in the same shape a tool's own failure takes.
+                        ToolDecision::Refuse(reason) => settled = Some((reason, true)),
+                        decision => {
+                            // Rewritten arguments are the ones that run, so they are also
+                            // the ones announced, recorded, and handed to the tool.
+                            if let ToolDecision::Rewrite(replacement) = decision {
+                                arguments = replacement;
+                            }
+                            match self.find_tool(&name) {
+                                Some(tool) => runnable = Some(Arc::clone(tool)),
+                                None => settled = Some((format!("tool not found: {name}"), true)),
+                            }
+                        }
                     }
                 }
+
+                events.send(AgentEvent::ToolStart {
+                    id: id.clone(),
+                    name: name.clone(),
+                    arguments: arguments.clone(),
+                });
 
                 prepared.push((id, name, arguments, settled, runnable));
             }
 
-            // The calls the model asked for in one answer do not depend on each other, so
-            // they run together: a turn asking for several files takes as long as the
-            // slowest read rather than the sum of all of them.
-            // Shared for the length of the batch: every call reads the same hooks, and
-            // nothing is committed until they have all answered.
-            let agent = &*self;
-            let ran = futures::future::join_all(prepared.into_iter().map(
-                |(id, name, arguments, settled, runnable)| {
-                    let events = &events;
-                    async move {
-                        let (content, is_error) = match (settled, runnable) {
-                            (Some((text, is_error)), _) => {
-                                (vec![ContentBlock::text(text)], is_error)
-                            }
-                            (None, Some(tool)) => {
-                                run_tool(tool, &id, &name, &arguments, events).await
-                            }
-                            // Neither answered nor runnable cannot happen: the preflight
-                            // sets one or the other for every call.
-                            (None, None) => (
-                                vec![ContentBlock::text(format!("tool not found: {name}"))],
-                                true,
-                            ),
-                        };
+            if sequential {
+                // A tool in this batch must run alone, so every call in it does: each is
+                // executed, rewritten, reported and committed before the next one starts,
+                // rather than the batch racing to whichever finishes first.
+                for (id, name, arguments, settled, runnable) in prepared {
+                    let result = self
+                        .finish_call(id, name, arguments, settled, runnable, events)
+                        .await;
+                    events.send(AgentEvent::MessageStart {
+                        message: result.clone(),
+                    });
+                    events.send(AgentEvent::MessageEnd {
+                        message: result.clone(),
+                    });
+                    self.commit(result, &mut produced);
+                }
+            } else {
+                // The calls the model asked for in one answer do not depend on each other,
+                // so they run together: a turn asking for several files takes as long as
+                // the slowest read rather than the sum of all of them.
+                // Shared for the length of the batch: every call reads the same hooks, and
+                // nothing is committed until they have all answered.
+                let agent = &*self;
+                let ran = futures::future::join_all(prepared.into_iter().map(
+                    |(id, name, arguments, settled, runnable)| {
+                        agent.finish_call(id, name, arguments, settled, runnable, events)
+                    },
+                ))
+                .await;
 
-                        // What ran can be rewritten before the model sees it, which is how
-                        // a result is redacted or replaced by something watching. Only the
-                        // text is offered: a rewrite is a decision about what the model
-                        // should be told, so anything else the tool returned goes with it.
-                        let said: String = content.iter().map(ContentBlock::as_text).collect();
-                        let (output, is_error) =
-                            agent.rewritten(&id, &name, said.clone(), is_error).await;
-                        let content = match output == said {
-                            true => content,
-                            false => vec![ContentBlock::text(output.clone())],
-                        };
-
-                        // Reported the moment this call is done rather than when the whole
-                        // batch is, so a quick tool is not held behind a slow one.
-                        events.send(AgentEvent::ToolEnd {
-                            id: id.clone(),
-                            name: name.clone(),
-                            output,
-                            is_error,
-                        });
-
-                        Message::tool_result_content(id, name, content, is_error)
-                    }
-                },
-            ))
-            .await;
-
-            // Committed in the order the model asked, whatever order they finished in, so
-            // the conversation reads the same every time.
-            for result in ran {
-                events.send(AgentEvent::MessageStart {
-                    message: result.clone(),
-                });
-                events.send(AgentEvent::MessageEnd {
-                    message: result.clone(),
-                });
-                self.commit(result, &mut produced);
+                // Committed in the order the model asked, whatever order they finished
+                // in, so the conversation reads the same every time.
+                for result in ran {
+                    events.send(AgentEvent::MessageStart {
+                        message: result.clone(),
+                    });
+                    events.send(AgentEvent::MessageEnd {
+                        message: result.clone(),
+                    });
+                    self.commit(result, &mut produced);
+                }
             }
 
             // One exchange is over: the model answered and every tool it asked for has
@@ -677,6 +781,7 @@ impl Agent {
         // Nothing is left to do, which is a different thing from the run being over: a
         // caller with more queued starts another run without ever settling.
         events.send(AgentEvent::AgentSettled);
+        settle.disarm();
         produced
     }
 
@@ -740,9 +845,13 @@ impl Agent {
 
         loop {
             attempt += 1;
-            let mut stream =
-                self.provider
-                    .stream(self.model.clone(), context.clone(), self.api_key.clone());
+            // Asked for once per attempt rather than held: a credential that expires is
+            // exchanged by whoever owns it, and a request made an hour into a session
+            // must carry the token that is current then, not the one it started with.
+            let api_key = self.api_key.current().await;
+            let mut stream = self
+                .provider
+                .stream(self.model.clone(), context.clone(), api_key);
 
             let mut emitted_content = false;
             let mut outcome: Option<Result<AssistantMessage, String>> = None;
@@ -1185,6 +1294,22 @@ impl Fan<'_> {
     }
 }
 
+/// What something watching the run decided about a tool call.
+///
+/// Rewriting rather than only refusing is what lets a hook fix a call instead of ending
+/// it: a path made absolute, a flag added, a secret taken out of a command before it runs.
+/// The model is never told the call changed, because the call it asked for is the one it
+/// meant; what changed is how it was carried out.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ToolDecision {
+    /// Run the call as the model wrote it.
+    Proceed,
+    /// Run it with these arguments in place of the ones the model wrote.
+    Rewrite(Value),
+    /// Do not run it. The reason takes the place of the output the tool would have given.
+    Refuse(String),
+}
+
 /// Something allowed to change what a run does, rather than only to watch it.
 ///
 /// Every point sits between two things the agent would otherwise do directly: between the
@@ -1193,11 +1318,10 @@ impl Fan<'_> {
 /// changes nothing, so an implementation takes only the ones it cares about.
 #[async_trait::async_trait]
 pub trait Hooks: Send + Sync {
-    /// Called before a tool runs. `Some(reason)` refuses the call, and the reason is what
-    /// the model is told instead of the tool's output.
-    async fn before_tool(&self, id: &str, name: &str, arguments: &Value) -> Option<String> {
+    /// Called before a tool runs, with the chance to change the call or refuse it.
+    async fn before_tool(&self, id: &str, name: &str, arguments: &Value) -> ToolDecision {
         let _ = (id, name, arguments);
-        None
+        ToolDecision::Proceed
     }
 
     /// Called once a tool has answered, before the model reads it. Returns the output and
@@ -1243,5 +1367,47 @@ impl Updates {
             let _ = observer.send(event.clone());
         }
         let _ = self.primary.send(event);
+    }
+}
+
+/// Reports that a run ended even when `run()` never says so itself.
+///
+/// `run()` sends `AgentEnd` and `AgentSettled` as its last two lines, reached only by
+/// returning normally. An interrupted turn does not return normally: the caller stops
+/// polling the future and drops it, which is how micro-tui's `run_turn` and micro-rpc's
+/// `turn()` both carry out an abort. Dropping a future drops its live locals exactly the
+/// way leaving a block drops the locals declared in it, so a guard that is one of those
+/// locals has its own `Drop` run on the same path — reported empty, since nothing here
+/// reconstructs what the abandoned turn had produced by that point. A listener told
+/// nothing at all could not tell an interrupted run from one still in progress; this way
+/// it can.
+struct SettleGuard {
+    events: Updates,
+    armed: bool,
+}
+
+impl SettleGuard {
+    fn armed(events: Updates) -> Self {
+        SettleGuard {
+            events,
+            armed: true,
+        }
+    }
+
+    /// Say the run's own `AgentEnd`/`AgentSettled` already went out, so this reports
+    /// nothing when it is dropped.
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for SettleGuard {
+    fn drop(&mut self) {
+        if self.armed {
+            self.events.send(AgentEvent::AgentEnd {
+                messages: Vec::new(),
+            });
+            self.events.send(AgentEvent::AgentSettled);
+        }
     }
 }

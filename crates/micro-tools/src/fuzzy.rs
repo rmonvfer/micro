@@ -98,7 +98,10 @@ mod tests {
     fn an_exact_match_is_taken_as_it_is() {
         let found = find("let a = 1;", "a = 1").expect("it is there");
         assert!(!found.fuzzy);
-        assert_eq!(&found.haystack[found.start..found.start + found.length], "a = 1");
+        assert_eq!(
+            &found.haystack[found.start..found.start + found.length],
+            "a = 1"
+        );
     }
 
     /// A curly quote in the edit against a straight one in the file, which is what comes

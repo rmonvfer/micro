@@ -5,6 +5,7 @@ use micro_context::ContextError;
 use micro_context::Result;
 use micro_context::Summarizer;
 use micro_context::COMPACTION_PROMPT;
+use micro_provider::ApiKey;
 use micro_provider::Provider;
 use micro_types::Context;
 use micro_types::Message;
@@ -20,11 +21,11 @@ use std::sync::Arc;
 pub struct ProviderSummarizer {
     provider: Arc<dyn Provider>,
     model: Model,
-    api_key: String,
+    api_key: ApiKey,
 }
 
 impl ProviderSummarizer {
-    pub fn new(provider: Arc<dyn Provider>, model: Model, api_key: impl Into<String>) -> Self {
+    pub fn new(provider: Arc<dyn Provider>, model: Model, api_key: impl Into<ApiKey>) -> Self {
         ProviderSummarizer {
             provider,
             model,
@@ -50,7 +51,9 @@ impl Summarizer for ProviderSummarizer {
         // rather than kept as the summary.
         model.thinking = ThinkingLevel::Off;
 
-        let mut stream = self.provider.stream(model, context, self.api_key.clone());
+        let mut stream = self
+            .provider
+            .stream(model, context, self.api_key.current().await);
 
         while let Some(event) = stream.recv().await {
             match event {
