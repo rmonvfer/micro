@@ -8,8 +8,8 @@
 use async_trait::async_trait;
 use micro_auth::AuthStore;
 use micro_commands::CommandContext;
-use micro_commands::Picker;
 use micro_commands::CommandOutcome;
+use micro_commands::Picker;
 use micro_models::Catalog;
 use micro_models::ModelDef;
 use micro_session::Session;
@@ -24,7 +24,7 @@ use tokio::sync::Mutex;
 /// Everything a command reads, which is what the agent was built from minus the agent.
 pub struct CliCommands {
     catalog: Catalog,
-    auth: AuthStore,
+    auth: Arc<AuthStore>,
     sessions: SessionStore,
     workspace: PathBuf,
     provider: String,
@@ -51,12 +51,29 @@ pub struct CliCommands {
     thinking: micro_types::ThinkingLevel,
     /// The extension host, so a command an extension registered can be run.
     extensions: Option<Arc<micro_extensions::Host>>,
+    /// How a phone reaches the interface, once this session has been handed to one.
+    seam: crate::remote::Seam,
+    /// Where the run is copied to while a phone is watching.
+    mirror: crate::remote::Mirror,
+    /// What the phone is told about the session.
+    snapshot: Arc<Mutex<crate::remote::Snapshot>>,
+    /// Whether a phone already has this session, so a second `/remote` says so
+    /// rather than opening a second connection.
+    remote_started: bool,
     /// Warn that a subscription credential bills per token here. Said once a run, as ohm
     /// says it: repeating it every model swap would train the reader to skip it.
     anthropic_extra_usage: bool,
     warned_about_extra_usage: bool,
     /// The user's own prompt files, which become commands named after them.
     prompts: Vec<micro_prompts::PromptTemplate>,
+    /// Whether the line just dispatched asked to step to the neighboring model rather than
+    /// naming one — set in `dispatch`, read and reset in `swap_to`, since that is where
+    /// ohm's `model_select` needs to say `"cycle"` instead of `"set"`.
+    model_source: &'static str,
+    /// Every tool this run actually offers the model, so `/reload` can tell which extension
+    /// tools are still owed their line in the system prompt and which were left out by
+    /// `--tools` or `--exclude-tools`.
+    tool_names: Vec<String>,
 }
 
 /// Everything a host is built from. Gathered into one value because a run assembles all
@@ -64,7 +81,7 @@ pub struct CliCommands {
 /// a mistake.
 pub struct HostParts {
     pub catalog: Catalog,
-    pub auth: AuthStore,
+    pub auth: Arc<AuthStore>,
     pub sessions: SessionStore,
     pub workspace: PathBuf,
     pub provider: String,
@@ -82,6 +99,13 @@ pub struct HostParts {
     pub anthropic_extra_usage: bool,
     pub extensions: Option<Arc<micro_extensions::Host>>,
     pub prompts: Vec<micro_prompts::PromptTemplate>,
+    pub tool_names: Vec<String>,
+    /// How a phone reaches the interface, once this session has been handed to one.
+    pub seam: crate::remote::Seam,
+    /// Where the run is copied to while a phone is watching.
+    pub mirror: crate::remote::Mirror,
+    /// What the phone is told about the session, kept current as it changes.
+    pub snapshot: std::sync::Arc<Mutex<crate::remote::Snapshot>>,
 }
 
 impl CliCommands {
@@ -106,6 +130,12 @@ impl CliCommands {
             anthropic_extra_usage: parts.anthropic_extra_usage,
             warned_about_extra_usage: false,
             prompts: parts.prompts,
+            seam: parts.seam,
+            mirror: parts.mirror,
+            snapshot: parts.snapshot,
+            remote_started: false,
+            model_source: "set",
+            tool_names: parts.tool_names,
         }
     }
 
@@ -126,13 +156,29 @@ impl CliCommands {
             .map_err(|error| format!("cannot write the settings: {error}"))
     }
 
+    /// Write the chosen thinking level to the settings, so the next run uses it.
+    fn remember_thinking(&self, level: micro_types::ThinkingLevel) -> Result<(), String> {
+        let path = self.home.join(micro_config::FILE_NAME);
+        let mut config = micro_config::Config::load_from(&path)
+            .map_err(|error| format!("cannot read the settings: {error}"))?;
+        config.thinking = Some(match level {
+            micro_types::ThinkingLevel::Off => micro_config::Thinking::Off,
+            micro_types::ThinkingLevel::Minimal => micro_config::Thinking::Minimal,
+            micro_types::ThinkingLevel::Low => micro_config::Thinking::Low,
+            micro_types::ThinkingLevel::Medium => micro_config::Thinking::Medium,
+            micro_types::ThinkingLevel::High => micro_config::Thinking::High,
+            micro_types::ThinkingLevel::XHigh => micro_config::Thinking::XHigh,
+            micro_types::ThinkingLevel::Max => micro_config::Thinking::Max,
+        });
+        config
+            .save_to(&path)
+            .map_err(|error| format!("cannot write the settings: {error}"))
+    }
+
     /// Run one of the user's own prompt files, if the line names one.
     fn prompt_command(&self, line: &str) -> Option<CommandOutcome> {
         let (name, arguments) = command_parts(line)?;
-        let template = self
-            .prompts
-            .iter()
-            .find(|template| template.name == name)?;
+        let template = self.prompts.iter().find(|template| template.name == name)?;
         Some(CommandOutcome::Send {
             prompt: template.render(arguments),
         })
@@ -173,29 +219,46 @@ impl CliCommands {
             }
         };
 
-        if resolved.api_key.trim().is_empty() {
+        if resolved.api_key.is_blank() {
             return Applied::error(format!(
                 "No credential for {}. Run `micro auth login {}`.",
                 model.provider, model.provider
             ));
         }
 
+        // Read before they are overwritten below, and the source is consumed rather than
+        // merely read: the line that led here is spent, and a later swap it did not ask
+        // for — reapplying the model already in use after signing in, say — starts fresh.
+        let previous_model = self.model.clone();
+        let source = std::mem::replace(&mut self.model_source, "set");
+
         // Kept in step so the next command reports the model that is actually running.
         self.provider = model.provider.clone();
         self.model = model.clone();
+        let session_model = model.qualified_id();
+        if let Err(error) = self.session.lock().await.set_model_id(session_model).await {
+            return Applied::error(format!("Could not update the session model: {error}"));
+        }
         // And remembered, so the next run starts on it. Choosing a model is a decision
         // about how to work, not about this conversation.
         let remembered = self.remember_model(model);
-        crate::extensions::announce(
-            self.extensions.as_ref(),
-            "model_select",
-            serde_json::json!({
-                "model": { "id": model.id, "provider": model.provider },
-            }),
-        )
-        .await;
+        // Ohm skips this event outright when the model did not actually change; the same
+        // guard applies here, since reapplying the model already in use is not a selection
+        // to report.
+        if previous_model.qualified_id() != model.qualified_id() {
+            crate::extensions::announce(
+                self.extensions.as_ref(),
+                "model_select",
+                serde_json::json!({
+                    "model": model_json(model),
+                    "previousModel": model_json(&previous_model),
+                    "source": source,
+                }),
+            )
+            .await;
+        }
 
-        let mut note = match self.subscription_warning(&resolved.api_key, &model.provider) {
+        let mut note = match self.subscription_warning(resolved.api_key.as_str(), &model.provider) {
             Some(warning) => format!("Model: {}\n{warning}", model.qualified_id()),
             None => format!("Model: {}", model.qualified_id()),
         };
@@ -251,15 +314,51 @@ impl CliCommands {
         }
     }
 
+    /// Every branch entry on the current path, in path order — the closest micro's tree
+    /// comes to the `SessionEntry[]` ohm's compaction events carry. What compaction
+    /// actually replaces is computed well below here, inside the agent loop, so the
+    /// richer `preparation` object ohm builds ahead of time (with token counts and the
+    /// exact stretch chosen) is not available to build from at this hook.
+    async fn branch_entries(&self) -> Vec<serde_json::Value> {
+        let session = self.session.lock().await;
+        let tree = session.tree();
+        let mut entries: Vec<(usize, &micro_session::Entry)> = tree
+            .entries()
+            .iter()
+            .filter_map(|entry| tree.position_on_path(&entry.id).map(|position| (position, entry)))
+            .collect();
+        entries.sort_by_key(|(position, _)| *position);
+        entries
+            .into_iter()
+            .map(|(_, entry)| {
+                serde_json::json!({ "id": entry.id, "message": micro_extensions::message_json(&entry.message) })
+            })
+            .collect()
+    }
+
     /// Continue the open conversation from an earlier entry.
     ///
     /// Nothing is deleted: what came after stays in the log as another branch, and the
     /// next message appended hangs off the entry that was chosen.
     async fn branch(&mut self, entry_id: &str) -> Applied {
+        let old_leaf_id = self.session.lock().await.tree().head().map(str::to_string);
         if crate::extensions::cancelled(
             self.extensions.as_ref(),
             "session_before_tree",
-            serde_json::json!({ "entryId": entry_id }),
+            serde_json::json!({
+                "preparation": {
+                    "targetId": entry_id,
+                    "oldLeafId": old_leaf_id,
+                    // `/tree` only ever moves to an entry already on the current path, so
+                    // that entry is its own common ancestor with the leaf it is leaving —
+                    // unlike ohm's `navigateTree`, which can also land on an unrelated
+                    // branch, this one never needs to search for where two branches meet.
+                    "commonAncestorId": entry_id,
+                    "entriesToSummarize": [],
+                    // micro's `/tree` does not summarize the branch it leaves.
+                    "userWantsSummary": false,
+                },
+            }),
         )
         .await
         {
@@ -279,7 +378,10 @@ impl CliCommands {
         crate::extensions::announce(
             self.extensions.as_ref(),
             "session_tree",
-            serde_json::json!({ "entryId": entry_id }),
+            serde_json::json!({
+                "newLeafId": session.tree().head(),
+                "oldLeafId": old_leaf_id,
+            }),
         )
         .await;
 
@@ -297,6 +399,19 @@ impl CliCommands {
     /// log follows: from here on, what is said is appended to the reopened conversation
     /// rather than to the one that was left.
     async fn resume(&mut self, session_id: &str) -> Applied {
+        // micro addresses a session by its id rather than by the file ohm would name here;
+        // the id is what an extension can act on regardless — asking to resume it again,
+        // say — so it stands in for `targetSessionFile`.
+        if crate::extensions::cancelled(
+            self.extensions.as_ref(),
+            "session_before_switch",
+            serde_json::json!({ "reason": "resume", "targetSessionFile": session_id }),
+        )
+        .await
+        {
+            return Applied::note("An extension stopped the switch");
+        }
+
         let loaded = match self.sessions.load(session_id).await {
             Ok(loaded) => loaded,
             Err(error) => {
@@ -305,12 +420,13 @@ impl CliCommands {
         };
 
         let messages = loaded.messages;
+        let previous_session_file = self.session.lock().await.path().display().to_string();
         self.session_id = loaded.session.id().to_string();
         *self.session.lock().await = loaded.session;
         crate::extensions::announce(
             self.extensions.as_ref(),
             "session_start",
-            serde_json::json!({ "session_id": self.session_id, "resumed": true }),
+            serde_json::json!({ "reason": "resume", "previousSessionFile": previous_session_file }),
         )
         .await;
 
@@ -325,18 +441,29 @@ impl CliCommands {
     /// The conversation that was left is not touched. It stays on disk under its own id,
     /// which is what makes starting over cheap.
     async fn start_new_session(&mut self) -> Applied {
+        if crate::extensions::cancelled(
+            self.extensions.as_ref(),
+            "session_before_switch",
+            serde_json::json!({ "reason": "new" }),
+        )
+        .await
+        {
+            return Applied::note("An extension stopped the switch");
+        }
+
         let started = self
             .sessions
             .create(&self.workspace, self.model.qualified_id())
             .await;
         match started {
             Ok(session) => {
+                let previous_session_file = self.session.lock().await.path().display().to_string();
                 self.session_id = session.id().to_string();
                 *self.session.lock().await = session;
                 crate::extensions::announce(
                     self.extensions.as_ref(),
                     "session_start",
-                    serde_json::json!({ "session_id": self.session_id, "resumed": false }),
+                    serde_json::json!({ "reason": "new", "previousSessionFile": previous_session_file }),
                 )
                 .await;
                 Applied::Conversation {
@@ -364,9 +491,7 @@ impl CliCommands {
             .await
         {
             Ok(imported) => imported,
-            Err(error) => {
-                return Applied::error(format!("Failed to import session: {error}"))
-            }
+            Err(error) => return Applied::error(format!("Failed to import session: {error}")),
         };
 
         let mut note = format!("Session imported from: {}", source.display());
@@ -384,6 +509,67 @@ impl CliCommands {
         Applied::Conversation {
             messages,
             note: Some(note),
+        }
+    }
+
+    /// Put this session on the paired phone, or bond a phone to this machine.
+    ///
+    /// Pairing is the one-off, and the only thing that shows a link. Publishing shows
+    /// nothing worth reading: the session appears in the app's list, which is where
+    /// someone reaching for their phone is already looking.
+    async fn remote(&mut self, action: micro_commands::RemoteAction) -> Applied {
+        if let micro_commands::RemoteAction::Pair { qr } = action {
+            return match crate::remote::pair(&self.home, qr).await {
+                Ok(lines) => Applied::note(lines.join("\n")),
+                Err(error) => Applied::error(format!("Could not pair a phone: {error}")),
+            };
+        }
+
+        if !crate::remote::is_paired(&self.home) {
+            return Applied::warning(
+                "No phone is paired with this machine yet. Run /remote pair to bond one.",
+            );
+        }
+        if self.remote_started {
+            return Applied::note("This session is already on your phone.");
+        }
+        let models = self
+            .catalog
+            .models()
+            .iter()
+            .map(|model| micro_remote::AvailableModel {
+                id: model.qualified_id(),
+                name: model.name.clone(),
+                provider: model.provider.clone(),
+            })
+            .collect();
+
+        // The session's own name is what the phone lists it under, so it is read now
+        // rather than left as the id it was seeded with.
+        if let Ok(session) = self.session.try_lock() {
+            let title = session.meta().title.clone();
+            if !title.is_empty() {
+                self.snapshot.lock().await.session_name = title;
+            }
+        }
+
+        let started = crate::remote::start(
+            &self.seam,
+            &self.mirror,
+            Arc::clone(&self.session),
+            Arc::clone(&self.snapshot),
+            self.session_id.clone(),
+            models,
+            &self.home,
+        )
+        .await;
+
+        match started {
+            Ok(()) => {
+                self.remote_started = true;
+                Applied::note("This session is on your phone.")
+            }
+            Err(error) => Applied::error(format!("Could not put this session on your phone: {error}")),
         }
     }
 
@@ -425,14 +611,16 @@ impl CliCommands {
                 .await
                 .unwrap_or_default()
                 .is_trusted(&self.workspace);
-        let context =
-            crate::runtime::load_context(
-                &self.workspace,
-                self.skills_enabled,
-                trusted,
-                &self.resources,
-            )
-            .await;
+        let context = crate::runtime::load_context(
+            &self.workspace,
+            self.skills_enabled,
+            trusted,
+            &self.resources,
+            self.extensions.as_deref(),
+            &self.tool_names,
+            "reload",
+        )
+        .await;
 
         let mut note = format!(
             "Reloaded {} and {}.",
@@ -521,16 +709,26 @@ impl CliCommands {
     /// Copy the conversation up to a point into a session of its own, and carry on in the
     /// copy. The session it came from is left exactly as it was.
     async fn fork(&mut self, session_id: &str, through_index: usize, whole: bool) -> Applied {
+        // Ohm addresses a fork by the tree entry to fork from; micro's own `/fork` takes a
+        // position along the path instead, so the entry id ohm's event carries is looked
+        // up from that position rather than being micro's own indexing. `/fork` keeps
+        // everything up to and including that entry, which is what ohm calls "at" rather
+        // than "before".
+        let entry_id = {
+            let session = self.session.lock().await;
+            let tree = session.tree();
+            tree.entries()
+                .iter()
+                .find(|entry| tree.position_on_path(&entry.id) == Some(through_index))
+                .map(|entry| entry.id.clone())
+                .unwrap_or_else(|| through_index.to_string())
+        };
         // Asked before the copy is made, so refusing it leaves the session untouched
         // rather than reporting a fork that has already happened.
         if crate::extensions::cancelled(
             self.extensions.as_ref(),
             "session_before_fork",
-            serde_json::json!({
-                "session_id": session_id,
-                "position": through_index,
-                "whole": whole,
-            }),
+            serde_json::json!({ "entryId": entry_id, "position": "at" }),
         )
         .await
         {
@@ -545,12 +743,16 @@ impl CliCommands {
         };
 
         let messages = forked.branch();
+        // A fork is a fresh session file, the same as `/new` and `/resume` are — which is
+        // what ohm reports it as too: there is no separate "a fork happened" event, only
+        // `session_start` with `reason: "fork"`.
+        let previous_session_file = self.session.lock().await.path().display().to_string();
         self.session_id = forked.id().to_string();
         *self.session.lock().await = forked;
         crate::extensions::announce(
             self.extensions.as_ref(),
-            "session_fork",
-            serde_json::json!({ "session_id": self.session_id, "whole": whole }),
+            "session_start",
+            serde_json::json!({ "reason": "fork", "previousSessionFile": previous_session_file }),
         )
         .await;
 
@@ -571,25 +773,32 @@ impl CliCommands {
 impl Commands for CliCommands {
     /// What the user typed, before anything is done with it. An extension may rewrite it,
     /// or swallow it by answering that it handled it.
+    ///
+    /// Ohm's three input sources are interactive typing, the RPC transport, and an
+    /// extension sending itself a message; RPC input never reaches this method at all — it
+    /// is answered by `micro-rpc`, a separate pump that does not go through `Commands` —
+    /// so what arrives here, print-mode's one-shot prompt included, is always reported as
+    /// `"interactive"`: neither of the other two.
     async fn submitted(&mut self, line: String) -> Option<String> {
         let answers = crate::extensions::consult(
             self.extensions.as_ref(),
             "input",
-            serde_json::json!({ "text": line }),
+            serde_json::json!({ "text": line, "source": "interactive" }),
         )
         .await;
 
         let mut line = line;
         for answer in answers {
-            if answer
-                .get("handled")
-                .and_then(serde_json::Value::as_bool)
-                .unwrap_or(false)
-            {
-                return None;
-            }
-            if let Some(text) = answer.get("text").and_then(serde_json::Value::as_str) {
-                line = text.to_string();
+            match answer.get("action").and_then(serde_json::Value::as_str) {
+                Some("handled") => return None,
+                Some("transform") => {
+                    if let Some(text) = answer.get("text").and_then(serde_json::Value::as_str) {
+                        line = text.to_string();
+                    }
+                }
+                // `"continue"`, or anything else — an extension that didn't answer ohm's
+                // shape at all — changes nothing.
+                _ => {}
             }
         }
         Some(line)
@@ -599,11 +808,12 @@ impl Commands for CliCommands {
         let Some(host) = self.extensions.clone() else {
             return false;
         };
-        let bound = host
-            .loaded()
-            .extensions
-            .iter()
-            .any(|extension| extension.shortcuts.iter().any(|shortcut| shortcut.key == key));
+        let bound = host.loaded().extensions.iter().any(|extension| {
+            extension
+                .shortcuts
+                .iter()
+                .any(|shortcut| shortcut.key == key)
+        });
         if !bound {
             return false;
         }
@@ -616,41 +826,93 @@ impl Commands for CliCommands {
     }
 
     async fn thinking_changed(&mut self, level: micro_types::ThinkingLevel) {
-        // Remembered here so a model swap carries it rather than resetting it.
+        let previous_level = self.thinking;
         self.thinking = level;
+        if let Err(error) = self.remember_thinking(level) {
+            eprintln!("note: thinking level was not remembered for next time: {error}");
+        }
         crate::extensions::announce(
             self.extensions.as_ref(),
             "thinking_level_select",
-            serde_json::json!({ "level": format!("{level:?}").to_lowercase() }),
+            serde_json::json!({
+                "level": format!("{level:?}").to_lowercase(),
+                "previousLevel": format!("{previous_level:?}").to_lowercase(),
+            }),
         )
         .await;
     }
 
     async fn compacting(&mut self) -> bool {
+        // micro's own auto-compaction — triggered by the context threshold or by overflow
+        // recovery — runs inside the agent loop, which has no extension hook of its own
+        // for compaction at all. Only `/compact`, dispatched through here, can be asked
+        // about, so `reason` is always `"manual"` and `willRetry` is always `false`.
         !crate::extensions::cancelled(
             self.extensions.as_ref(),
             "session_before_compact",
-            serde_json::json!({}),
+            serde_json::json!({
+                "branchEntries": self.branch_entries().await,
+                "reason": "manual",
+                "willRetry": false,
+            }),
         )
         .await
     }
 
     async fn compacted(&mut self, summary: &str) {
+        // `compacted` is handed only the finished summary text; the richer
+        // `CompactionEntry` ohm reports — its own id, the first entry still kept, when it
+        // happened — is not, so `compactionEntry` here carries just the part that is.
         crate::extensions::announce(
             self.extensions.as_ref(),
             "session_compact",
-            serde_json::json!({ "summary": summary }),
+            serde_json::json!({
+                "compactionEntry": { "summary": summary },
+                "fromExtension": false,
+                "reason": "manual",
+                "willRetry": false,
+            }),
         )
         .await;
     }
 
-    async fn ran_bash(&mut self, command: &str, output: &str, failed: bool) {
-        crate::extensions::announce(
+    async fn before_bash(
+        &mut self,
+        command: &str,
+        exclude_from_context: bool,
+        cwd: &str,
+    ) -> Option<micro_tui::BashRun> {
+        let answers = crate::extensions::consult(
             self.extensions.as_ref(),
             "user_bash",
-            serde_json::json!({ "command": command, "output": output, "failed": failed }),
+            serde_json::json!({
+                "command": command,
+                "excludeFromContext": exclude_from_context,
+                "cwd": cwd,
+            }),
         )
         .await;
+
+        // The first extension to answer with anything at all decides, the same way ohm's
+        // own runner stops at the first `user_bash` handler that returns something.
+        // `operations` — a custom execution strategy — has nowhere to plug in here: `!`
+        // always shells out directly, unlike the `bash` tool, which is built around a
+        // swappable executor. Only a full `result` is honoured; an answer that sets only
+        // `operations` is skipped, and the command runs as it would have.
+        answers.iter().find_map(|answer| {
+            let result = answer.get("result")?;
+            let output = result
+                .get("output")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default()
+                .to_string();
+            let failed = result.get("cancelled").and_then(serde_json::Value::as_bool).unwrap_or(false)
+                || result
+                    .get("exitCode")
+                    .and_then(serde_json::Value::as_i64)
+                    .is_some_and(|code| code != 0);
+            Some(micro_tui::BashRun { output, failed })
+        })
     }
 
     /// What a submitted line means, in the order the names are claimed.
@@ -670,16 +932,18 @@ impl Commands for CliCommands {
             // the borrow that started it. The token says which host serves this account;
             // only an individual plan is served by the default one.
             let copilot = match micro_auth::AuthStore::open() {
-                Ok(store) => store
-                    .resolve(micro_auth::GITHUB_COPILOT)
-                    .await
-                    .ok()
-                    .map(|credential| {
-                        let token = credential.token().to_string();
-                        let base = micro_auth::copilot::base_url_from_token(&token)
-                            .unwrap_or_else(|| micro_models::COPILOT_BASE_URL.to_string());
-                        (token, base)
-                    }),
+                Ok(store) => {
+                    store
+                        .resolve(micro_auth::GITHUB_COPILOT)
+                        .await
+                        .ok()
+                        .map(|credential| {
+                            let token = credential.token().to_string();
+                            let base = micro_auth::copilot::base_url_from_token(&token)
+                                .unwrap_or_else(|| micro_models::COPILOT_BASE_URL.to_string());
+                            (token, base)
+                        })
+                }
                 Err(_) => None,
             };
             let mut listings = micro_tui::Listings::default();
@@ -712,10 +976,19 @@ impl Commands for CliCommands {
     }
 
     async fn dispatch(&mut self, line: &str, state: ConversationState) -> Option<CommandOutcome> {
+        // `/model next|previous` steps to a neighbor rather than naming one, which is what
+        // ohm's `model_select` calls a `"cycle"` rather than a `"set"`. Read here, from the
+        // line itself, because by the time a `CommandOutcome::SetModel` reaches `swap_to`
+        // the two look identical.
+        self.model_source = match command_parts(line) {
+            Some(("model", argument)) if matches!(argument.trim(), "next" | "previous" | "prev") => "cycle",
+            _ => "set",
+        };
+
         // A name micro answers to is answered by micro. Trying the extensions first would
         // let an installed one quietly take over `/quit`.
-        let claimed = command_parts(line)
-            .is_some_and(|(name, _)| micro_commands::find(name).is_some());
+        let claimed =
+            command_parts(line).is_some_and(|(name, _)| micro_commands::find(name).is_some());
         if claimed {
             return micro_commands::dispatch(line, &self.context(state)).await;
         }
@@ -753,6 +1026,8 @@ impl Commands for CliCommands {
             CommandOutcome::Import { path } => self.import(&path).await,
 
             CommandOutcome::Share => self.share().await,
+
+            CommandOutcome::RemoteControl { action } => self.remote(action).await,
 
             CommandOutcome::SetModel { model } => self.swap_to(&model).await,
 
@@ -818,6 +1093,22 @@ fn counted(count: usize, thing: &str) -> String {
     }
 }
 
+/// A model the way `model_select` and `get_model` both describe one to an extension.
+///
+/// Kept to these few fields rather than ohm's full `Model<any>` — thinking-level mapping,
+/// per-model headers, cost tiers — because that is all a `ModelDef` itself carries; an
+/// extension reading further than this is reading past what micro tracked.
+fn model_json(model: &ModelDef) -> serde_json::Value {
+    serde_json::json!({
+        "id": model.id,
+        "name": model.name,
+        "provider": model.provider,
+        "contextWindow": model.context_window,
+        "maxOutputTokens": model.max_output_tokens,
+        "reasoning": model.reasoning,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -855,7 +1146,7 @@ mod tests {
 
         let host = CliCommands::new(HostParts {
             catalog,
-            auth: AuthStore::open_at(root.join("auth.json")).unwrap(),
+            auth: Arc::new(AuthStore::open_at(root.join("auth.json")).unwrap()),
             sessions,
             workspace,
             provider: "anthropic".to_string(),
@@ -872,6 +1163,12 @@ mod tests {
             extensions: None,
             anthropic_extra_usage: true,
             prompts: Vec::new(),
+            tool_names: Vec::new(),
+            // No phone is ever handed this session in a test, but the seam is built the
+            // same way it is in a real run: the interface's half is simply dropped.
+            seam: crate::remote::Seam::build().0,
+            mirror: Default::default(),
+            snapshot: Default::default(),
         });
         (host, root)
     }
@@ -966,12 +1263,15 @@ mod tests {
         let applied = host.apply(outcome).await;
         assert!(!applied.is_error(), "{applied:?}");
 
-        let saved = micro_config::Config::load_from(
-            root.join("home").join(micro_config::FILE_NAME),
-        )
-        .expect("the settings were written");
+        let saved =
+            micro_config::Config::load_from(root.join("home").join(micro_config::FILE_NAME))
+                .expect("the settings were written");
         assert_eq!(saved.model.as_deref(), Some("anthropic/claude-sonnet-5"));
         assert_eq!(saved.provider.as_deref(), Some("anthropic"));
+        assert_eq!(
+            host.session.lock().await.meta().model_id,
+            "anthropic/claude-sonnet-5"
+        );
     }
 
     /// Without a credential the swap cannot be built, and the report says which provider to
@@ -1030,6 +1330,19 @@ mod tests {
             Applied::Model { swap, .. } => assert_eq!(swap.provider.name(), "openrouter"),
             other => panic!("expected a model swap, got {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn cycling_thinking_is_remembered_for_next_time() {
+        let (mut host, root) = host("remember-thinking").await;
+
+        host.thinking_changed(micro_types::ThinkingLevel::High)
+            .await;
+
+        let saved =
+            micro_config::Config::load_from(root.join("home").join(micro_config::FILE_NAME))
+                .expect("the settings were written");
+        assert_eq!(saved.thinking, Some(micro_config::Thinking::High));
     }
 
     /// Starting over leaves the old conversation on disk under its own id and opens a
@@ -1348,15 +1661,24 @@ mod tests {
     #[tokio::test]
     async fn an_api_key_is_not_a_subscription() {
         let (mut host, _root) = host("api-key-usage").await;
-        assert_eq!(host.subscription_warning("sk-ant-api03-abc", "anthropic"), None);
-        assert_eq!(host.subscription_warning("sk-ant-oat01-abc", "openrouter"), None);
+        assert_eq!(
+            host.subscription_warning("sk-ant-api03-abc", "anthropic"),
+            None
+        );
+        assert_eq!(
+            host.subscription_warning("sk-ant-oat01-abc", "openrouter"),
+            None
+        );
     }
 
     #[tokio::test]
     async fn the_subscription_warning_can_be_turned_off() {
         let (mut host, _root) = host("no-usage-warning").await;
         host.anthropic_extra_usage = false;
-        assert_eq!(host.subscription_warning("sk-ant-oat01-abc", "anthropic"), None);
+        assert_eq!(
+            host.subscription_warning("sk-ant-oat01-abc", "anthropic"),
+            None
+        );
     }
 
     #[tokio::test]
@@ -1394,6 +1716,64 @@ mod tests {
 
         assert!(!outcome.is_error(), "{outcome:?}");
         assert!(host.auth.get("openrouter").is_none());
+    }
+
+    /// `!` runs the shell unless an extension takes over what running it means. Tested
+    /// directly against `before_bash` — a `!` line is only ever read by the interactive
+    /// TUI, which these tests do not drive — with a real extension host, since what
+    /// matters is that ohm's `user_bash` shape actually reaches one.
+    #[tokio::test]
+    async fn an_extension_can_take_over_what_a_bang_command_does() {
+        if micro_extensions::which_bun().is_none() {
+            return;
+        }
+        let (mut host, root) = host("bang-bash").await;
+        let extension = root.join("intercept.ts");
+        std::fs::write(
+            &extension,
+            r#"
+export default (micro) => {
+    micro.on("user_bash", (event) => {
+        if (event.command !== "rm -rf /") {
+            return;
+        }
+        return {
+            result: { output: "refused", exitCode: 1, cancelled: false, truncated: false },
+        };
+    });
+};
+"#,
+        )
+        .unwrap();
+        let extension_host = micro_extensions::Host::start(
+            &root.join("home"),
+            &[extension],
+            &root.join("workspace"),
+            false,
+            false,
+            "tui",
+        )
+        .await
+        .expect("the host starts");
+        host.extensions = Some(Arc::new(extension_host));
+
+        let taken_over = host.before_bash("rm -rf /", false, "/workspace").await;
+        assert_eq!(
+            taken_over,
+            Some(micro_tui::BashRun {
+                output: "refused".into(),
+                failed: true,
+            })
+        );
+
+        // A command the extension does not care about is not taken over, and the shell
+        // runs it as it always would.
+        let untouched = host.before_bash("ls", false, "/workspace").await;
+        assert_eq!(untouched, None);
+
+        if let Some(host) = host.extensions.take() {
+            host.shutdown("quit").await;
+        }
     }
 }
 

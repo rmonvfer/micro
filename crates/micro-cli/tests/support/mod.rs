@@ -573,3 +573,14 @@ pub fn tool_results(request: &Value) -> Vec<Value> {
 pub fn path_of(fixture: &Fixture, name: &str) -> String {
     fixture.workspace().join(name).display().to_string()
 }
+
+/// A theme file's `colors` block, every token the same color — enough to write a custom
+/// theme a test can look for without spelling out all forty-eight tokens by hand.
+pub fn theme_colors(hex: &str) -> Value {
+    Value::Object(
+        micro_tui::Theme::TOKEN_NAMES
+            .iter()
+            .map(|token| ((*token).to_string(), Value::String(hex.to_string())))
+            .collect(),
+    )
+}

@@ -8,8 +8,8 @@ use micro_auth::LoginFlow;
 use micro_models::Catalog;
 use micro_session::SessionStore;
 use std::io::BufRead as _;
-use std::path::Path;
 use std::io::Write as _;
+use std::path::Path;
 
 pub async fn auth_status() -> Result<()> {
     let store = AuthStore::open()?;
@@ -203,15 +203,29 @@ pub async fn install(source: &str, local: bool, workspace: &Path) -> Result<()> 
         .map_err(anyhow::Error::msg)?;
 
     remember(&installed.source, true)?;
-    println!("Installed {} to {}", installed.source, installed.path.display());
+    println!(
+        "Installed {} to {}",
+        installed.source,
+        installed.path.display()
+    );
 
-    // What it registered is worth seeing now rather than at the next start.
+    // What it registered is worth seeing now rather than at the next start. A package is a
+    // directory rather than a file, and what it loads is whatever its own manifest names —
+    // the same reading the next start will do, rather than handing the directory itself to
+    // a loader that only takes files.
     let workspace = std::env::current_dir().unwrap_or_default();
+    let entries = match installed.path.is_dir() {
+        true => micro_extensions::entries_of(&installed.path)
+            .unwrap_or_else(|| micro_extensions::in_directory(&installed.path)),
+        false => vec![installed.path.clone()],
+    };
     match micro_extensions::Host::start(
         &home,
-        std::slice::from_ref(&installed.path),
+        &entries,
         &workspace,
         false,
+        false,
+        "print",
     )
     .await
     {
@@ -225,9 +239,12 @@ pub async fn install(source: &str, local: bool, workspace: &Path) -> Result<()> 
                 }
             }
             for failure in &host.loaded().errors {
-                println!("  warning  {} did not load: {}", failure.path, failure.error);
+                println!(
+                    "  warning  {} did not load: {}",
+                    failure.path, failure.error
+                );
             }
-            host.shutdown().await;
+            host.shutdown("quit").await;
         }
         Err(error) => println!("  note     {error}"),
     }
