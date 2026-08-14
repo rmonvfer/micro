@@ -141,6 +141,7 @@ async fn run(
             }
         }
     }
+    request = crate::with_attribution(request, &model.base_url);
     // Anything the caller added wins, which is how an extension changes a header the
     // provider would otherwise set for itself.
     for (name, value) in &context.headers {

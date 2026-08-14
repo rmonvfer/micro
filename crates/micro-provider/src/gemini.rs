@@ -185,7 +185,7 @@ async fn run(
         }
     }
     .header("content-type", "application/json");
-    let response = crate::with_carried_headers(request, &context)
+    let response = crate::with_carried_headers(request, &context, &model.base_url)
         .json(&payload)
         .send()
         .await

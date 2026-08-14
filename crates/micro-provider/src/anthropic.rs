@@ -153,7 +153,7 @@ async fn run(
         AuthScheme::Bearer => request.header("authorization", format!("Bearer {api_key}")),
         AuthScheme::ApiKey => request.header("x-api-key", api_key),
     };
-    let response = crate::with_carried_headers(request, &context)
+    let response = crate::with_carried_headers(request, &context, &model.base_url)
         .json(&payload)
         .send()
         .await

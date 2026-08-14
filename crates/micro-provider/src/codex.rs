@@ -236,7 +236,7 @@ async fn run(
         }
     }
 
-    let response = crate::with_carried_headers(request, &context)
+    let response = crate::with_carried_headers(request, &context, &model.base_url)
         .json(&build_payload(backend, &model, &context))
         .send()
         .await

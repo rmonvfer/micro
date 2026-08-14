@@ -14,6 +14,9 @@
 pub mod syntax;
 
 use crate::render::links::Links;
+use crate::wrap::text_width;
+use crate::wrap::wrap_spans;
+use ratatui::text::Line;
 use crate::theme::Theme;
 use ratatui::style::Modifier;
 use ratatui::style::Style;
@@ -25,14 +28,6 @@ const CODE_INDENT: &str = "  ";
 
 /// Widest a horizontal rule is drawn, however wide the terminal is. ohm's own cap.
 const MAX_RULE: usize = 80;
-
-/// Widest a single table column grows before its cells start losing characters. Without a
-/// cap one verbose column would starve every other column in a narrow terminal.
-const MAX_COLUMN: usize = 24;
-
-/// A table narrower than this is not rendered as a table, because nothing but its border
-/// would be left; the source lines are shown as they arrived instead.
-const MIN_TABLE_WIDTH: usize = 8;
 
 /// One source line, styled and ready to wrap.
 #[derive(Debug, Clone, PartialEq)]
@@ -619,18 +614,7 @@ enum Table {
     Pending { header: String },
     /// A header whose delimiter confirmed it, and every row read since. The first entry in
     /// `cells` is the header row.
-    Building {
-        cells: Vec<Vec<String>>,
-        alignments: Vec<Align>,
-    },
-}
-
-/// The alignment a delimiter column declares, as ohm reads it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Align {
-    Left,
-    Center,
-    Right,
+    Building { cells: Vec<Vec<String>> },
 }
 
 /// The start of a table: a line that holds more than one cell. Anything further is decided
@@ -655,23 +639,21 @@ fn split_cells(trimmed: &str) -> Vec<String> {
     inner.split('|').map(|cell| cell.trim().to_string()).collect()
 }
 
-/// The delimiter row that confirms a table, as the alignment of each of its columns. A run
-/// of dashes alone, with no pipe, is a rule and is left to the rule renderer.
-fn delimiter(trimmed: &str) -> Option<Vec<Align>> {
+/// The delimiter row that confirms a table, as the number of columns it names. A run of
+/// dashes alone, with no pipe, is a rule and is left to the rule renderer.
+///
+/// The colons that declare an alignment are read and let through, but nothing is done with
+/// them: ohm's own tables are left-aligned whatever the delimiter asks for, and a table
+/// that lined up differently in the two would be the divergence, not the parity.
+fn delimiter(trimmed: &str) -> Option<usize> {
     let cells = split_cells(trimmed);
-    let mut alignments = Vec::with_capacity(cells.len());
     for cell in &cells {
         let dashes = cell.trim_matches(':');
         if dashes.len() < 3 || !dashes.chars().all(|c| c == '-') {
             return None;
         }
-        alignments.push(match (cell.starts_with(':'), cell.ends_with(':')) {
-            (true, true) => Align::Center,
-            (false, true) => Align::Right,
-            _ => Align::Left,
-        });
     }
-    (!alignments.is_empty()).then_some(alignments)
+    (!cells.is_empty()).then_some(cells.len())
 }
 
 /// What became of a line offered to a table.
@@ -693,32 +675,32 @@ impl Table {
         match self {
             Table::Pending { header } => {
                 let header_cells = split_cells(&header);
-                match delimiter(trimmed).filter(|widths| widths.len() == header_cells.len()) {
-                    Some(alignments) => Continued::Taken(Table::Building {
+                match delimiter(trimmed).filter(|columns| *columns == header_cells.len()) {
+                    Some(_) => Continued::Taken(Table::Building {
                         cells: vec![header_cells],
-                        alignments,
                     }),
                     None => Continued::Ended(Table::Pending { header }),
                 }
             }
-            Table::Building { mut cells, alignments } => match contains_cell(trimmed) {
+            Table::Building { mut cells } => match contains_cell(trimmed) {
                 true => {
                     cells.push(split_cells(trimmed));
-                    Continued::Taken(Table::Building { cells, alignments })
+                    Continued::Taken(Table::Building { cells })
                 }
-                false => Continued::Ended(Table::Building { cells, alignments }),
+                false => Continued::Ended(Table::Building { cells }),
             },
         }
     }
 
-    /// Draw the table as one block per row, in the space `width` leaves for it.
+    /// Draw the table boxed, one row of cells per row of the table.
     ///
-    /// Columns are sized to their widest cell, up to a cap, and the widest columns are
-    /// shortened with an ellipsis until the whole row fits. A table too wide to say
-    /// anything in is not drawn as a table at all; its rows fall back to the text they
-    /// arrived as.
+    /// Columns take what they need where the whole table fits, and give way in proportion
+    /// where it does not, down to the longest word each column holds. A cell too long for
+    /// its column wraps rather than being cut, so nothing a table says is lost to its
+    /// shape. A terminal too narrow for even that shows the source, which is still
+    /// readable, where a table of one-character columns would not be.
     fn render(self, theme: &Theme, width: usize, links: &mut Links) -> Vec<Block> {
-        let Self::Building { cells, alignments } = self else {
+        let Self::Building { cells } = self else {
             // A pending header never became a table, so it is the text it always was.
             let Table::Pending { header } = self else {
                 unreachable!()
@@ -726,84 +708,185 @@ impl Table {
             return vec![Block::plain(inline(&header, theme.body(), theme, links))];
         };
 
-        let columns = alignments.len();
-        let mut widths: Vec<usize> = (0..columns)
-            .map(|column| {
-                cells
-                    .iter()
-                    .map(|row| row.get(column).map_or(0, |cell| crate::wrap::text_width(cell)))
-                    .max()
-                    .unwrap_or(0)
-                    .min(MAX_COLUMN)
-            })
-            .collect();
-
-        // The widest columns give up columns until the row fits. An empty cell asks for
-        // nothing, so the floor of 1 is never the thing being shortened.
-        while row_width(&widths) > width {
-            match widths.iter().position(|w| *w == *widths.iter().max().unwrap()) {
-                Some(widest) if widths[widest] > 1 => widths[widest] -= 1,
-                _ => break,
-            }
+        let columns = cells.first().map_or(0, Vec::len);
+        if columns == 0 {
+            return Vec::new();
         }
 
-        if width < MIN_TABLE_WIDTH || row_width(&widths) > width {
+        // `│ ` before each cell and ` │` after the last: three columns per cell, plus one.
+        let overhead = 3 * columns + 1;
+        let Some(for_cells) = width.checked_sub(overhead).filter(|room| *room >= columns) else {
             return cells
                 .into_iter()
                 .map(|row| Block::plain(inline(&row.join(" | "), theme.body(), theme, links)))
                 .collect();
-        }
+        };
+
+        let widths = column_widths(&cells, columns, for_cells, width, overhead);
 
         let border = Style::new().fg(theme.md_hr);
-        let header_style = Style::new()
-            .fg(theme.md_heading)
-            .add_modifier(Modifier::BOLD)
-            .add_modifier(Modifier::UNDERLINED);
-        let body = theme.body();
+        let header_style = Style::new().fg(theme.md_heading).add_modifier(Modifier::BOLD);
+        let rule = |left: &str, middle: &str, right: &str| {
+            let spans: Vec<String> = widths.iter().map(|width| "─".repeat(*width)).collect();
+            Block::plain(vec![Span::styled(
+                format!("{left}{}{right}", spans.join(middle)),
+                border,
+            )])
+        };
 
-        let mut blocks = Vec::with_capacity(cells.len());
+        let mut blocks = vec![rule("┌─", "─┬─", "─┐")];
         for (index, row) in cells.iter().enumerate() {
             let style = match index {
                 0 => header_style,
-                _ => body,
+                _ => theme.body(),
             };
-            let mut spans = Vec::new();
-            for (column, cell_width) in widths.iter().enumerate() {
-                if column > 0 {
-                    spans.push(Span::styled(" │ ", border));
-                }
-                let cell = row.get(column).map_or("", String::as_str);
-                let fitted = crate::wrap::truncate(cell, *cell_width);
-                let used = crate::wrap::text_width(&fitted);
-                let padding = cell_width - used;
-                let (before, after) = match alignments[column] {
-                    Align::Left => (0, padding),
-                    Align::Right => (padding, 0),
-                    Align::Center => (padding / 2, padding - padding / 2),
-                };
-                if before > 0 {
-                    spans.push(Span::styled(" ".repeat(before), style));
-                }
-                spans.extend(inline(&fitted, style, theme, links));
-                if after > 0 {
-                    spans.push(Span::styled(" ".repeat(after), style));
-                }
+            blocks.extend(row_blocks(row, &widths, style, theme, links, border));
+            // A rule under the header, and between every pair of rows after it.
+            if index + 1 < cells.len() {
+                blocks.push(rule("├─", "─┼─", "─┤"));
             }
-            blocks.push(Block {
-                spans,
-                indent: 0,
-                filled: false,
-                spaced_after: false,
-            });
         }
+        blocks.push(rule("└─", "─┴─", "─┘"));
         blocks
     }
 }
 
-/// The columns a row spans: every cell, plus the ` │ ` between each pair.
-fn row_width(widths: &[usize]) -> usize {
-    let cells: usize = widths.iter().sum();
-    cells + 3 * widths.len().saturating_sub(1)
+/// One row of the table, over as many lines as its tallest cell needs.
+fn row_blocks(
+    row: &[String],
+    widths: &[usize],
+    style: Style,
+    theme: &Theme,
+    links: &mut Links,
+    border: Style,
+) -> Vec<Block> {
+    let wrapped: Vec<Vec<Line<'static>>> = widths
+        .iter()
+        .enumerate()
+        .map(|(column, width)| {
+            let text = row.get(column).map_or("", String::as_str);
+            let spans = inline(text, style, theme, links);
+            match spans.is_empty() {
+                true => vec![Line::default()],
+                false => wrap_spans(&spans, (*width).max(1), 0),
+            }
+        })
+        .collect();
+
+    let height = wrapped.iter().map(Vec::len).max().unwrap_or(1);
+    (0..height)
+        .map(|line| {
+            let mut spans = Vec::new();
+            for (column, cell) in wrapped.iter().enumerate() {
+                spans.push(Span::styled(
+                    match column {
+                        0 => "│ ".to_string(),
+                        _ => " │ ".to_string(),
+                    },
+                    border,
+                ));
+                let drawn = cell.get(line);
+                let used = drawn.map_or(0, |line| {
+                    line.spans.iter().map(|span| text_width(&span.content)).sum()
+                });
+                if let Some(drawn) = drawn {
+                    spans.extend(drawn.spans.iter().cloned());
+                }
+                spans.push(Span::styled(
+                    " ".repeat(widths[column].saturating_sub(used)),
+                    style,
+                ));
+            }
+            spans.push(Span::styled(" │".to_string(), border));
+            Block::plain(spans)
+        })
+        .collect()
+}
+
+/// How wide each column is drawn.
+///
+/// What every column would like, held against what there is: where the table fits, each
+/// takes what it needs; where it does not, each falls back toward the longest word it
+/// holds and what is left over is shared out in proportion to what each gave up.
+fn column_widths(
+    cells: &[Vec<String>],
+    columns: usize,
+    for_cells: usize,
+    width: usize,
+    overhead: usize,
+) -> Vec<usize> {
+    let mut natural = vec![0usize; columns];
+    let mut smallest = vec![1usize; columns];
+    for row in cells {
+        for (column, cell) in row.iter().enumerate().take(columns) {
+            natural[column] = natural[column].max(text_width(cell));
+            smallest[column] = smallest[column].max(longest_word(cell));
+        }
+    }
+
+    // Not even the longest words fit, so every column starts at one and grows by how much
+    // it wanted.
+    let mut least: usize = smallest.iter().sum();
+    if least > for_cells {
+        let wanted: usize = smallest.iter().map(|width| width.saturating_sub(1)).sum();
+        let spare = for_cells - columns;
+        smallest = smallest
+            .iter()
+            .map(|width| match wanted {
+                0 => 1,
+                _ => 1 + width.saturating_sub(1) * spare / wanted,
+            })
+            .collect();
+        let mut leftover = for_cells - smallest.iter().sum::<usize>();
+        for width in smallest.iter_mut() {
+            if leftover == 0 {
+                break;
+            }
+            *width += 1;
+            leftover -= 1;
+        }
+        least = smallest.iter().sum();
+    }
+
+    if natural.iter().sum::<usize>() + overhead <= width {
+        return natural
+            .iter()
+            .zip(&smallest)
+            .map(|(natural, least)| *natural.max(least))
+            .collect();
+    }
+
+    let room: usize = natural
+        .iter()
+        .zip(&smallest)
+        .map(|(natural, least)| natural.saturating_sub(*least))
+        .sum();
+    let spare = for_cells.saturating_sub(least);
+    let mut widths: Vec<usize> = smallest
+        .iter()
+        .zip(&natural)
+        .map(|(least, natural)| match room {
+            0 => *least,
+            _ => least + natural.saturating_sub(*least) * spare / room,
+        })
+        .collect();
+
+    // Whatever the division left over goes to the columns still short of what they wanted.
+    let mut leftover = for_cells.saturating_sub(widths.iter().sum::<usize>());
+    while leftover > 0 {
+        let mut grew = false;
+        for (width, natural) in widths.iter_mut().zip(&natural) {
+            if leftover > 0 && *width < *natural {
+                *width += 1;
+                leftover -= 1;
+                grew = true;
+            }
+        }
+        if !grew {
+            break;
+        }
+    }
+    widths
 }
 
 /// Inline maths, drawn as the characters it stands for, and the index past its closer.
@@ -860,6 +943,18 @@ fn is_math(source: &str, after: Option<&char>) -> bool {
     !(shouted && after.is_some_and(|c| c.is_alphanumeric() || *c == '_'))
 }
 
+/// The longest run of non-space in a cell, which is the narrowest its column can usefully
+/// be. Capped, because one long identifier must not decide the whole table's shape.
+fn longest_word(cell: &str) -> usize {
+    const LONGEST: usize = 30;
+    cell.split_whitespace()
+        .map(text_width)
+        .max()
+        .unwrap_or(0)
+        .min(LONGEST)
+        .max(1)
+}
+
 /// The text delimited by `delimiter` starting at `start`, and the index past the closer.
 fn marker(characters: &[char], start: usize, delimiter: &str) -> Option<(String, usize)> {
     let opener: Vec<char> = delimiter.chars().collect();
@@ -878,14 +973,72 @@ fn marker(characters: &[char], start: usize, delimiter: &str) -> Option<(String,
 
 #[cfg(test)]
 mod tests {
-    /// A table is drawn as a table: columns sized to what is in them, aligned as the
-    /// delimiter asked, with the header set apart.
+    /// A table is drawn boxed, a rule under the header and between every pair of rows,
+    /// with each column as wide as the widest thing in it.
     #[test]
-    fn a_table_is_drawn_as_one() {
+    fn a_table_is_drawn_boxed() {
         let rows = drawn("| Model | Context |\n| --- | ---: |\n| opus | 200k |\n| gemini | 1M |");
-        assert_eq!(rows[0], "Model  \u{2502} Context");
-        assert_eq!(rows[1], "opus   \u{2502}    200k", "right-aligned, as the delimiter asked");
-        assert_eq!(rows[2], "gemini \u{2502}      1M");
+        assert_eq!(rows[0], "┌────────┬─────────┐");
+        assert_eq!(rows[1], "│ Model  │ Context │");
+        assert_eq!(rows[2], "├────────┼─────────┤");
+        assert_eq!(rows[3], "│ opus   │ 200k    │");
+        assert_eq!(rows[4], "├────────┼─────────┤", "a rule between every pair of rows");
+        assert_eq!(rows[5], "│ gemini │ 1M      │");
+        assert_eq!(rows[6], "└────────┴─────────┘");
+    }
+
+    /// A column is as wide as its cells are drawn, not as wide as they were written: a
+    /// cell holding `code` loses its backticks, and a column sized to the source would
+    /// leave every row below it a column short.
+    #[test]
+    fn a_column_is_sized_by_what_is_drawn_not_what_was_typed() {
+        let rows = drawn("| A | B |\n| --- | --- |\n| `xy` | z |");
+        let width = |row: &str| row.chars().count();
+        assert_eq!(width(&rows[1]), width(&rows[3]), "{rows:?}");
+        assert!(rows[3].contains("xy") && !rows[3].contains('`'));
+    }
+
+    /// A cell too long for its column wraps rather than being cut, because a table is
+    /// worth nothing if what it says is lost to its shape.
+    #[test]
+    fn a_long_cell_wraps_inside_its_column() {
+        let mut links = Links::default();
+        let source = "| Thing | What it does |\n| --- | --- |\n| one | a description long enough to need two lines |";
+        let rows: Vec<String> = render_linked(source, &Theme::dark(), 34, &mut links)
+            .iter()
+            .map(|block| {
+                block
+                    .spans
+                    .iter()
+                    .map(|span| span.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect();
+        assert!(rows.iter().all(|row| row.chars().count() <= 34), "{rows:?}");
+        assert!(
+            rows.iter().filter(|row| row.contains('│')).count() > 3,
+            "the long cell took more than one line: {rows:?}"
+        );
+        assert!(!rows.iter().any(|row| row.contains('…')), "nothing was cut");
+    }
+
+    /// A terminal too narrow for a table at all shows the source, which is still readable.
+    #[test]
+    fn a_table_too_wide_to_draw_falls_back_to_its_source() {
+        let mut links = Links::default();
+        let source = "| A | B | C |\n| --- | --- | --- |\n| one | two | three |";
+        let rows: Vec<String> = render_linked(source, &Theme::dark(), 8, &mut links)
+            .iter()
+            .map(|block| {
+                block
+                    .spans
+                    .iter()
+                    .map(|span| span.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect();
+        assert!(!rows.iter().any(|row| row.contains('┌')), "{rows:?}");
+        assert!(rows.iter().any(|row| row.contains("one")), "{rows:?}");
     }
 
     /// A pipe in prose is a pipe: without a delimiter row beneath it, nothing is a table.
