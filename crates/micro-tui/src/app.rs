@@ -33,6 +33,7 @@ use micro_types::Message;
 use micro_types::ThinkingLevel;
 use ratatui::style::Color;
 use ratatui::text::Line;
+use std::collections::HashSet;
 use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::time::Duration;
@@ -117,6 +118,21 @@ pub struct TuiOptions {
     pub tui_mode: crate::TuiMode,
     /// What was loaded before the session started, named on the first screen.
     pub resources: Resources,
+    /// Where a key is offered before the interface acts on it itself, when an extension
+    /// asked `ctx.ui.onTerminalInput` to be told about every one.
+    pub terminal_input: Option<crate::ui::TerminalInputAsker>,
+    /// Where the interface asks the host something off the render path — a keystroke for a
+    /// `custom()` overlay that has focus, a completion list for the menu.
+    pub host_asker: Option<crate::ui::HostAsker>,
+    /// Names of tools whose `render_shell` asked for `"self"`, so their calls skip ohm's own
+    /// band and draw only what renderCall/renderResult answered. Fixed for the run, sent
+    /// once rather than carried on every render message — see [`Transcript::set_self_framed_tools`].
+    pub self_framed_tools: HashSet<String>,
+    /// The commands loaded extensions registered, offered in the menu beside the built-in
+    /// ones. Fixed for the run: what an extension registered does not change after loading.
+    pub extension_commands: Vec<crate::menu::MenuItem>,
+    /// Where a phone reaches this session, once one has been handed it.
+    pub remote: Option<crate::remote::Remote>,
 }
 
 impl Default for TuiOptions {
@@ -128,6 +144,11 @@ impl Default for TuiOptions {
             thinking: ThinkingLevel::Off,
             theme: None,
             questions: None,
+            terminal_input: None,
+            host_asker: None,
+            self_framed_tools: HashSet::new(),
+            extension_commands: Vec::new(),
+            remote: None,
             notice: None,
             provider: String::new(),
             subscription: false,
@@ -329,6 +350,178 @@ pub struct App {
     /// the five worth knowing, and where each resource was read from rather than its name.
     /// The same key that opens every tool result opens this.
     startup_expanded: bool,
+    /// What an extension asked the activity line to call what is happening, in place of
+    /// the turn's own word for it. `None` leaves [`App::activity`] to the turn.
+    working_message: Option<String>,
+    /// Whether the spinner's row is drawn at all, apart from whether its rows are held
+    /// open — see [`App::reserves_activity_rows`] for the row, this for what goes in it.
+    working_visible: bool,
+    /// The spinner's animation, in place of the built-in braille frames. `None` is the
+    /// default; `Some` with no frames hides the animation without hiding the row.
+    working_indicator: Option<WorkingIndicator>,
+    /// The label a folded reasoning block collapses to. `None` is "Thinking...".
+    hidden_thinking_label: Option<String>,
+    /// Lines an extension asked shown above or below the input, by the key it asked
+    /// under. A key with nothing to show is not in the map at all.
+    widgets: std::collections::BTreeMap<String, Widget>,
+    /// Whether an extension is listening to every key before the interface decides what
+    /// to do with it. Kept as a flag rather than discovered from the channel, so a
+    /// keystroke costs nothing beyond reading a `bool` while nothing is listening.
+    wants_terminal_input: bool,
+    /// A terminal title an extension asked for since the last frame, taken and written
+    /// once by whoever owns the terminal.
+    title_change: Option<String>,
+    /// Lines standing in for the opening screen, from `setHeader`. `None` is the built-in
+    /// one; shown only where the built-in one is, before anything else is on screen.
+    header_override: Option<Vec<String>>,
+    /// Lines standing in for the footer, from `setFooter`. `None` is the built-in one.
+    footer_override: Option<Vec<String>>,
+    /// What a live component's lines are standing in for, by the id it was registered
+    /// under — so a `component_changed` push, which names only the id, knows where the
+    /// fresh lines that come with it belong. A component that was never told about here
+    /// (already retired, or one this session never asked about) is one this map has
+    /// nothing to say about, and its push changes nothing.
+    component_slots: std::collections::HashMap<String, ComponentSlot>,
+    /// A live component shown with keyboard focus, from `custom()`. `None` when nothing is
+    /// open this way.
+    component_overlay: Option<ComponentOverlay>,
+    /// The component `setEditorComponent` replaced the built-in editor with, and what it
+    /// last looked like. `None` is the built-in editor.
+    editor_component: Option<ComponentOverlay>,
+    /// Names of tools whose `render_shell` asked for `"self"`, kept so a conversation
+    /// rebuilt mid-run — see [`App::apply_result`] — can be tagged the same way the first
+    /// one was, without asking the host again for something that never changes.
+    self_framed_tools: HashSet<String>,
+    /// The commands loaded extensions registered, offered in the slash menu beside the
+    /// built-in ones so what is listed matches what the session answers to.
+    extension_commands: Vec<crate::menu::MenuItem>,
+    /// A multi-line editor shown for an extension's `editor()`, holding the keyboard until
+    /// it submits or is cancelled. `None` when nothing is open this way.
+    extension_editor: Option<ExtensionEditorOverlay>,
+    /// Every character that opens an extension's own completion menu, from every
+    /// `addAutocompleteProvider` registration's own `triggerCharacters` — accumulated the
+    /// same way pi's `setupAutocompleteProvider` does, told once through `watch_autocomplete`
+    /// rather than carried on every keystroke.
+    autocomplete_triggers: Vec<char>,
+    /// A `getSuggestions` question `sync_menu` owes an extension, taken once by the event
+    /// loop — see [`App::take_pending_suggestion_request`].
+    pending_suggestion_request: Option<SuggestionRequest>,
+    /// An `applyCompletion` question queued by committing an extension's own menu item,
+    /// taken once by the event loop — see [`App::take_pending_completion_request`].
+    pending_completion_request: Option<CompletionRequest>,
+}
+
+/// What the interface asks an extension's `getSuggestions` about: the buffer as it stands,
+/// where the cursor sits in it, and the word the menu opened for — carried whole because the
+/// question is answered off the render path, well after `sync_menu` that raised it returned.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SuggestionRequest {
+    pub lines: Vec<String>,
+    pub cursor_line: usize,
+    pub cursor_col: usize,
+    pub prefix: String,
+}
+
+/// What the interface asks an extension's `applyCompletion` about, once the reader commits
+/// one of its items: the buffer, the cursor, which item, and the word it is replacing.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CompletionRequest {
+    pub lines: Vec<String>,
+    pub cursor_line: usize,
+    pub cursor_col: usize,
+    pub item: serde_json::Value,
+    pub prefix: String,
+}
+
+/// A live component holding keyboard focus in place of something built in — the overlay,
+/// from `custom()`, or the editor, from `setEditorComponent`. Both are only ever an id and
+/// whatever lines it last drew, so one shape serves both.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ComponentOverlay {
+    component_id: String,
+    lines: Vec<String>,
+}
+
+/// A real [`Editor`] shown for an extension's `editor()`, unlike [`ComponentOverlay`] — there
+/// is no remote side answering render/input here, since nothing about a multi-line text field
+/// needs an extension in the loop once it is open. `title` is what `render::overlay` labels
+/// it with.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ExtensionEditorOverlay {
+    title: String,
+    editor: Editor,
+}
+
+/// What a registered component stands in for.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ComponentSlot {
+    Header,
+    Footer,
+    Widget(String),
+}
+
+/// A slot as `register_component_slot`'s detail names it: `"header"`, `"footer"`, or
+/// `"widget:<key>"`. `None` for anything else, which leaves the registration unread rather
+/// than guessed at.
+fn component_slot_named(name: Option<&str>) -> Option<ComponentSlot> {
+    match name? {
+        "header" => Some(ComponentSlot::Header),
+        "footer" => Some(ComponentSlot::Footer),
+        rest => rest
+            .strip_prefix("widget:")
+            .map(|key| ComponentSlot::Widget(key.to_string())),
+    }
+}
+
+/// A spinner's animation, asked for in place of the built-in one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkingIndicator {
+    /// The frames to cycle through. Empty hides the animation outright.
+    pub frames: Vec<String>,
+    /// How long each frame is shown before the next.
+    pub interval_ms: u64,
+}
+
+/// Where a widget's lines are drawn.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WidgetPlacement {
+    Above,
+    Below,
+}
+
+/// One widget an extension is showing beside the input.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Widget {
+    lines: Vec<String>,
+    placement: WidgetPlacement,
+}
+
+/// Widget lines are cut off past this many rows, the same limit ohm places on its own
+/// extension widgets — past it a widget is reading material, not a status line.
+const MAX_WIDGET_LINES: usize = 10;
+
+/// The zero-width marker pi's own components emit at the cursor position when they want a
+/// hardware cursor shown — see `CURSOR_MARKER` in `pi/packages/tui/src/tui.ts`. Stripped out
+/// of every live-component line rather than left in: a terminal is expected to pass an
+/// unrecognised APC sequence through invisibly, but nothing here relies on that being true
+/// for every terminal a reader might be running.
+const CURSOR_MARKER: &str = "\x1b_pi:c\x07";
+
+/// A live component's lines, with the cursor marker taken out of whichever one carried it.
+///
+/// The position it named is not read yet — placing micro's own hardware cursor inside an
+/// overlay it does not otherwise track is its own piece of work — so this only keeps a
+/// component's own text from ever showing raw escape bytes on screen; nothing yet asks for
+/// the position `.1` holds.
+fn strip_cursor_marker(lines: Vec<String>) -> (Vec<String>, Option<(usize, usize)>) {
+    for (row, line) in lines.iter().enumerate() {
+        if let Some(at) = line.find(CURSOR_MARKER) {
+            let mut stripped = lines.clone();
+            stripped[row] = format!("{}{}", &line[..at], &line[at + CURSOR_MARKER.len()..]);
+            return (stripped, Some((row, at)));
+        }
+    }
+    (lines, None)
 }
 
 /// The branch a workspace is on, or nothing when it is not a repository.
@@ -356,8 +549,13 @@ impl App {
         let workspace = options.cwd;
         let branch = git_branch(&workspace);
         let notice = options.notice;
+        let self_framed_tools = options.self_framed_tools;
+        let extension_commands = options.extension_commands;
+        let mut transcript = Transcript::from_messages(history);
+        transcript.set_self_framed_tools(self_framed_tools.clone());
         let mut app = App {
-            transcript: Transcript::from_messages(history),
+            transcript,
+            extension_commands,
             editor: Editor::new(),
             theme: options.theme.unwrap_or_else(Theme::dark),
             show_thinking: !options.settings.hide_thinking,
@@ -406,6 +604,23 @@ impl App {
             tui_mode: options.tui_mode,
             branch,
             startup_expanded: false,
+            working_message: None,
+            working_visible: true,
+            working_indicator: None,
+            hidden_thinking_label: None,
+            widgets: Default::default(),
+            wants_terminal_input: false,
+            title_change: None,
+            header_override: None,
+            footer_override: None,
+            component_slots: Default::default(),
+            component_overlay: None,
+            editor_component: None,
+            self_framed_tools,
+            extension_editor: None,
+            autocomplete_triggers: Vec::new(),
+            pending_suggestion_request: None,
+            pending_completion_request: None,
         };
 
         // Said before the first frame, so the reason nothing can be sent is on screen
@@ -446,6 +661,10 @@ impl App {
 
     pub fn set_model_label(&mut self, model: String) {
         self.model = model;
+    }
+
+    pub fn set_tui_mode(&mut self, mode: crate::TuiMode) {
+        self.tui_mode = mode;
     }
 
     pub fn set_theme(&mut self, theme: Theme) {
@@ -546,6 +765,15 @@ impl App {
         self.picker.as_ref()
     }
 
+    /// The built-in editor's text as it stands right now. Read, not asked for: unlike
+    /// `getEditorText()`'s echo of the last text an extension itself set, this is the real
+    /// buffer — what `setEditorComponent`'s consume-or-fallback path needs to hand a
+    /// component so it can draw itself against what a key it did not consume actually did,
+    /// the way pi's `CustomEditor` sees it for free by inheriting the same buffer.
+    pub fn editor_text(&self) -> String {
+        self.editor.text()
+    }
+
     pub fn key_prompt(&self) -> Option<&KeyPrompt> {
         self.key_prompt.as_ref()
     }
@@ -553,7 +781,10 @@ impl App {
     /// Whether something is holding the keyboard, which is also what decides where the
     /// cursor is drawn: an input the next keystroke will not reach must not blink.
     pub fn overlay_is_open(&self) -> bool {
-        self.key_prompt.is_some() || self.picker.is_some()
+        self.key_prompt.is_some()
+            || self.picker.is_some()
+            || self.component_overlay.is_some()
+            || self.extension_editor.is_some()
     }
 
     pub fn is_running(&self) -> bool {
@@ -561,9 +792,7 @@ impl App {
     }
 
     pub fn is_interrupting(&self) -> bool {
-        self.turn
-            .as_ref()
-            .is_some_and(|turn| turn.interrupting)
+        self.turn.as_ref().is_some_and(|turn| turn.interrupting)
     }
 
     pub fn elapsed(&self) -> Duration {
@@ -574,11 +803,176 @@ impl App {
     }
 
     /// What the activity line calls what is happening.
-    pub fn activity(&self) -> &'static str {
-        self.turn
+    ///
+    /// An extension's own wording, when it asked for one, stands in for the turn's —
+    /// `setWorkingMessage` is a request about what the line says, not about which turn is
+    /// running, so it overrides every label rather than only the default one.
+    pub fn activity(&self) -> String {
+        match &self.working_message {
+            Some(message) => message.clone(),
+            None => self
+                .turn
+                .as_ref()
+                .map(|turn| turn.label)
+                .unwrap_or("working")
+                .to_string(),
+        }
+    }
+
+    /// Whether the activity line is drawn at all right now. Distinct from
+    /// [`App::reserves_activity_rows`]: that decides whether its rows are held open, this
+    /// decides whether anything is painted into them.
+    pub fn working_visible(&self) -> bool {
+        self.working_visible
+    }
+
+    /// The spinner glyph for this frame: a custom animation's frame at its own pace when an
+    /// extension asked for one, the built-in braille frames advanced by `tick` otherwise.
+    ///
+    /// Empty frames is what `setWorkingIndicator({ frames: [] })` asks for, and it is
+    /// answered the same way here: nothing is returned to draw, but the row and the rest of
+    /// the line — the label, the elapsed time, the interrupt hint — stay exactly as they
+    /// were, since hiding the indicator is not the same request as hiding the whole line.
+    pub fn indicator_frame(&self) -> &str {
+        match &self.working_indicator {
+            Some(indicator) if indicator.frames.is_empty() => "",
+            Some(indicator) => {
+                let interval = indicator.interval_ms.max(1) as u128;
+                let index =
+                    (self.elapsed().as_millis() / interval) as usize % indicator.frames.len();
+                &indicator.frames[index]
+            }
+            None => crate::render::status::spinner_frame(self.tick),
+        }
+    }
+
+    /// The label a folded reasoning block collapses to.
+    pub fn hidden_thinking_label(&self) -> &str {
+        self.hidden_thinking_label
+            .as_deref()
+            .unwrap_or("Thinking...")
+    }
+
+    /// Lines an extension asked shown above the input, each already cut to
+    /// [`MAX_WIDGET_LINES`] with a note when it was.
+    pub fn widgets_above(&self) -> Vec<Vec<String>> {
+        self.widgets_for(WidgetPlacement::Above)
+    }
+
+    /// Lines an extension asked shown below the input, each already cut to
+    /// [`MAX_WIDGET_LINES`] with a note when it was.
+    pub fn widgets_below(&self) -> Vec<Vec<String>> {
+        self.widgets_for(WidgetPlacement::Below)
+    }
+
+    fn widgets_for(&self, placement: WidgetPlacement) -> Vec<Vec<String>> {
+        self.widgets
+            .values()
+            .filter(|widget| widget.placement == placement)
+            .map(|widget| match widget.lines.len() > MAX_WIDGET_LINES {
+                true => {
+                    let mut shown: Vec<String> = widget.lines[..MAX_WIDGET_LINES].to_vec();
+                    shown.push("... (widget truncated)".to_string());
+                    shown
+                }
+                false => widget.lines.clone(),
+            })
+            .collect()
+    }
+
+    /// Whether an extension is listening to every key before the interface itself acts on
+    /// it. Checked once per keystroke, so a session with nothing listening pays nothing for
+    /// the possibility.
+    pub fn wants_terminal_input(&self) -> bool {
+        self.wants_terminal_input
+    }
+
+    /// A terminal title an extension asked for since this was last called. Taken rather
+    /// than read, so whoever owns the terminal writes it exactly once.
+    pub fn take_title_change(&mut self) -> Option<String> {
+        self.title_change.take()
+    }
+
+    /// Lines standing in for the opening screen, from `setHeader` — `None` for the built-in
+    /// one.
+    pub fn header_override(&self) -> Option<&[String]> {
+        self.header_override.as_deref()
+    }
+
+    /// Lines standing in for the footer, from `setFooter` — `None` for the built-in one.
+    pub fn footer_override(&self) -> Option<&[String]> {
+        self.footer_override.as_deref()
+    }
+
+    /// The component id a `custom()` overlay currently has the keyboard for, so the event
+    /// loop knows to route a key to it rather than to the editor. `None` when no such
+    /// overlay is open.
+    pub fn component_overlay_id(&self) -> Option<&str> {
+        self.component_overlay
             .as_ref()
-            .map(|turn| turn.label)
-            .unwrap_or("working")
+            .map(|overlay| overlay.component_id.as_str())
+    }
+
+    /// The lines a `custom()` overlay is currently drawn with.
+    pub fn component_overlay_lines(&self) -> Option<&[String]> {
+        self.component_overlay
+            .as_ref()
+            .map(|overlay| overlay.lines.as_slice())
+    }
+
+    /// Redraw the open `custom()` overlay with what its component looked like after
+    /// handling a key. A stale answer for an overlay that has since closed changes nothing.
+    pub fn set_component_overlay_lines(&mut self, component_id: &str, lines: Vec<String>) {
+        if let Some(overlay) = self.component_overlay.as_mut() {
+            if overlay.component_id == component_id {
+                overlay.lines = strip_cursor_marker(lines).0;
+            }
+        }
+    }
+
+    /// The component id `setEditorComponent` replaced the built-in editor with, so the
+    /// event loop knows to offer it a key before the built-in editor sees one. `None` while
+    /// the built-in editor is in use.
+    pub fn editor_component_id(&self) -> Option<&str> {
+        self.editor_component
+            .as_ref()
+            .map(|component| component.component_id.as_str())
+    }
+
+    /// What the editor's replacement is currently drawn with. Empty while nothing has
+    /// replaced it.
+    pub fn editor_component_lines(&self) -> &[String] {
+        self.editor_component
+            .as_ref()
+            .map(|component| component.lines.as_slice())
+            .unwrap_or_default()
+    }
+
+    /// Redraw the editor's replacement with what it looked like after handling a key. A
+    /// stale answer for a component that is no longer the one replacing the editor changes
+    /// nothing.
+    pub fn set_editor_component_lines(&mut self, component_id: &str, lines: Vec<String>) {
+        if let Some(component) = self.editor_component.as_mut() {
+            if component.component_id == component_id {
+                component.lines = strip_cursor_marker(lines).0;
+            }
+        }
+    }
+
+    /// The title an extension's `editor()` opened with, so `render::overlay` can label the
+    /// dialog. `None` while nothing is open this way.
+    pub fn extension_editor_title(&self) -> Option<&str> {
+        self.extension_editor
+            .as_ref()
+            .map(|overlay| overlay.title.as_str())
+    }
+
+    /// The editor an extension's `editor()` is currently driving, so `render::overlay` can
+    /// draw it. `None` while nothing is open this way.
+    pub fn extension_editor(&self) -> Option<&Editor> {
+        self.extension_editor
+            .as_ref()
+            .map(|overlay| &overlay.editor)
     }
 
     /// How many prompts are waiting behind the one in flight.
@@ -699,6 +1093,60 @@ impl App {
                 request.answer(serde_json::json!({}));
                 return;
             }
+            // A tool's renderCall/renderResult answered: the title names the call it
+            // belongs to, the detail is the component id it registered under, the options
+            // are the lines it drew. Told apart from `component_changed` below because
+            // this one always knows which call it is for; that one only knows the id.
+            "tool_call_rendered" => {
+                let mut request = request;
+                self.transcript.set_tool_call_render(
+                    &request.title,
+                    request.detail.clone().unwrap_or_default(),
+                    request.options.clone(),
+                );
+                request.answer(serde_json::json!({}));
+                return;
+            }
+            "tool_result_rendered" => {
+                let mut request = request;
+                self.transcript.set_tool_result_render(
+                    &request.title,
+                    request.detail.clone().unwrap_or_default(),
+                    request.options.clone(),
+                );
+                request.answer(serde_json::json!({}));
+                return;
+            }
+            // A registered component said its own lines changed, on its own schedule
+            // rather than in answer to anything this side asked for — the title is the
+            // component id, the options are its fresh lines. A tool call's own render or
+            // its result is checked first, since a tool call registers by id the moment it
+            // renders; `component_slots` is what a widget, the header or the footer
+            // registered under instead. Neither if the id belongs to nothing here anymore.
+            "component_changed" => {
+                let mut request = request;
+                let handled = self
+                    .transcript
+                    .tool_component_changed(&request.title, request.options.clone());
+                if !handled {
+                    match self.component_slots.get(&request.title) {
+                        Some(ComponentSlot::Header) => {
+                            self.header_override = Some(request.options.clone());
+                        }
+                        Some(ComponentSlot::Footer) => {
+                            self.footer_override = Some(request.options.clone());
+                        }
+                        Some(ComponentSlot::Widget(key)) => {
+                            if let Some(widget) = self.widgets.get_mut(key) {
+                                widget.lines = request.options.clone();
+                            }
+                        }
+                        None => {}
+                    }
+                }
+                request.answer(serde_json::json!({}));
+                return;
+            }
             // Not a question: a line an extension keeps in the footer until it changes
             // it. Text it does not give takes the line away again.
             "set_status" => {
@@ -719,7 +1167,11 @@ impl App {
                     .options
                     .iter()
                     .map(|option| {
-                        micro_commands::PickerItem::new(option.clone(), String::new(), option.clone())
+                        micro_commands::PickerItem::new(
+                            option.clone(),
+                            String::new(),
+                            option.clone(),
+                        )
                     })
                     .collect();
                 self.open_picker(
@@ -735,6 +1187,256 @@ impl App {
                 self.open_picker(
                     micro_commands::Picker::new(request.title.clone(), items).titled(),
                 );
+            }
+            // The title is what to open the editor with, the detail its prefill — left open
+            // the same way `select`/`confirm` are, answered from `handle_extension_editor`
+            // when the reader submits or backs out.
+            "editor" => {
+                let mut editor = Editor::new();
+                if let Some(prefill) = request.detail.clone() {
+                    editor.set_text(&prefill);
+                }
+                self.extension_editor = Some(ExtensionEditorOverlay {
+                    title: request.title.clone(),
+                    editor,
+                });
+            }
+            // The title is the component's id; the options are the lines it drew when it
+            // was registered. Left open the same way `select`/`confirm` are — answered by
+            // `handle_component_overlay` when the reader backs out, or by `custom_done`
+            // below when the component decides for itself that it is finished.
+            "custom" => {
+                self.component_overlay = Some(ComponentOverlay {
+                    component_id: request.title.clone(),
+                    lines: strip_cursor_marker(request.options.clone()).0,
+                });
+            }
+            // The component itself decided it was finished — `done(result)` on its side —
+            // rather than the reader backing out of the overlay. The detail is the result,
+            // carried as the JSON it already was rather than taken apart into a string.
+            "custom_done" => {
+                let mut request = request;
+                self.component_overlay = None;
+                if let Some(mut question) = self.question.take() {
+                    let value: serde_json::Value = request
+                        .detail
+                        .as_deref()
+                        .and_then(|raw| serde_json::from_str(raw).ok())
+                        .unwrap_or(serde_json::Value::Null);
+                    question.answer(serde_json::json!({ "value": value }));
+                }
+                request.answer(serde_json::json!({}));
+                return;
+            }
+            // The rest are all requests rather than questions: something to change, said
+            // and answered in the same breath rather than left open for an overlay.
+            "set_title" => {
+                let mut request = request;
+                self.title_change = Some(request.title.clone());
+                request.answer(serde_json::json!({}));
+                return;
+            }
+            "set_working_message" => {
+                let mut request = request;
+                self.working_message = request.detail.clone();
+                request.answer(serde_json::json!({}));
+                return;
+            }
+            "set_working_visible" => {
+                let mut request = request;
+                self.working_visible = request.title == "true";
+                request.answer(serde_json::json!({}));
+                return;
+            }
+            // "reset" restores the built-in spinner; anything else carries its own frames
+            // (empty ones included, which is what hides the animation) and, optionally, its
+            // own pace.
+            "set_working_indicator" => {
+                let mut request = request;
+                self.working_indicator = match request.title.as_str() {
+                    "reset" => None,
+                    _ => Some(WorkingIndicator {
+                        frames: request.options.clone(),
+                        interval_ms: request
+                            .detail
+                            .as_deref()
+                            .and_then(|value| value.parse().ok())
+                            .unwrap_or(80),
+                    }),
+                };
+                request.answer(serde_json::json!({}));
+                return;
+            }
+            "set_hidden_thinking_label" => {
+                let mut request = request;
+                self.hidden_thinking_label = request.detail.clone();
+                request.answer(serde_json::json!({}));
+                return;
+            }
+            // The title names the widget; empty lines is indistinguishable from having
+            // nothing to show, so both take the widget out of the map rather than leaving
+            // an entry that draws nothing.
+            "set_widget" => {
+                let mut request = request;
+                match request.options.is_empty() {
+                    true => {
+                        self.widgets.remove(&request.title);
+                    }
+                    false => {
+                        let placement = match request.detail.as_deref() {
+                            Some("belowEditor") => WidgetPlacement::Below,
+                            _ => WidgetPlacement::Above,
+                        };
+                        self.widgets.insert(
+                            request.title.clone(),
+                            Widget {
+                                lines: request.options.clone(),
+                                placement,
+                            },
+                        );
+                    }
+                }
+                request.answer(serde_json::json!({}));
+                return;
+            }
+            // Empty options is "restore the built-in one" for both, the same convention
+            // `set_widget` uses for "nothing to show here anymore".
+            "set_header" => {
+                let mut request = request;
+                self.header_override =
+                    (!request.options.is_empty()).then(|| request.options.clone());
+                request.answer(serde_json::json!({}));
+                return;
+            }
+            "set_footer" => {
+                let mut request = request;
+                self.footer_override =
+                    (!request.options.is_empty()).then(|| request.options.clone());
+                request.answer(serde_json::json!({}));
+                return;
+            }
+            // The title is the component's id; the detail names what it is standing in
+            // for — `"header"`, `"footer"`, or `"widget:<key>"`. Told once, right after
+            // the pump fetched that component's first lines, so a later `component_changed`
+            // naming only the id already knows where to send what it fetches next.
+            "register_component_slot" => {
+                let mut request = request;
+                if let Some(slot) = component_slot_named(request.detail.as_deref()) {
+                    // Whatever id used to back this same slot is retired along with it —
+                    // a replaced component leaves no stale id still pointing here.
+                    self.component_slots.retain(|_, existing| *existing != slot);
+                    self.component_slots.insert(request.title.clone(), slot);
+                }
+                request.answer(serde_json::json!({}));
+                return;
+            }
+            "set_editor_text" => {
+                let mut request = request;
+                self.editor
+                    .set_text(request.detail.as_deref().unwrap_or_default());
+                request.answer(serde_json::json!({}));
+                return;
+            }
+            // Routed through the editor's own paste handling, so a large one collapses
+            // behind a marker the same way text pasted at the keyboard does.
+            "paste_to_editor" => {
+                let mut request = request;
+                self.editor
+                    .paste(request.detail.as_deref().unwrap_or_default());
+                request.answer(serde_json::json!({}));
+                return;
+            }
+            // The title is the component's id, empty for "restore the built-in editor";
+            // the options are its first lines. A keystroke from here on is offered to it
+            // first — see `offer_editor_component_input` in `lib.rs` — and only reaches the
+            // built-in editor if the component says it did not consume it.
+            "set_editor_component" => {
+                let mut request = request;
+                self.editor_component = (!request.title.is_empty()).then(|| ComponentOverlay {
+                    component_id: request.title.clone(),
+                    lines: strip_cursor_marker(request.options.clone()).0,
+                });
+                request.answer(serde_json::json!({}));
+                return;
+            }
+            // The title names the theme; the detail, when there is one, is a JSON object of
+            // token colors an extension resolved itself — a name asks micro to look one up
+            // on its own, anything else is carried whole rather than piece by piece.
+            "set_theme" => {
+                let mut request = request;
+                let colors = request
+                    .detail
+                    .as_deref()
+                    .and_then(|raw| serde_json::from_str::<serde_json::Value>(raw).ok());
+                let resolved = match colors {
+                    Some(colors) => {
+                        let wrapped =
+                            serde_json::json!({ "name": request.title, "colors": colors })
+                                .to_string();
+                        Theme::from_json(&wrapped)
+                    }
+                    None => Theme::named(&request.title)
+                        .or_else(|| Theme::from_user_file(&request.title).ok())
+                        .ok_or_else(|| format!("no theme named {}", request.title)),
+                };
+                match resolved {
+                    Ok(theme) => {
+                        self.set_theme(theme);
+                        request.answer(serde_json::json!({ "ok": true }));
+                    }
+                    Err(error) => {
+                        request.answer(serde_json::json!({ "ok": false, "error": error }))
+                    }
+                }
+                return;
+            }
+            "set_tools_expanded" => {
+                let mut request = request;
+                self.transcript.set_all_expanded(request.title == "true");
+                request.answer(serde_json::json!({}));
+                return;
+            }
+            // Interrupt the turn the same way Ctrl+C does — only there is one to
+            // interrupt: `interrupt()` sets `turn.interrupting` and says so by returning
+            // `Outcome::Interrupt` when a turn is running, and does something else
+            // entirely (clearing the prompt, asking to quit) when nothing is. `run_turn`
+            // watches `is_interrupting()` after every question is answered and stops the
+            // turn when it sees it, the same way it would from the keyboard; the other
+            // outcomes are this method's business, not the run's.
+            "abort" => {
+                let mut request = request;
+                let interrupted = matches!(self.interrupt(), Outcome::Interrupt);
+                request.answer(serde_json::json!({ "interrupted": interrupted }));
+                return;
+            }
+            // Not a question either: told through the same channel a question would use,
+            // since it is what carries an extension's asks to the interface, but answered
+            // at once rather than left for the reader.
+            "watch_terminal_input" => {
+                let mut request = request;
+                self.wants_terminal_input = true;
+                request.answer(serde_json::json!({}));
+                return;
+            }
+            "unwatch_terminal_input" => {
+                let mut request = request;
+                self.wants_terminal_input = false;
+                request.answer(serde_json::json!({}));
+                return;
+            }
+            // Every trigger character any `addAutocompleteProvider` registration has ever
+            // declared, sent whole each time rather than diffed — replacing what was known
+            // before is simpler than reconciling an addition against it, and correct either
+            // way since micro asks nothing until a word actually begins with one of them.
+            "watch_autocomplete" => {
+                let mut request = request;
+                self.autocomplete_triggers = request
+                    .options
+                    .iter()
+                    .filter_map(|trigger| trigger.chars().next())
+                    .collect();
+                request.answer(serde_json::json!({}));
+                return;
             }
             // Anything else is asked in words.
             _ => self.open_input(request.title.clone(), request.detail.clone()),
@@ -888,6 +1590,8 @@ impl App {
                 // The conversation is the host's to define; the scrollback is rebuilt from
                 // whatever it says the conversation now is.
                 self.transcript = Transcript::from_messages(&messages);
+                self.transcript
+                    .set_self_framed_tools(self.self_framed_tools.clone());
                 self.cache.shape = None;
                 self.focus = None;
                 // A replaced conversation is read from its end, like any new one.
@@ -913,10 +1617,7 @@ impl App {
 
     /// Write the conversation to a file beside the workspace.
     pub fn export(&mut self, path: Option<&str>) {
-        let default = format!(
-            "micro-conversation-{}.md",
-            micro_types::now_ms() / 1000
-        );
+        let default = format!("micro-conversation-{}.md", micro_types::now_ms() / 1000);
         let target = self.workspace.join(path.unwrap_or(&default));
 
         let mut out = String::new();
@@ -1017,8 +1718,10 @@ impl App {
                     true => Links::new(),
                     false => Links::disabled(),
                 },
-                pictures: Pictures::new(self.images)
-                    .sized(self.settings.image_width_cells as usize, self.settings.auto_resize_images),
+                pictures: Pictures::new(self.images).sized(
+                    self.settings.image_width_cells as usize,
+                    self.settings.auto_resize_images,
+                ),
             },
             _ => {
                 let mut kept = std::mem::take(&mut self.cache.rendered);
@@ -1045,6 +1748,9 @@ impl App {
                 image_width: self.settings.image_width_cells as usize,
                 resize_images: self.settings.auto_resize_images,
                 mermaid: self.settings.mermaid,
+                hidden_thinking_label: std::borrow::Cow::Owned(
+                    self.hidden_thinking_label().to_string(),
+                ),
             },
             &mut rendered,
             &mut self.cache.starts,
@@ -1083,6 +1789,12 @@ impl App {
         }
         if self.picker.is_some() {
             return self.handle_picker(action);
+        }
+        if self.component_overlay.is_some() {
+            return self.handle_component_overlay(action);
+        }
+        if self.extension_editor.is_some() {
+            return self.handle_extension_editor(action);
         }
 
         // Armed by jump-to-char: the next printable key is a destination, not text.
@@ -1254,6 +1966,12 @@ impl App {
     /// Enter. A menu takes it before the prompt does, so a completion is committed rather
     /// than a half-typed command being sent.
     fn submit(&mut self) -> Outcome {
+        // An extension's own menu has no fixed splice to commit here — see
+        // `queue_extension_completion` — so it is asked about before anything else gets a
+        // say in what Enter does.
+        if self.queue_extension_completion() {
+            return Outcome::Handled;
+        }
         // Enter takes a completion only when there is something left to complete. A
         // command typed out in full is a command the user meant to send, and swallowing
         // that press to add a space would make every short command need two.
@@ -1294,6 +2012,9 @@ impl App {
 
     /// Tab takes the highlighted completion; with nothing offering one it indents.
     fn complete_or_indent(&mut self) -> Outcome {
+        if self.queue_extension_completion() {
+            return Outcome::Handled;
+        }
         if self.commit_completion() {
             return Outcome::Handled;
         }
@@ -1403,24 +2124,106 @@ impl App {
     /// prompt after every change rather than opened and closed by hand.
     fn sync_menu(&mut self) {
         let (row, column) = self.editor.cursor();
-        let line = self
-            .editor
-            .lines()
-            .get(row)
-            .cloned()
-            .unwrap_or_default();
+        let line = self.editor.lines().get(row).cloned().unwrap_or_default();
         // Only the first line can hold a command, and only when nothing precedes it.
         if row == 0 {
-            if let Some(menu) = Menu::open_for(&line, column) {
+            if let Some(menu) = Menu::open_for(&line, column, &self.extension_commands) {
                 self.menu = Some(menu);
                 return;
             }
         }
         // A file can be named anywhere in the prompt, so `@` is looked for on every line.
-        self.menu = match wants_file_menu(&line, column) {
-            true => Menu::files_for(&line, column, self.workspace_files()),
-            false => None,
+        if wants_file_menu(&line, column) {
+            self.menu = Menu::files_for(&line, column, self.workspace_files());
+            return;
+        }
+        // Nothing built in claimed the word under the cursor; an extension's own trigger
+        // characters get the same chance `@` already had. The menu opens empty and asks —
+        // see `take_pending_suggestion_request` — since nothing here knows what an
+        // extension would answer until it does.
+        self.menu = Menu::extension_for(&line, column, &self.autocomplete_triggers);
+        if let Some(menu) = &self.menu {
+            self.pending_suggestion_request = Some(SuggestionRequest {
+                lines: self.editor.lines().to_vec(),
+                cursor_line: row,
+                cursor_col: char_offset(&line, column),
+                prefix: menu.prefix().to_string(),
+            });
+        }
+    }
+
+    /// The `getSuggestions` question `sync_menu` raised, if any, and only once — a frame that
+    /// never looks does not leave the next one to ask the same thing twice.
+    pub fn take_pending_suggestion_request(&mut self) -> Option<SuggestionRequest> {
+        self.pending_suggestion_request.take()
+    }
+
+    /// Fill the open extension menu with what `getSuggestions` answered, when it still
+    /// belongs to the prefix it was asked about — see `Menu::set_extension_items` for what
+    /// makes an answer late rather than stale.
+    pub fn apply_extension_suggestions(&mut self, prefix: &str, items: Vec<serde_json::Value>) {
+        let Some(menu) = self.menu.as_mut() else {
+            return;
         };
+        let items = items
+            .into_iter()
+            .filter_map(crate::menu::MenuItem::from_extension_item)
+            .collect();
+        menu.set_extension_items(prefix, items);
+    }
+
+    /// Queue the `applyCompletion` question committing an open extension menu's highlighted
+    /// item raises, so the event loop can ask off the render path. `false` when there is
+    /// nothing here for an extension to answer — no menu, not this offering, or an item with
+    /// no raw shape to hand back — which leaves the key free for whatever it would otherwise
+    /// do, the same as `commit_completion` returning `false` does for the built-in menus.
+    fn queue_extension_completion(&mut self) -> bool {
+        let Some(menu) = self.menu.as_ref() else {
+            return false;
+        };
+        if menu.offering() != crate::menu::Offering::Extension {
+            return false;
+        }
+        let Some(item) = menu.selected_item().and_then(|item| item.raw.clone()) else {
+            return false;
+        };
+        let (row, column) = self.editor.cursor();
+        let line = self.editor.lines().get(row).cloned().unwrap_or_default();
+        self.pending_completion_request = Some(CompletionRequest {
+            lines: self.editor.lines().to_vec(),
+            cursor_line: row,
+            cursor_col: char_offset(&line, column),
+            item,
+            prefix: menu.prefix().to_string(),
+        });
+        true
+    }
+
+    /// The `applyCompletion` question committing an extension's menu item raised, if any,
+    /// and only once.
+    pub fn take_pending_completion_request(&mut self) -> Option<CompletionRequest> {
+        self.pending_completion_request.take()
+    }
+
+    /// Carry out what `applyCompletion` answered: the buffer it says the edit leaves behind,
+    /// and the cursor where it says the edit leaves it — an extension's own splice, in place
+    /// of the fixed one `commit_completion` writes for a built-in menu. The menu closes
+    /// either way; a stale answer for one already closed still has nothing left to reopen.
+    pub fn apply_extension_completion(
+        &mut self,
+        lines: Vec<String>,
+        cursor_line: usize,
+        cursor_col: usize,
+    ) {
+        self.menu = None;
+        let text = lines.join("\n");
+        let row = cursor_line.min(lines.len().saturating_sub(1));
+        let col = lines
+            .get(row)
+            .map(|line| byte_offset(line, cursor_col))
+            .unwrap_or(0);
+        self.editor.set_text_with_cursor(&text, row, col);
+        self.sync_menu();
     }
 
     /// Every file in the workspace, worked out the first time one is asked for.
@@ -1513,6 +2316,87 @@ impl App {
                 }
             }
             // Nothing is written in an overlay, so this is only ever the leaving half.
+            Action::QuitOrDelete => return Outcome::Quit,
+            _ => {}
+        }
+        Outcome::Handled
+    }
+
+    /// Back out of a `custom()` overlay. Every other key reaches the component itself, but
+    /// not through here — that goes straight from the event loop to the extension host and
+    /// back (see `offer_component_input` in `lib.rs`), since answering it needs a round
+    /// trip this synchronous method cannot make. Escape and interrupt are the exception:
+    /// closing the overlay is the interface's own to decide, the same as it is for a
+    /// picker or a credential prompt, not the component's.
+    fn handle_component_overlay(&mut self, action: Action) -> Outcome {
+        match action {
+            Action::Cancel | Action::Interrupt => {
+                self.component_overlay = None;
+                if let Some(mut question) = self.question.take() {
+                    question.cancel();
+                }
+                Outcome::Handled
+            }
+            // Nothing is written in an overlay, so this is only ever the leaving half.
+            Action::QuitOrDelete => Outcome::Quit,
+            _ => Outcome::Handled,
+        }
+    }
+
+    /// Drive an extension's `editor()` overlay. Unlike a `custom()` component this is a real
+    /// [`Editor`], entirely local, so every editing and motion key is handled the same way
+    /// the built-in prompt handles it — see the same actions in [`App::handle`]'s own match —
+    /// rather than round-tripping to an extension that has no say in any of it. Enter submits
+    /// with the text as it stands; shift+enter, like the built-in prompt, writes a newline
+    /// instead of closing anything.
+    fn handle_extension_editor(&mut self, action: Action) -> Outcome {
+        let Some(overlay) = self.extension_editor.as_mut() else {
+            return Outcome::Handled;
+        };
+        match action {
+            Action::Insert(text) => overlay.editor.insert_str(&text),
+            Action::Paste(text) => overlay.editor.paste(&text),
+            Action::Newline => overlay.editor.insert_newline(),
+            Action::Backspace => overlay.editor.backspace(),
+            Action::Delete => overlay.editor.delete(),
+            Action::DeleteWordBefore => overlay.editor.delete_word_before(),
+            Action::DeleteWordAfter => overlay.editor.delete_word_after(),
+            Action::DeleteToLineStart => overlay.editor.delete_to_line_start(),
+            Action::DeleteToLineEnd => overlay.editor.delete_to_line_end(),
+            Action::MoveLeft => overlay.editor.move_left(),
+            Action::MoveRight => overlay.editor.move_right(),
+            Action::MoveWordLeft => overlay.editor.move_word_left(),
+            Action::MoveWordRight => overlay.editor.move_word_right(),
+            Action::MoveLineStart => overlay.editor.move_line_start(),
+            Action::MoveLineEnd => overlay.editor.move_line_end(),
+            Action::MoveUp => {
+                overlay.editor.move_up(self.width);
+            }
+            Action::MoveDown => {
+                overlay.editor.move_down(self.width);
+            }
+            Action::Undo => {
+                overlay.editor.undo();
+            }
+            Action::Yank => overlay.editor.yank(),
+            Action::YankPop => {
+                overlay.editor.yank_pop();
+            }
+            Action::Submit => {
+                let text = overlay.editor.text();
+                self.extension_editor = None;
+                if let Some(mut question) = self.question.take() {
+                    question.answer(serde_json::json!({ "value": text }));
+                }
+            }
+            Action::Cancel | Action::Interrupt => {
+                self.extension_editor = None;
+                if let Some(mut question) = self.question.take() {
+                    question.cancel();
+                }
+            }
+            // Nothing is written outside the editor's own buffer, so this is only ever the
+            // leaving half — the same reading `handle_key_prompt` and `handle_picker` give it.
             Action::QuitOrDelete => return Outcome::Quit,
             _ => {}
         }
@@ -1631,7 +2515,12 @@ impl App {
     /// Scrolling stops at the first line: past it there is nothing to show, and the window
     /// would drift off the top of the conversation.
     fn clamp_scroll(&mut self) {
-        let furthest = self.cache.rendered.lines.len().saturating_sub(self.viewport);
+        let furthest = self
+            .cache
+            .rendered
+            .lines
+            .len()
+            .saturating_sub(self.viewport);
         self.scroll = self.scroll.min(furthest);
     }
 }
@@ -1800,6 +2689,132 @@ mod tests {
         type_text(&mut app, "/mo");
         app.handle(Action::Tab);
         assert_eq!(app.editor.text(), "/model ");
+    }
+
+    fn watch_autocomplete(app: &mut App, triggers: &[&str]) {
+        let (request, _answered) = crate::ui::UiRequest::for_test(
+            "watch_autocomplete",
+            "",
+            None,
+            triggers.iter().map(|trigger| trigger.to_string()).collect(),
+        );
+        app.ask_question(request);
+    }
+
+    /// A trigger character nobody registered opens nothing, the way `@` would if nothing
+    /// under it named a file.
+    #[test]
+    fn an_unregistered_trigger_opens_nothing() {
+        let mut app = app();
+        type_text(&mut app, "#tag");
+        assert!(app.menu().is_none());
+    }
+
+    /// A registered trigger opens the menu empty and queues the `getSuggestions` question
+    /// the event loop owes the extension.
+    #[test]
+    fn a_registered_trigger_opens_an_empty_menu_and_queues_a_suggestion_request() {
+        let mut app = app();
+        watch_autocomplete(&mut app, &["#"]);
+        type_text(&mut app, "#tag");
+
+        assert!(app.menu().unwrap().items().is_empty());
+        let request = app
+            .take_pending_suggestion_request()
+            .expect("a suggestion request");
+        assert_eq!(request.prefix, "#tag");
+        assert_eq!(request.cursor_line, 0);
+        assert_eq!(request.cursor_col, 4);
+        assert!(
+            app.take_pending_suggestion_request().is_none(),
+            "taken once"
+        );
+    }
+
+    /// What `getSuggestions` answers lands in the menu the reader is still looking at, shown
+    /// by its label.
+    #[test]
+    fn an_extension_answer_fills_the_open_menu() {
+        let mut app = app();
+        watch_autocomplete(&mut app, &["#"]);
+        type_text(&mut app, "#tag");
+        app.take_pending_suggestion_request();
+
+        app.apply_extension_suggestions(
+            "#tag",
+            vec![serde_json::json!({ "value": "v1", "label": "#tagged" })],
+        );
+
+        let items = app.menu().unwrap().items();
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].value, "#tagged");
+    }
+
+    /// An answer for a prefix the reader has since typed past does not land on the menu that
+    /// replaced it.
+    #[test]
+    fn a_stale_extension_answer_is_ignored() {
+        let mut app = app();
+        watch_autocomplete(&mut app, &["#"]);
+        type_text(&mut app, "#tag");
+
+        app.apply_extension_suggestions(
+            "#ta",
+            vec![serde_json::json!({ "value": "v1", "label": "stale" })],
+        );
+
+        assert!(app.menu().unwrap().items().is_empty());
+    }
+
+    /// Enter on an extension's own item queues `applyCompletion` instead of committing a
+    /// fixed splice — there is none for this offering to fall back to.
+    #[test]
+    fn enter_on_an_extension_item_queues_apply_completion_instead_of_submitting() {
+        let mut app = app();
+        watch_autocomplete(&mut app, &["#"]);
+        type_text(&mut app, "#tag");
+        app.apply_extension_suggestions(
+            "#tag",
+            vec![serde_json::json!({ "value": "v1", "label": "#tagged" })],
+        );
+
+        app.handle(Action::Submit);
+
+        assert_eq!(
+            app.editor.text(),
+            "#tag",
+            "nothing is written until applyCompletion answers"
+        );
+        assert_eq!(app.queued(), 0);
+        let request = app
+            .take_pending_completion_request()
+            .expect("a completion request");
+        assert_eq!(request.prefix, "#tag");
+        assert_eq!(
+            request.item,
+            serde_json::json!({ "value": "v1", "label": "#tagged" })
+        );
+    }
+
+    /// What `applyCompletion` answers replaces the buffer and places the cursor exactly
+    /// where it says to, and closes the menu.
+    #[test]
+    fn apply_extension_completion_writes_what_was_answered() {
+        let mut app = app();
+        watch_autocomplete(&mut app, &["#"]);
+        type_text(&mut app, "#tag");
+        app.apply_extension_suggestions(
+            "#tag",
+            vec![serde_json::json!({ "value": "v1", "label": "#tagged" })],
+        );
+        app.handle(Action::Submit);
+        app.take_pending_completion_request();
+
+        app.apply_extension_completion(vec!["#tagged ".to_string()], 0, 8);
+
+        assert_eq!(app.editor.text(), "#tagged ");
+        assert_eq!(app.editor.cursor(), (0, 8));
+        assert!(app.menu().is_none());
     }
 
     #[test]
@@ -2106,7 +3121,11 @@ mod tests {
             app.handle(Action::PageUp);
         }
         let furthest = app.lines().len() - 10;
-        assert_eq!(app.scroll(), furthest, "the start is as far back as it goes");
+        assert_eq!(
+            app.scroll(),
+            furthest,
+            "the start is as far back as it goes"
+        );
     }
 
     #[test]
@@ -2464,7 +3483,10 @@ mod tests {
         let key = app.cache.shape;
 
         app.refresh_lines();
-        assert_eq!(app.cache.shape, key, "nothing changed, so nothing rewrapped");
+        assert_eq!(
+            app.cache.shape, key,
+            "nothing changed, so nothing rewrapped"
+        );
 
         app.set_frame(40, 24);
         app.refresh_lines();
@@ -2485,17 +3507,21 @@ mod tests {
     /// setting rather than a row in a menu.
     #[test]
     fn hiding_thinking_starts_it_folded_away() {
-        assert!(!app_with(Preferences {
-            hide_thinking: true,
-            ..Preferences::default()
-        })
-        .show_thinking);
+        assert!(
+            !app_with(Preferences {
+                hide_thinking: true,
+                ..Preferences::default()
+            })
+            .show_thinking
+        );
 
-        assert!(app_with(Preferences {
-            hide_thinking: false,
-            ..Preferences::default()
-        })
-        .show_thinking);
+        assert!(
+            app_with(Preferences {
+                hide_thinking: false,
+                ..Preferences::default()
+            })
+            .show_thinking
+        );
     }
 
     #[test]
@@ -2757,7 +3783,11 @@ mod tests {
 
         let mut unique = seen.clone();
         unique.dedup();
-        assert_eq!(unique.len(), 4, "levels share the available thinking colours");
+        assert_eq!(
+            unique.len(),
+            4,
+            "levels share the available thinking colours"
+        );
     }
 
     #[test]
@@ -2826,6 +3856,627 @@ mod tests {
         assert_eq!(human_size(2048), "2 KB");
         assert_eq!(human_size(5 * 1_048_576), "5.0 MB");
     }
+
+    /// Build a request the way an extension's ask arrives, hand it to `ask_question`, and
+    /// read back whatever it answered.
+    fn ask(
+        app: &mut App,
+        method: &str,
+        title: &str,
+        detail: Option<&str>,
+        options: Vec<&str>,
+    ) -> serde_json::Value {
+        let (request, mut answered) = crate::ui::UiRequest::for_test(
+            method,
+            title,
+            detail.map(str::to_string),
+            options.into_iter().map(str::to_string).collect(),
+        );
+        app.ask_question(request);
+        answered.try_recv().expect("ask_question answers at once")
+    }
+
+    /// An "abort" question interrupts a running turn the same way Ctrl+C does, and says
+    /// so; with nothing running there is nothing to interrupt, and it says that too.
+    #[test]
+    fn an_abort_question_interrupts_a_running_turn_and_says_so() {
+        let mut app = app();
+        app.busy("thinking");
+        assert!(!app.is_interrupting());
+
+        let answered = ask(&mut app, "abort", "", None, Vec::new());
+
+        assert_eq!(answered["interrupted"], true);
+        assert!(app.is_interrupting());
+    }
+
+    #[test]
+    fn an_abort_question_with_nothing_running_interrupts_nothing() {
+        let mut app = app();
+        assert!(!app.is_interrupting());
+
+        let answered = ask(&mut app, "abort", "", None, Vec::new());
+
+        assert_eq!(answered["interrupted"], false);
+        assert!(!app.is_interrupting());
+    }
+
+    #[test]
+    fn setting_the_title_is_taken_once_and_only_once() {
+        let mut app = app();
+        ask(&mut app, "set_title", "a new title", None, Vec::new());
+        assert_eq!(app.take_title_change().as_deref(), Some("a new title"));
+        assert_eq!(app.take_title_change(), None);
+    }
+
+    #[test]
+    fn a_header_can_be_set_and_restored() {
+        let mut app = app();
+        assert!(app.header_override().is_none());
+        ask(&mut app, "set_header", "", None, vec!["custom header"]);
+        assert_eq!(
+            app.header_override(),
+            Some(["custom header".to_string()].as_slice())
+        );
+        ask(&mut app, "set_header", "", None, Vec::new());
+        assert!(app.header_override().is_none());
+    }
+
+    #[test]
+    fn a_footer_can_be_set_and_restored() {
+        let mut app = app();
+        assert!(app.footer_override().is_none());
+        ask(&mut app, "set_footer", "", None, vec!["custom footer"]);
+        assert_eq!(
+            app.footer_override(),
+            Some(["custom footer".to_string()].as_slice())
+        );
+        ask(&mut app, "set_footer", "", None, Vec::new());
+        assert!(app.footer_override().is_none());
+    }
+
+    /// Once a component has registered for a slot, a `component_changed` push naming its id
+    /// updates whichever slot that was — the header, the footer, or a widget by its key —
+    /// without saying which kind of slot it is again.
+    #[test]
+    fn a_component_changed_push_reaches_the_slot_it_registered_for() {
+        let mut app = app();
+
+        ask(
+            &mut app,
+            "register_component_slot",
+            "c-header",
+            Some("header"),
+            Vec::new(),
+        );
+        ask(
+            &mut app,
+            "component_changed",
+            "c-header",
+            None,
+            vec!["fresh header"],
+        );
+        assert_eq!(
+            app.header_override(),
+            Some(["fresh header".to_string()].as_slice())
+        );
+
+        ask(
+            &mut app,
+            "register_component_slot",
+            "c-footer",
+            Some("footer"),
+            Vec::new(),
+        );
+        ask(
+            &mut app,
+            "component_changed",
+            "c-footer",
+            None,
+            vec!["fresh footer"],
+        );
+        assert_eq!(
+            app.footer_override(),
+            Some(["fresh footer".to_string()].as_slice())
+        );
+
+        // The widget has to exist before a push can update its lines — the same as any
+        // other widget, registering only says where a later push for this id should land.
+        ask(
+            &mut app,
+            "set_widget",
+            "status",
+            Some("aboveEditor"),
+            vec!["first"],
+        );
+        ask(
+            &mut app,
+            "register_component_slot",
+            "c-widget",
+            Some("widget:status"),
+            Vec::new(),
+        );
+        ask(
+            &mut app,
+            "component_changed",
+            "c-widget",
+            None,
+            vec!["second"],
+        );
+        assert_eq!(app.widgets_above(), vec![vec!["second".to_string()]]);
+
+        // An id nothing registered changes nothing, and answers rather than panicking.
+        let answer = ask(
+            &mut app,
+            "component_changed",
+            "nobody-registered-this",
+            None,
+            vec!["x"],
+        );
+        assert_eq!(answer, serde_json::json!({}));
+    }
+
+    /// Registering a new id for a slot retires whichever id was there before, so a stale
+    /// push from a replaced component can no longer reach it.
+    #[test]
+    fn registering_a_slot_again_retires_the_previous_id() {
+        let mut app = app();
+        ask(
+            &mut app,
+            "register_component_slot",
+            "c-old",
+            Some("header"),
+            Vec::new(),
+        );
+        ask(
+            &mut app,
+            "register_component_slot",
+            "c-new",
+            Some("header"),
+            Vec::new(),
+        );
+
+        ask(&mut app, "component_changed", "c-old", None, vec!["stale"]);
+        assert!(
+            app.header_override().is_none(),
+            "the old id no longer reaches the header"
+        );
+
+        ask(
+            &mut app,
+            "component_changed",
+            "c-new",
+            None,
+            vec!["current"],
+        );
+        assert_eq!(
+            app.header_override(),
+            Some(["current".to_string()].as_slice())
+        );
+    }
+
+    #[test]
+    fn a_working_message_overrides_the_turns_own_label() {
+        let mut app = app();
+        app.busy("thinking");
+        assert_eq!(app.activity(), "thinking");
+        ask(
+            &mut app,
+            "set_working_message",
+            "",
+            Some("cooking up an answer"),
+            Vec::new(),
+        );
+        assert_eq!(app.activity(), "cooking up an answer");
+        // With nothing given back, the turn's own word returns.
+        ask(&mut app, "set_working_message", "", None, Vec::new());
+        assert_eq!(app.activity(), "thinking");
+    }
+
+    #[test]
+    fn working_visible_hides_and_restores_the_activity_line() {
+        let mut app = app();
+        assert!(app.working_visible());
+        ask(&mut app, "set_working_visible", "false", None, Vec::new());
+        assert!(!app.working_visible());
+        ask(&mut app, "set_working_visible", "true", None, Vec::new());
+        assert!(app.working_visible());
+    }
+
+    #[test]
+    fn a_working_indicator_can_be_set_hidden_and_reset() {
+        let mut app = app();
+        // The built-in frames, before anything asks for anything else.
+        assert_eq!(
+            app.indicator_frame(),
+            crate::render::status::spinner_frame(0)
+        );
+
+        ask(
+            &mut app,
+            "set_working_indicator",
+            "set",
+            Some("1000"),
+            vec!["*"],
+        );
+        assert_eq!(app.indicator_frame(), "*");
+
+        // Empty frames hides the glyph without hiding the row.
+        ask(&mut app, "set_working_indicator", "set", None, Vec::new());
+        assert_eq!(app.indicator_frame(), "");
+
+        ask(&mut app, "set_working_indicator", "reset", None, Vec::new());
+        assert_eq!(
+            app.indicator_frame(),
+            crate::render::status::spinner_frame(0)
+        );
+    }
+
+    #[test]
+    fn a_hidden_thinking_label_can_be_set_and_reset() {
+        let mut app = app();
+        assert_eq!(app.hidden_thinking_label(), "Thinking...");
+        ask(
+            &mut app,
+            "set_hidden_thinking_label",
+            "",
+            Some("Reasoning"),
+            Vec::new(),
+        );
+        assert_eq!(app.hidden_thinking_label(), "Reasoning");
+        ask(&mut app, "set_hidden_thinking_label", "", None, Vec::new());
+        assert_eq!(app.hidden_thinking_label(), "Thinking...");
+    }
+
+    #[test]
+    fn a_widget_is_set_placed_and_taken_out_by_an_empty_set() {
+        let mut app = app();
+        assert!(app.widgets_above().is_empty());
+
+        ask(
+            &mut app,
+            "set_widget",
+            "status",
+            Some("aboveEditor"),
+            vec!["line one", "line two"],
+        );
+        assert_eq!(
+            app.widgets_above(),
+            vec![vec!["line one".to_string(), "line two".to_string()]]
+        );
+        assert!(app.widgets_below().is_empty());
+
+        // An empty set of lines is the same request as never having set one.
+        ask(
+            &mut app,
+            "set_widget",
+            "status",
+            Some("aboveEditor"),
+            Vec::new(),
+        );
+        assert!(app.widgets_above().is_empty());
+    }
+
+    #[test]
+    fn a_widget_placed_below_the_editor_does_not_appear_above_it() {
+        let mut app = app();
+        ask(
+            &mut app,
+            "set_widget",
+            "footer-note",
+            Some("belowEditor"),
+            vec!["hello"],
+        );
+        assert!(app.widgets_above().is_empty());
+        assert_eq!(app.widgets_below(), vec![vec!["hello".to_string()]]);
+    }
+
+    /// A widget past the line cap is cut off with a note, the same limit ohm places on its
+    /// own extension widgets.
+    #[test]
+    fn a_long_widget_is_cut_off_with_a_note() {
+        let mut app = app();
+        let lines: Vec<&str> = (0..15).map(|_| "x").collect();
+        ask(&mut app, "set_widget", "long", Some("aboveEditor"), lines);
+        let shown = &app.widgets_above()[0];
+        assert_eq!(shown.len(), MAX_WIDGET_LINES + 1);
+        assert_eq!(shown.last().unwrap(), "... (widget truncated)");
+    }
+
+    fn only_tool(app: &App) -> &crate::transcript::ToolEntry {
+        match app.transcript.entries().first() {
+            Some(crate::transcript::Entry::Tool(tool)) => tool,
+            other => panic!("expected a tool entry, got {other:?}"),
+        }
+    }
+
+    /// A tool's renderCall answer lands on the call it was asked about, by id, and is read
+    /// straight off the entry — no round trip through `render::tool::lines` needed to prove
+    /// the answer reached the transcript.
+    #[test]
+    fn a_tools_rendercall_answer_is_stored_on_its_entry() {
+        let mut app = app();
+        app.apply_event(micro_types::AgentEvent::ToolStart {
+            id: "call_1".into(),
+            name: "weather".into(),
+            arguments: serde_json::json!({}),
+        });
+
+        ask(
+            &mut app,
+            "tool_call_rendered",
+            "call_1",
+            Some("component-0"),
+            vec!["lima: sunny"],
+        );
+
+        let tool = only_tool(&app);
+        assert_eq!(tool.call_component_id.as_deref(), Some("component-0"));
+        assert_eq!(tool.call_lines, Some(vec!["lima: sunny".to_string()]));
+        assert!(tool.has_custom_render());
+    }
+
+    /// renderResult's answer is kept apart from renderCall's — both make up the row, in
+    /// call-then-result order.
+    #[test]
+    fn a_tools_renderresult_answer_joins_its_rendercall_answer() {
+        let mut app = app();
+        app.apply_event(micro_types::AgentEvent::ToolStart {
+            id: "call_1".into(),
+            name: "weather".into(),
+            arguments: serde_json::json!({}),
+        });
+        ask(
+            &mut app,
+            "tool_call_rendered",
+            "call_1",
+            Some("component-0"),
+            vec!["lima:"],
+        );
+        ask(
+            &mut app,
+            "tool_result_rendered",
+            "call_1",
+            Some("component-1"),
+            vec!["sunny, 18°C"],
+        );
+
+        let tool = only_tool(&app);
+        assert_eq!(tool.render_lines(), vec!["lima:", "sunny, 18°C"]);
+    }
+
+    /// A component pushing its own change — `ctx.invalidate()`, not a Rust-observed state
+    /// change — is found by the id it registered under and updates just that half of the
+    /// row.
+    #[test]
+    fn a_pushed_component_change_updates_whichever_renderer_registered_it() {
+        let mut app = app();
+        app.apply_event(micro_types::AgentEvent::ToolStart {
+            id: "call_1".into(),
+            name: "weather".into(),
+            arguments: serde_json::json!({}),
+        });
+        ask(
+            &mut app,
+            "tool_call_rendered",
+            "call_1",
+            Some("component-0"),
+            vec!["checking..."],
+        );
+
+        ask(
+            &mut app,
+            "component_changed",
+            "component-0",
+            None,
+            vec!["lima: sunny"],
+        );
+
+        let tool = only_tool(&app);
+        assert_eq!(tool.call_lines, Some(vec!["lima: sunny".to_string()]));
+    }
+
+    #[test]
+    fn editor_text_can_be_set_and_a_paste_goes_through_the_editors_own_handling() {
+        let mut app = app();
+        ask(&mut app, "set_editor_text", "", Some("hello"), Vec::new());
+        assert_eq!(app.editor.text(), "hello");
+
+        // Routed through `Editor::paste` rather than inserted plainly, so a large paste
+        // still collapses behind a marker.
+        let large = "x".repeat(5000);
+        ask(&mut app, "paste_to_editor", "", Some(&large), Vec::new());
+        assert!(app.editor.text().contains("hello"));
+        assert_ne!(app.editor.expanded_text().len(), app.editor.text().len());
+    }
+
+    #[test]
+    fn tools_expanded_folds_and_unfolds_every_entry() {
+        let mut app = app();
+        app.transcript.apply(&AgentEvent::ToolStart {
+            id: "call_1".into(),
+            name: "read".into(),
+            arguments: serde_json::json!({ "path": "a.rs" }),
+        });
+        assert!(app.transcript.any_collapsed());
+        ask(&mut app, "set_tools_expanded", "true", None, Vec::new());
+        assert!(!app.transcript.any_collapsed());
+        ask(&mut app, "set_tools_expanded", "false", None, Vec::new());
+        assert!(app.transcript.any_collapsed());
+    }
+
+    #[test]
+    fn watching_terminal_input_toggles_on_and_off() {
+        let mut app = app();
+        assert!(!app.wants_terminal_input());
+        ask(&mut app, "watch_terminal_input", "", None, Vec::new());
+        assert!(app.wants_terminal_input());
+        ask(&mut app, "unwatch_terminal_input", "", None, Vec::new());
+        assert!(!app.wants_terminal_input());
+    }
+
+    #[test]
+    fn a_theme_named_by_a_reader_is_switched_to() {
+        let mut app = app();
+        app.set_theme(Theme::light());
+        let answer = ask(&mut app, "set_theme", "dark", None, Vec::new());
+        assert_eq!(answer["ok"], true);
+        assert_eq!(app.theme.name, "dark");
+    }
+
+    #[test]
+    fn a_theme_that_does_not_exist_is_answered_rather_than_applied() {
+        let mut app = app();
+        let before = app.theme;
+        let answer = ask(&mut app, "set_theme", "nocturne", None, Vec::new());
+        assert_eq!(answer["ok"], false);
+        assert_eq!(app.theme, before);
+    }
+
+    /// The shape `getTheme` hands an extension back — a name and every token's resolved
+    /// color — is exactly what `setTheme` accepts to switch to a theme carried whole rather
+    /// than looked up again by name.
+    #[test]
+    fn a_theme_snapshot_can_be_set_back() {
+        let mut app = app();
+        let mut colors = serde_json::Map::new();
+        for token in Theme::TOKEN_NAMES {
+            colors.insert((*token).to_string(), serde_json::json!("#123456"));
+        }
+        let answer = ask(
+            &mut app,
+            "set_theme",
+            "custom",
+            Some(&serde_json::Value::Object(colors).to_string()),
+            Vec::new(),
+        );
+        assert_eq!(answer["ok"], true);
+        assert_eq!(
+            app.theme.accent,
+            ratatui::style::Color::Rgb(0x12, 0x34, 0x56)
+        );
+    }
+
+    #[test]
+    fn a_custom_overlay_opens_with_its_first_lines_and_takes_the_keyboard() {
+        let mut app = app();
+        assert!(app.component_overlay_id().is_none());
+        assert!(!app.overlay_is_open());
+
+        // Left open rather than answered at once, the same as `select`/`confirm` — there is
+        // nothing yet to answer it with until the overlay closes.
+        let (request, _answered) = crate::ui::UiRequest::for_test(
+            "custom",
+            "component-1",
+            None,
+            vec!["hello from the component".to_string()],
+        );
+        app.ask_question(request);
+        assert_eq!(app.component_overlay_id(), Some("component-1"));
+        assert_eq!(
+            app.component_overlay_lines(),
+            Some(["hello from the component".to_string()].as_slice())
+        );
+        assert!(app.overlay_is_open());
+    }
+
+    /// Escape backs out of the overlay itself, the same as it does for a picker — it is not
+    /// forwarded to the component, which is why `handle_component_overlay` answers it rather
+    /// than routing it through `lib.rs`'s asynchronous input relay.
+    #[test]
+    fn escape_closes_a_custom_overlay_and_cancels_the_question() {
+        let mut app = app();
+        let (request, mut answered) =
+            crate::ui::UiRequest::for_test("custom", "component-1", None, vec!["hi".to_string()]);
+        app.ask_question(request);
+        assert!(app.component_overlay_id().is_some());
+
+        assert_eq!(app.handle(Action::Cancel), Outcome::Handled);
+        assert!(app.component_overlay_id().is_none());
+        assert_eq!(
+            answered.try_recv().expect("cancelled at once")["cancelled"],
+            true
+        );
+    }
+
+    /// The component finishing on its own — `done(result)` — closes the overlay and answers
+    /// the original question with whatever it passed, the same result an interactive reader
+    /// backing out with a choice would have produced.
+    #[test]
+    fn a_component_finishing_itself_closes_the_overlay_with_its_result() {
+        let mut app = app();
+        let (request, mut answered) =
+            crate::ui::UiRequest::for_test("custom", "component-1", None, vec!["hi".to_string()]);
+        app.ask_question(request);
+
+        ask(
+            &mut app,
+            "custom_done",
+            "",
+            Some(r#"{"picked": "yes"}"#),
+            Vec::new(),
+        );
+        assert!(app.component_overlay_id().is_none());
+        assert_eq!(answered.try_recv().unwrap()["value"]["picked"], "yes");
+    }
+
+    #[test]
+    fn a_key_pushed_answer_redraws_the_open_overlay_and_ignores_a_stale_one() {
+        let mut app = app();
+        let (request, _answered) =
+            crate::ui::UiRequest::for_test("custom", "component-1", None, vec!["v0".to_string()]);
+        app.ask_question(request);
+        app.set_component_overlay_lines("component-1", vec!["v1".to_string()]);
+        assert_eq!(
+            app.component_overlay_lines(),
+            Some(["v1".to_string()].as_slice())
+        );
+
+        // An answer for a component that is not (or no longer) the open overlay changes
+        // nothing — it may have arrived after the overlay already closed.
+        app.set_component_overlay_lines("some-other-component", vec!["stale".to_string()]);
+        assert_eq!(
+            app.component_overlay_lines(),
+            Some(["v1".to_string()].as_slice())
+        );
+    }
+
+    #[test]
+    fn an_editor_component_can_be_set_and_restored() {
+        let mut app = app();
+        assert!(app.editor_component_id().is_none());
+
+        ask(
+            &mut app,
+            "set_editor_component",
+            "component-1",
+            None,
+            vec!["> "],
+        );
+        assert_eq!(app.editor_component_id(), Some("component-1"));
+        assert_eq!(app.editor_component_lines(), ["> ".to_string()]);
+
+        ask(&mut app, "set_editor_component", "", None, Vec::new());
+        assert!(app.editor_component_id().is_none());
+        assert!(app.editor_component_lines().is_empty());
+    }
+
+    #[test]
+    fn a_pushed_answer_redraws_the_editor_component_and_ignores_a_stale_one() {
+        let mut app = app();
+        ask(
+            &mut app,
+            "set_editor_component",
+            "component-1",
+            None,
+            vec!["v0"],
+        );
+        app.set_editor_component_lines("component-1", vec!["v1".to_string()]);
+        assert_eq!(app.editor_component_lines(), ["v1".to_string()]);
+
+        app.set_editor_component_lines("some-other-component", vec!["stale".to_string()]);
+        assert_eq!(app.editor_component_lines(), ["v1".to_string()]);
+    }
 }
 
 /// Whether the word under the cursor is asking for a file.
@@ -2838,6 +4489,25 @@ fn wants_file_menu(line: &str, cursor: usize) -> bool {
         .map(|index| index + 1)
         .unwrap_or(0);
     typed.get(start..).is_some_and(|word| word.starts_with('@'))
+}
+
+/// A byte offset into `line`, in characters instead — what the wire sends a cursor position
+/// as, since the extension process reads JavaScript strings, which index by character rather
+/// than by byte.
+fn char_offset(line: &str, byte_col: usize) -> usize {
+    line.get(..byte_col)
+        .map(|typed| typed.chars().count())
+        .unwrap_or_else(|| line.chars().count())
+}
+
+/// The byte offset in `line` that is `char_col` characters in — the reverse of
+/// [`char_offset`], needed when an extension's answer names a cursor position in characters
+/// and [`Editor`] wants a byte index. Past the end of the line lands at the end of it.
+fn byte_offset(line: &str, char_col: usize) -> usize {
+    line.char_indices()
+        .nth(char_col)
+        .map(|(index, _)| index)
+        .unwrap_or(line.len())
 }
 
 /// How many files are worth offering to complete against.

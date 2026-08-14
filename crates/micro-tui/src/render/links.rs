@@ -168,7 +168,12 @@ mod tests {
     fn buffer_with(text: &str, style: Style, width: u16) -> (Buffer, Rect) {
         let area = Rect::new(0, 0, width, 1);
         let mut buffer = Buffer::empty(area);
-        buffer.set_line(0, 0, &Line::from(vec![Span::styled(text.to_string(), style)]), width);
+        buffer.set_line(
+            0,
+            0,
+            &Line::from(vec![Span::styled(text.to_string(), style)]),
+            width,
+        );
         (buffer, area)
     }
 
@@ -180,7 +185,9 @@ mod tests {
 
         links.apply(&mut buffer, area);
 
-        assert!(buffer[(0, 0)].symbol().starts_with("\x1b]8;;https://example.com\x07"));
+        assert!(buffer[(0, 0)]
+            .symbol()
+            .starts_with("\x1b]8;;https://example.com\x07"));
         assert!(buffer[(0, 0)].symbol().ends_with('l'));
         assert!(buffer[(3, 0)].symbol().ends_with("\x1b]8;;\x07"));
     }
@@ -272,11 +279,15 @@ mod tests {
         buffer.set_line(0, 0, &Line::from(blocks[0].spans.clone()), 60);
         links.apply(&mut buffer, area);
 
-        let row: String = (0..60).map(|x| buffer[(x, 0)].symbol().to_string()).collect();
+        let row: String = (0..60)
+            .map(|x| buffer[(x, 0)].symbol().to_string())
+            .collect();
         assert!(row.contains("\x1b]8;;https://example.com\x07"), "{row:?}");
         assert!(row.contains("\x1b]8;;\x07"), "and it is closed again");
         // The visible text is untouched: the escapes ride on cells, not in the text.
-        let visible: String = row.replace("\x1b]8;;https://example.com\x07", "").replace("\x1b]8;;\x07", "");
+        let visible: String = row
+            .replace("\x1b]8;;https://example.com\x07", "")
+            .replace("\x1b]8;;\x07", "");
         // With the terminal able to click the text, the target rides in the escape rather
         // than being printed after it.
         assert!(visible.starts_with("see the docs now"), "{visible:?}");

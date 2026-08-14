@@ -12,8 +12,8 @@ mod paste;
 mod undo;
 
 pub use kill_ring::KillRing;
-pub use paste::PasteStore;
 pub use kill_ring::LastAction;
+pub use paste::PasteStore;
 pub use undo::Snapshot;
 pub use undo::UndoStack;
 
@@ -245,6 +245,17 @@ impl Editor {
             self.lines.push(String::new());
         }
         self.move_end();
+    }
+
+    /// Replace the whole buffer and place the cursor exactly where asked, clamped to what
+    /// the new text actually has. For an edit computed elsewhere rather than typed at the
+    /// keyboard — an extension's own `applyCompletion`, say — which knows where its own
+    /// cursor belongs and would have it moved to the end, as plain `set_text` does, otherwise.
+    pub fn set_text_with_cursor(&mut self, text: &str, row: usize, col: usize) {
+        self.set_text(text);
+        self.row = row.min(self.lines.len() - 1);
+        self.col = col.min(self.lines[self.row].len());
+        self.sticky = None;
     }
 
     /// Empty the buffer and return what it held.
@@ -926,6 +937,25 @@ mod tests {
         assert_eq!(editor.cursor(), (0, 5));
     }
 
+    /// Unlike plain `set_text`, which always lands the cursor at the end, this places it
+    /// exactly where asked — what an edit computed elsewhere, rather than typed, needs.
+    #[test]
+    fn set_text_with_cursor_places_it_where_asked() {
+        let mut editor = Editor::new();
+        editor.set_text_with_cursor("one\ntwo", 1, 1);
+        assert_eq!(editor.text(), "one\ntwo");
+        assert_eq!(editor.cursor(), (1, 1));
+    }
+
+    /// A row or column past what the new text actually has is clamped rather than trusted,
+    /// since the caller computed it against text that may not match what lands here exactly.
+    #[test]
+    fn set_text_with_cursor_clamps_past_the_end() {
+        let mut editor = Editor::new();
+        editor.set_text_with_cursor("hi", 9, 9);
+        assert_eq!(editor.cursor(), (0, 2));
+    }
+
     #[test]
     fn inserting_happens_at_the_cursor() {
         let mut editor = editor_with("helo");
@@ -1233,7 +1263,11 @@ mod ring_tests {
         editor.insert_str("kept");
         editor.backspace();
         editor.yank();
-        assert_eq!(editor.text(), "kepword", "the ring still holds the word kill");
+        assert_eq!(
+            editor.text(),
+            "kepword",
+            "the ring still holds the word kill"
+        );
     }
 
     #[test]
@@ -1253,7 +1287,11 @@ mod ring_tests {
             editor.insert_char(character);
         }
         editor.undo();
-        assert_eq!(editor.text(), "one ", "the second word goes back on its own");
+        assert_eq!(
+            editor.text(),
+            "one ",
+            "the second word goes back on its own"
+        );
         editor.undo();
         assert_eq!(editor.text(), "one", "and then the space");
     }
@@ -1393,7 +1431,11 @@ mod ring_tests {
         let sent = editor.take();
         assert_eq!(sent, big());
         editor.paste(&big());
-        assert_eq!(editor.text(), "[paste #1 +41 lines]", "numbering starts over");
+        assert_eq!(
+            editor.text(),
+            "[paste #1 +41 lines]",
+            "numbering starts over"
+        );
     }
 
     #[test]
@@ -1401,7 +1443,11 @@ mod ring_tests {
         let mut editor = editor("alpha beta gamma");
         editor.move_line_start();
         editor.jump_to_char('a', true);
-        assert_eq!(editor.cursor().1, 4, "the a in alpha, not the one under the cursor");
+        assert_eq!(
+            editor.cursor().1,
+            4,
+            "the a in alpha, not the one under the cursor"
+        );
         editor.jump_to_char('g', true);
         assert_eq!(editor.cursor().1, 11);
     }
@@ -1412,7 +1458,11 @@ mod ring_tests {
         editor.insert_str("first\nsecond\nthird");
         editor.move_start();
         editor.jump_to_char('c', true);
-        assert_eq!(editor.cursor(), (1, 2), "the c in second, on the line below");
+        assert_eq!(
+            editor.cursor(),
+            (1, 2),
+            "the c in second, on the line below"
+        );
     }
 
     #[test]
@@ -1462,7 +1512,11 @@ mod ring_tests {
         // Paging keeps the display column, the way every vertical motion does, so only the
         // row is asserted here.
         editor.page_up(40, 24);
-        assert_eq!(editor.cursor().0, 0, "stopped at the top rather than running off");
+        assert_eq!(
+            editor.cursor().0,
+            0,
+            "stopped at the top rather than running off"
+        );
         editor.page_down(40, 24);
         assert_eq!(editor.cursor().0, 2, "and at the bottom");
     }

@@ -101,10 +101,12 @@ fn read_via_macos() -> Option<ClipboardImage> {
         .ok()?;
 
     let image = match ran.success() {
-        true => std::fs::read(&path).ok().and_then(|bytes| match bytes.is_empty() {
-            true => None,
-            false => encoded("image/png", &bytes),
-        }),
+        true => std::fs::read(&path)
+            .ok()
+            .and_then(|bytes| match bytes.is_empty() {
+                true => None,
+                false => encoded("image/png", &bytes),
+            }),
         false => None,
     };
     let _ = std::fs::remove_file(&path);

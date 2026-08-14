@@ -9,10 +9,10 @@
 //! bands out inside exactly that many rows, so the two always agree on where things go.
 
 mod editor;
-mod menu;
-mod overlay;
 pub mod hints;
 pub mod links;
+mod menu;
+mod overlay;
 pub mod pictures;
 pub mod status;
 mod tool;
@@ -78,57 +78,92 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     // The frame is measured before anything is laid out against it: the transcript wraps to
     // this width, and a page of scrolling moves by the rows the region turns out to have.
     app.set_frame(content_width as usize, area.height);
-    let chrome = chrome(app, &theme, content_width, area.height);
+    let chrome = chrome(app, &theme, area.width, area.height);
     let transcript_rows = area.height.saturating_sub(chrome.rows());
     app.set_viewport(transcript_rows as usize);
 
     app.refresh_lines();
 
     // Before anything has happened there is no conversation, and the screen introduces
-    // itself in the space one would have taken.
+    // itself in the space one would have taken — an extension's own header in place of
+    // ohm's, when `setHeader` gave it one.
     let opening = match app.lines().is_empty() && !app.settings().quiet_startup {
-        true => intro(
-            &theme,
-            content_width as usize,
-            app.startup_expanded(),
-            app.resources(),
-        ),
+        true => match app.header_override() {
+            Some(lines) => lines
+                .iter()
+                .map(|line| Line::styled(line.clone(), theme.body()))
+                .collect(),
+            None => intro(
+                &theme,
+                content_width as usize,
+                app.startup_expanded(),
+                app.resources(),
+            ),
+        },
         false => Vec::new(),
     };
 
     // The engine says how the rows divide; ratatui draws into what it decided. One
     // calculation whether the interface has the whole screen or a region of it.
     let rows = chrome.stack(Some(area.height as usize)).allocation(0);
-    let [transcript_area, _, activity_area, overlay_area, editor_area, menu_area, status_area] =
-        Layout::vertical(rows.iter().map(|rows| Constraint::Length(*rows as u16)))
-            .areas(area);
+    let [transcript_area, _, activity_area, overlay_area, widgets_above_area, editor_area, widgets_below_area, menu_area, status_area] =
+        Layout::vertical(rows.iter().map(|rows| Constraint::Length(*rows as u16))).areas(area);
 
     let overlay = chrome.overlay;
     let menu = chrome.menu;
+    let widgets_above = chrome.widgets_above;
+    let widgets_below = chrome.widgets_below;
 
     draw_transcript(frame, transcript_area, app, &opening, &theme);
     draw_rows(
         frame,
         overlay_area,
-        inset_by(overlay_area, content_padding),
+        overlay_area,
         &overlay,
         &theme,
+        app.picker().is_none(),
     );
     draw_activity(frame, inset_by(activity_area, content_padding), app, &theme);
+    draw_rows(
+        frame,
+        widgets_above_area,
+        inset_by(widgets_above_area, content_padding),
+        &widgets_above,
+        &theme,
+        false,
+    );
     // An overlay has the keyboard while it is up, so the cursor belongs to it rather than to
     // an input the next keystroke will not reach.
     let level = app.thinking_color();
-    editor::draw(
-        frame,
-        editor_area,
-        inset_by(editor_area, content_padding),
-        &app.editor,
-        &theme,
-        editor::Look {
+    match app.editor_component_id() {
+        Some(_) => editor::draw_component(
+            frame,
+            editor_area,
+            inset_by(editor_area, content_padding),
+            app.editor_component_lines(),
+            &theme,
             level,
-            focused: !app.overlay_is_open(),
-            hardware_cursor: app.settings().show_hardware_cursor,
-        },
+        ),
+        None => editor::draw(
+            frame,
+            editor_area,
+            inset_by(editor_area, content_padding),
+            &app.editor,
+            &theme,
+            editor::Look {
+                level,
+                focused: !app.overlay_is_open(),
+                hardware_cursor: app.settings().show_hardware_cursor,
+            },
+        ),
+    }
+    draw_rows(
+        frame,
+        widgets_below_area,
+        inset_by(widgets_below_area, content_padding),
+        &widgets_below,
+        &theme,
+        false,
     );
     for (offset, line) in menu.iter().take(menu_area.height as usize).enumerate() {
         let content = inset_by(menu_area, content_padding);
@@ -166,6 +201,10 @@ struct Chrome {
     activity: u16,
     /// The rows the footer needs, which grows when an extension has something to say.
     status: u16,
+    /// What `setWidget` asked shown just above the input, already laid out.
+    widgets_above: Vec<Line<'static>>,
+    /// What `setWidget` asked shown just below the input, already laid out.
+    widgets_below: Vec<Line<'static>>,
 }
 
 impl Chrome {
@@ -200,7 +239,9 @@ impl Chrome {
             // the next keystroke reaches, so it is what occupies the place a reader is
             // already looking at. The prompt is not drawn behind it.
             .with(Child::content(Lines(self.overlay.clone())))
+            .with(Child::content(Lines(self.widgets_above.clone())))
             .with(Child::content(Spacer(self.editor as usize)))
+            .with(Child::content(Lines(self.widgets_below.clone())))
             .with(Child::content(Lines(self.menu.clone())))
             .with(Child::content(Spacer(self.status as usize)))
     }
@@ -211,7 +252,7 @@ impl Chrome {
 /// What drawing inline asks for: the region is only as tall as the prompt, the footer and
 /// whatever is open above them, and the conversation goes to the terminal's own scrollback.
 pub fn interface_rows(app: &App, theme: &Theme, width: u16, height: u16) -> u16 {
-    let width = content_width(margin(
+    let width = margin(
         Rect {
             x: 0,
             y: 0,
@@ -220,32 +261,41 @@ pub fn interface_rows(app: &App, theme: &Theme, width: u16, height: u16) -> u16 
         },
         app.settings().interface_padding,
     )
-    .width, app.settings().content_padding);
+    .width;
     chrome(app, theme, width, height).rows()
 }
 
 fn chrome(app: &App, theme: &Theme, width: u16, height: u16) -> Chrome {
     let overlay = overlay_lines(app, theme, width as usize);
     let activity = activity_rows(app);
+    let widgets_above = widget_lines(app.widgets_above(), theme);
+    let widgets_below = widget_lines(app.widgets_below(), theme);
     // The prompt's own rows, plus the rule above it and the rule below it. None at all
     // while an overlay is up: the overlay has taken its place, and a prompt drawn below one
     // that the keyboard does not reach is a second input that does nothing.
     let editor = match overlay.is_empty() {
         true => {
-            app.editor
-                .height(width as usize)
-                .clamp(1, max_editor_rows(height)) as u16
-                + editor::RULES
+            let content_rows = match app.editor_component_id() {
+                Some(_) => app.editor_component_lines().len().max(1),
+                None => app.editor.height(width as usize),
+            };
+            content_rows.clamp(1, max_editor_rows(height)) as u16 + editor::RULES
         }
         false => 0,
     };
-    let status = footer_for(app).height();
+    let status = footer_height(app);
 
     // A menu opens under the prompt, so it can only have rows nothing else is using. It is
     // the one part of the interface that is there to be scrolled, and the prompt it belongs
     // to has to stay whole: an input without its rules is not a smaller input, it is a
     // different one.
-    let held = 1 + overlay.len() as u16 + activity + editor + status;
+    let held = 1
+        + overlay.len() as u16
+        + activity
+        + widgets_above.len() as u16
+        + editor
+        + widgets_below.len() as u16
+        + status;
     let free = height.saturating_sub(held) as usize;
 
     Chrome {
@@ -257,7 +307,19 @@ fn chrome(app: &App, theme: &Theme, width: u16, height: u16) -> Chrome {
         editor,
         activity,
         status,
+        widgets_above,
+        widgets_below,
     }
+}
+
+/// An extension's widgets, laid out one line per row in the order they were set — the same
+/// order a `BTreeMap` keeps them in, which is by the key each was set under.
+fn widget_lines(widgets: Vec<Vec<String>>, theme: &Theme) -> Vec<Line<'static>> {
+    widgets
+        .into_iter()
+        .flatten()
+        .map(|line| Line::styled(line, theme.body()))
+        .collect()
 }
 
 /// The rows of whatever overlay is up, in the order of what is blocking on an answer: a
@@ -267,11 +329,21 @@ fn overlay_lines(app: &App, theme: &Theme, width: usize) -> Vec<Line<'static>> {
     // turns out to need, so measuring it against itself would never settle. What is left
     // after the footer, the spinner's rows and a glimpse of the conversation is the
     // overlay's; the conversation gives way, which is what the layout does anyway.
-    let held = ROWS_BEHIND_OVERLAY + activity_rows(app) + footer_for(app).height() + 1;
+    let held = ROWS_BEHIND_OVERLAY + activity_rows(app) + footer_height(app) + 1;
     let budget = app.rows().saturating_sub(held).max(4) as usize;
 
     if let Some(prompt) = app.key_prompt() {
         return overlay::key_prompt_lines(prompt, theme, width);
+    }
+    if let Some(lines) = app.component_overlay_lines() {
+        return lines
+            .iter()
+            .take(budget)
+            .map(|line| Line::styled(line.clone(), theme.body()))
+            .collect();
+    }
+    if let (Some(title), Some(editor)) = (app.extension_editor_title(), app.extension_editor()) {
+        return overlay::extension_editor_lines(title, editor, theme, width, budget);
     }
     match app.picker() {
         Some(picker) => overlay::picker_lines(picker, theme, width, budget),
@@ -280,13 +352,22 @@ fn overlay_lines(app: &App, theme: &Theme, width: usize) -> Vec<Line<'static>> {
 }
 
 /// Paint a block of already-wrapped rows, filling the region behind them.
-fn draw_rows(frame: &mut Frame, area: Rect, content: Rect, rows: &[Line<'static>], theme: &Theme) {
+fn draw_rows(
+    frame: &mut Frame,
+    area: Rect,
+    content: Rect,
+    rows: &[Line<'static>],
+    theme: &Theme,
+    surface: bool,
+) {
     if area.height == 0 || content.width == 0 {
         return;
     }
-    frame
-        .buffer_mut()
-        .set_style(area, Style::new().bg(theme.surface));
+    if surface {
+        frame
+            .buffer_mut()
+            .set_style(area, Style::new().bg(theme.surface));
+    }
     for (offset, line) in rows.iter().take(area.height as usize).enumerate() {
         frame
             .buffer_mut()
@@ -327,7 +408,14 @@ fn draw_transcript(
             .set_line(area.x, top + offset as u16, line, area.width);
     }
 
-    draw_scrollbar(frame, area, rows.len(), first, theme, app.settings().scrollbar);
+    draw_scrollbar(
+        frame,
+        area,
+        rows.len(),
+        first,
+        theme,
+        app.settings().scrollbar,
+    );
 }
 
 /// How far through the conversation the window is, drawn down the right edge.
@@ -583,15 +671,15 @@ fn resource_lines(
 }
 
 fn draw_activity(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
-    if area.width == 0 || area.height == 0 || !app.is_running() {
+    if area.width == 0 || area.height == 0 || !app.is_running() || !app.working_visible() {
         return;
     }
     let line = status::activity_line(
         theme,
-        app.tick,
+        app.indicator_frame(),
         app.elapsed(),
         app.is_interrupting(),
-        app.activity(),
+        &app.activity(),
     );
     let line = match app.queued() {
         0 => line,
@@ -638,13 +726,30 @@ fn footer_for(app: &App) -> status::Footer<'_> {
     }
 }
 
+/// How many rows the footer takes: an extension's own count, from `setFooter`, or ohm's.
+fn footer_height(app: &App) -> u16 {
+    match app.footer_override() {
+        Some(lines) => lines.len() as u16,
+        None => footer_for(app).height(),
+    }
+}
+
+/// The footer's rows: an extension's own, from `setFooter`, or ohm's.
+fn footer_rows(app: &App, theme: &Theme, width: usize) -> Vec<Line<'static>> {
+    match app.footer_override() {
+        Some(lines) => lines
+            .iter()
+            .map(|line| Line::styled(line.clone(), theme.body()))
+            .collect(),
+        None => footer_for(app).rows(theme, width),
+    }
+}
+
 fn draw_status(frame: &mut Frame, content: Rect, app: &App, theme: &Theme) {
     if content.width == 0 || content.height == 0 {
         return;
     }
-    let footer = footer_for(app);
-    for (offset, line) in footer
-        .rows(theme, content.width as usize)
+    for (offset, line) in footer_rows(app, theme, content.width as usize)
         .iter()
         .take(content.height as usize)
         .enumerate()
@@ -756,6 +861,72 @@ mod tests {
         }
     }
 
+    /// A widget an extension asked shown above the input is drawn where it asked, and one
+    /// asked below appears after it rather than instead of it.
+    #[test]
+    fn extension_widgets_are_drawn_where_they_were_placed() {
+        let mut app = App::new(&[], TuiOptions::default());
+        let (above, _rx1) = crate::ui::UiRequest::for_test(
+            "set_widget",
+            "above",
+            Some("aboveEditor".to_string()),
+            vec!["widget above the input".to_string()],
+        );
+        app.ask_question(above);
+        let (below, _rx2) = crate::ui::UiRequest::for_test(
+            "set_widget",
+            "below",
+            Some("belowEditor".to_string()),
+            vec!["widget below the input".to_string()],
+        );
+        app.ask_question(below);
+
+        let mut terminal = Terminal::new(TestBackend::new(60, 20)).expect("backend");
+        terminal.draw(|frame| draw(frame, &mut app)).expect("draws");
+        let rows = screen(&terminal);
+
+        let above_row = rows
+            .iter()
+            .position(|row| row.contains("widget above the input"))
+            .expect("the above-editor widget is drawn");
+        let below_row = rows
+            .iter()
+            .position(|row| row.contains("widget below the input"))
+            .expect("the below-editor widget is drawn");
+        assert!(above_row < below_row, "{rows:?}");
+    }
+
+    /// Once `setEditorComponent` has replaced the built-in editor, its lines are what is
+    /// drawn in the input's place — not the built-in editor, even though it is still there
+    /// underneath, unseen.
+    #[test]
+    fn an_editor_component_is_drawn_in_the_inputs_place() {
+        let mut app = App::new(&[], TuiOptions::default());
+        app.editor.insert_str("this should not be on screen");
+        let (request, _answered) = crate::ui::UiRequest::for_test(
+            "set_editor_component",
+            "component-1",
+            None,
+            vec!["a custom editor".to_string()],
+        );
+        app.ask_question(request);
+
+        let mut terminal = Terminal::new(TestBackend::new(60, 20)).expect("backend");
+        terminal.draw(|frame| draw(frame, &mut app)).expect("draws");
+        let rows = screen(&terminal);
+
+        assert!(
+            rows.iter().any(|row| row.contains("a custom editor")),
+            "{rows:?}"
+        );
+        assert!(
+            !rows
+                .iter()
+                .any(|row| row.contains("this should not be on screen")),
+            "{rows:?}"
+        );
+    }
+
     /// A menu opens under the input and can be long. It may take rows the conversation is
     /// not using, and no others: an input missing the rules that bound it is not a smaller
     /// input, it is one a reader cannot see the edges of.
@@ -774,7 +945,10 @@ mod tests {
             let mut terminal = Terminal::new(TestBackend::new(60, height)).expect("backend");
             terminal.draw(|frame| draw(frame, &mut app)).expect("draws");
             let closed = rules(&terminal);
-            assert_eq!(closed, 2, "{height} rows: the input is bounded above and below");
+            assert_eq!(
+                closed, 2,
+                "{height} rows: the input is bounded above and below"
+            );
 
             app.handle(Action::Insert("/".into()));
             assert!(app.menu().is_some(), "typing a slash opens the menu");
@@ -809,7 +983,10 @@ mod tests {
         resources.add(
             "Skills",
             vec!["humanizer".into(), "shadcn".into()],
-            vec!["~/.micro/skills/humanizer/SKILL.md".into(), "~/x/shadcn.md".into()],
+            vec![
+                "~/.micro/skills/humanizer/SKILL.md".into(),
+                "~/x/shadcn.md".into(),
+            ],
         );
         let mut app = App::new(
             &[],
@@ -833,8 +1010,14 @@ mod tests {
         app.handle(Action::ToggleFocused);
         terminal.draw(|frame| draw(frame, &mut app)).expect("draws");
         let opened = screen(&terminal).join("\n");
-        assert!(opened.contains("~/.micro/skills/humanizer/SKILL.md"), "{opened}");
-        assert!(opened.contains("to cycle thinking level"), "every key: {opened}");
+        assert!(
+            opened.contains("~/.micro/skills/humanizer/SKILL.md"),
+            "{opened}"
+        );
+        assert!(
+            opened.contains("to cycle thinking level"),
+            "every key: {opened}"
+        );
 
         // And closes again, so the key is a toggle rather than a one-way door.
         app.handle(Action::ToggleFocused);
@@ -879,7 +1062,11 @@ mod tests {
             },
         });
 
-        assert_eq!(gap(&paint(&mut app, 40, 12)), 1, "nothing has been worked on");
+        assert_eq!(
+            gap(&paint(&mut app, 40, 12)),
+            1,
+            "nothing has been worked on"
+        );
 
         app.busy("thinking");
         app.finish_turn(false);
@@ -941,8 +1128,10 @@ mod tests {
         let rows = paint(&mut app, 40, 14);
 
         assert!(rows.first().is_some_and(|row| row.is_empty()), "{rows:?}");
-        assert!(rows.last().is_some_and(|row| row.is_empty()), "{rows:?}");
         for row in rows.iter().filter(|row| !row.is_empty()) {
+            if row.chars().all(|character| character == '─') {
+                continue;
+            }
             assert!(row.starts_with(' '), "a row reaches the left edge: {row:?}");
             assert!(
                 row.chars().count() < 40,
@@ -989,7 +1178,10 @@ mod tests {
                 "a row ran past {width}: {rows:#?}"
             );
             for ending in ["ctrl+o more", "loaded resources.", "extend micro."] {
-                assert!(said.contains(ending), "`{ending}` was cut at {width}: {said}");
+                assert!(
+                    said.contains(ending),
+                    "`{ending}` was cut at {width}: {said}"
+                );
             }
         }
     }
@@ -999,12 +1191,15 @@ mod tests {
         let mut app = App::new(&[], TuiOptions::default());
         let rows = paint(&mut app, 100, 30);
         assert!(
-            rows.iter().any(|row| row.trim()
-                == "escape interrupt · ctrl+c/ctrl+d clear/exit · / commands · ! bash · ctrl+o more"),
+            rows.iter().any(|row| {
+                row.trim()
+                == "escape interrupt · ctrl+c/ctrl+d clear/exit · / commands · ! bash · ctrl+o more"
+            }),
             "{rows:#?}"
         );
         assert!(
-            rows.iter().any(|row| row.contains("can explain its own features")),
+            rows.iter()
+                .any(|row| row.contains("can explain its own features")),
             "{rows:#?}"
         );
     }
@@ -1034,7 +1229,11 @@ mod tests {
         let rows = paint(&mut app, 80, 24);
 
         assert!(rows.len() <= 24, "the interface never outgrows the screen");
-        assert_eq!(rows.len(), 24, "and fills it, with the input on the last rows");
+        assert_eq!(
+            rows.len(),
+            24,
+            "and fills it, with the input on the last rows"
+        );
         // The footer takes the last two rows of the region, so the conversation reaches all
         // the way down to the input rather than stopping short of it.
         let footer = rows.len() - 2;
@@ -1131,4 +1330,3 @@ mod tests {
         assert_eq!(inner.height, 5);
     }
 }
-

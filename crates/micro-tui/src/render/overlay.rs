@@ -1,14 +1,21 @@
-//! The two overlays a command can open: a list to choose from, and a prompt for a key.
+//! The overlays a command or an extension can open: a list to choose from, a prompt for a
+//! key or a line of words, and a multi-line editor.
 //!
-//! Both are shaped after ohm's selectors — a title, a filter you type into, an arrow on the
-//! highlighted row, a marker on what is already in use, and a count when the list scrolls.
+//! The list and the single-line prompt are shaped after ohm's selectors — a title, a filter
+//! you type into, an arrow on the highlighted row, a marker on what is already in use, and a
+//! count when the list scrolls. The editor is shaped after ohm's own `ExtensionEditorComponent`
+//! instead: a title, the text, and a hint naming what closes it.
 
 use crate::app::KeyPrompt;
+use crate::editor::Editor;
 use crate::picker::Picker;
 use crate::picker::MAX_VISIBLE;
+use crate::render::clip;
+use crate::render::editor::first_visible_row;
 use crate::render::hints;
 use crate::render::tint;
 use crate::theme::Theme;
+use crate::wrap::grapheme_width;
 use crate::wrap::text_width;
 use crate::wrap::truncate;
 use crate::wrap::wrap_spans;
@@ -16,6 +23,7 @@ use ratatui::style::Modifier;
 use ratatui::style::Style;
 use ratatui::text::Line;
 use ratatui::text::Span;
+use unicode_segmentation::UnicodeSegmentation;
 
 /// Columns the selection arrow occupies. It is three bytes wide but two columns.
 const MARKER_WIDTH: usize = 2;
@@ -78,7 +86,10 @@ pub fn picker_lines(
             false => theme.dimmed(),
         };
         tail.insert(0, Line::default());
-        tail.insert(1, Line::from(vec![Span::styled(format!("  {text}"), style)]));
+        tail.insert(
+            1,
+            Line::from(vec![Span::styled(format!("  {text}"), style)]),
+        );
     }
 
     // The chosen row's note, for what the row itself has no room for.
@@ -126,9 +137,7 @@ pub fn picker_lines(
 
     head.extend(tail);
     head.truncate(max_rows.max(1));
-    head.into_iter()
-        .map(|line| tint(line, width, theme.surface))
-        .collect()
+    head.into_iter().map(|line| clip(line, width)).collect()
 }
 
 /// What the list is called, for a list the reader did not open themselves.
@@ -170,7 +179,10 @@ fn filter(picker: &Picker, theme: &Theme) -> Line<'static> {
     Line::from(vec![
         Span::styled("  > ", Style::new().fg(theme.accent)),
         Span::styled(picker.query().to_string(), Style::new().fg(theme.text)),
-        Span::styled(" ", Style::new().fg(theme.text).add_modifier(Modifier::REVERSED)),
+        Span::styled(
+            " ",
+            Style::new().fg(theme.text).add_modifier(Modifier::REVERSED),
+        ),
     ])
 }
 
@@ -300,6 +312,85 @@ pub fn key_prompt_lines(prompt: &KeyPrompt, theme: &Theme, width: usize) -> Vec<
         .collect()
 }
 
+/// `text` cut at display column `column`, the same measure `Editor::layout` places
+/// `cursor_column` in: what comes before the cursor, the one grapheme it sits on — `None`
+/// once the column runs past the end of the text, which is where a cursor on an empty tail
+/// belongs — and what comes after.
+fn split_at_cursor(text: &str, column: usize) -> (String, Option<String>, String) {
+    let mut seen = 0;
+    for (index, grapheme) in text.grapheme_indices(true) {
+        if seen >= column {
+            let after = &text[index + grapheme.len()..];
+            return (
+                text[..index].to_string(),
+                Some(grapheme.to_string()),
+                after.to_string(),
+            );
+        }
+        seen += grapheme_width(grapheme);
+    }
+    (text.to_string(), None, String::new())
+}
+
+/// A multi-line editor an extension asked for with `ctx.ui.editor()`, wrapped and scrolled by
+/// the same [`Editor::layout`] the built-in prompt draws from — see [`crate::render::editor`],
+/// which this mirrors in plain lines rather than a live frame, the way [`key_prompt_lines`]
+/// mirrors a single-line one.
+pub fn extension_editor_lines(
+    title: &str,
+    editor: &Editor,
+    theme: &Theme,
+    width: usize,
+    budget: usize,
+) -> Vec<Line<'static>> {
+    let indent = 2;
+    let mut out = vec![
+        Line::from(vec![
+            Span::raw(" ".repeat(indent)),
+            Span::styled(
+                title.to_string(),
+                Style::new().fg(theme.accent).add_modifier(Modifier::BOLD),
+            ),
+        ]),
+        Line::default(),
+    ];
+
+    // What is left of the budget once the title, the blank line above the body, the blank
+    // line below it, and the hint have each taken their row.
+    let body_height = budget.saturating_sub(4).max(1);
+    let body_width = width.saturating_sub(indent).max(1);
+    let layout = editor.layout(body_width);
+    let first = first_visible_row(layout.cursor_row, layout.rows.len(), body_height);
+
+    let text = Style::new().fg(theme.text);
+    let cursor = Style::new().fg(theme.text).add_modifier(Modifier::REVERSED);
+    for (index, row) in layout.rows.iter().enumerate().skip(first).take(body_height) {
+        let source = &editor.lines()[row.line][row.range.clone()];
+        let mut spans = vec![Span::raw(" ".repeat(indent))];
+        if index == layout.cursor_row {
+            let (before, at, after) = split_at_cursor(source, layout.cursor_column);
+            spans.push(Span::styled(before, text));
+            spans.push(Span::styled(at.unwrap_or_else(|| " ".to_string()), cursor));
+            if !after.is_empty() {
+                spans.push(Span::styled(after, text));
+            }
+        } else {
+            spans.push(Span::styled(source.to_string(), text));
+        }
+        out.push(Line::from(spans));
+    }
+
+    out.push(Line::default());
+    out.push(hint(
+        "enter submit · shift+enter newline · esc cancel",
+        theme,
+    ));
+
+    out.into_iter()
+        .map(|line| tint(line, width, theme.surface))
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -407,7 +498,9 @@ mod tests {
 
         list.set_status("Model catalogs refreshed.", true);
         let out = rendered(&picker_lines(&list, &Theme::dark(), 76, 24));
-        assert!(out.iter().any(|line| line.contains("Model catalogs refreshed.")));
+        assert!(out
+            .iter()
+            .any(|line| line.contains("Model catalogs refreshed.")));
     }
 
     /// A refresh finishing must not move the selection out from under a hand already on
@@ -516,7 +609,7 @@ mod tests {
                 assert!(out.len() <= rows, "{} rows exceed {rows}", out.len());
                 for line in out {
                     let drawn: usize = line.spans.iter().map(|s| text_width(&s.content)).sum();
-                    assert_eq!(drawn, width);
+                    assert!(drawn <= width, "{drawn} columns exceed {width}");
                 }
             }
         }
@@ -534,5 +627,62 @@ mod tests {
             !out.iter().any(|line| line.contains("secret")),
             "the key is never drawn back"
         );
+    }
+
+    #[test]
+    fn an_extension_editor_names_itself_and_carries_the_prefill() {
+        let mut editor = Editor::new();
+        editor.set_text("draft text");
+        let out = rendered(&extension_editor_lines(
+            "Write a title",
+            &editor,
+            &Theme::dark(),
+            70,
+            20,
+        ));
+
+        assert!(out[0].contains("Write a title"));
+        assert!(out.iter().any(|line| line.contains("draft text")));
+        assert!(out.iter().any(|line| line.contains("submit")));
+        assert!(out.iter().any(|line| line.contains("newline")));
+        assert!(out.iter().any(|line| line.contains("cancel")));
+    }
+
+    /// The cursor lands where `Editor::layout` says it does, mid-line included — not only at
+    /// the end, which is all a flat `KeyPrompt` ever needs.
+    #[test]
+    fn the_cursor_marks_wherever_it_sits_in_the_text() {
+        let mut editor = Editor::new();
+        editor.set_text("ab");
+        editor.move_start();
+        editor.move_right();
+
+        let out = extension_editor_lines("Title", &editor, &Theme::dark(), 70, 20);
+        let body = &out[2];
+        let marked: Vec<&Span> = body
+            .spans
+            .iter()
+            .filter(|span| span.style.add_modifier.contains(Modifier::REVERSED))
+            .collect();
+
+        assert_eq!(marked.len(), 1);
+        assert_eq!(marked[0].content.as_ref(), "b");
+    }
+
+    #[test]
+    fn a_long_editor_never_outgrows_its_budget_or_its_width() {
+        let mut editor = Editor::new();
+        editor.set_text(&"a very long line that wraps several times over ".repeat(10));
+
+        for width in 12..80 {
+            for rows in 5..20 {
+                let out = extension_editor_lines("Title", &editor, &Theme::dark(), width, rows);
+                assert!(out.len() <= rows, "{} rows exceed {rows}", out.len());
+                for line in out {
+                    let drawn: usize = line.spans.iter().map(|s| text_width(&s.content)).sum();
+                    assert!(drawn <= width, "{drawn} columns exceed {width}");
+                }
+            }
+        }
     }
 }

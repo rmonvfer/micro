@@ -23,6 +23,9 @@ ratatui = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true }
 micro-mermaid = { path = "../micro-mermaid" }
+typst = "0.13.1"
+typst-as-lib = { version = "0.13.0", features = ["typst-kit-fonts", "typst-kit-embed-fonts"] }
+typst-render = "0.13.1"
 unicode-segmentation = "1"
 unicode-width = "0.2"
 

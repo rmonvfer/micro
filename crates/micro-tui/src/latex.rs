@@ -351,14 +351,46 @@ const NAMED_OPERATORS: &[&str] = &[
 
 /// Commands that only affect spacing, which a terminal renders as one space or none.
 const SPACING_COMMANDS: &[&str] = &[
-    ",", ":", ";", " ", "quad", "qquad", "thinspace", "medspace", "thickspace", "enspace",
+    ",",
+    ":",
+    ";",
+    " ",
+    "quad",
+    "qquad",
+    "thinspace",
+    "medspace",
+    "thickspace",
+    "enspace",
 ];
 
 /// Commands that change size or style and mean nothing here.
 const IGNORED_COMMANDS: &[&str] = &[
-    "displaystyle", "textstyle", "scriptstyle", "scriptscriptstyle", "limits", "nolimits", "left",
-    "right", "big", "Big", "bigg", "Bigg", "bigl", "bigr", "Bigl", "Bigr", "mathrm", "mathit",
-    "mathsf", "mathtt", "mathnormal", "text", "textrm", "textit", "textbf", "operatorname",
+    "displaystyle",
+    "textstyle",
+    "scriptstyle",
+    "scriptscriptstyle",
+    "limits",
+    "nolimits",
+    "left",
+    "right",
+    "big",
+    "Big",
+    "bigg",
+    "Bigg",
+    "bigl",
+    "bigr",
+    "Bigl",
+    "Bigr",
+    "mathrm",
+    "mathit",
+    "mathsf",
+    "mathtt",
+    "mathnormal",
+    "text",
+    "textrm",
+    "textit",
+    "textbf",
+    "operatorname",
 ];
 
 /// Look a name up in one of the tables.
@@ -425,7 +457,11 @@ fn lay_out(text: &str, pieces: &[Stacked]) -> Drawn {
             let Some(end) = after.find(MARK_END) else {
                 break;
             };
-            if let Some(piece) = after[..end].parse::<usize>().ok().and_then(|i| pieces.get(i)) {
+            if let Some(piece) = after[..end]
+                .parse::<usize>()
+                .ok()
+                .and_then(|i| pieces.get(i))
+            {
                 beside.push(draw_piece(piece, pieces));
             }
             rest = &after[end + MARK_END.len_utf8()..];
@@ -441,7 +477,11 @@ fn lay_out(text: &str, pieces: &[Stacked]) -> Drawn {
         rows.extend(joined.lines);
     }
 
-    let width = rows.iter().map(|row| crate::wrap::text_width(row)).max().unwrap_or(0);
+    let width = rows
+        .iter()
+        .map(|row| crate::wrap::text_width(row))
+        .max()
+        .unwrap_or(0);
     Drawn {
         lines: rows,
         width,
@@ -897,7 +937,10 @@ mod tests {
     /// beside it lined up on that rule rather than on the top of it.
     #[test]
     fn a_fraction_is_stacked_over_its_rule() {
-        assert_eq!(render_display(r"\frac{a}{b}").as_deref(), Some(" a\n ─\n b"));
+        assert_eq!(
+            render_display(r"\frac{a}{b}").as_deref(),
+            Some(" a\n ─\n b")
+        );
         assert_eq!(
             render_display(r"E = \frac{x^2 + 1}{2y}").as_deref(),
             Some("     x² + 1\nE =  ──────\n       2y")
@@ -1024,14 +1067,8 @@ mod tests {
     /// A whole expression of the kind a model actually writes.
     #[test]
     fn a_real_expression_reads() {
-        assert_eq!(
-            render(r"E = mc^2").as_deref(),
-            Some("E = mc²")
-        );
-        assert_eq!(
-            render(r"\sum_{i=1}^{n} x_i").as_deref(),
-            Some("∑ᵢ₌₁ⁿ xᵢ")
-        );
+        assert_eq!(render(r"E = mc^2").as_deref(), Some("E = mc²"));
+        assert_eq!(render(r"\sum_{i=1}^{n} x_i").as_deref(), Some("∑ᵢ₌₁ⁿ xᵢ"));
         assert_eq!(
             render(r"\forall x \in \mathbb{R}, x^2 \geq 0").as_deref(),
             Some("∀ x ∈ ℝ, x² ≥ 0")

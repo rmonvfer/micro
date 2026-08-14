@@ -4,9 +4,9 @@
 //! as they type, and a marker on whatever is in use now. Choosing hands back the command
 //! line the item carries, which the interface dispatches as though it had been typed.
 
-use micro_models::fuzzy;
 use micro_commands::Picker as Choices;
 use micro_commands::PickerItem;
+use micro_models::fuzzy;
 use std::ops::Range;
 
 /// Rows a picker shows at once before it scrolls, matching ohm's selectors.
@@ -186,7 +186,9 @@ impl Picker {
     }
 
     pub fn selected_item(&self) -> Option<&PickerItem> {
-        self.matches.get(self.selected).map(|index| &self.showing()[*index])
+        self.matches
+            .get(self.selected)
+            .map(|index| &self.showing()[*index])
     }
 
     /// The command line to dispatch for the highlighted item.

@@ -309,9 +309,13 @@ impl<'a> Footer<'a> {
 }
 
 /// The line above the editor while a turn runs.
+///
+/// `frame` is the spinner glyph already chosen for this tick — the built-in braille frame
+/// ordinarily, or whatever `setWorkingIndicator` asked for instead — so this draws the line
+/// without having to know which of the two it was given.
 pub fn activity_line(
     theme: &Theme,
-    tick: usize,
+    frame: &str,
     elapsed: Duration,
     interrupted: bool,
     label: &str,
@@ -322,11 +326,12 @@ pub fn activity_line(
             Style::new().fg(theme.warning),
         )]);
     }
+    let indicator = match frame.is_empty() {
+        true => String::new(),
+        false => format!("{frame} "),
+    };
     Line::from(vec![
-        Span::styled(
-            format!("{} ", spinner_frame(tick)),
-            Style::new().fg(theme.accent),
-        ),
+        Span::styled(indicator, Style::new().fg(theme.accent)),
         Span::styled(
             format!("{label}  {}  ", format_elapsed(elapsed)),
             Style::new().fg(theme.muted),
@@ -699,7 +704,10 @@ mod tests {
             ..footer()
         };
         let text = rendered(&unmeasured.rows(&Theme::dark(), 60)[1]);
-        assert!(text.starts_with("?/0"), "no window to measure against: {text}");
+        assert!(
+            text.starts_with("?/0"),
+            "no window to measure against: {text}"
+        );
         assert!(text.trim_end().ends_with("claude-opus-5"), "{text}");
 
         let fresh = Footer {
@@ -725,11 +733,33 @@ mod tests {
 
     #[test]
     fn the_activity_line_shows_the_elapsed_time() {
-        let line = activity_line(&Theme::dark(), 0, Duration::from_secs(12), false, "working");
+        let line = activity_line(
+            &Theme::dark(),
+            spinner_frame(0),
+            Duration::from_secs(12),
+            false,
+            "working",
+        );
         assert!(rendered(&line).contains("12s"));
         assert!(rendered(&line).contains("working"));
-        let line = activity_line(&Theme::dark(), 0, Duration::from_secs(12), true, "working");
+        let line = activity_line(
+            &Theme::dark(),
+            spinner_frame(0),
+            Duration::from_secs(12),
+            true,
+            "working",
+        );
         assert_eq!(rendered(&line), "stopping…");
+    }
+
+    /// An empty frame — what `setWorkingIndicator({ frames: [] })` resolves to — leaves the
+    /// rest of the line alone rather than an empty gap where the glyph was.
+    #[test]
+    fn an_empty_frame_hides_only_the_glyph() {
+        let line = activity_line(&Theme::dark(), "", Duration::from_secs(3), false, "working");
+        let text = rendered(&line);
+        assert!(!text.starts_with(' '), "{text:?}");
+        assert!(text.contains("working"));
     }
 }
 
@@ -758,7 +788,12 @@ mod added_fields {
     fn row(footer: &Footer<'_>, index: usize) -> String {
         let rows = footer.rows(&Theme::dark(), 120);
         rows.get(index)
-            .map(|line| line.spans.iter().map(|span| span.content.as_ref()).collect())
+            .map(|line| {
+                line.spans
+                    .iter()
+                    .map(|span| span.content.as_ref())
+                    .collect()
+            })
             .unwrap_or_default()
     }
 

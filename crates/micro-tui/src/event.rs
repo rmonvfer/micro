@@ -58,9 +58,13 @@ pub enum Action {
     ScrollUp,
     ScrollDown,
     /// Arm jump-to-char: the next printable key moves the cursor to it.
-    ArmJump { forward: bool },
+    ArmJump {
+        forward: bool,
+    },
     /// Step to the next or previous model in the catalog.
-    CycleModel { forward: bool },
+    CycleModel {
+        forward: bool,
+    },
     /// Open the model picker.
     SelectModel,
     /// Put the last answer on the system clipboard.
@@ -209,7 +213,6 @@ fn alt_action(character: char) -> Action {
     }
 }
 
-
 /// A key press as a person writes it: `ctrl+h`, `alt+enter`, `shift+f5`.
 ///
 /// The spelling ohm uses for a registered shortcut, so a key an extension asked for is
@@ -254,6 +257,64 @@ pub fn key_name(event: &Event) -> Option<String> {
     }
     parts.push(named);
     Some(parts.join("+"))
+}
+
+/// A key press as the terminal would have sent it: the bytes a program reading raw stdin
+/// sees, which is what `ctx.ui.onTerminalInput` hands an extension.
+///
+/// crossterm keeps only the key it parsed those bytes into, not the bytes themselves, so
+/// this reconstructs the common ones — a printable character as its own UTF-8, a control
+/// key as the escape sequence a terminal emits for it — rather than replaying what was
+/// actually typed. `None` for anything with no terminal representation worth reconstructing
+/// (a mouse event, a resize), which is not offered to an extension in the first place.
+pub fn key_to_data(event: &Event) -> Option<String> {
+    let Event::Key(key) = event else {
+        return None;
+    };
+    if key.kind == KeyEventKind::Release {
+        return None;
+    }
+
+    let control = key.modifiers.contains(KeyModifiers::CONTROL);
+    let alt = key.modifiers.contains(KeyModifiers::ALT);
+
+    let plain = match key.code {
+        KeyCode::Char(character) if control => {
+            // A terminal sends a lowercase letter under control as the control byte for
+            // it: ctrl+a is 0x01 through ctrl+z is 0x1a, following the letter's position
+            // in the alphabet.
+            let lower = character.to_ascii_lowercase();
+            if lower.is_ascii_lowercase() {
+                let byte = (lower as u8) - b'a' + 1;
+                (byte as char).to_string()
+            } else {
+                character.to_string()
+            }
+        }
+        KeyCode::Char(character) => character.to_string(),
+        KeyCode::Enter => "\r".to_string(),
+        KeyCode::Tab => "\t".to_string(),
+        KeyCode::BackTab => "\x1b[Z".to_string(),
+        KeyCode::Esc => "\x1b".to_string(),
+        KeyCode::Backspace => "\x7f".to_string(),
+        KeyCode::Delete => "\x1b[3~".to_string(),
+        KeyCode::Up => "\x1b[A".to_string(),
+        KeyCode::Down => "\x1b[B".to_string(),
+        KeyCode::Right => "\x1b[C".to_string(),
+        KeyCode::Left => "\x1b[D".to_string(),
+        KeyCode::Home => "\x1b[H".to_string(),
+        KeyCode::End => "\x1b[F".to_string(),
+        KeyCode::PageUp => "\x1b[5~".to_string(),
+        KeyCode::PageDown => "\x1b[6~".to_string(),
+        _ => return None,
+    };
+
+    // Alt is sent as the escape character ahead of the key it modifies, the way a terminal
+    // in the common 8-bit-clean convention sends it.
+    Some(match alt {
+        true => format!("\x1b{plain}"),
+        false => plain,
+    })
 }
 
 #[cfg(test)]
@@ -434,5 +495,56 @@ mod tests {
             key_name(&key(KeyCode::Char('A'), KeyModifiers::SHIFT)).as_deref(),
             Some("a")
         );
+    }
+
+    #[test]
+    fn a_plain_character_becomes_its_own_utf8() {
+        assert_eq!(
+            key_to_data(&plain(KeyCode::Char('j'))).as_deref(),
+            Some("j")
+        );
+        assert_eq!(
+            key_to_data(&key(KeyCode::Char('J'), KeyModifiers::SHIFT)).as_deref(),
+            Some("J")
+        );
+    }
+
+    #[test]
+    fn a_control_letter_becomes_its_control_byte() {
+        assert_eq!(
+            key_to_data(&key(KeyCode::Char('a'), KeyModifiers::CONTROL)).as_deref(),
+            Some("\x01")
+        );
+        assert_eq!(
+            key_to_data(&key(KeyCode::Char('z'), KeyModifiers::CONTROL)).as_deref(),
+            Some("\x1a")
+        );
+    }
+
+    #[test]
+    fn named_keys_become_the_escape_sequences_a_terminal_sends() {
+        assert_eq!(key_to_data(&plain(KeyCode::Enter)).as_deref(), Some("\r"));
+        assert_eq!(key_to_data(&plain(KeyCode::Esc)).as_deref(), Some("\x1b"));
+        assert_eq!(key_to_data(&plain(KeyCode::Up)).as_deref(), Some("\x1b[A"));
+        assert_eq!(
+            key_to_data(&plain(KeyCode::Backspace)).as_deref(),
+            Some("\x7f")
+        );
+    }
+
+    #[test]
+    fn alt_prefixes_the_escape_character() {
+        assert_eq!(
+            key_to_data(&key(KeyCode::Char('b'), KeyModifiers::ALT)).as_deref(),
+            Some("\x1bb")
+        );
+    }
+
+    #[test]
+    fn a_release_and_a_non_key_event_have_no_data() {
+        let mut event = KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE);
+        event.kind = KeyEventKind::Release;
+        assert_eq!(key_to_data(&Event::Key(event)), None);
+        assert_eq!(key_to_data(&Event::Resize(80, 24)), None);
     }
 }

@@ -85,6 +85,14 @@ impl Applied {
     }
 }
 
+/// What running a `!` command amounted to, when whatever was listening decided instead of
+/// the shell.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BashRun {
+    pub output: String,
+    pub failed: bool,
+}
+
 /// What asking every provider what it serves came back with.
 #[derive(Debug, Default)]
 pub struct Listings {
@@ -108,9 +116,21 @@ pub trait Commands: Send {
         Some(line)
     }
 
-    /// Tell whatever is listening what the user ran with `!`.
-    async fn ran_bash(&mut self, command: &str, output: &str, failed: bool) {
-        let _ = (command, output, failed);
+    /// Ask whatever is listening before running what the user typed with `!`, and let it
+    /// take over the run entirely.
+    ///
+    /// `None` runs the command against the shell as usual. `Some` is what running it
+    /// amounted to instead — the shell is never actually asked — which is how ohm's
+    /// `user_bash` handlers are honoured: an extension answering with its own result has
+    /// decided what happened, not merely watched it happen.
+    async fn before_bash(
+        &mut self,
+        command: &str,
+        exclude_from_context: bool,
+        cwd: &str,
+    ) -> Option<BashRun> {
+        let _ = (command, exclude_from_context, cwd);
+        None
     }
 
     /// Run whatever is bound to this key, if anything is. `true` means it was handled and

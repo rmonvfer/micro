@@ -14,12 +14,12 @@
 pub mod syntax;
 
 use crate::render::links::Links;
+use crate::theme::Theme;
 use crate::wrap::text_width;
 use crate::wrap::wrap_spans;
-use ratatui::text::Line;
-use crate::theme::Theme;
 use ratatui::style::Modifier;
 use ratatui::style::Style;
+use ratatui::text::Line;
 use ratatui::text::Span;
 use syntax::Highlighter;
 
@@ -33,6 +33,8 @@ const MAX_RULE: usize = 80;
 #[derive(Debug, Clone, PartialEq)]
 pub struct Block {
     pub spans: Vec<Span<'static>>,
+    /// A PNG for a graphical display block, drawn after its rows are laid out.
+    pub image: Option<String>,
     /// Columns to indent continuation rows by when this line wraps.
     pub indent: usize,
     /// Whether the line's background extends to the full width. ohm paints no background
@@ -52,6 +54,7 @@ impl Block {
     fn plain(spans: Vec<Span<'static>>) -> Self {
         Block {
             spans,
+            image: None,
             indent: 0,
             filled: false,
             spaced_after: false,
@@ -91,9 +94,7 @@ pub fn render_linked(
         let next = lines.get(index + 1).map(|next| next.trim_start());
         let followed_by_blank = next.is_none_or(|next| next.is_empty());
         // A run of quote lines is one block, so only the last of them is set apart.
-        let continues = next.is_some_and(|next| {
-            quote(trimmed).is_some() && quote(next).is_some()
-        });
+        let continues = next.is_some_and(|next| quote(trimmed).is_some() && quote(next).is_some());
 
         if let Some(open) = &mut maths {
             match trimmed.starts_with(open.closer) {
@@ -216,7 +217,10 @@ pub fn render_linked(
     // written is drawn from what has arrived, which is what keeps one on screen while it
     // streams rather than flickering between source and drawing.
     if let Some(open) = fence {
-        match open.diagram.filter(|_| mermaid == crate::commands::Mermaid::Streaming) {
+        match open
+            .diagram
+            .filter(|_| mermaid == crate::commands::Mermaid::Streaming)
+        {
             // Drawn while it is still arriving only if that is what was asked for; waiting
             // for the last line keeps a half-written diagram from flickering as it lands.
             Some(source) => blocks.extend(diagram_blocks(&source, theme, width)),
@@ -259,6 +263,7 @@ fn code_line(line: &str, fence: &mut Fence, theme: &Theme) -> Block {
 
     Block {
         spans,
+        image: None,
         indent: CODE_INDENT.len(),
         filled: false,
         spaced_after: false,
@@ -308,6 +313,7 @@ fn block_for(
         spans.extend(inline(rest, body, theme, links));
         return Block {
             spans,
+            image: None,
             indent: 2,
             filled: false,
             spaced_after: true,
@@ -320,6 +326,7 @@ fn block_for(
         spans.extend(inline(rest, theme.body(), theme, links));
         return Block {
             spans,
+            image: None,
             indent,
             filled: false,
             spaced_after: false,
@@ -476,9 +483,7 @@ fn inline(text: &str, base: Style, theme: &Theme, links: &mut Links) -> Vec<Span
             '_' if characters.get(index + 1) == Some(&'_') => marker(&characters, index, "__")
                 .map(|(content, next)| (content, next, base.add_modifier(Modifier::BOLD))),
             '~' if characters.get(index + 1) == Some(&'~') => marker(&characters, index, "~~")
-                .map(|(content, next)| {
-                    (content, next, base.add_modifier(Modifier::CROSSED_OUT))
-                }),
+                .map(|(content, next)| (content, next, base.add_modifier(Modifier::CROSSED_OUT))),
             // Single markers are emphasis. Checked after the doubled ones, so `**bold**` is
             // never read as an empty italic wrapping a bold.
             '*' => marker(&characters, index, "*")
@@ -618,7 +623,9 @@ fn paint(cls: micro_mermaid::Cls, theme: &Theme) -> Style {
         Cls::Text => theme.body(),
         Cls::Edge => Style::new().fg(theme.md_code_block_border),
         Cls::EdgeLabel => Style::new().fg(theme.dim),
-        Cls::Title => Style::new().fg(theme.md_heading).add_modifier(Modifier::BOLD),
+        Cls::Title => Style::new()
+            .fg(theme.md_heading)
+            .add_modifier(Modifier::BOLD),
         Cls::None => theme.body(),
     }
 }
@@ -664,6 +671,23 @@ impl Maths {
     fn drawn(&self, theme: &Theme) -> Vec<Block> {
         let source = self.lines.join("\n");
         let style = theme.body();
+        if let Some(image) = crate::typeset::render_math(&source, theme.text, theme.status) {
+            return vec![
+                Block::plain(Vec::new()),
+                Block {
+                    spans: crate::latex::render_display(&source)
+                        .unwrap_or_else(|| source.clone())
+                        .split('\n')
+                        .map(|line| Span::styled(line.to_string(), style))
+                        .collect(),
+                    image: Some(image),
+                    indent: 0,
+                    filled: false,
+                    spaced_after: false,
+                },
+                Block::plain(Vec::new()),
+            ];
+        }
         let drawn = crate::latex::render_display(&source).unwrap_or_else(|| source.clone());
         let mut blocks = vec![Block::plain(Vec::new())];
         for line in drawn.split('\n') {
@@ -704,7 +728,10 @@ fn contains_cell(trimmed: &str) -> bool {
 fn split_cells(trimmed: &str) -> Vec<String> {
     let inner = trimmed.strip_prefix('|').unwrap_or(trimmed);
     let inner = inner.strip_suffix('|').unwrap_or(inner);
-    inner.split('|').map(|cell| cell.trim().to_string()).collect()
+    inner
+        .split('|')
+        .map(|cell| cell.trim().to_string())
+        .collect()
 }
 
 /// The delimiter row that confirms a table, as the number of columns it names. A run of
@@ -793,7 +820,9 @@ impl Table {
         let widths = column_widths(&cells, columns, for_cells, width, overhead);
 
         let border = Style::new().fg(theme.md_hr);
-        let header_style = Style::new().fg(theme.md_heading).add_modifier(Modifier::BOLD);
+        let header_style = Style::new()
+            .fg(theme.md_heading)
+            .add_modifier(Modifier::BOLD);
         let rule = |left: &str, middle: &str, right: &str| {
             let spans: Vec<String> = widths.iter().map(|width| "─".repeat(*width)).collect();
             Block::plain(vec![Span::styled(
@@ -855,7 +884,10 @@ fn row_blocks(
                 ));
                 let drawn = cell.get(line);
                 let used = drawn.map_or(0, |line| {
-                    line.spans.iter().map(|span| text_width(&span.content)).sum()
+                    line.spans
+                        .iter()
+                        .map(|span| text_width(&span.content))
+                        .sum()
                 });
                 if let Some(drawn) = drawn {
                     spans.extend(drawn.spans.iter().cloned());
@@ -970,8 +1002,8 @@ fn math(characters: &[char], start: usize) -> Option<(String, usize)> {
         _ => return None,
     };
 
-    let (source, next) = marker(characters, start, opener)
-        .filter(|(source, _)| !source.is_empty())?;
+    let (source, next) =
+        marker(characters, start, opener).filter(|(source, _)| !source.is_empty())?;
     // A single `$` is also a currency sign and a shell variable, so it has to earn being
     // read as maths: what follows a price is a digit, what precedes the closing `$` of a
     // sum of money is a space, and `$PATH` is a name rather than an expression.
@@ -1049,7 +1081,10 @@ mod tests {
         assert!(!rows.iter().any(|row| row.contains("```")), "{rows:?}");
         assert!(!rows.iter().any(|row| row.contains("graph TD")), "{rows:?}");
         assert!(rows.iter().any(|row| row.contains("│ Read │")), "{rows:?}");
-        assert!(rows.iter().any(|row| row.contains("│ Answer │")), "{rows:?}");
+        assert!(
+            rows.iter().any(|row| row.contains("│ Answer │")),
+            "{rows:?}"
+        );
         assert!(rows.iter().any(|row| row.contains('▼')), "{rows:?}");
     }
 
@@ -1085,8 +1120,14 @@ mod tests {
             20,
         );
         let framed = rows.join("\n");
-        assert!(framed.contains("mermaid: graph"), "it says what it was: {framed}");
-        assert!(framed.contains("graph LR"), "and holds the source: {framed}");
+        assert!(
+            framed.contains("mermaid: graph"),
+            "it says what it was: {framed}"
+        );
+        assert!(
+            framed.contains("graph LR"),
+            "and holds the source: {framed}"
+        );
         assert!(
             rows.iter().all(|row| text_width(row) <= 20),
             "inside the terminal: {rows:?}"
@@ -1124,7 +1165,10 @@ mod tests {
         assert_eq!(rows[1], "│ Model  │ Context │");
         assert_eq!(rows[2], "├────────┼─────────┤");
         assert_eq!(rows[3], "│ opus   │ 200k    │");
-        assert_eq!(rows[4], "├────────┼─────────┤", "a rule between every pair of rows");
+        assert_eq!(
+            rows[4], "├────────┼─────────┤",
+            "a rule between every pair of rows"
+        );
         assert_eq!(rows[5], "│ gemini │ 1M      │");
         assert_eq!(rows[6], "└────────┴─────────┘");
     }
@@ -1146,16 +1190,22 @@ mod tests {
     fn a_long_cell_wraps_inside_its_column() {
         let mut links = Links::default();
         let source = "| Thing | What it does |\n| --- | --- |\n| one | a description long enough to need two lines |";
-        let rows: Vec<String> = render_linked(source, &Theme::dark(), 34, &mut links, crate::commands::Mermaid::Streaming)
-            .iter()
-            .map(|block| {
-                block
-                    .spans
-                    .iter()
-                    .map(|span| span.content.as_ref())
-                    .collect::<String>()
-            })
-            .collect();
+        let rows: Vec<String> = render_linked(
+            source,
+            &Theme::dark(),
+            34,
+            &mut links,
+            crate::commands::Mermaid::Streaming,
+        )
+        .iter()
+        .map(|block| {
+            block
+                .spans
+                .iter()
+                .map(|span| span.content.as_ref())
+                .collect::<String>()
+        })
+        .collect();
         assert!(rows.iter().all(|row| row.chars().count() <= 34), "{rows:?}");
         assert!(
             rows.iter().filter(|row| row.contains('│')).count() > 3,
@@ -1169,16 +1219,22 @@ mod tests {
     fn a_table_too_wide_to_draw_falls_back_to_its_source() {
         let mut links = Links::default();
         let source = "| A | B | C |\n| --- | --- | --- |\n| one | two | three |";
-        let rows: Vec<String> = render_linked(source, &Theme::dark(), 8, &mut links, crate::commands::Mermaid::Streaming)
-            .iter()
-            .map(|block| {
-                block
-                    .spans
-                    .iter()
-                    .map(|span| span.content.as_ref())
-                    .collect::<String>()
-            })
-            .collect();
+        let rows: Vec<String> = render_linked(
+            source,
+            &Theme::dark(),
+            8,
+            &mut links,
+            crate::commands::Mermaid::Streaming,
+        )
+        .iter()
+        .map(|block| {
+            block
+                .spans
+                .iter()
+                .map(|span| span.content.as_ref())
+                .collect::<String>()
+        })
+        .collect();
         assert!(!rows.iter().any(|row| row.contains('┌')), "{rows:?}");
         assert!(rows.iter().any(|row| row.contains("one")), "{rows:?}");
     }
@@ -1202,25 +1258,37 @@ mod tests {
     /// earn being read as an expression.
     #[test]
     fn a_dollar_sign_is_left_alone() {
-        assert_eq!(drawn("costs $5 and $10 here."), vec!["costs $5 and $10 here."]);
-        assert_eq!(drawn("set $PATH and $HOME now"), vec!["set $PATH and $HOME now"]);
+        assert_eq!(
+            drawn("costs $5 and $10 here."),
+            vec!["costs $5 and $10 here."]
+        );
+        assert_eq!(
+            drawn("set $PATH and $HOME now"),
+            vec!["set $PATH and $HOME now"]
+        );
         assert_eq!(drawn("a lone $ sign"), vec!["a lone $ sign"]);
     }
 
     /// Every row of a block, as plain text.
     fn drawn(source: &str) -> Vec<String> {
         let mut links = Links::default();
-        render_linked(source, &Theme::dark(), 60, &mut links, crate::commands::Mermaid::Streaming)
-            .iter()
-            .map(|block| {
-                block
-                    .spans
-                    .iter()
-                    .map(|span| span.content.as_ref())
-                    .collect::<String>()
-            })
-            .filter(|row: &String| !row.is_empty())
-            .collect()
+        render_linked(
+            source,
+            &Theme::dark(),
+            60,
+            &mut links,
+            crate::commands::Mermaid::Streaming,
+        )
+        .iter()
+        .map(|block| {
+            block
+                .spans
+                .iter()
+                .map(|span| span.content.as_ref())
+                .collect::<String>()
+        })
+        .filter(|row: &String| !row.is_empty())
+        .collect()
     }
 
     use super::*;
@@ -1231,7 +1299,13 @@ mod tests {
 
     /// The renderer at a width wide enough that only a horizontal rule notices.
     fn render(text: &str, theme: &Theme) -> Vec<Block> {
-        render_linked(text, theme, MAX_RULE, &mut Links::new(), crate::commands::Mermaid::Streaming)
+        render_linked(
+            text,
+            theme,
+            MAX_RULE,
+            &mut Links::new(),
+            crate::commands::Mermaid::Streaming,
+        )
     }
 
     fn text_of(block: &Block) -> String {
@@ -1308,8 +1382,10 @@ mod tests {
     fn an_unterminated_fence_still_styles_what_followed_it() {
         let theme = theme();
         let blocks = render("```\nstreaming code", &theme);
-        assert_eq!(rendered(&blocks), // A fence the answer never closed is closed for it, so it still reads as code.
-            vec!["```", "  streaming code", "```"]);
+        assert_eq!(
+            rendered(&blocks), // A fence the answer never closed is closed for it, so it still reads as code.
+            vec!["```", "  streaming code", "```"]
+        );
         assert_eq!(blocks[1].spans[0].style.fg, Some(theme.md_code_block));
     }
 
@@ -1408,11 +1484,26 @@ mod tests {
         let theme = theme();
         let source = "see [the docs](https://example.com) now";
 
-        let clickable = render_linked(source, &theme, 80, &mut Links::new(), crate::commands::Mermaid::Streaming);
+        let clickable = render_linked(
+            source,
+            &theme,
+            80,
+            &mut Links::new(),
+            crate::commands::Mermaid::Streaming,
+        );
         assert_eq!(text_of(&clickable[0]), "see the docs now");
 
-        let blocks = render_linked(source, &theme, 80, &mut Links::disabled(), crate::commands::Mermaid::Streaming);
-        assert_eq!(text_of(&blocks[0]), "see the docs (https://example.com) now");
+        let blocks = render_linked(
+            source,
+            &theme,
+            80,
+            &mut Links::disabled(),
+            crate::commands::Mermaid::Streaming,
+        );
+        assert_eq!(
+            text_of(&blocks[0]),
+            "see the docs (https://example.com) now"
+        );
 
         let text = span_with(&blocks[0], "the docs");
         assert_eq!(text.style.fg, Some(theme.md_link));
@@ -1462,16 +1553,43 @@ mod tests {
     #[test]
     fn a_rule_spans_the_width_up_to_ohms_cap() {
         let theme = theme();
-        let blocks = render_linked("---", &theme, 20, &mut Links::new(), crate::commands::Mermaid::Streaming);
+        let blocks = render_linked(
+            "---",
+            &theme,
+            20,
+            &mut Links::new(),
+            crate::commands::Mermaid::Streaming,
+        );
         assert_eq!(text_of(&blocks[0]), "─".repeat(20));
         assert_eq!(blocks[0].spans[0].style.fg, Some(theme.md_hr));
 
         // Wider terminals stop at ohm's cap of 80.
         assert_eq!(
-            text_of(&render_linked("---", &theme, 200, &mut Links::new(), crate::commands::Mermaid::Streaming)[0]).chars().count(),
+            text_of(
+                &render_linked(
+                    "---",
+                    &theme,
+                    200,
+                    &mut Links::new(),
+                    crate::commands::Mermaid::Streaming
+                )[0]
+            )
+            .chars()
+            .count(),
             80
         );
-        assert_eq!(text_of(&render_linked("***", &theme, 5, &mut Links::new(), crate::commands::Mermaid::Streaming)[0]), "─────");
+        assert_eq!(
+            text_of(
+                &render_linked(
+                    "***",
+                    &theme,
+                    5,
+                    &mut Links::new(),
+                    crate::commands::Mermaid::Streaming
+                )[0]
+            ),
+            "─────"
+        );
     }
 
     #[test]
@@ -1487,10 +1605,16 @@ mod tests {
         let source = "# One\n### Three\n- item\n> quote\n---\n```rs\ncode\n```\n`inline` [t](u)";
         // Rendered without hyperlinks, since that is the path that prints a link's target
         // and so the only one that reaches `md_link_url`.
-        let used: Vec<_> = render_linked(source, &theme, 80, &mut Links::disabled(), crate::commands::Mermaid::Streaming)
-            .iter()
-            .flat_map(|block| block.spans.iter().filter_map(|span| span.style.fg))
-            .collect();
+        let used: Vec<_> = render_linked(
+            source,
+            &theme,
+            80,
+            &mut Links::disabled(),
+            crate::commands::Mermaid::Streaming,
+        )
+        .iter()
+        .flat_map(|block| block.spans.iter().filter_map(|span| span.style.fg))
+        .collect();
 
         for (name, color) in [
             ("md_heading", theme.md_heading),
@@ -1508,5 +1632,3 @@ mod tests {
         }
     }
 }
-
-

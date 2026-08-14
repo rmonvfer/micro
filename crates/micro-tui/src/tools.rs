@@ -58,8 +58,7 @@ pub enum Body {
     Paths(Vec<String>),
 }
 
-impl Body {
-}
+impl Body {}
 
 /// A tool result ready to render: what it acted on, how it went, and what it produced.
 #[derive(Debug, Clone, PartialEq, Eq)]

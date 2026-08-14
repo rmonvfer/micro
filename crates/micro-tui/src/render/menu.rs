@@ -123,7 +123,7 @@ mod tests {
 
     #[test]
     fn the_highlighted_row_carries_the_arrow() {
-        let mut menu = Menu::open_for("/c", 2).unwrap();
+        let mut menu = Menu::open_for("/c", 2, &[]).unwrap();
         let out = rendered(&lines(&menu, &Theme::dark(), 60, MAX_VISIBLE));
         assert!(out[0].starts_with("→ clone"));
         assert!(out[1].starts_with("  changelog"));
@@ -136,7 +136,7 @@ mod tests {
 
     #[test]
     fn names_line_up_in_a_column_with_their_descriptions() {
-        let menu = Menu::open_for("/c", 2).unwrap();
+        let menu = Menu::open_for("/c", 2, &[]).unwrap();
         let out = rendered(&lines(&menu, &Theme::dark(), 70, MAX_VISIBLE));
         let column_of = |line: &str, text: &str| {
             let byte = line.find(text).expect("a description");
@@ -151,7 +151,7 @@ mod tests {
 
     #[test]
     fn a_narrow_menu_drops_the_descriptions_rather_than_wrapping() {
-        let menu = Menu::open_for("/c", 2).unwrap();
+        let menu = Menu::open_for("/c", 2, &[]).unwrap();
         for line in lines(&menu, &Theme::dark(), 20, MAX_VISIBLE) {
             let width: usize = line.spans.iter().map(|s| text_width(&s.content)).sum();
             assert!(width <= 20, "row of {width} exceeds 20");
@@ -162,7 +162,7 @@ mod tests {
 
     #[test]
     fn no_row_ever_exceeds_the_width() {
-        let menu = Menu::open_for("/", 1).unwrap();
+        let menu = Menu::open_for("/", 1, &[]).unwrap();
         for width in 4..90 {
             for line in lines(&menu, &Theme::dark(), width, MAX_VISIBLE) {
                 let drawn: usize = line.spans.iter().map(|s| text_width(&s.content)).sum();
@@ -173,7 +173,7 @@ mod tests {
 
     #[test]
     fn a_scrolling_list_reports_where_you_are() {
-        let mut menu = Menu::open_for("/", 1).unwrap();
+        let mut menu = Menu::open_for("/", 1, &[]).unwrap();
         let total = menu.items().len();
         let out = rendered(&lines(&menu, &Theme::dark(), 60, MAX_VISIBLE));
         assert_eq!(out.last().unwrap(), &format!("  (1/{total})"));
@@ -186,7 +186,7 @@ mod tests {
 
     #[test]
     fn a_list_that_fits_has_no_count() {
-        let menu = Menu::open_for("/com", 4).unwrap();
+        let menu = Menu::open_for("/com", 4, &[]).unwrap();
         let out = rendered(&lines(&menu, &Theme::dark(), 60, MAX_VISIBLE));
         assert_eq!(out.len(), 1);
     }

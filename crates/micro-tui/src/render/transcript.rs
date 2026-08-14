@@ -21,9 +21,10 @@ use ratatui::style::Color;
 use ratatui::style::Style;
 use ratatui::text::Line;
 use ratatui::text::Span;
+use std::borrow::Cow;
 
 /// How the transcript should be shown.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Display {
     pub width: usize,
     pub show_thinking: bool,
@@ -42,6 +43,11 @@ pub struct Display {
     pub mermaid: crate::commands::Mermaid,
     /// Whether an image wider than the room it has is shrunk to fit.
     pub resize_images: bool,
+    /// What a folded reasoning block collapses to. `setHiddenThinkingLabel` is the only
+    /// thing that ever makes this anything but the built-in `"Thinking..."`, which is why
+    /// it travels as a `Cow` rather than the `&'static str` every other built-in label on
+    /// screen gets away with.
+    pub hidden_thinking_label: Cow<'static, str>,
 }
 
 /// The transcript as drawn, with the first line of each entry.
@@ -97,20 +103,38 @@ pub fn append(
         starts.push(out.len());
         let before = out.len();
         // An entry keeps the blank row above it whether the entry before it is on screen or
-        // in the scrollback, so a block reads the same either way.
-        if !out.is_empty() || index > 0 {
+        // in the scrollback, so a block reads the same either way. A tool's band supplies
+        // that row itself when it immediately follows a thinking-only assistant entry.
+        let thinking_leads_into_tool = assistant_leads_into_tool(entries, index);
+        let assistant_precedes_tool = assistant_precedes_tool(entries, index);
+        if (!out.is_empty() || index > 0) && !thinking_leads_into_tool {
             out.push(Line::default());
         }
         let start = out.len();
 
         match entry {
             Entry::User(text) => push_user(&mut out, text, theme, display),
-            Entry::Bash { command, shared } => push_bash(&mut out, command, *shared, theme, display),
+            Entry::Bash { command, shared } => {
+                push_bash(&mut out, command, *shared, theme, display)
+            }
             Entry::Assistant(assistant) => {
-                push_thinking(&mut out, &assistant.thinking, theme, display);
+                push_thinking(
+                    &mut out,
+                    &assistant.thinking,
+                    theme,
+                    display,
+                    !assistant_precedes_tool,
+                );
                 // An answer arriving is marked by the spinner in the status rows, not by a
                 // block on the text. ohm draws no cursor into the transcript.
-                push_markdown(&mut out, &assistant.text, theme, display, &mut links);
+                push_markdown(
+                    &mut out,
+                    &assistant.text,
+                    theme,
+                    display,
+                    &mut links,
+                    &mut pictures,
+                );
                 if let Some(error) = &assistant.error {
                     push_notice(&mut out, error, NoticeLevel::Error, theme, display);
                 }
@@ -134,7 +158,10 @@ pub fn append(
         // A banded entry carries its own inset inside the tint; everything else is pushed in
         // by the same column so text lines up whether or not it sits on coloured ground.
         for line in out.iter_mut().skip(start) {
-            let banded = line.spans.first().is_some_and(|span| span.style.bg.is_some());
+            let banded = line
+                .spans
+                .first()
+                .is_some_and(|span| span.style.bg.is_some());
             if !banded {
                 *line = indented(std::mem::take(line));
             }
@@ -145,7 +172,21 @@ pub fn append(
             out.truncate(before);
         }
     }
+}
 
+/// A thinking-only assistant entry ends directly above the top row of the following tool's
+/// band. The band supplies its own top padding, so neither side adds another blank row.
+fn assistant_precedes_tool(entries: &[Entry], index: usize) -> bool {
+    matches!(entries.get(index + 1), Some(Entry::Tool(_)))
+        && matches!(
+            entries.get(index),
+            Some(Entry::Assistant(assistant))
+                if !assistant.thinking.trim().is_empty() && assistant.text.trim().is_empty()
+        )
+}
+
+fn assistant_leads_into_tool(entries: &[Entry], index: usize) -> bool {
+    assistant_precedes_tool(entries, index.saturating_sub(1))
 }
 
 /// Wrap `rows` in the box ohm draws around a message: a blank row above and below, and
@@ -233,7 +274,13 @@ fn push_bash(
 }
 
 /// Reasoning is background information: folded behind a label unless asked for.
-fn push_thinking(out: &mut Vec<Line<'static>>, thinking: &str, theme: &Theme, display: &Display) {
+fn push_thinking(
+    out: &mut Vec<Line<'static>>,
+    thinking: &str,
+    theme: &Theme,
+    display: &Display,
+    trailing_padding: bool,
+) {
     if thinking.trim().is_empty() {
         return;
     }
@@ -246,14 +293,21 @@ fn push_thinking(out: &mut Vec<Line<'static>>, thinking: &str, theme: &Theme, di
             let spans = vec![Span::styled(line.to_string(), style)];
             out.extend(wrap_spans(&spans, display.width, 0));
         }
-        out.push(Line::default());
+        if trailing_padding {
+            out.push(Line::default());
+        }
         return;
     }
 
     // Hidden, a whole run collapses to one fixed label rather than the latest line. A live
     // tail reads as content the model produced; a label reads as what it is, a fold.
-    out.push(Line::from(vec![Span::styled("Thinking...", style)]));
-    out.push(Line::default());
+    out.push(Line::from(vec![Span::styled(
+        display.hidden_thinking_label.clone().into_owned(),
+        style,
+    )]));
+    if trailing_padding {
+        out.push(Line::default());
+    }
 }
 
 /// An image, given the rows it needs and drawn into them by the terminal.
@@ -341,6 +395,7 @@ fn push_markdown(
     theme: &Theme,
     display: &Display,
     links: &mut crate::render::links::Links,
+    pictures: &mut crate::render::pictures::Pictures,
 ) {
     // A response almost always ends with a newline, and the empty row that would produce
     // reads as a gap the model asked for rather than punctuation.
@@ -351,7 +406,15 @@ fn push_markdown(
     // An answer is written straight onto the terminal's own ground. A fenced block is
     // marked by its fences and by the color of its text, not by a fill behind it.
     for block in markdown::render_linked(text, theme, display.width, links, display.mermaid) {
-        out.extend(wrap_spans(&block.spans, display.width, block.indent));
+        if let Some(image) = block.image {
+            if let Some(rows) = pictures.reserve(&image, display.width) {
+                out.extend(std::iter::repeat_with(Line::default).take(rows));
+            } else {
+                out.extend(wrap_spans(&block.spans, display.width, block.indent));
+            }
+        } else {
+            out.extend(wrap_spans(&block.spans, display.width, block.indent));
+        }
     }
 }
 
@@ -387,7 +450,6 @@ fn push_notice(
         }
     }
 }
-
 
 /// Something an extension drew, on the band ohm gives a custom message.
 ///
@@ -438,6 +500,7 @@ mod tests {
             images: None,
             image_width: 40,
             resize_images: true,
+            hidden_thinking_label: Cow::Borrowed("Thinking..."),
         }
     }
 
@@ -609,6 +672,42 @@ mod tests {
             },
         });
         assert_eq!(rendered(&transcript, &display(60)), ["Thinking...", ""]);
+    }
+
+    /// `setHiddenThinkingLabel` changes the word a fold collapses to.
+    #[test]
+    fn a_custom_hidden_thinking_label_replaces_the_default_one() {
+        let mut transcript = Transcript::new();
+        transcript.apply(&AgentEvent::MessageDelta {
+            event: StreamEvent::ThinkingDelta {
+                index: 0,
+                delta: "considering".into(),
+            },
+        });
+        let mut shown = display(60);
+        shown.hidden_thinking_label = Cow::Borrowed("Reasoning (hidden)");
+        assert_eq!(rendered(&transcript, &shown), ["Reasoning (hidden)", ""]);
+    }
+
+    #[test]
+    fn thinking_followed_by_a_tool_uses_the_tools_top_padding() {
+        let mut transcript = Transcript::new();
+        transcript.apply(&AgentEvent::MessageDelta {
+            event: StreamEvent::ThinkingDelta {
+                index: 0,
+                delta: "considering".into(),
+            },
+        });
+        transcript.apply(&AgentEvent::ToolStart {
+            id: "call_1".into(),
+            name: "read".into(),
+            arguments: json!({ "path": "a.rs" }),
+        });
+
+        assert_eq!(
+            rendered(&transcript, &display(60)),
+            ["Thinking...", "", "read a.rs …", ""]
+        );
     }
 
     #[test]

@@ -31,6 +31,10 @@ const INDENT: usize = 2;
 const NUMBER_WIDTH: usize = 5;
 
 pub fn lines(tool: &ToolEntry, focused: bool, theme: &Theme, width: usize) -> Vec<Line<'static>> {
+    if tool.has_custom_render() {
+        return custom_lines(tool, focused, theme, width);
+    }
+
     let view = tools::view(
         &tool.name,
         &tool.arguments,
@@ -50,6 +54,32 @@ pub fn lines(tool: &ToolEntry, focused: bool, theme: &Theme, width: usize) -> Ve
             width,
             INDENT,
         ));
+    }
+
+    band(rows, width, ground(tool, focused, theme))
+}
+
+/// A call an extension is drawing itself, through renderCall/renderResult. Its lines are
+/// already composed on the other side of the wire; what is left is where they land.
+///
+/// Most such tools still want ohm's own frame — the padded band whose color says how the
+/// call went — and only supply what goes inside it. A tool whose `render_shell` asked for
+/// `"self"` wants none of that: it means to draw its own frame on the far side, so this
+/// leaves the band off entirely and only spaces the result off from whatever came before.
+fn custom_lines(
+    tool: &ToolEntry,
+    focused: bool,
+    theme: &Theme,
+    width: usize,
+) -> Vec<Line<'static>> {
+    let rows: Vec<Line<'static>> = tool
+        .render_lines()
+        .into_iter()
+        .flat_map(|text| row_lines(&Row::Plain(text), theme, width, 0))
+        .collect();
+
+    if tool.self_framed {
+        return std::iter::once(Line::default()).chain(rows).collect();
     }
 
     band(rows, width, ground(tool, focused, theme))
@@ -217,6 +247,7 @@ mod tests {
             output: output.map(str::to_string),
             is_error: false,
             expanded: false,
+            ..Default::default()
         }
     }
 
@@ -250,6 +281,71 @@ mod tests {
             .iter()
             .flat_map(|line| line.spans.iter().map(|span| span.style.bg))
             .collect()
+    }
+
+    /// A tool with a registered component draws exactly what it answered rather than the
+    /// built-in view — the call and the result lines stacked in that order, the way pi's
+    /// own `ToolExecutionComponent` stacks its two renderers.
+    #[test]
+    fn a_tool_with_a_registered_component_draws_what_it_answered_instead_of_the_built_in_view() {
+        let theme = Theme::dark();
+        let mut tool = entry("weather", json!({ "city": "lima" }), Some("ignored"));
+        tool.call_component_id = Some("component-0".into());
+        tool.call_lines = Some(vec!["lima: sunny".into()]);
+        tool.result_component_id = Some("component-1".into());
+        tool.result_lines = Some(vec!["18°C".into()]);
+
+        assert_eq!(
+            rendered(&lines(&tool, false, &theme, 60)),
+            vec!["lima: sunny", "18°C"]
+        );
+    }
+
+    /// `render_shell: "self"` skips ohm's own band entirely: no background tint marking how
+    /// the call went, no padding column, just the extension's own lines behind one blank
+    /// row that keeps them off whatever came before — no trailing blank row, since nothing
+    /// here is closing a frame the extension is still drawing.
+    #[test]
+    fn a_self_framed_tool_draws_without_ohms_band() {
+        let theme = Theme::dark();
+        let mut tool = entry("weather", json!({ "city": "lima" }), Some("ignored"));
+        tool.call_component_id = Some("component-0".into());
+        tool.call_lines = Some(vec!["lima: sunny".into()]);
+        tool.self_framed = true;
+
+        let out = lines(&tool, false, &theme, 60);
+        let text: Vec<String> = out
+            .iter()
+            .map(|line| {
+                line.spans
+                    .iter()
+                    .map(|span| span.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect();
+
+        assert_eq!(text, vec!["", "lima: sunny"]);
+        assert!(
+            out.iter()
+                .flat_map(|line| line.spans.iter())
+                .all(|span| span.style.bg.is_none()),
+            "no band color behind a self-framed call"
+        );
+    }
+
+    /// A component answering for only one of the two renderers still draws — the built-in
+    /// view is not a fallback for the half nothing registered.
+    #[test]
+    fn only_a_call_component_still_draws_on_its_own() {
+        let theme = Theme::dark();
+        let mut tool = entry("weather", json!({ "city": "lima" }), None);
+        tool.call_component_id = Some("component-0".into());
+        tool.call_lines = Some(vec!["lima: checking...".into()]);
+
+        assert_eq!(
+            rendered(&lines(&tool, false, &theme, 60)),
+            vec!["lima: checking..."]
+        );
     }
 
     #[test]
@@ -453,6 +549,7 @@ mod tests {
             output: Some("Edited a.rs".into()),
             is_error: false,
             expanded: true,
+            ..Default::default()
         };
 
         let marked: Vec<String> = lines(&tool, false, &Theme::dark(), 80)
@@ -478,5 +575,4 @@ mod tests {
             "unchanged words should not be lit: {marked:?}"
         );
     }
-
 }
