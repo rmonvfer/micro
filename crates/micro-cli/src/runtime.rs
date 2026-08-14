@@ -340,6 +340,7 @@ pub async fn build(
         home: micro_context::micro_home().unwrap_or_default(),
         scoped_models: settings.scoped_models.clone(),
         resources: selection.resources.clone(),
+        tree_filter: settings.tree_filter_mode,
         skills_enabled: settings.skill_commands,
         collapse_changelog: settings.collapse_changelog,
         thinking: selection.thinking,

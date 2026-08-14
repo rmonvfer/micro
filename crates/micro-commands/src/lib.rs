@@ -275,6 +275,8 @@ pub struct CommandContext<'a> {
     /// The models a workspace put on its shortlist, as the patterns it named them by. The
     /// model list opens on these; everything else is a keystroke away.
     pub scoped_models: &'a [String],
+    /// What the conversation tree shows before anything is asked of it.
+    pub tree_filter: micro_config::TreeFilter,
 }
 
 /// Run a submitted line. `None` means it was ordinary text for the model.
@@ -402,7 +404,7 @@ fn thinking(argument: Option<&str>) -> CommandOutcome {
     match level_named(argument) {
         Some(level) => CommandOutcome::SetThinking { level },
         None => CommandOutcome::error(format!(
-            "unknown reasoning effort `{argument}`: expected off, low, medium or high"
+            "unknown reasoning effort `{argument}`: expected off, minimal, low, medium, high, xhigh or max"
         )),
     }
 }
@@ -410,17 +412,23 @@ fn thinking(argument: Option<&str>) -> CommandOutcome {
 /// The levels a user can ask for, with what each one is worth saying about it.
 const LEVELS: &[(&str, &str)] = &[
     ("off", "answer directly"),
+    ("minimal", "the least reasoning available"),
     ("low", "a little reasoning first"),
     ("medium", "a moderate amount"),
-    ("high", "as much as the model will do"),
+    ("high", "a lot of reasoning"),
+    ("xhigh", "extra reasoning"),
+    ("max", "as much as the model will do"),
 ];
 
 fn level_named(name: &str) -> Option<ThinkingLevel> {
     match name.trim().to_ascii_lowercase().as_str() {
         "off" | "none" => Some(ThinkingLevel::Off),
+        "minimal" => Some(ThinkingLevel::Minimal),
         "low" => Some(ThinkingLevel::Low),
         "medium" | "med" => Some(ThinkingLevel::Medium),
-        "high" | "max" => Some(ThinkingLevel::High),
+        "high" => Some(ThinkingLevel::High),
+        "xhigh" => Some(ThinkingLevel::XHigh),
+        "max" => Some(ThinkingLevel::Max),
         _ => None,
     }
 }
@@ -567,14 +575,9 @@ fn settings(context: &CommandContext<'_>) -> CommandOutcome {
             "/set skill_commands",
         ),
         PickerItem::new(
-            "Editor padding",
-            now.editor_padding.to_string(),
-            "/set editor_padding",
-        ),
-        PickerItem::new(
-            "Output padding",
-            now.output_padding.to_string(),
-            "/set output_padding",
+            "Content padding",
+            now.content_padding.to_string(),
+            "/set content_padding",
         ),
         PickerItem::new(
             "Autocomplete max items",
@@ -849,8 +852,7 @@ fn settable(config: &micro_config::Config, name: &str) -> Option<Vec<PickerItem>
 /// A setting counted in columns, rows, cells or seconds, offered over the range it takes.
 fn numbered(name: &str, now: &micro_config::Settings) -> Option<Vec<PickerItem>> {
     let (range, unit, current): (Vec<u64>, &str, u64) = match name {
-        "editor_padding" => ((0..=3).collect(), "columns", now.editor_padding as u64),
-        "output_padding" => ((0..=3).collect(), "columns", now.output_padding as u64),
+        "content_padding" => ((0..=3).collect(), "columns", now.content_padding as u64),
         "interface_padding" => (
             (0..=3).collect(),
             "columns and rows",
@@ -898,8 +900,7 @@ fn describe(config: &micro_config::Config, name: &str) -> Option<String> {
         }
         "block_images" => format!("block_images is {} (on or off)", now.block_images),
         "skill_commands" => format!("skill_commands is {} (on or off)", now.skill_commands),
-        "editor_padding" => format!("editor_padding is {} (columns)", now.editor_padding),
-        "output_padding" => format!("output_padding is {} (columns)", now.output_padding),
+        "content_padding" => format!("content_padding is {} (columns)", now.content_padding),
         "interface_padding" => format!(
             "interface_padding is {} (columns and rows around the interface)",
             now.interface_padding
@@ -983,17 +984,8 @@ fn assign(config: &mut micro_config::Config, name: &str, value: &str) -> Result<
         "auto_resize_images" => config.auto_resize_images = Some(flag()?),
         "block_images" => config.block_images = Some(flag()?),
         "skill_commands" => config.skill_commands = Some(flag()?),
-        // Padding is allowed to be nothing, which is what ohm gives the input by default.
-        "editor_padding" => {
-            config.editor_padding = Some(
-                value
-                    .parse::<u16>()
-                    .map_err(|_| format!("`{value}` is not a number"))?
-                    .min(20),
-            )
-        }
-        "output_padding" => {
-            config.output_padding = Some(
+        "content_padding" => {
+            config.content_padding = Some(
                 value
                     .parse::<u16>()
                     .map_err(|_| format!("`{value}` is not a number"))?
@@ -1326,6 +1318,7 @@ pub(crate) mod testing {
                 usage: micro_types::Usage::default(),
             collapse_changelog: false,
             scoped_models: &[],
+            tree_filter: Default::default(),
             }
         }
     }
@@ -1416,6 +1409,7 @@ mod tests {
             usage: micro_types::Usage::default(),
             collapse_changelog: false,
             scoped_models: &[],
+            tree_filter: Default::default(),
         };
 
         // An argument each command will accept, for the ones that need one. A command that
@@ -1461,8 +1455,7 @@ mod tests {
             ("auto_resize_images", "off"),
             ("block_images", "on"),
             ("skill_commands", "off"),
-            ("editor_padding", "2"),
-            ("output_padding", "0"),
+            ("content_padding", "2"),
             ("interface_padding", "2"),
             ("autocomplete_max_items", "12"),
             ("show_hardware_cursor", "on"),
@@ -1495,7 +1488,7 @@ mod tests {
             micro_config::FollowUpMode::Interrupt
         );
         assert_eq!(now.scoped_models, vec!["anthropic/", "google/gemini-3-pro"]);
-        assert_eq!(now.output_padding, 0);
+        assert_eq!(now.content_padding, 2);
         assert_eq!(now.transport, "auto");
     }
 
@@ -1534,6 +1527,7 @@ mod tests {
             usage: micro_types::Usage::default(),
             collapse_changelog: false,
             scoped_models: &[],
+            tree_filter: Default::default(),
         };
 
         let CommandOutcome::Choose(picker) = settings(&context) else {
@@ -1687,6 +1681,7 @@ mod tests {
             usage: micro_types::Usage::default(),
             collapse_changelog: false,
             scoped_models: &[],
+            tree_filter: Default::default(),
             ..harness.context()
         };
         assert!(matches!(

@@ -44,6 +44,7 @@ pub struct CliCommands {
     /// What this run was told to look at beyond the usual places, so a reload looks in the
     /// same places the first load did.
     resources: crate::runtime::Resources,
+    tree_filter: micro_config::TreeFilter,
     /// Show only the newest entry when the changelog is asked for.
     collapse_changelog: bool,
     /// How hard the model is being asked to reason, so a model swap keeps it.
@@ -75,6 +76,7 @@ pub struct HostParts {
     /// The models the workspace put on its shortlist, which the model list opens on.
     pub scoped_models: Vec<String>,
     pub resources: crate::runtime::Resources,
+    pub tree_filter: micro_config::TreeFilter,
     pub collapse_changelog: bool,
     pub thinking: micro_types::ThinkingLevel,
     pub anthropic_extra_usage: bool,
@@ -97,6 +99,7 @@ impl CliCommands {
             skills_enabled: parts.skills_enabled,
             scoped_models: parts.scoped_models,
             resources: parts.resources,
+            tree_filter: parts.tree_filter,
             collapse_changelog: parts.collapse_changelog,
             thinking: parts.thinking,
             extensions: parts.extensions,
@@ -244,6 +247,7 @@ impl CliCommands {
             usage: state.usage,
             collapse_changelog: self.collapse_changelog,
             scoped_models: &self.scoped_models,
+            tree_filter: self.tree_filter,
         }
     }
 
@@ -862,6 +866,7 @@ mod tests {
             skills_enabled: true,
             scoped_models: Vec::new(),
             resources: Default::default(),
+            tree_filter: Default::default(),
             collapse_changelog: false,
             thinking: micro_types::ThinkingLevel::Off,
             extensions: None,

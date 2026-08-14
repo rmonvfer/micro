@@ -969,6 +969,9 @@ const INLINE_ROWS: u16 = 8;
 struct Screen {
     terminal: Terminal<CrosstermBackend<Stdout>>,
     mode: TuiMode,
+    /// How tall the inline region is now, so a change in what the interface needs can be
+    /// noticed and the region resized to match.
+    rows: u16,
 }
 
 impl Screen {
@@ -993,7 +996,11 @@ impl Screen {
                 )?;
                 let mut terminal = Terminal::new(CrosstermBackend::new(std::io::stdout()))?;
                 terminal.clear()?;
-                Ok(Screen { terminal, mode })
+                Ok(Screen {
+                    terminal,
+                    mode,
+                    rows: 0,
+                })
             }
             TuiMode::Inline => {
                 execute!(std::io::stdout(), EnableBracketedPaste)?;
@@ -1005,9 +1012,47 @@ impl Screen {
                         viewport: ratatui::Viewport::Inline(INLINE_ROWS),
                     },
                 )?;
-                Ok(Screen { terminal, mode })
+                Ok(Screen {
+                    terminal,
+                    mode,
+                    rows: INLINE_ROWS,
+                })
             }
         }
+    }
+
+    /// Make the inline region as tall as the interface has turned out to be.
+    ///
+    /// A region fixed at the height it started with is either too small for a menu or too
+    /// tall for a bare prompt, so it follows what is drawn. ratatui settles an inline
+    /// viewport's height when the terminal is made and does not move it afterwards, so the
+    /// terminal is made again — which happens only when the height actually changes, and
+    /// what the interface needs changes when a menu opens, not between keystrokes.
+    ///
+    /// Rows the region gives up keep whatever was drawn in them unless the reader asked for
+    /// them to be cleared: clearing is tidier and costs a flicker, and which of those
+    /// matters is theirs to say.
+    fn fit_inline(&mut self, app: &mut App) -> Result<()> {
+        if self.mode != TuiMode::Inline {
+            return Ok(());
+        }
+        let width = self.terminal.size()?.width;
+        let wanted = render::interface_rows(app, &app.theme, width, self.rows).max(1);
+        if wanted == self.rows {
+            return Ok(());
+        }
+
+        if wanted < self.rows && app.settings().clear_on_shrink {
+            self.terminal.clear()?;
+        }
+        self.terminal = Terminal::with_options(
+            CrosstermBackend::new(std::io::stdout()),
+            ratatui::TerminalOptions {
+                viewport: ratatui::Viewport::Inline(wanted),
+            },
+        )?;
+        self.rows = wanted;
+        Ok(())
     }
 
     /// Bring the interface up to date: hand whatever has left the live region to the
@@ -1026,6 +1071,7 @@ impl Screen {
                 })?;
             }
         }
+        self.fit_inline(app)?;
         self.terminal.draw(|frame| render::draw(frame, app))?;
         Ok(())
     }

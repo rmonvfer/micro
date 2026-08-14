@@ -336,6 +336,7 @@ impl Tree {
         for child in self.children(parent) {
             rows.push(Row {
                 entry: child,
+                label: self.labels.get(&child.id).map(String::as_str),
                 depth,
                 on_path: on_path.contains(&child.id),
                 is_head: self.head.as_deref() == Some(child.id.as_str()),
@@ -349,6 +350,8 @@ impl Tree {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Row<'a> {
     pub entry: &'a Entry,
+    /// The name this entry was given, when it has one.
+    pub label: Option<&'a str>,
     /// How far from the root, for indenting.
     pub depth: usize,
     /// Whether the conversation currently runs through this entry.

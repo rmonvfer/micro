@@ -73,9 +73,8 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     }
     let theme = app.theme;
 
-    let output_padding = app.settings().output_padding;
-    let editor_padding = app.settings().editor_padding;
-    let content_width = content_width(area.width, output_padding);
+    let content_padding = app.settings().content_padding;
+    let content_width = content_width(area.width, content_padding);
     // The frame is measured before anything is laid out against it: the transcript wraps to
     // this width, and a page of scrolling moves by the rows the region turns out to have.
     app.set_frame(content_width as usize, area.height);
@@ -107,22 +106,22 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     let overlay = chrome.overlay;
     let menu = chrome.menu;
 
-    draw_transcript(frame, transcript_area, app, &opening);
+    draw_transcript(frame, transcript_area, app, &opening, &theme);
     draw_rows(
         frame,
         overlay_area,
-        inset_by(overlay_area, output_padding),
+        inset_by(overlay_area, content_padding),
         &overlay,
         &theme,
     );
-    draw_activity(frame, inset_by(activity_area, output_padding), app, &theme);
+    draw_activity(frame, inset_by(activity_area, content_padding), app, &theme);
     // An overlay has the keyboard while it is up, so the cursor belongs to it rather than to
     // an input the next keystroke will not reach.
     let level = app.thinking_color();
     editor::draw(
         frame,
         editor_area,
-        inset_by(editor_area, editor_padding),
+        inset_by(editor_area, content_padding),
         &app.editor,
         &theme,
         editor::Look {
@@ -132,12 +131,12 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         },
     );
     for (offset, line) in menu.iter().take(menu_area.height as usize).enumerate() {
-        let content = inset_by(menu_area, editor_padding);
+        let content = inset_by(menu_area, content_padding);
         frame
             .buffer_mut()
             .set_line(content.x, content.y + offset as u16, line, content.width);
     }
-    draw_status(frame, inset_by(status_area, output_padding), app, &theme);
+    draw_status(frame, inset_by(status_area, content_padding), app, &theme);
 
     // Last, once every line has been placed and its columns are settled: a hyperlink costs
     // no width, so it can only go on after everything that measures width has finished.
@@ -205,6 +204,24 @@ impl Chrome {
             .with(Child::content(Lines(self.menu.clone())))
             .with(Child::content(Spacer(self.status as usize)))
     }
+}
+
+/// How many rows the interface itself needs, apart from the conversation.
+///
+/// What drawing inline asks for: the region is only as tall as the prompt, the footer and
+/// whatever is open above them, and the conversation goes to the terminal's own scrollback.
+pub fn interface_rows(app: &App, theme: &Theme, width: u16, height: u16) -> u16 {
+    let width = content_width(margin(
+        Rect {
+            x: 0,
+            y: 0,
+            width,
+            height,
+        },
+        app.settings().interface_padding,
+    )
+    .width, app.settings().content_padding);
+    chrome(app, theme, width, height).rows()
 }
 
 fn chrome(app: &App, theme: &Theme, width: u16, height: u16) -> Chrome {
@@ -277,7 +294,13 @@ fn draw_rows(frame: &mut Frame, area: Rect, content: Rect, rows: &[Line<'static>
     }
 }
 
-fn draw_transcript(frame: &mut Frame, area: Rect, app: &App, opening: &[Line<'static>]) {
+fn draw_transcript(
+    frame: &mut Frame,
+    area: Rect,
+    app: &App,
+    opening: &[Line<'static>],
+    theme: &Theme,
+) {
     if area.width == 0 || area.height == 0 {
         return;
     }
@@ -302,6 +325,63 @@ fn draw_transcript(frame: &mut Frame, area: Rect, app: &App, opening: &[Line<'st
         frame
             .buffer_mut()
             .set_line(area.x, top + offset as u16, line, area.width);
+    }
+
+    draw_scrollbar(frame, area, rows.len(), first, theme, app.settings().scrollbar);
+}
+
+/// How far through the conversation the window is, drawn down the right edge.
+///
+/// Shown only where there is more than fits, unless the reader asked for it always. It sits
+/// in the last column of the region, over whatever is there: a conversation wraps to the
+/// content width, which already leaves that column clear.
+fn draw_scrollbar(
+    frame: &mut Frame,
+    area: Rect,
+    total: usize,
+    first: usize,
+    theme: &Theme,
+    when: crate::commands::Scrollbar,
+) {
+    use crate::commands::Scrollbar;
+
+    let height = area.height as usize;
+    let overflows = total > height;
+    let draw = match when {
+        Scrollbar::Hidden => false,
+        Scrollbar::Auto => overflows,
+        Scrollbar::Always => true,
+    };
+    if !draw || area.width == 0 || height == 0 {
+        return;
+    }
+
+    // The thumb is as tall a share of the track as the window is of the conversation, and
+    // never shorter than one row: a mark that is not there says nothing about where you are.
+    let thumb = match overflows {
+        true => (height * height / total).max(1),
+        false => height,
+    };
+    let furthest = total.saturating_sub(height);
+    let at = match furthest {
+        0 => 0,
+        _ => first * (height - thumb) / furthest,
+    };
+
+    let column = area.x + area.width - 1;
+    for offset in 0..height {
+        let (glyph, color) = match (offset >= at && offset < at + thumb, overflows) {
+            (true, _) => ("│", theme.border_accent),
+            (false, true) => ("│", theme.border_muted),
+            // Nothing to scroll, so the track is drawn without a road to travel down.
+            (false, false) => (" ", theme.border_muted),
+        };
+        frame.buffer_mut().set_string(
+            column,
+            area.y + offset as u16,
+            glyph,
+            Style::new().fg(color),
+        );
     }
 }
 
@@ -858,7 +938,7 @@ mod tests {
     fn the_interface_keeps_a_margin_around_itself() {
         let mut app = App::new(&[], TuiOptions::default());
         app.transcript.push_user("a question");
-        let rows = paint(&mut app, 40, 12);
+        let rows = paint(&mut app, 40, 14);
 
         assert!(rows.first().is_some_and(|row| row.is_empty()), "{rows:?}");
         assert!(rows.last().is_some_and(|row| row.is_empty()), "{rows:?}");

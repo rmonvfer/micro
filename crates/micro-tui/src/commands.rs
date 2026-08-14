@@ -258,6 +258,8 @@ pub struct Preferences {
     pub mermaid: Mermaid,
     /// What a full screen leaves behind when it goes.
     pub exit_output: ExitOutput,
+    /// Whether rows the inline region gives up are cleared as it shrinks.
+    pub clear_on_shrink: bool,
     /// Keep the model's reasoning folded away until it is asked for.
     pub hide_thinking: bool,
     /// Draw images in the terminal, where the terminal can.
@@ -268,10 +270,8 @@ pub struct Preferences {
     pub auto_resize_images: bool,
     /// Refuse to attach images at all.
     pub block_images: bool,
-    /// Columns of breathing room on each side of the input.
-    pub editor_padding: u16,
-    /// Columns of breathing room on each side of the conversation.
-    pub output_padding: u16,
+    /// Columns of breathing room on each side of the input and lower interface components.
+    pub content_padding: u16,
     /// Columns and rows kept clear between the terminal's edges and the interface.
     pub interface_padding: u16,
     /// How many completions the command menu offers at once.
@@ -299,14 +299,14 @@ impl Default for Preferences {
             scrollbar: Scrollbar::default(),
             mermaid: Mermaid::default(),
             exit_output: ExitOutput::default(),
+            clear_on_shrink: false,
             hide_thinking: true,
             show_images: true,
             image_width_cells: 60,
             auto_resize_images: true,
             block_images: false,
-            editor_padding: 0,
-            output_padding: 0,
-            interface_padding: 1,
+            content_padding: 1,
+            interface_padding: 0,
             autocomplete_max_items: crate::menu::MAX_VISIBLE,
             show_hardware_cursor: false,
             terminal_progress: true,
@@ -327,8 +327,7 @@ impl From<&micro_config::Settings> for Preferences {
             image_width_cells: settings.image_width_cells,
             auto_resize_images: settings.auto_resize_images,
             block_images: settings.block_images,
-            editor_padding: settings.editor_padding,
-            output_padding: settings.output_padding,
+            content_padding: settings.content_padding,
             interface_padding: settings.interface_padding,
             autocomplete_max_items: settings.autocomplete_max_items,
             show_hardware_cursor: settings.show_hardware_cursor,
@@ -360,6 +359,7 @@ impl From<&micro_config::Settings> for Preferences {
                 micro_config::ExitOutput::Transcript => ExitOutput::Transcript,
                 micro_config::ExitOutput::ResumeHint => ExitOutput::ResumeHint,
             },
+            clear_on_shrink: settings.clear_on_shrink,
         }
     }
 }
