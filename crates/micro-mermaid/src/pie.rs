@@ -97,13 +97,26 @@ fn draw(title: Option<&str>, slices: &[Slice]) -> Option<Canvas> {
         .unwrap_or(0);
     let amounts: Vec<String> = slices
         .iter()
-        .map(|slice| format!("{} ({:.1}%)", trim_number(slice.value), share(slice.value, total)))
+        .map(|slice| {
+            format!(
+                "{} ({:.1}%)",
+                trim_number(slice.value),
+                share(slice.value, total)
+            )
+        })
         .collect();
-    let widest_amount = amounts.iter().map(|text| string_width(text)).max().unwrap_or(0);
+    let widest_amount = amounts
+        .iter()
+        .map(|text| string_width(text))
+        .max()
+        .unwrap_or(0);
 
     let width = labels + 1 + BAR + 1 + widest_amount;
     let top = usize::from(title.is_some());
-    let mut canvas = Canvas::new(width.max(string_width(title.unwrap_or(""))), slices.len() + top);
+    let mut canvas = Canvas::new(
+        width.max(string_width(title.unwrap_or(""))),
+        slices.len() + top,
+    );
 
     if let Some(title) = title {
         draw_text(&mut canvas, title, 0, 0, Cls::Title);
@@ -160,7 +173,11 @@ mod tests {
         // The largest fills the bar and the rest are drawn against it: a quarter beside
         // three quarters is a third of the longest bar.
         assert_eq!(rows[1].matches('█').count(), BAR);
-        assert_eq!(rows[2].matches('█').count(), 11, "a third of {BAR}, rounded");
+        assert_eq!(
+            rows[2].matches('█').count(),
+            11,
+            "a third of {BAR}, rounded"
+        );
     }
 
     /// A slice worth nothing still has a row, because it was written down.
@@ -186,7 +203,10 @@ mod tests {
         assert!(render_pie("pie").is_none(), "a chart with no slices");
         assert!(render_pie("pie\n  \"Bad\" : nonsense").is_none());
         assert!(render_pie("pie\n  \"Negative\" : -5").is_none());
-        assert!(render_pie("pie\n  \"Nothing\" : 0").is_none(), "nothing to divide");
+        assert!(
+            render_pie("pie\n  \"Nothing\" : 0").is_none(),
+            "nothing to divide"
+        );
     }
 
     /// A chart of hundreds of slices says nothing, so it is not drawn.

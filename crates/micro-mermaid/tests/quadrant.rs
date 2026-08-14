@@ -56,7 +56,15 @@ fn quadrant_names_axes_and_points_are_all_drawn_together() {
     // "Campaign A" itself may be truncated with an ellipsis if the point
     // lands somewhere tight, so only a prefix short enough to survive that
     // is checked for.
-    for word in ["Expand", "Promote", "Re-evaluate", "Improve", "Campa", "Reach", "Engagement"] {
+    for word in [
+        "Expand",
+        "Promote",
+        "Re-evaluate",
+        "Improve",
+        "Campa",
+        "Reach",
+        "Engagement",
+    ] {
         assert!(text.contains(word), "{word} missing from:\n{text}");
     }
 }

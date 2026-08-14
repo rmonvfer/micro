@@ -170,8 +170,14 @@ mod tests {
         let rows = drawn("mindmap\n  root((Ideas))\n    First\n    Second");
         assert_eq!(rows[0], "Ideas");
         assert!(rows[1].contains("First"), "{rows:?}");
-        assert!(rows[1].contains('├'), "hangs from the root, with more below: {rows:?}");
-        assert!(rows[2].contains('└'), "and the last one closes it: {rows:?}");
+        assert!(
+            rows[1].contains('├'),
+            "hangs from the root, with more below: {rows:?}"
+        );
+        assert!(
+            rows[2].contains('└'),
+            "and the last one closes it: {rows:?}"
+        );
         assert!(rows[2].contains("Second"), "{rows:?}");
     }
 
@@ -199,8 +205,14 @@ mod tests {
     #[test]
     fn what_is_not_a_mindmap_is_left_alone() {
         assert!(render_mindmap("graph TD\n  A --> B").is_none());
-        assert!(render_mindmap("mindmap").is_none(), "nothing hangs off nothing");
-        assert!(render_mindmap("mindmap\n  Alone").is_none(), "one node is not a map");
+        assert!(
+            render_mindmap("mindmap").is_none(),
+            "nothing hangs off nothing"
+        );
+        assert!(
+            render_mindmap("mindmap\n  Alone").is_none(),
+            "one node is not a map"
+        );
     }
 
     /// A map too large to take in is not drawn.

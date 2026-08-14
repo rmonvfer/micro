@@ -234,10 +234,25 @@ fn draw_quadrant_names(
     bottom: usize,
 ) {
     let regions = [
-        (mid_x + 1, right.saturating_sub(1), 1, mid_y.saturating_sub(1)),
+        (
+            mid_x + 1,
+            right.saturating_sub(1),
+            1,
+            mid_y.saturating_sub(1),
+        ),
         (1, mid_x.saturating_sub(1), 1, mid_y.saturating_sub(1)),
-        (1, mid_x.saturating_sub(1), mid_y + 1, bottom.saturating_sub(1)),
-        (mid_x + 1, right.saturating_sub(1), mid_y + 1, bottom.saturating_sub(1)),
+        (
+            1,
+            mid_x.saturating_sub(1),
+            mid_y + 1,
+            bottom.saturating_sub(1),
+        ),
+        (
+            mid_x + 1,
+            right.saturating_sub(1),
+            mid_y + 1,
+            bottom.saturating_sub(1),
+        ),
     ];
     for (name, (x0, x1, y0, y1)) in quadrants.iter().zip(regions) {
         let Some(name) = name else { continue };
@@ -278,10 +293,18 @@ fn draw_points(
         // cross rather than in either quadrant it is next to, so it is
         // nudged one cell into whichever side its own value already leans.
         if col == mid_x {
-            col = if xn >= 0.5 { mid_x + 1 } else { mid_x.saturating_sub(1) };
+            col = if xn >= 0.5 {
+                mid_x + 1
+            } else {
+                mid_x.saturating_sub(1)
+            };
         }
         if row == mid_y {
-            row = if yn >= 0.5 { mid_y.saturating_sub(1) } else { mid_y + 1 };
+            row = if yn >= 0.5 {
+                mid_y.saturating_sub(1)
+            } else {
+                mid_y + 1
+            };
         }
         let (top_bound, bottom_bound) = if row <= mid_y {
             (1, mid_y.saturating_sub(1))
@@ -294,14 +317,7 @@ fn draw_points(
         // is less misleading than the point erasing part of the name.
         // A cell either side has to be clear too: a marker drawn hard against a quadrant
         // name reads as part of it, so `Plan●` looks like a point called Plan.
-        let row = nearby_clear_row(
-            g,
-            col.saturating_sub(1),
-            3,
-            row,
-            top_bound,
-            bottom_bound,
-        );
+        let row = nearby_clear_row(g, col.saturating_sub(1), 3, row, top_bound, bottom_bound);
         draw_text(g, "●", col, row, Cls::Text);
 
         // A label never crosses the divider into the other quadrant: doing
@@ -336,7 +352,14 @@ fn draw_points(
 /// `x` are all still blank. Falls back to `preferred` if nothing nearby is
 /// clear — a diagram crowded enough to exhaust the search draws an overlap
 /// rather than hunting indefinitely for room that may not exist.
-fn nearby_clear_row(g: &Canvas, x: usize, w: usize, preferred: usize, lo: usize, hi: usize) -> usize {
+fn nearby_clear_row(
+    g: &Canvas,
+    x: usize,
+    w: usize,
+    preferred: usize,
+    lo: usize,
+    hi: usize,
+) -> usize {
     if row_is_clear(g, x, w, preferred) {
         return preferred;
     }
@@ -394,8 +417,15 @@ mod tests {
         let top_border = rows.iter().find(|r| r.contains('┌')).expect("top border");
         assert!(top_border.starts_with('┌'), "{top_border:?}");
         assert!(top_border.ends_with('┐'), "{top_border:?}");
-        assert!(top_border.contains('┬'), "the cross tees into the top border: {top_border:?}");
-        let bottom_border = rows.iter().rev().find(|r| r.contains('└')).expect("bottom border");
+        assert!(
+            top_border.contains('┬'),
+            "the cross tees into the top border: {top_border:?}"
+        );
+        let bottom_border = rows
+            .iter()
+            .rev()
+            .find(|r| r.contains('└'))
+            .expect("bottom border");
         assert!(bottom_border.contains('┴'), "{bottom_border:?}");
         // An interior row (not a border row, not the cross's own row) still
         // carries the vertical divider between its two side borders.
@@ -444,7 +474,11 @@ mod tests {
         // x=0.1 is near the left edge, y=0.9 near the top: the marker's row
         // should come well before the vertical midpoint of the grid.
         let marker_row = rows.iter().position(|r| r.contains('●')).unwrap();
-        assert!(marker_row < rows.len() / 2, "{marker_row} of {}", rows.len());
+        assert!(
+            marker_row < rows.len() / 2,
+            "{marker_row} of {}",
+            rows.len()
+        );
     }
 
     /// A point at exactly `(0.5, 0.5)` maps onto the cross itself; nudged
@@ -490,10 +524,11 @@ mod tests {
     #[test]
     fn what_is_not_a_quadrant_chart_is_left_alone() {
         assert!(render_quadrant("graph TD\n A --> B").is_none());
-        assert!(render_quadrant("quadrantChart").is_none(), "no points at all");
         assert!(
-            render_quadrant("quadrantChart\n  Bad point with no brackets: 0.3, 0.6").is_none(),
+            render_quadrant("quadrantChart").is_none(),
+            "no points at all"
         );
+        assert!(render_quadrant("quadrantChart\n  Bad point with no brackets: 0.3, 0.6").is_none(),);
         assert!(
             render_quadrant("quadrantChart\n  Bad: [nonsense, 0.6]").is_none(),
             "a point coordinate that does not parse as a number"

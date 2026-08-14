@@ -44,7 +44,10 @@ pub(crate) fn render_timeline(src: &str) -> Option<Canvas> {
         let line = line.strip_prefix("section ").unwrap_or(line);
 
         // `period : event : event`, and a line with no colon is a period on its own.
-        let mut parts = line.split(':').map(str::trim).filter(|part| !part.is_empty());
+        let mut parts = line
+            .split(':')
+            .map(str::trim)
+            .filter(|part| !part.is_empty());
         let label = clean_label(parts.next()?);
         if label.is_empty() {
             return None;
@@ -143,7 +146,10 @@ mod tests {
         // The second event of 2020 belongs to it, so it takes a row with no period beside it.
         assert!(rows[2].contains("Grew"), "{rows:?}");
         assert!(!rows[2].contains("2021"), "{rows:?}");
-        assert!(rows[3].contains("2021") && rows[3].contains("Shipped"), "{rows:?}");
+        assert!(
+            rows[3].contains("2021") && rows[3].contains("Shipped"),
+            "{rows:?}"
+        );
     }
 
     /// The spine runs the whole way down and closes at the end, so the periods read as one

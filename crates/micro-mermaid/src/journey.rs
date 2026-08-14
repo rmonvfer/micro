@@ -99,9 +99,9 @@ fn draw(title: Option<&str>, rows: &[Row]) -> Canvas {
 
     let widest_label = rows
         .iter()
-        .filter_map(|row| match row {
-            Row::Task { label, .. } => Some(INDENT + string_width(label)),
-            Row::Section(name) => Some(string_width(name)),
+        .map(|row| match row {
+            Row::Task { label, .. } => INDENT + string_width(label),
+            Row::Section(name) => string_width(name),
         })
         .max()
         .unwrap_or(0);
@@ -193,7 +193,10 @@ mod tests {
     #[test]
     fn what_is_not_a_journey_is_left_alone() {
         assert!(render_journey("graph TD\n  A --> B").is_none());
-        assert!(render_journey("journey").is_none(), "a journey with no steps");
+        assert!(
+            render_journey("journey").is_none(),
+            "a journey with no steps"
+        );
         assert!(render_journey("journey\n  section Only").is_none());
         assert!(render_journey("journey\n  No score here").is_none());
         assert!(

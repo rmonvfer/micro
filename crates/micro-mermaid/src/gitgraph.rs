@@ -307,8 +307,11 @@ fn apply(line: &str, graph: &mut GitGraph) -> Option<()> {
     }
 }
 
-/// Place text at `row`, stopping before it would overwrite anything already
-/// drawn there — a connector line or an earlier commit's own label.
+/// Place text at `row`, stopping before it would overwrite a glyph already
+/// drawn there — another commit's mark or its own label. A lane's dash fill
+/// underneath is fair game: those cells only carry routing bits so far, not
+/// a character, since `finalize_mask` has not run yet — resolving them into
+/// dashes is exactly what drawing a real character over them pre-empts.
 fn place(canvas: &mut Canvas, text: &str, row: usize, start_x: usize) {
     if row >= canvas.h {
         return;
@@ -318,10 +321,7 @@ fn place(canvas: &mut Canvas, text: &str, row: usize, start_x: usize) {
         if cw == 0 || x + cw > canvas.w {
             break;
         }
-        let blocked = (0..cw).any(|k| {
-            let i = canvas.idx(x + k, row);
-            canvas.ch[i] != " " || canvas.mask[i] != 0
-        });
+        let blocked = (0..cw).any(|k| canvas.ch[canvas.idx(x + k, row)] != " ");
         if blocked {
             break;
         }
@@ -370,7 +370,10 @@ fn draw(graph: &GitGraph) -> Option<Canvas> {
     let title_h = usize::from(graph.title.is_some());
     let row = |lane: usize| title_h + lane;
 
-    let canvas_w = (x(graph.col) + content_w + 2).max(left + 1);
+    let mut canvas_w = (x(graph.col) + content_w + 2).max(left + 1);
+    if let Some(title) = &graph.title {
+        canvas_w = canvas_w.max(string_width(title));
+    }
     let canvas_h = title_h + graph.lanes.len();
     if canvas_w.saturating_mul(canvas_h) > MAX_CANVAS_CELLS {
         return None;
@@ -401,9 +404,15 @@ fn draw(graph: &GitGraph) -> Option<Canvas> {
                 to_lane,
                 to_col,
             } => {
+                // Travel along the source's own row first and turn at the
+                // landing column, rather than the other way around: the
+                // source lane has nothing else drawn past its own last
+                // commit, so the dotted path stays clear of it, where turning
+                // at the source column would instead run the dots straight
+                // over the target lane's solid timeline and lose them to it.
                 canvas.cur_style = STY_DOT;
-                canvas.seg_v(x(from_col), row(from_lane), row(to_lane));
-                canvas.seg_h(row(to_lane), x(from_col), x(to_col));
+                canvas.seg_h(row(from_lane), x(from_col), x(to_col));
+                canvas.seg_v(x(to_col), row(from_lane), row(to_lane));
                 canvas.cur_style = STY_SOLID;
             }
         }
@@ -449,7 +458,7 @@ mod tests {
         assert!(rows[1].starts_with("feature "), "{rows:?}");
         // The fork happens under the commit on main, so a vertical mark sits at
         // that column on the row between the two lane labels' text.
-        let fork_col = rows[0].find('●').unwrap();
+        let fork_col = rows[0].chars().position(|c| c == '●').unwrap();
         assert!(
             rows[1].chars().nth(fork_col).is_some_and(|c| c != ' '),
             "expected a connector under the fork point: {rows:?}"
@@ -467,7 +476,7 @@ mod tests {
         // main gets a second mark for the merge commit, after the fork column.
         assert_eq!(rows[0].matches('●').count(), 2);
         assert_eq!(rows[1].matches('●').count(), 1);
-        let merge_col = rows[0].rfind('●').unwrap();
+        let merge_col = rows[0].chars().enumerate().filter(|&(_, c)| c == '●').last().unwrap().0;
         assert!(
             rows[1].chars().nth(merge_col).is_some_and(|c| c != ' '),
             "expected the feature lane to carry a connector under the merge point: {rows:?}"
@@ -479,7 +488,7 @@ mod tests {
     #[test]
     fn a_cherry_pick_draws_a_dotted_line_back_to_its_source() {
         let rows = drawn(
-            "gitGraph\n  commit id: \"base\"\n  branch feature\n  commit\n  checkout main\n  cherry-pick id: \"base\"",
+            "gitGraph\n  commit\n  branch feature\n  commit id: \"fix\"\n  checkout main\n  cherry-pick id: \"fix\"",
         );
         let joined = rows.join("\n");
         assert!(joined.contains('○'), "cherry-picked commit: {rows:?}");

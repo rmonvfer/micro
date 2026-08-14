@@ -45,7 +45,10 @@ fn a_relation_connects_two_boxes_with_a_routed_labelled_arrow() {
     assert!(text.contains("«requirement»"), "{text}");
     assert!(text.contains("«element»"), "{text}");
     assert!(text.contains("«satisfies»"), "{text}");
-    assert!(text.contains('│') || text.contains('╎'), "a routed line: {text}");
+    assert!(
+        text.contains('│') || text.contains('╎'),
+        "a routed line: {text}"
+    );
 }
 
 /// An unparseable requirement diagram renders nothing, the same way an

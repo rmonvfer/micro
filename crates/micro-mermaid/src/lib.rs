@@ -8,22 +8,31 @@
 //! large to lay out — [`source_box`] frames the raw source instead, which is
 //! always a valid fallback view.
 
+mod architecture;
+mod block;
 mod canvas;
 mod gantt;
+mod gitgraph;
 mod graph;
 mod journey;
+mod kanban;
 mod labels;
 mod layout;
 mod layout_seq;
 mod mindmap;
+mod packet;
 mod parse;
 mod pie;
 mod quadrant;
+mod radar;
 mod requirement;
+mod sankey;
 mod source_box;
 mod timeline;
+mod treemap;
 mod types;
 mod width;
+mod xychart;
 
 pub use parse::{diagram_kind, DiagramKind};
 pub use source_box::source_box;
@@ -138,6 +147,15 @@ fn draw(src: &str) -> Option<Drawn> {
         DiagramKind::Mindmap => plain(mindmap::render_mindmap(src)),
         DiagramKind::Timeline => plain(timeline::render_timeline(src)),
         DiagramKind::Journey => plain(journey::render_journey(src)),
+        DiagramKind::Architecture => plain(architecture::render_architecture(src)),
+        DiagramKind::Block => plain(block::render_block(src)),
+        DiagramKind::GitGraph => plain(gitgraph::render_gitgraph(src)),
+        DiagramKind::Kanban => plain(kanban::render_kanban(src)),
+        DiagramKind::Packet => plain(packet::render_packet(src)),
+        DiagramKind::Radar => plain(radar::render_radar(src)),
+        DiagramKind::Sankey => plain(sankey::render_sankey(src)),
+        DiagramKind::Treemap => plain(treemap::render_treemap(src)),
+        DiagramKind::XyChart => plain(xychart::render_xychart(src)),
         DiagramKind::Gantt => plain(gantt::render_gantt(src)),
         DiagramKind::Quadrant => plain(quadrant::render_quadrant(src)),
         DiagramKind::Requirement => plain(requirement::render_requirement(src)),

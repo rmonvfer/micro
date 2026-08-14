@@ -364,7 +364,13 @@ fn draw_gantt(chart: &Chart) -> Option<Canvas> {
             y += 1;
         }
         for t in &g.tasks {
-            draw_text(&mut canvas, &fit_label(&t.label, LABEL_MAX), 2, y, Cls::Text);
+            draw_text(
+                &mut canvas,
+                &fit_label(&t.label, LABEL_MAX),
+                2,
+                y,
+                Cls::Text,
+            );
             let offset = (t.start - min_start) as usize;
             if t.milestone {
                 draw_text(&mut canvas, "◆", grid_x + offset, y, Cls::Border);
@@ -438,7 +444,10 @@ mod tests {
     use super::*;
 
     fn drawn(src: &str) -> Vec<String> {
-        render_gantt(src).expect("it is a gantt chart").to_lines().plain
+        render_gantt(src)
+            .expect("it is a gantt chart")
+            .to_lines()
+            .plain
     }
 
     /// The civil-date round trip this whole module is built on: a day count

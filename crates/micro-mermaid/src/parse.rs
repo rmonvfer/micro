@@ -102,6 +102,15 @@ pub enum DiagramKind {
     Mindmap,
     Timeline,
     Journey,
+    Architecture,
+    Block,
+    GitGraph,
+    Kanban,
+    Packet,
+    Radar,
+    Sankey,
+    Treemap,
+    XyChart,
     Gantt,
     Quadrant,
     Requirement,
@@ -138,6 +147,24 @@ pub fn diagram_kind(src: &str) -> Option<DiagramKind> {
         Some(DiagramKind::Timeline)
     } else if kind == "journey" {
         Some(DiagramKind::Journey)
+    } else if kind == "architecture-beta" {
+        Some(DiagramKind::Architecture)
+    } else if kind == "block-beta" {
+        Some(DiagramKind::Block)
+    } else if kind == "gitgraph" {
+        Some(DiagramKind::GitGraph)
+    } else if kind == "kanban" {
+        Some(DiagramKind::Kanban)
+    } else if kind == "packet-beta" {
+        Some(DiagramKind::Packet)
+    } else if kind == "radar-beta" {
+        Some(DiagramKind::Radar)
+    } else if kind == "sankey-beta" {
+        Some(DiagramKind::Sankey)
+    } else if kind == "treemap-beta" {
+        Some(DiagramKind::Treemap)
+    } else if kind == "xychart-beta" {
+        Some(DiagramKind::XyChart)
     } else if kind == "gantt" {
         Some(DiagramKind::Gantt)
     } else if kind == "quadrantchart" {

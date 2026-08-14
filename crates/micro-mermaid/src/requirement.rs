@@ -175,9 +175,15 @@ mod tests {
         assert!(rows.iter().any(|r| r.contains("«requirement»")), "{rows:?}");
         assert!(rows.iter().any(|r| r.contains("test_req")), "{rows:?}");
         assert!(rows.iter().any(|r| r.contains("id: 1")), "{rows:?}");
-        assert!(rows.iter().any(|r| r.contains("text: the test text.")), "{rows:?}");
+        assert!(
+            rows.iter().any(|r| r.contains("text: the test text.")),
+            "{rows:?}"
+        );
         assert!(rows.iter().any(|r| r.contains("risk: high")), "{rows:?}");
-        assert!(rows.iter().any(|r| r.contains("verifymethod: test")), "{rows:?}");
+        assert!(
+            rows.iter().any(|r| r.contains("verifymethod: test")),
+            "{rows:?}"
+        );
     }
 
     /// A specialised requirement type keeps its own name as the stereotype,
@@ -191,7 +197,10 @@ mod tests {
              text: fast enough.\n\
              }",
         );
-        assert!(rows.iter().any(|r| r.contains("«functionalRequirement»")), "{rows:?}");
+        assert!(
+            rows.iter().any(|r| r.contains("«functionalRequirement»")),
+            "{rows:?}"
+        );
     }
 
     /// A box with a single field is small enough to check exactly, corner to
@@ -276,7 +285,10 @@ mod tests {
     #[test]
     fn what_is_not_a_requirement_diagram_is_left_alone() {
         assert!(render_requirement("graph TD\n A --> B").is_none());
-        assert!(render_requirement("requirementDiagram").is_none(), "no boxes at all");
+        assert!(
+            render_requirement("requirementDiagram").is_none(),
+            "no boxes at all"
+        );
         assert!(
             render_requirement("requirementDiagram\nrequirement r {\nid 1\n}").is_none(),
             "a field with no colon"
