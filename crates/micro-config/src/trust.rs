@@ -99,8 +99,7 @@ impl TrustStore {
             .await
             .map_err(|source| unreadable(directory, source))?;
         let path = directory.join(TRUST_FILE_NAME);
-        let encoded =
-            serde_json::to_vec_pretty(self).map_err(|source| malformed(&path, source))?;
+        let encoded = serde_json::to_vec_pretty(self).map_err(|source| malformed(&path, source))?;
         tokio::fs::write(&path, encoded)
             .await
             .map_err(|source| unreadable(&path, source))

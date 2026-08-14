@@ -24,6 +24,7 @@ mod session;
 
 pub use outcome::CommandOutcome;
 pub use outcome::MessageKind;
+pub use outcome::RemoteAction;
 pub use outcome::Picker;
 pub use outcome::PickerItem;
 pub use outcome::PickerLayout;
@@ -150,6 +151,11 @@ static COMMANDS: &[Command] = &[
         name: "share",
         argument: None,
         description: "Share session as a secret GitHub gist",
+    },
+    Command {
+        name: "remote",
+        argument: Some("[pair]"),
+        description: "Put this session on your phone",
     },
     Command {
         name: "changelog",
@@ -321,6 +327,16 @@ pub async fn run(
         "trust" => trust(argument),
         "reload" => CommandOutcome::Reload,
         "share" => CommandOutcome::Share,
+        // Bare, this puts the session on whichever phone is already paired — which is
+        // what pairing once is for. `pair` is the one-off that bonds a phone in the
+        // first place, and the only thing that ever shows a link.
+        "remote" => CommandOutcome::RemoteControl {
+            action: match argument.map(str::trim).unwrap_or_default() {
+                "pair" => RemoteAction::Pair { qr: false },
+                "pair qr" | "qr" => RemoteAction::Pair { qr: true },
+                _ => RemoteAction::Publish,
+            },
+        },
         "changelog" => CommandOutcome::info(changelog(context.collapse_changelog)),
         "import" => match argument.map(str::trim).filter(|path| !path.is_empty()) {
             Some(path) => CommandOutcome::Import {
@@ -380,7 +396,11 @@ fn changelog(collapse: bool) -> String {
 /// It never widens what a shell command may do: a command can reach anywhere, and saying
 /// a directory is safe says nothing about that.
 fn trust(argument: Option<&str>) -> CommandOutcome {
-    match argument.map(str::trim).map(str::to_ascii_lowercase).as_deref() {
+    match argument
+        .map(str::trim)
+        .map(str::to_ascii_lowercase)
+        .as_deref()
+    {
         None | Some("") | Some("on") | Some("yes") => CommandOutcome::Trust { trusted: true },
         Some("off") | Some("no") => CommandOutcome::Trust { trusted: false },
         Some(other) => CommandOutcome::error(format!(
@@ -436,17 +456,19 @@ fn level_named(name: &str) -> Option<ThinkingLevel> {
 /// `/theme` with no argument offers the palettes; with one, switches to it.
 fn theme(argument: Option<&str>) -> CommandOutcome {
     let Some(argument) = argument else {
-        return CommandOutcome::Choose(Picker::new(
-            "Theme",
-            vec![
-                PickerItem::new("dark", "ohm's dark palette", "/theme dark"),
-                PickerItem::new("light", "ohm's light palette", "/theme light"),
-                PickerItem::new("auto", "follow the terminal", "/theme auto"),
-            ],
-        )
-        // A palette's name is short, so its column is held narrow: padding three names out
-        // to the width a model id needs would leave the descriptions stranded.
-        .columns(12, 32));
+        return CommandOutcome::Choose(
+            Picker::new(
+                "Theme",
+                vec![
+                    PickerItem::new("dark", "ohm's dark palette", "/theme dark"),
+                    PickerItem::new("light", "ohm's light palette", "/theme light"),
+                    PickerItem::new("auto", "follow the terminal", "/theme auto"),
+                ],
+            )
+            // A palette's name is short, so its column is held narrow: padding three names out
+            // to the width a model id needs would leave the descriptions stranded.
+            .columns(12, 32),
+        );
     };
 
     match argument.trim().to_ascii_lowercase().as_str() {
@@ -475,11 +497,18 @@ async fn skills(context: &CommandContext<'_>) -> CommandOutcome {
             .await
             .unwrap_or_default()
             .is_trusted(context.workspace);
-    let found = micro_skills::discover(context.workspace, &home, trusted).await;
+    let found = micro_skills::discover(
+        context.workspace,
+        &home,
+        micro_skills::user_agents_dir(),
+        trusted,
+    )
+    .await;
 
     if found.skills.is_empty() && found.diagnostics.is_empty() {
         return CommandOutcome::info(
-            "No skills. Put a SKILL.md in .micro/skills/ or ~/.micro/skills/.".to_string(),
+            "No skills. Put a SKILL.md in .micro/skills/, ~/.micro/skills/, or ~/.agents/skills/."
+                .to_string(),
         );
     }
 
@@ -532,11 +561,7 @@ fn settings(context: &CommandContext<'_>) -> CommandOutcome {
     };
 
     let items = vec![
-        PickerItem::new(
-            "Thinking level",
-            thinking_label(context),
-            "/thinking",
-        ),
+        PickerItem::new("Thinking level", thinking_label(context), "/thinking"),
         PickerItem::new("Theme", now.theme.clone(), "/theme"),
         PickerItem::new(
             "Model",
@@ -551,7 +576,11 @@ fn settings(context: &CommandContext<'_>) -> CommandOutcome {
             format!("{:?}", now.default_project_trust).to_lowercase(),
             "/set default_project_trust",
         ),
-        PickerItem::new("Auto-compact", on_off(now.auto_compact), "/set auto_compact"),
+        PickerItem::new(
+            "Auto-compact",
+            on_off(now.auto_compact),
+            "/set auto_compact",
+        ),
         PickerItem::new(
             "Hide thinking",
             on_off(now.hide_thinking),
@@ -568,7 +597,11 @@ fn settings(context: &CommandContext<'_>) -> CommandOutcome {
             on_off(now.auto_resize_images),
             "/set auto_resize_images",
         ),
-        PickerItem::new("Block images", on_off(now.block_images), "/set block_images"),
+        PickerItem::new(
+            "Block images",
+            on_off(now.block_images),
+            "/set block_images",
+        ),
         PickerItem::new(
             "Skill commands",
             on_off(now.skill_commands),
@@ -723,6 +756,9 @@ fn set(argument: Option<&str>) -> CommandOutcome {
         return CommandOutcome::error(message);
     }
     match config.save_to(&path) {
+        Ok(()) if name == "tui_mode" => CommandOutcome::SetTuiMode {
+            mode: config.tui_mode.unwrap_or_default(),
+        },
         Ok(()) => CommandOutcome::info(format!("{name} is now {value}.")),
         Err(error) => CommandOutcome::error(format!("Could not save the settings: {error}")),
     }
@@ -742,12 +778,7 @@ fn settable(config: &micro_config::Config, name: &str) -> Option<Vec<PickerItem>
         true => "on",
         false => "off",
     };
-    let switch = |current: bool| {
-        vec![
-            ("on", "", current),
-            ("off", "", !current),
-        ]
-    };
+    let switch = |current: bool| vec![("on", "", current), ("off", "", !current)];
 
     let described: Vec<(&str, &str, bool)> = match name {
         "auto_compact" => switch(now.auto_compact),
@@ -789,7 +820,11 @@ fn settable(config: &micro_config::Config, name: &str) -> Option<Vec<PickerItem>
         "tui_mode" => {
             let now = format!("{:?}", now.tui_mode).to_lowercase();
             vec![
-                ("regular", "draw inline, leaving the scrollback", now == "regular"),
+                (
+                    "regular",
+                    "draw inline, leaving the scrollback",
+                    now == "regular",
+                ),
                 ("fullscreen", "take the whole terminal", now == "fullscreen"),
             ]
         }
@@ -797,7 +832,11 @@ fn settable(config: &micro_config::Config, name: &str) -> Option<Vec<PickerItem>
         "steering_mode" => {
             let now = kebab(&format!("{:?}", now.steering_mode));
             vec![
-                ("one-at-a-time", "the oldest, and the rest after it", now == "one-at-a-time"),
+                (
+                    "one-at-a-time",
+                    "the oldest, and the rest after it",
+                    now == "one-at-a-time",
+                ),
                 ("all", "every one of them, as one message", now == "all"),
             ]
         }
@@ -807,15 +846,27 @@ fn settable(config: &micro_config::Config, name: &str) -> Option<Vec<PickerItem>
                 ("default", "prompts and answers", now == "default"),
                 ("no-tools", "without what the tools did", now == "no-tools"),
                 ("user-only", "only what was written", now == "user-only"),
-                ("labeled-only", "only what has a name", now == "labeled-only"),
+                (
+                    "labeled-only",
+                    "only what has a name",
+                    now == "labeled-only",
+                ),
                 ("all", "everything there is", now == "all"),
             ]
         }
         "fullscreen_exit_output" => {
             let now = kebab(&format!("{:?}", now.fullscreen_exit_output));
             vec![
-                ("transcript", "leave the conversation on screen", now == "transcript"),
-                ("resume-hint", "leave only the line that brings it back", now == "resume-hint"),
+                (
+                    "transcript",
+                    "leave the conversation on screen",
+                    now == "transcript",
+                ),
+                (
+                    "resume-hint",
+                    "leave only the line that brings it back",
+                    now == "resume-hint",
+                ),
             ]
         }
         "fullscreen_scrollbar" => {
@@ -829,8 +880,16 @@ fn settable(config: &micro_config::Config, name: &str) -> Option<Vec<PickerItem>
         "mermaid" => {
             let now = kebab(&format!("{:?}", now.mermaid));
             vec![
-                ("off", "leave it as the code it was written as", now == "off"),
-                ("final", "draw it once the answer is complete", now == "final"),
+                (
+                    "off",
+                    "leave it as the code it was written as",
+                    now == "off",
+                ),
+                (
+                    "final",
+                    "draw it once the answer is complete",
+                    now == "final",
+                ),
                 ("streaming", "draw it as it arrives", now == "streaming"),
             ]
         }
@@ -896,7 +955,10 @@ fn describe(config: &micro_config::Config, name: &str) -> Option<String> {
         "show_images" => format!("show_images is {} (on or off)", now.show_images),
         "image_width_cells" => format!("image_width_cells is {} (cells)", now.image_width_cells),
         "auto_resize_images" => {
-            format!("auto_resize_images is {} (on or off)", now.auto_resize_images)
+            format!(
+                "auto_resize_images is {} (on or off)",
+                now.auto_resize_images
+            )
         }
         "block_images" => format!("block_images is {} (on or off)", now.block_images),
         "skill_commands" => format!("skill_commands is {} (on or off)", now.skill_commands),
@@ -918,11 +980,17 @@ fn describe(config: &micro_config::Config, name: &str) -> Option<String> {
         }
         "quiet_startup" => format!("quiet_startup is {} (on or off)", now.quiet_startup),
         "collapse_changelog" => {
-            format!("collapse_changelog is {} (on or off)", now.collapse_changelog)
+            format!(
+                "collapse_changelog is {} (on or off)",
+                now.collapse_changelog
+            )
         }
         "warnings" => format!("warnings is {} (on or off)", now.warnings),
         "cache_miss_notices" => {
-            format!("cache_miss_notices is {} (on or off)", now.cache_miss_notices)
+            format!(
+                "cache_miss_notices is {} (on or off)",
+                now.cache_miss_notices
+            )
         }
         "double_escape" => format!(
             "double_escape is {} (tree, fork or none)",
@@ -1000,9 +1068,7 @@ fn assign(config: &mut micro_config::Config, name: &str, value: &str) -> Result<
                     .min(20),
             )
         }
-        "autocomplete_max_items" => {
-            config.autocomplete_max_items = Some(number(50)? as usize)
-        }
+        "autocomplete_max_items" => config.autocomplete_max_items = Some(number(50)? as usize),
         "show_hardware_cursor" => config.show_hardware_cursor = Some(flag()?),
         "terminal_progress" => config.terminal_progress = Some(flag()?),
         "quiet_startup" => config.quiet_startup = Some(flag()?),
@@ -1316,9 +1382,9 @@ pub(crate) mod testing {
                 session_id: None,
                 message_count: 0,
                 usage: micro_types::Usage::default(),
-            collapse_changelog: false,
-            scoped_models: &[],
-            tree_filter: Default::default(),
+                collapse_changelog: false,
+                scoped_models: &[],
+                tree_filter: Default::default(),
             }
         }
     }
@@ -1483,10 +1549,7 @@ mod tests {
         assert_eq!(now.autocomplete_max_items, 12);
         assert_eq!(now.http_idle_timeout, 300);
         assert_eq!(now.double_escape, micro_config::DoubleEscape::Fork);
-        assert_eq!(
-            now.follow_up_mode,
-            micro_config::FollowUpMode::Interrupt
-        );
+        assert_eq!(now.follow_up_mode, micro_config::FollowUpMode::Interrupt);
         assert_eq!(now.scoped_models, vec!["anthropic/", "google/gemini-3-pro"]);
         assert_eq!(now.content_padding, 2);
         assert_eq!(now.transport, "auto");
@@ -1555,7 +1618,10 @@ mod tests {
         }
         assert!(text.contains("Send message"), "{text}");
         assert!(text.contains("Cycle thinking level"), "{text}");
-        assert!(text.contains("Paste image or text from clipboard"), "{text}");
+        assert!(
+            text.contains("Paste image or text from clipboard"),
+            "{text}"
+        );
         assert!(text.contains("Run bash command"), "{text}");
     }
 

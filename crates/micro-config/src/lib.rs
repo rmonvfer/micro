@@ -33,13 +33,14 @@ use std::str::FromStr;
 pub const FILE_NAME: &str = "config.json";
 pub const MICRO_DIR_ENV: &str = "MICRO_DIR";
 
+pub mod assignments;
 mod trust;
 
 pub use trust::requires_decision;
-pub use trust::PROJECT_DIR;
 pub use trust::ProjectTrust;
 pub use trust::TrustDecision;
 pub use trust::TrustStore;
+pub use trust::PROJECT_DIR;
 pub use trust::TRUST_FILE_NAME;
 
 pub const MODEL_ENV: &str = "MICRO_MODEL";
@@ -95,6 +96,9 @@ pub enum ConfigError {
 
     #[error("{path}: {message}")]
     Io { path: String, message: String },
+
+    #[error("-c {assignment}: {message}")]
+    Override { assignment: String, message: String },
 }
 
 /// How much reasoning to ask a model for.
@@ -103,9 +107,12 @@ pub enum ConfigError {
 pub enum Thinking {
     #[default]
     Off,
+    Minimal,
     Low,
     Medium,
     High,
+    XHigh,
+    Max,
 }
 
 /// What a second escape does when the prompt is empty.
@@ -240,12 +247,9 @@ pub struct Config {
     /// Announce skills to the model, so it can reach for one.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub skill_commands: Option<bool>,
-    /// Columns of breathing room on each side of the input.
+    /// Columns of breathing room on each side of the input and lower interface components.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub editor_padding: Option<u16>,
-    /// Columns of breathing room on each side of the conversation.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub output_padding: Option<u16>,
+    pub content_padding: Option<u16>,
     /// Columns and rows kept clear between the terminal's edges and the interface.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub interface_padding: Option<u16>,
@@ -291,6 +295,16 @@ pub struct Config {
     /// Models this workspace may use, when it should not have the whole catalog.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub scoped_models: Option<Vec<String>>,
+    /// Programs that provide tools over the Model Context Protocol, by the name their
+    /// tools are announced under. Held as written rather than as a parsed shape, so this
+    /// crate does not need to know what an MCP server is to carry the setting.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mcp_servers: Option<Map<String, Value>>,
+    /// How many tools beyond the built-in ones are described to the model up front. Past
+    /// this many, the rest are found with `tool_search` instead. Zero describes them all,
+    /// however many there are.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_search_threshold: Option<usize>,
     /// Warn that Anthropic subscription auth bills per token in a third-party harness.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub anthropic_extra_usage: Option<bool>,
@@ -335,8 +349,7 @@ pub struct Settings {
     pub auto_resize_images: bool,
     pub block_images: bool,
     pub skill_commands: bool,
-    pub editor_padding: u16,
-    pub output_padding: u16,
+    pub content_padding: u16,
     pub interface_padding: u16,
     pub steering_mode: SteeringMode,
     pub tree_filter_mode: TreeFilter,
@@ -356,6 +369,8 @@ pub struct Settings {
     pub default_project_trust: ProjectTrust,
     pub http_idle_timeout: u64,
     pub scoped_models: Vec<String>,
+    pub mcp_servers: Map<String, Value>,
+    pub tool_search_threshold: usize,
     pub anthropic_extra_usage: bool,
     pub transport: String,
     pub extensions: Vec<String>,
@@ -395,8 +410,7 @@ impl Default for Settings {
             auto_resize_images: true,
             block_images: false,
             skill_commands: true,
-            editor_padding: 0,
-            output_padding: 0,
+            content_padding: 1,
             interface_padding: 0,
             steering_mode: SteeringMode::default(),
             tree_filter_mode: TreeFilter::default(),
@@ -416,6 +430,8 @@ impl Default for Settings {
             default_project_trust: ProjectTrust::default(),
             http_idle_timeout: DEFAULT_HTTP_IDLE_TIMEOUT,
             scoped_models: Vec::new(),
+            mcp_servers: Map::new(),
+            tool_search_threshold: 15,
             anthropic_extra_usage: true,
             transport: DEFAULT_TRANSPORT.to_string(),
             extensions: Vec::new(),
@@ -429,28 +445,57 @@ impl Config {
         Config::load_from(default_path()?)
     }
 
+    /// Read the config from its default path, then apply `key=value` assignments.
+    pub fn load_with(overrides: &[String]) -> Result<Config> {
+        Config::load_from_with(default_path()?, overrides)
+    }
+
     pub fn load_from(path: impl AsRef<Path>) -> Result<Config> {
+        Config::load_from_with(path, &[])
+    }
+
+    /// Read the config, then apply the settings named on the command line.
+    ///
+    /// The overrides land on the file's contents rather than on the resolved settings, so
+    /// a nested key writes into the same shape the file uses and an unknown one is
+    /// reported the same way an unknown key in the file would be.
+    pub fn load_from_with(path: impl AsRef<Path>, overrides: &[String]) -> Result<Config> {
         let path = path.as_ref();
         let contents = match fs::read_to_string(path) {
             Ok(contents) => contents,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                return Ok(Config::default())
-            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
             Err(error) => return Err(io_error(path, error)),
         };
 
-        // An empty file is what an editor leaves behind after clearing it out; treat it
-        // the same as no file rather than as a syntax error.
-        if contents.trim().is_empty() {
-            return Ok(Config::default());
-        }
-
-        let value: Value =
+        // A missing file and one an editor left empty are both "nothing configured yet".
+        // An override still needs somewhere to land, so both become an empty object
+        // rather than an early return.
+        let mut value: Value = if contents.trim().is_empty() {
+            Value::Object(Map::new())
+        } else {
             serde_json::from_str(&contents).map_err(|error| ConfigError::Malformed {
                 path: path.display().to_string(),
                 message: error.to_string(),
-            })?;
-        Config::from_value(value, path)
+            })?
+        };
+
+        let written = assignments::apply_all(&mut value, overrides)?;
+
+        // A setting the command line wrote is reported against the flag that wrote it.
+        // Naming the file instead would point at somewhere the bad value is not, and
+        // falling back to the stored settings would run with something other than what
+        // was asked for.
+        Config::from_value(value, path).map_err(|error| match &error {
+            ConfigError::Field { field, message, .. } => written
+                .iter()
+                .find(|written| &written.key == field)
+                .map(|written| ConfigError::Override {
+                    assignment: written.assignment.clone(),
+                    message: message.clone(),
+                })
+                .unwrap_or(error),
+            _ => error,
+        })
     }
 
     /// Write the config to its default path, creating the directory if needed.
@@ -556,11 +601,8 @@ impl Config {
                 .unwrap_or(defaults.auto_resize_images),
             block_images: self.block_images.unwrap_or(defaults.block_images),
             skill_commands: self.skill_commands.unwrap_or(defaults.skill_commands),
-            editor_padding: self.editor_padding.unwrap_or(defaults.editor_padding),
-            output_padding: self.output_padding.unwrap_or(defaults.output_padding),
-            interface_padding: self
-                .interface_padding
-                .unwrap_or(defaults.interface_padding),
+            content_padding: self.content_padding.unwrap_or(defaults.content_padding),
+            interface_padding: self.interface_padding.unwrap_or(defaults.interface_padding),
             autocomplete_max_items: self
                 .autocomplete_max_items
                 .unwrap_or(defaults.autocomplete_max_items)
@@ -587,6 +629,10 @@ impl Config {
                 .unwrap_or(defaults.http_idle_timeout)
                 .max(1),
             scoped_models: self.scoped_models.clone().unwrap_or(defaults.scoped_models),
+            mcp_servers: self.mcp_servers.clone().unwrap_or(defaults.mcp_servers),
+            tool_search_threshold: self
+                .tool_search_threshold
+                .unwrap_or(defaults.tool_search_threshold),
             anthropic_extra_usage: self
                 .anthropic_extra_usage
                 .unwrap_or(defaults.anthropic_extra_usage),
@@ -622,8 +668,7 @@ impl Config {
             auto_resize_images: take(&mut fields, "auto_resize_images", path)?,
             block_images: take(&mut fields, "block_images", path)?,
             skill_commands: take(&mut fields, "skill_commands", path)?,
-            editor_padding: take(&mut fields, "editor_padding", path)?,
-            output_padding: take(&mut fields, "output_padding", path)?,
+            content_padding: take(&mut fields, "content_padding", path)?,
             interface_padding: take(&mut fields, "interface_padding", path)?,
             autocomplete_max_items: take(&mut fields, "autocomplete_max_items", path)?,
             show_hardware_cursor: take(&mut fields, "show_hardware_cursor", path)?,
@@ -637,6 +682,8 @@ impl Config {
             default_project_trust: take(&mut fields, "default_project_trust", path)?,
             http_idle_timeout: take(&mut fields, "http_idle_timeout", path)?,
             scoped_models: take(&mut fields, "scoped_models", path)?,
+            mcp_servers: take(&mut fields, "mcp_servers", path)?,
+            tool_search_threshold: take(&mut fields, "tool_search_threshold", path)?,
             anthropic_extra_usage: take(&mut fields, "anthropic_extra_usage", path)?,
             transport: take(&mut fields, "transport", path)?,
             extensions: take(&mut fields, "extensions", path)?,
@@ -734,11 +781,14 @@ impl FromStr for Thinking {
     fn from_str(value: &str) -> std::result::Result<Self, Self::Err> {
         match value.to_ascii_lowercase().as_str() {
             "off" | "none" => Ok(Thinking::Off),
+            "minimal" => Ok(Thinking::Minimal),
             "low" => Ok(Thinking::Low),
             "medium" => Ok(Thinking::Medium),
             "high" => Ok(Thinking::High),
+            "xhigh" => Ok(Thinking::XHigh),
+            "max" => Ok(Thinking::Max),
             other => Err(format!(
-                "unknown thinking level `{other}` - expected off, low, medium, or high"
+                "unknown thinking level `{other}` - expected off, minimal, low, medium, high, xhigh, or max"
             )),
         }
     }
@@ -748,9 +798,12 @@ impl fmt::Display for Thinking {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(match self {
             Thinking::Off => "off",
+            Thinking::Minimal => "minimal",
             Thinking::Low => "low",
             Thinking::Medium => "medium",
             Thinking::High => "high",
+            Thinking::XHigh => "xhigh",
+            Thinking::Max => "max",
         })
     }
 }
@@ -1057,7 +1110,10 @@ mod tests {
             .to_string();
 
         assert!(error.contains(THINKING_ENV), "{error}");
-        assert!(error.contains("off, low, medium, or high"), "{error}");
+        assert!(
+            error.contains("off, minimal, low, medium, high, xhigh, or max"),
+            "{error}"
+        );
     }
 
     #[test]
