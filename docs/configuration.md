@@ -96,6 +96,8 @@ Release-installer installations check GitHub for a newer release before an inter
 
 Set `auto_update` to `false` to disable checks, or use `MICRO_NO_AUTO_UPDATE=1` for one run. `micro update` checks and installs a release immediately.
 
+Private release checks read `MICRO_GITHUB_TOKEN`, `GITHUB_TOKEN`, or `GH_TOKEN`. If none is set, micro reuses the current `gh auth` token. The credential must be able to read releases from the repository.
+
 ### sandbox
 
 The default is:

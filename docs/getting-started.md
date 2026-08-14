@@ -4,13 +4,15 @@ The release installer downloads the native binary for macOS on Apple Silicon and
 
 ## Install
 
-Install the latest release:
+Install the latest release from this private repository with an authenticated GitHub CLI:
 
 ```bash
-curl --fail --silent --show-error --location https://raw.githubusercontent.com/rmonvfer/micro/main/scripts/install.sh | bash
+gh api -H "Accept: application/vnd.github.raw+json" repos/rmonvfer/micro/contents/scripts/install.sh | bash
 ```
 
 The installer verifies the release checksum, keeps versioned copies under `~/.local/share/micro/dist`, and links `micro` from `~/.local/bin`. Packaged interactive installations check for updates automatically once every 24 hours. Set `auto_update` to `false`, set `MICRO_NO_AUTO_UPDATE=1`, or run `micro update` when you want explicit control.
+
+Private release checks use `MICRO_GITHUB_TOKEN`, then `GITHUB_TOKEN`, then `GH_TOKEN`, and otherwise reuse the token from `gh auth login`. The token must be able to read releases from the repository.
 
 To build from a source checkout instead:
 

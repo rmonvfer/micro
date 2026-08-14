@@ -7,6 +7,7 @@ DIST_DIR="${MICRO_DIST_DIR:-$HOME/.local/share/micro/dist}"
 DOWNLOAD_ROOT="https://github.com/${REPOSITORY}/releases/download"
 TEMP_DIR=""
 STAGED_DIST=""
+GITHUB_AUTH_TOKEN=""
 
 die() {
     echo "error: $1" >&2
@@ -18,7 +19,36 @@ require_command() {
 }
 
 download() {
-    curl --fail --silent --show-error --location --retry 3 --retry-delay 1 "$@"
+    local arguments=(--fail --silent --show-error --location --retry 3 --retry-delay 1)
+    if [ -n "$GITHUB_AUTH_TOKEN" ]; then
+        arguments+=(--header "Authorization: Bearer ${GITHUB_AUTH_TOKEN}")
+    fi
+    curl "${arguments[@]}" "$@"
+}
+
+github_token() {
+    if [ -n "${MICRO_GITHUB_TOKEN:-}" ]; then
+        printf '%s' "$MICRO_GITHUB_TOKEN"
+    elif [ -n "${GITHUB_TOKEN:-}" ]; then
+        printf '%s' "$GITHUB_TOKEN"
+    elif [ -n "${GH_TOKEN:-}" ]; then
+        printf '%s' "$GH_TOKEN"
+    elif command -v gh >/dev/null 2>&1; then
+        gh auth token 2>/dev/null || true
+    fi
+}
+
+download_release_asset() {
+    local tag="$1" asset="$2"
+    if [ -n "$GITHUB_AUTH_TOKEN" ]; then
+        require_command gh
+        GH_TOKEN="$GITHUB_AUTH_TOKEN" gh release download "$tag" \
+            --repo "$REPOSITORY" \
+            --pattern "$asset" \
+            --dir "$TEMP_DIR"
+    else
+        download --output "${TEMP_DIR}/${asset}" "${DOWNLOAD_ROOT}/${tag}/${asset}"
+    fi
 }
 
 cleanup() {
@@ -74,6 +104,7 @@ main() {
     require_command curl
     require_command mktemp
     require_command tar
+    GITHUB_AUTH_TOKEN=$(github_token)
     target=$(platform)
     tag=$(version)
     verify_version "$tag"
@@ -82,8 +113,8 @@ main() {
     trap cleanup EXIT
 
     echo "Installing micro ${tag} for ${target}..."
-    download --output "${TEMP_DIR}/${asset}" "${DOWNLOAD_ROOT}/${tag}/${asset}" || die "failed to download ${asset}"
-    download --output "${TEMP_DIR}/checksums-sha256.txt" "${DOWNLOAD_ROOT}/${tag}/checksums-sha256.txt" || die "failed to download checksums"
+    download_release_asset "$tag" "$asset" || die "failed to download ${asset}"
+    download_release_asset "$tag" "checksums-sha256.txt" || die "failed to download checksums"
     expected=$(awk -v asset="$asset" '$2 == asset || $2 == "*" asset { print $1 }' "${TEMP_DIR}/checksums-sha256.txt")
     [ -n "$expected" ] || die "release checksums do not contain ${asset}"
     [[ "$expected" =~ ^[0-9a-fA-F]{64}$ ]] || die "invalid SHA-256 checksum"

@@ -5,6 +5,7 @@ use anyhow::Result;
 use fs2::FileExt as _;
 use futures::TryStreamExt as _;
 use reqwest::Client;
+use reqwest::RequestBuilder;
 use semver::Version;
 use serde::Deserialize;
 use serde::Serialize;
@@ -24,6 +25,7 @@ const CHECK_INTERVAL_HOURS: u64 = 24;
 const STATE_FILE: &str = "update.json";
 const LOCK_FILE: &str = "update.lock";
 const BINARY: &str = "micro";
+const TOKEN_VARIABLES: [&str; 3] = ["MICRO_GITHUB_TOKEN", "GITHUB_TOKEN", "GH_TOKEN"];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Outcome {
@@ -49,7 +51,18 @@ struct Release {
 #[derive(Debug, Deserialize)]
 struct Asset {
     name: String,
+    url: String,
     browser_download_url: String,
+}
+
+impl Asset {
+    fn download_url(&self, authenticated: bool) -> &str {
+        if authenticated {
+            &self.url
+        } else {
+            &self.browser_download_url
+        }
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -143,21 +156,27 @@ async fn check_and_install(force: bool, interval_hours: u64) -> Result<Outcome> 
 }
 
 async fn check_and_install_managed(installation: &Installation) -> Result<Outcome> {
+    let token = github_token();
     let client = Client::builder()
         .connect_timeout(Duration::from_secs(3))
         .timeout(Duration::from_secs(10))
         .user_agent(format!("micro/{}", env!("CARGO_PKG_VERSION")))
         .build()?;
-    let release: Release = client
-        .get(format!(
-            "https://api.github.com/repos/{REPOSITORY}/releases/latest"
-        ))
-        .header("Accept", "application/vnd.github+json")
-        .send()
-        .await?
-        .error_for_status()?
-        .json()
-        .await?;
+    let release: Release = github_get(
+        &client,
+        format!("https://api.github.com/repos/{REPOSITORY}/releases/latest"),
+        token.as_deref(),
+        "application/vnd.github+json",
+    )
+    .send()
+    .await?
+    .error_for_status()
+    .context(
+        "could not read the latest GitHub release; private repositories require \
+         MICRO_GITHUB_TOKEN, GITHUB_TOKEN, GH_TOKEN, or an authenticated gh CLI",
+    )?
+    .json()
+    .await?;
     let version = Version::parse(release.tag_name.trim_start_matches('v'))
         .with_context(|| format!("release tag {} is not a semantic version", release.tag_name))?;
     let current = Version::parse(env!("CARGO_PKG_VERSION"))?;
@@ -184,7 +203,13 @@ async fn check_and_install_managed(installation: &Installation) -> Result<Outcom
         .iter()
         .find(|asset| asset.name == "checksums-sha256.txt")
         .ok_or_else(|| anyhow::anyhow!("release {} has no checksums", release.tag_name))?;
-    let checksum_text = download_text(&client, &checksums.browser_download_url).await?;
+    let authenticated = token.is_some();
+    let checksum_text = download_text(
+        &client,
+        checksums.download_url(authenticated),
+        token.as_deref(),
+    )
+    .await?;
     let expected = checksum_for(&checksum_text, &archive_name)
         .ok_or_else(|| anyhow::anyhow!("release checksums do not contain {archive_name}"))?;
 
@@ -192,7 +217,13 @@ async fn check_and_install_managed(installation: &Installation) -> Result<Outcom
         .prefix(".micro-update-")
         .tempdir_in(&installation.dist_dir)?;
     let archive_path = staging.path().join(&archive_name);
-    download_file(&client, &archive.browser_download_url, &archive_path).await?;
+    download_file(
+        &client,
+        archive.download_url(authenticated),
+        token.as_deref(),
+        &archive_path,
+    )
+    .await?;
     let actual = sha256(&archive_path)?;
     if !actual.eq_ignore_ascii_case(expected) {
         anyhow::bail!("checksum verification failed for {archive_name}");
@@ -243,9 +274,44 @@ async fn check_and_install_managed(installation: &Installation) -> Result<Outcom
     })
 }
 
-async fn download_text(client: &Client, url: &str) -> Result<String> {
-    Ok(client
-        .get(url)
+fn github_get(
+    client: &Client,
+    url: impl reqwest::IntoUrl,
+    token: Option<&str>,
+    accept: &'static str,
+) -> RequestBuilder {
+    let request = client.get(url).header("Accept", accept);
+    if let Some(token) = token {
+        request.bearer_auth(token)
+    } else {
+        request
+    }
+}
+
+fn github_token() -> Option<String> {
+    TOKEN_VARIABLES
+        .iter()
+        .find_map(|name| std::env::var(name).ok().and_then(non_empty))
+        .or_else(|| {
+            let output = std::process::Command::new("gh")
+                .args(["auth", "token"])
+                .output()
+                .ok()?;
+            output
+                .status
+                .success()
+                .then(|| String::from_utf8_lossy(&output.stdout).into_owned())
+                .and_then(non_empty)
+        })
+}
+
+fn non_empty(value: String) -> Option<String> {
+    let value = value.trim();
+    (!value.is_empty()).then(|| value.to_string())
+}
+
+async fn download_text(client: &Client, url: &str, token: Option<&str>) -> Result<String> {
+    Ok(github_get(client, url, token, "application/octet-stream")
         .send()
         .await?
         .error_for_status()?
@@ -253,9 +319,8 @@ async fn download_text(client: &Client, url: &str) -> Result<String> {
         .await?)
 }
 
-async fn download_file(client: &Client, url: &str, path: &Path) -> Result<()> {
-    let response = client
-        .get(url)
+async fn download_file(client: &Client, url: &str, token: Option<&str>, path: &Path) -> Result<()> {
+    let response = github_get(client, url, token, "application/octet-stream")
         .timeout(Duration::from_secs(600))
         .send()
         .await?
@@ -432,6 +497,46 @@ fn unix_time() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn authenticated_downloads_use_the_asset_api_and_bearer_token() {
+        let asset = Asset {
+            name: "micro-darwin-arm64.tar.gz".to_string(),
+            url: "https://api.github.com/releases/assets/1".to_string(),
+            browser_download_url: "https://github.com/releases/download/archive".to_string(),
+        };
+        assert_eq!(
+            asset.download_url(true),
+            "https://api.github.com/releases/assets/1"
+        );
+        assert_eq!(
+            asset.download_url(false),
+            "https://github.com/releases/download/archive"
+        );
+
+        let request = github_get(
+            &Client::new(),
+            asset.download_url(true),
+            Some("secret"),
+            "application/octet-stream",
+        )
+        .build()
+        .unwrap();
+        assert_eq!(
+            request.headers()["Authorization"].to_str().unwrap(),
+            "Bearer secret"
+        );
+        assert_eq!(
+            request.headers()["Accept"].to_str().unwrap(),
+            "application/octet-stream"
+        );
+    }
+
+    #[test]
+    fn blank_tokens_are_ignored() {
+        assert_eq!(non_empty(" \n".to_string()), None);
+        assert_eq!(non_empty(" token \n".to_string()).as_deref(), Some("token"));
+    }
 
     #[test]
     fn checksums_require_a_complete_matching_record() {
