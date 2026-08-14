@@ -69,6 +69,7 @@ pub fn render_linked(
     theme: &Theme,
     width: usize,
     links: &mut Links,
+    mermaid: crate::commands::Mermaid,
 ) -> Vec<Block> {
     let mut blocks = Vec::new();
     let mut fence: Option<Fence> = None;
@@ -112,16 +113,24 @@ pub fn render_linked(
         match &mut fence {
             // A fence closes on its own marker, so a `~~~` inside a ``` block is content.
             Some(open) if trimmed.starts_with(open.marker) => {
-                blocks.push(Block::plain(vec![Span::styled(
-                    trimmed.to_string(),
-                    Style::new().fg(theme.md_code_block_border),
-                )]));
+                match open.diagram.take() {
+                    // A diagram is drawn in place of the block that described it, and the
+                    // fence around it goes with the source it was fencing.
+                    Some(source) => blocks.extend(diagram_blocks(&source, theme, width)),
+                    None => blocks.push(Block::plain(vec![Span::styled(
+                        trimmed.to_string(),
+                        Style::new().fg(theme.md_code_block_border),
+                    )])),
+                }
                 fence = None;
                 if !followed_by_blank {
                     blocks.push(Block::plain(Vec::new()));
                 }
             }
-            Some(open) => blocks.push(code_line(line, open, theme)),
+            Some(open) => match &mut open.diagram {
+                Some(source) => source.push(line.to_string()),
+                None => blocks.push(code_line(line, open, theme)),
+            },
             None => match fence_marker(trimmed) {
                 Some(marker) => {
                     // A table cannot run into a code block, so it is finished here rather
@@ -129,16 +138,28 @@ pub fn render_linked(
                     if let Some(open) = table.take() {
                         blocks.extend(open.render(theme, width, links));
                     }
-                    // The fence line is shown with its language, as ohm shows it, rather
-                    // than being swallowed.
-                    blocks.push(Block::plain(vec![Span::styled(
-                        trimmed.to_string(),
-                        Style::new().fg(theme.md_code_block_border),
-                    )]));
                     let language = &trimmed[marker.len()..];
+                    // Left as the code it was written as when the reader asked for that.
+                    let diagram = (mermaid != crate::commands::Mermaid::Off
+                        && language
+                            .trim()
+                            .split_whitespace()
+                            .next()
+                            .is_some_and(|word| word.eq_ignore_ascii_case("mermaid")))
+                    .then(Vec::new);
+                    // The fence line is shown with its language, as ohm shows it, rather
+                    // than being swallowed — unless what it fences is a drawing, which
+                    // stands in place of the block that described it, fence and all.
+                    if diagram.is_none() {
+                        blocks.push(Block::plain(vec![Span::styled(
+                            trimmed.to_string(),
+                            Style::new().fg(theme.md_code_block_border),
+                        )]));
+                    }
                     fence = Some(Fence {
                         marker,
                         highlighter: Highlighter::new(language),
+                        diagram,
                     });
                 }
                 None => {
@@ -191,12 +212,19 @@ pub fn render_linked(
     }
 
     // A fence the text never closed is closed here, so a half-written answer still reads as
-    // a code block rather than running on into whatever follows it.
+    // a code block rather than running on into whatever follows it. A diagram still being
+    // written is drawn from what has arrived, which is what keeps one on screen while it
+    // streams rather than flickering between source and drawing.
     if let Some(open) = fence {
-        blocks.push(Block::plain(vec![Span::styled(
-            open.marker.to_string(),
-            Style::new().fg(theme.md_code_block_border),
-        )]));
+        match open.diagram.filter(|_| mermaid == crate::commands::Mermaid::Streaming) {
+            // Drawn while it is still arriving only if that is what was asked for; waiting
+            // for the last line keeps a half-written diagram from flickering as it lands.
+            Some(source) => blocks.extend(diagram_blocks(&source, theme, width)),
+            None => blocks.push(Block::plain(vec![Span::styled(
+                open.marker.to_string(),
+                Style::new().fg(theme.md_code_block_border),
+            )])),
+        }
     }
 
     blocks
@@ -207,6 +235,9 @@ pub fn render_linked(
 struct Fence {
     marker: &'static str,
     highlighter: Option<Highlighter>,
+    /// A diagram gathers its source instead of showing it, because a drawing cannot be
+    /// made a line at a time — the shape it is about is only known once all of it is read.
+    diagram: Option<Vec<String>>,
 }
 
 /// One line inside a fence.
@@ -553,6 +584,47 @@ fn link(
 
 fn find(characters: &[char], from: usize, wanted: char) -> Option<usize> {
     (from..characters.len()).find(|index| characters[*index] == wanted)
+}
+
+/// A diagram, drawn if it can be and left as its source if it cannot.
+///
+/// What a diagram says is its shape, and the source hides exactly that — so it is worth
+/// drawing. What cannot be drawn is still shown, because the words in it say what was meant.
+fn diagram_blocks(source: &[String], theme: &Theme, width: usize) -> Vec<Block> {
+    let text = source.join("\n");
+    let drawn = micro_mermaid::render(&text).filter(|art| art.width <= width);
+
+    let Some(art) = drawn else {
+        let style = Style::new().fg(theme.md_code_block);
+        return source
+            .iter()
+            .map(|line| Block::plain(vec![Span::styled(line.clone(), style)]))
+            .collect();
+    };
+
+    art.styled
+        .iter()
+        .map(|row| {
+            Block::plain(
+                row.iter()
+                    .map(|span| Span::styled(span.text.clone(), paint(span.cls, theme)))
+                    .collect::<Vec<_>>(),
+            )
+        })
+        .collect()
+}
+
+/// The colour a part of a diagram is drawn in.
+fn paint(cls: micro_mermaid::Cls, theme: &Theme) -> Style {
+    use micro_mermaid::Cls;
+    match cls {
+        Cls::Border => Style::new().fg(theme.md_hr),
+        Cls::Text => theme.body(),
+        Cls::Edge => Style::new().fg(theme.md_code_block_border),
+        Cls::EdgeLabel => Style::new().fg(theme.dim),
+        Cls::Title => Style::new().fg(theme.md_heading).add_modifier(Modifier::BOLD),
+        Cls::None => theme.body(),
+    }
 }
 
 /// Display maths in progress: what closes it, and the source gathered so far.
@@ -973,6 +1045,74 @@ fn marker(characters: &[char], start: usize, delimiter: &str) -> Option<(String,
 
 #[cfg(test)]
 mod tests {
+    /// A diagram is drawn in place of the block describing it, fence and all: what a
+    /// diagram says is its shape, and the source is exactly what hides that.
+    #[test]
+    fn a_mermaid_block_is_drawn_as_a_diagram() {
+        let rows = drawn("```mermaid\ngraph TD\n  A[Read] --> B[Answer]\n```");
+        assert!(!rows.iter().any(|row| row.contains("```")), "{rows:?}");
+        assert!(!rows.iter().any(|row| row.contains("graph TD")), "{rows:?}");
+        assert!(rows.iter().any(|row| row.contains("│ Read │")), "{rows:?}");
+        assert!(rows.iter().any(|row| row.contains("│ Answer │")), "{rows:?}");
+        assert!(rows.iter().any(|row| row.contains('▼')), "{rows:?}");
+    }
+
+    /// A reader who would rather see the source gets the source.
+    #[test]
+    fn a_diagram_is_left_as_written_when_that_is_what_was_asked_for() {
+        let mut links = Links::default();
+        let rows: Vec<String> = render_linked(
+            "```mermaid\ngraph TD\n  A --> B\n```",
+            &Theme::dark(),
+            60,
+            &mut links,
+            crate::commands::Mermaid::Off,
+        )
+        .iter()
+        .map(|block| {
+            block
+                .spans
+                .iter()
+                .map(|span| span.content.as_ref())
+                .collect::<String>()
+        })
+        .collect();
+        assert!(rows.iter().any(|row| row.contains("graph TD")), "{rows:?}");
+    }
+
+    /// A diagram too wide for the terminal is shown as the text it was written as, which
+    /// still says what was meant where a drawing cut in half would not.
+    #[test]
+    fn a_diagram_too_wide_to_draw_falls_back_to_its_source() {
+        let rows = drawn_at(
+            "```mermaid\ngraph LR\n  A[A very long label indeed] --> B[Another long one here]\n```",
+            20,
+        );
+        assert!(rows.iter().any(|row| row.contains("A very long label")), "{rows:?}");
+    }
+
+    /// Every row of a block at a given width, as plain text.
+    fn drawn_at(source: &str, width: usize) -> Vec<String> {
+        let mut links = Links::default();
+        render_linked(
+            source,
+            &Theme::dark(),
+            width,
+            &mut links,
+            crate::commands::Mermaid::Streaming,
+        )
+        .iter()
+        .map(|block| {
+            block
+                .spans
+                .iter()
+                .map(|span| span.content.as_ref())
+                .collect::<String>()
+        })
+        .filter(|row: &String| !row.is_empty())
+        .collect()
+    }
+
     /// A table is drawn boxed, a rule under the header and between every pair of rows,
     /// with each column as wide as the widest thing in it.
     #[test]
@@ -1004,7 +1144,7 @@ mod tests {
     fn a_long_cell_wraps_inside_its_column() {
         let mut links = Links::default();
         let source = "| Thing | What it does |\n| --- | --- |\n| one | a description long enough to need two lines |";
-        let rows: Vec<String> = render_linked(source, &Theme::dark(), 34, &mut links)
+        let rows: Vec<String> = render_linked(source, &Theme::dark(), 34, &mut links, crate::commands::Mermaid::Streaming)
             .iter()
             .map(|block| {
                 block
@@ -1027,7 +1167,7 @@ mod tests {
     fn a_table_too_wide_to_draw_falls_back_to_its_source() {
         let mut links = Links::default();
         let source = "| A | B | C |\n| --- | --- | --- |\n| one | two | three |";
-        let rows: Vec<String> = render_linked(source, &Theme::dark(), 8, &mut links)
+        let rows: Vec<String> = render_linked(source, &Theme::dark(), 8, &mut links, crate::commands::Mermaid::Streaming)
             .iter()
             .map(|block| {
                 block
@@ -1068,7 +1208,7 @@ mod tests {
     /// Every row of a block, as plain text.
     fn drawn(source: &str) -> Vec<String> {
         let mut links = Links::default();
-        render_linked(source, &Theme::dark(), 60, &mut links)
+        render_linked(source, &Theme::dark(), 60, &mut links, crate::commands::Mermaid::Streaming)
             .iter()
             .map(|block| {
                 block
@@ -1089,7 +1229,7 @@ mod tests {
 
     /// The renderer at a width wide enough that only a horizontal rule notices.
     fn render(text: &str, theme: &Theme) -> Vec<Block> {
-        render_linked(text, theme, MAX_RULE, &mut Links::new())
+        render_linked(text, theme, MAX_RULE, &mut Links::new(), crate::commands::Mermaid::Streaming)
     }
 
     fn text_of(block: &Block) -> String {
@@ -1266,10 +1406,10 @@ mod tests {
         let theme = theme();
         let source = "see [the docs](https://example.com) now";
 
-        let clickable = render_linked(source, &theme, 80, &mut Links::new());
+        let clickable = render_linked(source, &theme, 80, &mut Links::new(), crate::commands::Mermaid::Streaming);
         assert_eq!(text_of(&clickable[0]), "see the docs now");
 
-        let blocks = render_linked(source, &theme, 80, &mut Links::disabled());
+        let blocks = render_linked(source, &theme, 80, &mut Links::disabled(), crate::commands::Mermaid::Streaming);
         assert_eq!(text_of(&blocks[0]), "see the docs (https://example.com) now");
 
         let text = span_with(&blocks[0], "the docs");
@@ -1320,16 +1460,16 @@ mod tests {
     #[test]
     fn a_rule_spans_the_width_up_to_ohms_cap() {
         let theme = theme();
-        let blocks = render_linked("---", &theme, 20, &mut Links::new());
+        let blocks = render_linked("---", &theme, 20, &mut Links::new(), crate::commands::Mermaid::Streaming);
         assert_eq!(text_of(&blocks[0]), "─".repeat(20));
         assert_eq!(blocks[0].spans[0].style.fg, Some(theme.md_hr));
 
         // Wider terminals stop at ohm's cap of 80.
         assert_eq!(
-            text_of(&render_linked("---", &theme, 200, &mut Links::new())[0]).chars().count(),
+            text_of(&render_linked("---", &theme, 200, &mut Links::new(), crate::commands::Mermaid::Streaming)[0]).chars().count(),
             80
         );
-        assert_eq!(text_of(&render_linked("***", &theme, 5, &mut Links::new())[0]), "─────");
+        assert_eq!(text_of(&render_linked("***", &theme, 5, &mut Links::new(), crate::commands::Mermaid::Streaming)[0]), "─────");
     }
 
     #[test]
@@ -1345,7 +1485,7 @@ mod tests {
         let source = "# One\n### Three\n- item\n> quote\n---\n```rs\ncode\n```\n`inline` [t](u)";
         // Rendered without hyperlinks, since that is the path that prints a link's target
         // and so the only one that reaches `md_link_url`.
-        let used: Vec<_> = render_linked(source, &theme, 80, &mut Links::disabled())
+        let used: Vec<_> = render_linked(source, &theme, 80, &mut Links::disabled(), crate::commands::Mermaid::Streaming)
             .iter()
             .flat_map(|block| block.spans.iter().filter_map(|span| span.style.fg))
             .collect();

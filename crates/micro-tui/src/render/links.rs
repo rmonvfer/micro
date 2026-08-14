@@ -264,6 +264,7 @@ mod tests {
             &theme,
             60,
             &mut links,
+            crate::commands::Mermaid::Streaming,
         );
 
         let area = Rect::new(0, 0, 60, 1);

@@ -1044,6 +1044,7 @@ impl App {
                 images: self.images,
                 image_width: self.settings.image_width_cells as usize,
                 resize_images: self.settings.auto_resize_images,
+                mermaid: self.settings.mermaid,
             },
             &mut rendered,
             &mut self.cache.starts,

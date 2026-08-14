@@ -38,6 +38,8 @@ pub struct Display {
     pub images: Option<crate::capabilities::ImageProtocol>,
     /// The widest an image may be drawn, in cells.
     pub image_width: usize,
+    /// Whether a diagram written in a code block is drawn, and when.
+    pub mermaid: crate::commands::Mermaid,
     /// Whether an image wider than the room it has is shrunk to fit.
     pub resize_images: bool,
 }
@@ -348,7 +350,7 @@ fn push_markdown(
     }
     // An answer is written straight onto the terminal's own ground. A fenced block is
     // marked by its fences and by the color of its text, not by a fill behind it.
-    for block in markdown::render_linked(text, theme, display.width, links) {
+    for block in markdown::render_linked(text, theme, display.width, links, display.mermaid) {
         out.extend(wrap_spans(&block.spans, display.width, block.indent));
     }
 }
@@ -427,6 +429,7 @@ mod tests {
 
     fn display(width: usize) -> Display {
         Display {
+            mermaid: crate::commands::Mermaid::Streaming,
             width,
             show_thinking: false,
             focus: None,
