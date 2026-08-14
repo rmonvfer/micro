@@ -101,6 +101,9 @@ pub enum DiagramKind {
     Pie,
     Mindmap,
     Timeline,
+    Gantt,
+    Quadrant,
+    Requirement,
 }
 
 /// The kind of diagram `src` declares, or `None` if its header names no type
@@ -132,6 +135,12 @@ pub fn diagram_kind(src: &str) -> Option<DiagramKind> {
         Some(DiagramKind::Mindmap)
     } else if kind == "timeline" {
         Some(DiagramKind::Timeline)
+    } else if kind == "gantt" {
+        Some(DiagramKind::Gantt)
+    } else if kind == "quadrantchart" {
+        Some(DiagramKind::Quadrant)
+    } else if kind == "requirementdiagram" {
+        Some(DiagramKind::Requirement)
     } else {
         None
     }
