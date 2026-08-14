@@ -128,7 +128,22 @@ fn is_extension_file(path: &Path) -> bool {
 }
 
 /// What a directory offers as its entry points, or nothing when it offers none.
-fn entries_of(directory: &Path) -> Option<Vec<PathBuf>> {
+/// What the package in `directory` calls itself, when it is a package and says so.
+///
+/// Read from the root a package was installed to rather than guessed at from an entry
+/// file's path: `index.ts` is what most packages call their entry point, so the file says
+/// nothing about which package it belongs to, and the manifest beside it says everything.
+pub fn package_name(directory: &Path) -> Option<String> {
+    let raw = std::fs::read_to_string(directory.join("package.json")).ok()?;
+    let manifest: serde_json::Value = serde_json::from_str(&raw).ok()?;
+    let name = manifest.get("name")?.as_str()?;
+    match name.is_empty() {
+        true => None,
+        false => Some(name.to_string()),
+    }
+}
+
+pub fn entries_of(directory: &Path) -> Option<Vec<PathBuf>> {
     // A manifest wins, because it is the only way to say what a complex package loads.
     let manifest_path = directory.join("package.json");
     if let Ok(raw) = std::fs::read_to_string(&manifest_path) {

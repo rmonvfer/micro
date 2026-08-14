@@ -212,9 +212,15 @@ pub async fn install(
 
     match source {
         Source::Npm { spec, .. } => {
+            // Walking up from the install path would answer differently for a scoped name
+            // than an unscoped one, since `@scope/package` is two directories rather than
+            // one — and landing inside `node_modules` is what makes Bun install into a
+            // second `node_modules` beneath it. The root is where `install_path` put the
+            // `node_modules` directory, so it is taken from there rather than counted back.
             let root = path
-                .parent()
-                .and_then(|modules| modules.parent())
+                .ancestors()
+                .find(|ancestor| ancestor.file_name().is_some_and(|name| name == "node_modules"))
+                .and_then(Path::parent)
                 .ok_or("the install path has no root")?
                 .to_path_buf();
             std::fs::create_dir_all(&root)
@@ -255,11 +261,27 @@ pub async fn install(
                     run(Path::new("git"), &["fetch", "origin", reference], &path).await?;
                     run(Path::new("git"), &["checkout", reference], &path).await?;
                 }
+                // A cloned package's own dependencies are its to declare and micro's to
+                // fetch, the same posture an npm-sourced install already takes for its own
+                // `--omit=peer`. Only a fresh clone reaches this: an update that was
+                // already installed keeps whatever is already in its node_modules rather
+                // than reinstalling on every pull.
+                ensure_declared_dependencies_installed(&path).await?;
             }
         }
         Source::Local { .. } => {
             if !path.exists() {
                 return Err(format!("{} is not there", path.display()));
+            }
+            // pi's own installer (`installParsedSource` in `package-manager.ts`) branches
+            // only on its npm and git source types; nothing installs a local package's
+            // dependencies there. This is a deliberate difference rather than an
+            // oversight: "install an extension and it works" is the rule for every
+            // source, and a local directory is a real package the same way a cloned one
+            // is. Do not narrow this back toward pi to chase parity — the gap being
+            // matched here is one pi never filled, not one micro is inventing.
+            if path.is_dir() {
+                ensure_declared_dependencies_installed(&path).await?;
             }
         }
     }
@@ -275,6 +297,26 @@ pub async fn install(
         source: source.canonical(),
         path,
     })
+}
+
+/// Fetch a package's own declared dependencies into it, the way pi's installer runs a
+/// plain `install --omit=dev` inside a package it just fetched — a no-specs install read
+/// from the `package.json` already sitting there, not the specs-based `add` an npm-sourced
+/// install uses to fetch the package itself. `--omit=dev` rather than micro's own
+/// `--omit=peer`: a fetched package's dev tooling is not needed to run it, the way an
+/// npm-sourced install's `--omit=peer` exists to keep host-provided `@earendil-works/pi-*`
+/// peers from being solved and reinstalled, a different concern this is not the place for.
+///
+/// A directory with nothing to install — no `package.json` at all — costs nothing: this
+/// returns immediately rather than running bun over an empty question.
+async fn ensure_declared_dependencies_installed(directory: &Path) -> Result<(), String> {
+    if !directory.join("package.json").exists() {
+        return Ok(());
+    }
+    let runtime =
+        crate::host::which_bun().ok_or("bun is not on the path. Install it from https://bun.sh")?;
+    run(&runtime, &["install", "--omit=dev"], directory).await?;
+    Ok(())
 }
 
 /// Take an installed package away. Its source is the caller's to forget.
@@ -492,6 +534,151 @@ mod tests {
             let written = parsed.canonical();
             assert_eq!(Source::parse(&written).unwrap(), parsed, "{source}");
         }
+    }
+
+    /// A throwaway directory carrying a `package.json` that declares one real dependency —
+    /// small and stable, so installing it is fast and does not depend on anything about the
+    /// package beyond it existing on the registry.
+    fn directory_with_a_dependency(label: &str) -> PathBuf {
+        let root = std::env::temp_dir().join(format!(
+            "micro-packages-{label}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(
+            root.join("package.json"),
+            r#"{"name": "test-pkg", "version": "1.0.0", "dependencies": {"ms": "2.1.3"}}"#,
+        )
+        .unwrap();
+        root
+    }
+
+    /// The same directory, turned into a throwaway git repository so it can be cloned.
+    fn repo_with_a_dependency() -> PathBuf {
+        let root = directory_with_a_dependency("repo");
+
+        let git = |args: &[&str]| {
+            let status = std::process::Command::new("git")
+                .args(args)
+                .current_dir(&root)
+                // No dependence on whatever global git identity the machine running this
+                // test happens to have configured.
+                .env("GIT_AUTHOR_NAME", "test")
+                .env("GIT_AUTHOR_EMAIL", "test@example.invalid")
+                .env("GIT_COMMITTER_NAME", "test")
+                .env("GIT_COMMITTER_EMAIL", "test@example.invalid")
+                .status()
+                .expect("run git");
+            assert!(status.success(), "git {args:?}");
+        };
+        git(&["init", "--quiet"]);
+        git(&["add", "-A"]);
+        git(&["commit", "--quiet", "-m", "test package"]);
+
+        root
+    }
+
+    /// Installing a git source fetches the package's own dependencies the same way an
+    /// npm-sourced install already does — this is the fix for the bug where a cloned
+    /// package's `import "ms"` failed even though the clone itself succeeded, because
+    /// nothing had ever run a package manager inside it.
+    #[tokio::test]
+    async fn a_git_source_gets_its_own_dependencies_installed() {
+        if crate::host::which_bun().is_none() {
+            eprintln!("skipped: bun is not on the path");
+            return;
+        }
+        let repo = repo_with_a_dependency();
+        let scratch = std::env::temp_dir().join(format!("micro-packages-git-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&scratch);
+        let home = scratch.join("home");
+        let workspace = scratch.join("workspace");
+        std::fs::create_dir_all(&home).unwrap();
+        std::fs::create_dir_all(&workspace).unwrap();
+
+        let source = Source::Git {
+            url: repo.display().to_string(),
+            slug: "test/repo".to_string(),
+            reference: None,
+        };
+        let installed = install(&source, &home, &workspace, false)
+            .await
+            .expect("the install succeeds");
+
+        assert!(
+            installed.path.join("node_modules").join("ms").exists(),
+            "the cloned package's own dependency was installed into it"
+        );
+
+        let _ = std::fs::remove_dir_all(&repo);
+        let _ = std::fs::remove_dir_all(&scratch);
+    }
+
+    /// Installing a local source fetches its own declared dependencies too — a local
+    /// directory is a real package the same way a cloned one is, and the same rule applies:
+    /// install it and it works, rather than install it and watch its first import fail.
+    #[tokio::test]
+    async fn a_local_source_gets_its_own_dependencies_installed() {
+        if crate::host::which_bun().is_none() {
+            eprintln!("skipped: bun is not on the path");
+            return;
+        }
+        let package = directory_with_a_dependency("local");
+        let scratch = std::env::temp_dir().join(format!("micro-packages-local-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&scratch);
+        let home = scratch.join("home");
+        let workspace = scratch.join("workspace");
+        std::fs::create_dir_all(&home).unwrap();
+        std::fs::create_dir_all(&workspace).unwrap();
+
+        let source = Source::Local {
+            path: package.display().to_string(),
+        };
+        let installed = install(&source, &home, &workspace, false)
+            .await
+            .expect("the install succeeds");
+
+        assert!(
+            installed.path.join("node_modules").join("ms").exists(),
+            "the local package's own dependency was installed into it"
+        );
+
+        let _ = std::fs::remove_dir_all(&package);
+        let _ = std::fs::remove_dir_all(&scratch);
+    }
+
+    /// A local directory with no `package.json` at all is unaffected: nothing runs bun
+    /// over a directory that never asked for anything to be installed.
+    #[tokio::test]
+    async fn a_local_source_with_nothing_to_install_is_unaffected() {
+        let root = std::env::temp_dir().join(format!(
+            "micro-packages-plain-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("index.ts"), "export default (micro) => {};").unwrap();
+
+        let source = Source::Local {
+            path: root.display().to_string(),
+        };
+        let installed = install(&source, Path::new("/tmp"), Path::new("/tmp"), false)
+            .await
+            .expect("the install succeeds");
+
+        assert!(
+            !installed.path.join("node_modules").exists(),
+            "nothing was there to install, so nothing should have run"
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[tokio::test]
