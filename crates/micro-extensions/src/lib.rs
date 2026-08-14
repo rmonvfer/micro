@@ -6,16 +6,20 @@
 //! command a user may type, a handler that runs when something happens.
 
 mod discover;
-mod host;
 mod events;
-mod packages;
 mod flags;
+mod host;
+mod packages;
 mod providers;
 mod tool;
 
 pub use discover::discover;
 pub use discover::in_directory;
 pub use discover::PROJECT_DIR;
+pub use events::name_of;
+pub use events::payload_of;
+pub use flags::split_unknown;
+pub use flags::Given;
 pub use host::install_host;
 pub use host::which_bun;
 pub use host::FromHost;
@@ -28,15 +32,11 @@ pub use host::RegisteredFlag;
 pub use host::RegisteredProvider;
 pub use host::RegisteredShortcut;
 pub use host::RegisteredTool;
-pub use events::name_of;
-pub use events::payload_of;
 pub use packages::install;
-pub use flags::split_unknown;
-pub use flags::Given;
-pub use providers::declare;
-pub use providers::resolve_key;
-pub use providers::Declared;
 pub use packages::remove;
 pub use packages::Installed;
 pub use packages::Source;
+pub use providers::declare;
+pub use providers::resolve_key;
+pub use providers::Declared;
 pub use tool::ExtensionTool;

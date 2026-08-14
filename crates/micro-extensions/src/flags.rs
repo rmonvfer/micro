@@ -87,7 +87,10 @@ mod tests {
     #[test]
     fn what_micro_understands_is_left_alone() {
         let (kept, leftover) = split(&["micro", "--print", "--model", "opus", "a prompt"]);
-        assert_eq!(kept, vec!["micro", "--print", "--model", "opus", "a prompt"]);
+        assert_eq!(
+            kept,
+            vec!["micro", "--print", "--model", "opus", "a prompt"]
+        );
         assert!(leftover.is_empty());
     }
 

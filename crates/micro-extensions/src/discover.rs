@@ -98,7 +98,10 @@ pub fn in_directory(directory: &Path) -> Vec<PathBuf> {
     };
 
     // Read in name order, so a directory listing does not change what loads first.
-    let mut names: Vec<PathBuf> = entries.filter_map(|entry| entry.ok()).map(|entry| entry.path()).collect();
+    let mut names: Vec<PathBuf> = entries
+        .filter_map(|entry| entry.ok())
+        .map(|entry| entry.path())
+        .collect();
     names.sort();
 
     let mut found = Vec::new();
@@ -221,7 +224,10 @@ mod tests {
             &root.join("adapter/package.json"),
             r#"{ "name": "ohm-mcp-adapter", "ohm": { "extensions": ["dist/index.js"] } }"#,
         );
-        write(&root.join("adapter/dist/index.js"), "export default () => {}");
+        write(
+            &root.join("adapter/dist/index.js"),
+            "export default () => {}",
+        );
 
         let found = in_directory(&root);
         assert_eq!(found.len(), 1, "{found:?}");
@@ -280,8 +286,14 @@ mod tests {
         let root = scratch("order");
         let workspace = root.join("workspace");
         let home = root.join("home");
-        write(&workspace.join(PROJECT_DIR).join("local.ts"), "export default () => {}");
-        write(&home.join("extensions/global.ts"), "export default () => {}");
+        write(
+            &workspace.join(PROJECT_DIR).join("local.ts"),
+            "export default () => {}",
+        );
+        write(
+            &home.join("extensions/global.ts"),
+            "export default () => {}",
+        );
 
         let found = discover(&workspace, &home, &[], true);
         assert_eq!(found.len(), 2, "{found:?}");

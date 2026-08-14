@@ -309,7 +309,10 @@ async fn install_peers(runtime: &Path, root: &Path, package: &Path) -> Result<()
     let Ok(manifest) = serde_json::from_str::<serde_json::Value>(&raw) else {
         return Ok(());
     };
-    let Some(peers) = manifest.get("peerDependencies").and_then(|peers| peers.as_object()) else {
+    let Some(peers) = manifest
+        .get("peerDependencies")
+        .and_then(|peers| peers.as_object())
+    else {
         return Ok(());
     };
 

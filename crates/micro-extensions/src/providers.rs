@@ -25,7 +25,9 @@ pub struct Declared {
 /// Read a declaration into the shapes micro uses.
 pub fn declare(name: &str, config: &Value) -> Result<Declared, String> {
     let Some(config) = config.as_object() else {
-        return Err(format!("{name} was declared as something other than an object"));
+        return Err(format!(
+            "{name} was declared as something other than an object"
+        ));
     };
 
     let mut provider = Map::new();
@@ -78,10 +80,7 @@ fn model(described: &Value) -> Result<Value, String> {
     out.insert("id".into(), json!(id));
     out.insert(
         "name".into(),
-        json!(described
-            .get("name")
-            .and_then(Value::as_str)
-            .unwrap_or(id)),
+        json!(described.get("name").and_then(Value::as_str).unwrap_or(id)),
     );
     for (theirs, ours) in [
         ("contextWindow", "context_window"),
@@ -230,8 +229,11 @@ mod tests {
     /// Naming a provider that already exists changes it rather than adding a second one.
     #[test]
     fn a_base_url_alone_points_an_existing_provider_somewhere_else() {
-        let declared = declare("anthropic", &json!({ "baseUrl": "https://proxy.example.com" }))
-            .unwrap();
+        let declared = declare(
+            "anthropic",
+            &json!({ "baseUrl": "https://proxy.example.com" }),
+        )
+        .unwrap();
 
         let mut catalog = micro_models::Catalog::bundled();
         let before = catalog
@@ -250,7 +252,9 @@ mod tests {
             .collect();
         assert_eq!(after.len(), before, "no models were added or lost");
         assert!(
-            after.iter().all(|model| model.base_url == "https://proxy.example.com"),
+            after
+                .iter()
+                .all(|model| model.base_url == "https://proxy.example.com"),
             "every one of them now goes through the proxy"
         );
     }
@@ -267,7 +271,10 @@ mod tests {
         assert_eq!(resolve_key("sk-literal").unwrap(), "sk-literal");
 
         std::env::set_var("MICRO_TEST_PROVIDER_KEY", "sk-from-env");
-        assert_eq!(resolve_key("$MICRO_TEST_PROVIDER_KEY").unwrap(), "sk-from-env");
+        assert_eq!(
+            resolve_key("$MICRO_TEST_PROVIDER_KEY").unwrap(),
+            "sk-from-env"
+        );
         assert_eq!(
             resolve_key("${MICRO_TEST_PROVIDER_KEY}").unwrap(),
             "sk-from-env"
@@ -280,7 +287,10 @@ mod tests {
 
     #[test]
     fn a_key_can_come_from_a_command() {
-        assert_eq!(resolve_key("!echo sk-from-a-command").unwrap(), "sk-from-a-command");
+        assert_eq!(
+            resolve_key("!echo sk-from-a-command").unwrap(),
+            "sk-from-a-command"
+        );
 
         let failed = resolve_key("!exit 3").expect_err("it failed");
         assert!(failed.contains("failed"), "{failed}");

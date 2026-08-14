@@ -25,10 +25,20 @@ use tokio::process::ChildStdin;
 use tokio::sync::oneshot;
 use tokio::sync::Mutex;
 
-/// The host script, shipped inside the binary so there is nothing to install.
-const HOST_SOURCE: &str = include_str!("../host/host.ts");
+/// The host, shipped inside the binary so there is nothing to install.
+///
+/// One entry per file rather than one string, because the host is written in parts: what an
+/// extension is handed is a wide surface, and keeping the context, the interface and the
+/// tools apart is what stops any one of them becoming the file nobody wants to open.
+const HOST_SOURCE: &[(&str, &str)] = &[
+    ("extension-host.ts", include_str!("../host/host.ts")),
+    ("host-context.ts", include_str!("../host/context.ts")),
+    ("host-ui.ts", include_str!("../host/ui.ts")),
+    ("host-tools.ts", include_str!("../host/tools.ts")),
+    ("host-wire.ts", include_str!("../host/wire.ts")),
+];
 
-/// What the host is written to, under micro's own directory.
+/// What the host is entered through, under micro's own directory.
 const HOST_FILE: &str = "extension-host.ts";
 
 /// How long a tool call may run before micro stops waiting for it.
@@ -575,10 +585,11 @@ async fn write_line(stdin: &mut ChildStdin, value: &impl Serialize) -> Result<()
 pub fn install_host(home: &Path) -> Result<PathBuf, String> {
     std::fs::create_dir_all(home)
         .map_err(|error| format!("cannot use {}: {error}", home.display()))?;
-    let path = home.join(HOST_FILE);
-    std::fs::write(&path, HOST_SOURCE)
-        .map_err(|error| format!("cannot write the extension host: {error}"))?;
-    Ok(path)
+    for (name, source) in HOST_SOURCE {
+        std::fs::write(home.join(name), source)
+            .map_err(|error| format!("cannot write the extension host: {error}"))?;
+    }
+    Ok(home.join(HOST_FILE))
 }
 
 /// Where Bun is, if it is anywhere.
@@ -605,9 +616,13 @@ mod tests {
         let path = install_host(&home).unwrap();
 
         assert!(path.ends_with(HOST_FILE));
-        let written = std::fs::read_to_string(&path).unwrap();
-        assert_eq!(written, HOST_SOURCE);
-        assert!(written.contains("registerTool"), "the API is in there");
+        // Every part of the host is written beside the entry, or an import finds nothing.
+        for (name, source) in HOST_SOURCE {
+            let written = std::fs::read_to_string(home.join(name)).unwrap();
+            assert_eq!(&written, source, "{name} was not written whole");
+        }
+        let entry = std::fs::read_to_string(&path).unwrap();
+        assert!(entry.contains("registerTool"), "the API is in there");
 
         let _ = std::fs::remove_dir_all(&home);
     }
@@ -645,7 +660,10 @@ mod tests {
         assert_eq!(described.extensions.len(), 1);
         let extension = &described.extensions[0];
         assert_eq!(extension.tools[0].name, "greet");
-        assert_eq!(extension.tools[0].parameters["properties"]["who"]["type"], "string");
+        assert_eq!(
+            extension.tools[0].parameters["properties"]["who"]["type"],
+            "string"
+        );
         assert_eq!(extension.commands[0].name, "hello");
         assert_eq!(extension.flags[0].r#type, "boolean");
         assert_eq!(extension.shortcuts[0].key, "ctrl+h");
@@ -699,7 +717,10 @@ export default (micro) => {
         assert_eq!(loaded.extensions.len(), 1);
         assert_eq!(host.tools().len(), 1);
         assert_eq!(host.tools()[0].name, "greet");
-        assert_eq!(host.tools()[0].parameters["properties"]["who"]["type"], "string");
+        assert_eq!(
+            host.tools()[0].parameters["properties"]["who"]["type"],
+            "string"
+        );
         assert_eq!(host.commands()[0].name, "wave");
         assert_eq!(loaded.extensions[0].events, vec!["session_start"]);
 
@@ -709,7 +730,10 @@ export default (micro) => {
             .expect("the tool answers");
         assert_eq!(answer, "hello world");
 
-        let command = host.call_command("wave", "").await.expect("the command runs");
+        let command = host
+            .call_command("wave", "")
+            .await
+            .expect("the command runs");
         assert_eq!(command, serde_json::json!("waved"));
 
         host.shutdown().await;
@@ -743,7 +767,9 @@ export default (micro) => {
         )
         .unwrap();
 
-        let host = Host::start(&root, &[extension], &root, false).await.expect("the host starts");
+        let host = Host::start(&root, &[extension], &root, false)
+            .await
+            .expect("the host starts");
 
         let error = host
             .call_tool("explode", &serde_json::json!({}))
@@ -752,7 +778,10 @@ export default (micro) => {
         assert!(error.contains("it went wrong"), "{error}");
 
         // The host is still there to answer the next call.
-        let answer = host.call_tool("fine", &serde_json::json!({})).await.unwrap();
+        let answer = host
+            .call_tool("fine", &serde_json::json!({}))
+            .await
+            .unwrap();
         assert_eq!(answer, "still here");
 
         host.shutdown().await;
@@ -797,7 +826,9 @@ export default (micro) => {
         let extension = root.join("empty.ts");
         std::fs::write(&extension, "export default () => {};").unwrap();
 
-        let host = Host::start(&root, &[extension], &root, false).await.expect("the host starts");
+        let host = Host::start(&root, &[extension], &root, false)
+            .await
+            .expect("the host starts");
         let error = host
             .call_tool("nothing-like-this", &serde_json::json!({}))
             .await

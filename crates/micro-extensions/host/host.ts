@@ -9,7 +9,10 @@
 // forwards the ask to micro, and micro decides — which is what keeps a third-party file
 // inside the same policy as everything else.
 
-type Json = Record<string, unknown>;
+import { contextFor, located, where } from "./host-context.ts";
+import { renderedLines, toolAnswer } from "./host-tools.ts";
+import { uiFor } from "./host-ui.ts";
+import { answered, ask, type Json, send } from "./host-wire.ts";
 
 interface ToolDefinition {
 	name: string;
@@ -73,36 +76,9 @@ const events = {
  * and both are the host's to say. Filled in when the extensions are loaded, which is
  * before anything can be called.
  */
-const where = { cwd: process.cwd(), hasUI: false };
-
-/** The context every tool, command and handler is called with. */
-function contextFor(): Record<string, unknown> {
-	return {
-		cwd: where.cwd,
-		hasUI: where.hasUI,
-	};
-}
-
 const loaded: Registration[] = [];
 const failures: Array<{ path: string; error: string }> = [];
 const flagValues = new Map<string, boolean | string>();
-
-/** Requests to micro that are waiting for an answer, by id. */
-const waiting = new Map<string, (value: Json) => void>();
-let nextRequestId = 0;
-
-function send(message: Json): void {
-	process.stdout.write(`${JSON.stringify(message)}\n`);
-}
-
-/** Ask micro for something and wait for the answer. */
-function ask(request: Json): Promise<Json> {
-	const id = `host-${nextRequestId++}`;
-	return new Promise((resolve) => {
-		waiting.set(id, resolve);
-		send({ ...request, id });
-	});
-}
 
 /** The API an extension is handed. Every entry either records something or asks micro. */
 function apiFor(registration: Registration) {
@@ -331,7 +307,7 @@ async function runTool(id: string, name: string, args: Json): Promise<void> {
 			continue;
 		}
 		try {
-			const output = await tool.execute(args, contextFor());
+			const output = await tool.execute(args, contextFor(uiFor()));
 			send({ type: "tool_result", id, output: normalizeToolOutput(output) });
 		} catch (error) {
 			send({
@@ -378,7 +354,7 @@ async function runCommand(id: string, name: string, args: string): Promise<void>
 			continue;
 		}
 		try {
-			const output = await command.handler(args, contextFor());
+			const output = await command.handler(args, contextFor(uiFor()));
 			send({ type: "command_result", id, output: output === undefined ? null : output });
 		} catch (error) {
 			send({
@@ -398,7 +374,7 @@ async function dispatchEvent(id: string | undefined, event: string, payload: Jso
 	for (const registration of loaded) {
 		for (const handler of registration.handlers.get(event) ?? []) {
 			try {
-				const result = await handler(payload, contextFor());
+				const result = await handler(payload, contextFor(uiFor()));
 				if (result !== undefined && result !== null) {
 					results.push(result);
 				}
@@ -428,8 +404,7 @@ async function handle(line: string): Promise<void> {
 
 	switch (message.type) {
 		case "load": {
-			where.cwd = (message.cwd as string) ?? process.cwd();
-			where.hasUI = message.has_ui === true;
+			located(message);
 			const paths = (message.paths as string[]) ?? [];
 			for (const path of paths) {
 				await load(path);
@@ -450,7 +425,7 @@ async function handle(line: string): Promise<void> {
 					const shortcut = registration.shortcuts.get(key);
 					if (shortcut) {
 						try {
-							await shortcut.handler(contextFor());
+							await shortcut.handler(contextFor(uiFor()));
 						} catch (error) {
 							send({
 								type: "extension_error",
@@ -492,15 +467,10 @@ async function handle(line: string): Promise<void> {
 			send({ type: "render_result", id: message.id, lines: [] });
 			return;
 		}
-		case "answer": {
+		case "answer":
 			// micro answering something the host asked for.
-			const resolve = waiting.get(message.id as string);
-			if (resolve) {
-				waiting.delete(message.id as string);
-				resolve(message);
-			}
+			answered(message.id as string, message);
 			return;
-		}
 		case "set_flag":
 			flagValues.set(message.name as string, message.value as boolean | string);
 			return;
