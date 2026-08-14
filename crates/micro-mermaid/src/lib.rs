@@ -17,6 +17,7 @@ mod mindmap;
 mod parse;
 mod pie;
 mod source_box;
+mod timeline;
 mod types;
 mod width;
 
@@ -131,6 +132,7 @@ fn draw(src: &str) -> Option<Drawn> {
         // A mind map is written as indentation rather than as edges, so it reads its own
         // source too.
         DiagramKind::Mindmap => plain(mindmap::render_mindmap(src)),
+        DiagramKind::Timeline => plain(timeline::render_timeline(src)),
         DiagramKind::State => {
             let state = parse_state(src)?;
             plain(layout_flowchart(&state))
