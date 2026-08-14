@@ -90,6 +90,24 @@ pub struct Compat {
     pub zai_tool_stream: bool,
     /// Whether a tool definition may carry `strict`.
     pub supports_strict_mode: bool,
+    /// Whether Anthropic's Messages API will honor `strict` on a tool definition.
+    ///
+    /// A distinct flag from `supports_strict_mode` because Anthropic's gate is opt-in
+    /// rather than assumed: only the first-party Messages API understands it, so a Claude
+    /// model served through Bedrock, Vertex, or a gateway that merely speaks the same wire
+    /// shape defaults to not supporting it, unlike `supports_strict_mode`'s default.
+    pub supports_strict_tools: bool,
+    /// Whether Bedrock's Converse API will honor `strict` on a tool spec.
+    ///
+    /// Its own flag rather than a shared one, opt-in with the same shape as
+    /// `supports_strict_tools` but not the same meaning: Anthropic's Messages API and
+    /// Bedrock's Converse API are different protocols that happen to both gate `strict`
+    /// behind a default-off switch, and a model's support for one says nothing about the
+    /// other. No model in the bundled catalog sets this true yet — pi's own catalog
+    /// generator never has either, for any Bedrock model — so this is built and correct
+    /// but currently unreachable outside a manual catalog override, the same state grammar
+    /// constrained sampling is in.
+    pub bedrock_supports_strict_tools: bool,
     pub cache_control_format: Option<CacheControlFormat>,
     /// Whether to tie a request to its conversation with headers.
     pub send_session_affinity_headers: bool,
@@ -132,6 +150,8 @@ impl Default for Compat {
             thinking_format: ThinkingFormat::Openai,
             zai_tool_stream: false,
             supports_strict_mode: true,
+            supports_strict_tools: false,
+            bedrock_supports_strict_tools: false,
             cache_control_format: None,
             send_session_affinity_headers: false,
             session_affinity_format: SessionAffinity::Openai,

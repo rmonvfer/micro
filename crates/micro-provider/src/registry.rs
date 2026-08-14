@@ -8,6 +8,7 @@
 //! over the Responses shape.
 
 use crate::Anthropic;
+use crate::ApiKey;
 use crate::Codex;
 use crate::Gemini;
 use crate::OpenAi;
@@ -67,7 +68,9 @@ pub fn client_for(api: WireApi, provider: &str) -> Arc<dyn Provider> {
         }
         // Azure hosts the same protocol, addressed by deployment and authenticated with
         // its own header.
-        WireApi::OpenaiResponses if canonical_provider(provider) == crate::codex::AZURE_PROVIDER => {
+        WireApi::OpenaiResponses
+            if canonical_provider(provider) == crate::codex::AZURE_PROVIDER =>
+        {
             Arc::new(Codex::azure())
         }
         // Every other service declaring the Responses protocol gets it, under its own
@@ -87,7 +90,7 @@ pub fn client_for_model(model: &ModelDef) -> Arc<dyn Provider> {
 /// A provider ready to stream, and the credential to hand [`Provider::stream`].
 pub struct ResolvedProvider {
     pub client: Arc<dyn Provider>,
-    pub api_key: String,
+    pub api_key: ApiKey,
     /// Where this credential's account is served, when it is somewhere other than what
     /// the catalog records. A Copilot token names its own host.
     pub base_url: Option<String>,
@@ -101,7 +104,14 @@ pub enum ResolveError {
 
 /// Pick the client that serves a model and the credential it needs, exchanging an expired
 /// token on the way. This is what a CLI or TUI calls when the user names a model.
-pub async fn resolve(store: &AuthStore, model: &ModelDef) -> Result<ResolvedProvider, ResolveError> {
+///
+/// The credential that comes back is tied to the store rather than copied out of it, so a
+/// token that lapses while the session runs is exchanged before the request that needs it
+/// rather than at the moment the model was chosen.
+pub async fn resolve(
+    store: &Arc<AuthStore>,
+    model: &ModelDef,
+) -> Result<ResolvedProvider, ResolveError> {
     let credential = store.resolve(&model.provider).await?;
     let token = credential.token().to_string();
 
@@ -115,7 +125,11 @@ pub async fn resolve(store: &AuthStore, model: &ModelDef) -> Result<ResolvedProv
 
     Ok(ResolvedProvider {
         client: client_for_model(model),
-        api_key: token,
+        api_key: ApiKey::Stored {
+            store: Arc::clone(store),
+            provider: model.provider.clone(),
+            resolved: token,
+        },
         base_url,
     })
 }
@@ -201,7 +215,10 @@ mod tests {
     fn each_provider_declares_how_it_is_authenticated() {
         let copilot = provider_info("github-copilot").unwrap();
         assert_eq!(copilot.auth, AuthMethod::OAuth);
-        assert_eq!(provider_info("openrouter").unwrap().auth, AuthMethod::ApiKey);
+        assert_eq!(
+            provider_info("openrouter").unwrap().auth,
+            AuthMethod::ApiKey
+        );
     }
 
     #[test]

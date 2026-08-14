@@ -147,7 +147,10 @@ fn an_ambiguous_query_reports_its_candidates() {
     };
 
     let qualified: Vec<String> = candidates.iter().map(|m| m.qualified_id()).collect();
-    assert!(qualified.contains(&"anthropic/claude-opus-5".to_string()), "{qualified:?}");
+    assert!(
+        qualified.contains(&"anthropic/claude-opus-5".to_string()),
+        "{qualified:?}"
+    );
     assert!(
         qualified.contains(&"github-copilot/claude-opus-5".to_string()),
         "{qualified:?}"

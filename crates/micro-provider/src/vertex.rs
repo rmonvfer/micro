@@ -119,7 +119,9 @@ pub struct RefreshCredential {
 /// Read from the file the conventional variable names, falling back to the place gcloud
 /// writes it, which is where every other Google tool looks for it.
 fn application_default_credentials() -> Option<RefreshCredential> {
-    let named = std::env::var(CREDENTIALS_ENV).ok().map(std::path::PathBuf::from);
+    let named = std::env::var(CREDENTIALS_ENV)
+        .ok()
+        .map(std::path::PathBuf::from);
     let conventional = std::env::var("HOME").ok().map(|home| {
         std::path::Path::new(&home)
             .join(".config")
@@ -159,7 +161,10 @@ pub fn read_refresh_credential(contents: &str) -> Option<RefreshCredential> {
 }
 
 /// Trade a refresh token for one that can be used now.
-async fn exchange(client: &reqwest::Client, credential: &RefreshCredential) -> Result<String, String> {
+async fn exchange(
+    client: &reqwest::Client,
+    credential: &RefreshCredential,
+) -> Result<String, String> {
     let response = client
         .post(TOKEN_URL)
         .form(&[

@@ -236,10 +236,17 @@ mod tests {
     #[test]
     fn the_bundled_catalog_resolves_what_it_lists() {
         let bundled = Catalog::bundled();
-        let first = bundled.models().first().expect("the catalog lists models").clone();
+        let first = bundled
+            .models()
+            .first()
+            .expect("the catalog lists models")
+            .clone();
 
         let resolved = bundled.resolve(&first.qualified_id()).model().cloned();
-        assert_eq!(resolved.map(|model| model.qualified_id()), Some(first.qualified_id()));
+        assert_eq!(
+            resolved.map(|model| model.qualified_id()),
+            Some(first.qualified_id())
+        );
     }
 
     #[test]

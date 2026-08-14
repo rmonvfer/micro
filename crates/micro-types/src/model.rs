@@ -7,9 +7,12 @@ use serde::Serialize;
 pub enum ThinkingLevel {
     #[default]
     Off,
+    Minimal,
     Low,
     Medium,
     High,
+    XHigh,
+    Max,
 }
 
 impl ThinkingLevel {
@@ -17,9 +20,12 @@ impl ThinkingLevel {
     pub fn as_str(&self) -> &'static str {
         match self {
             ThinkingLevel::Off => "off",
+            ThinkingLevel::Minimal => "minimal",
             ThinkingLevel::Low => "low",
             ThinkingLevel::Medium => "medium",
             ThinkingLevel::High => "high",
+            ThinkingLevel::XHigh => "xhigh",
+            ThinkingLevel::Max => "max",
         }
     }
 
@@ -27,9 +33,12 @@ impl ThinkingLevel {
     pub fn budget_tokens(&self) -> Option<u32> {
         match self {
             ThinkingLevel::Off => None,
+            ThinkingLevel::Minimal => Some(2_000),
             ThinkingLevel::Low => Some(4_000),
             ThinkingLevel::Medium => Some(12_000),
             ThinkingLevel::High => Some(32_000),
+            ThinkingLevel::XHigh => Some(64_000),
+            ThinkingLevel::Max => Some(128_000),
         }
     }
 }

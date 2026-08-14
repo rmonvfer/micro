@@ -268,7 +268,8 @@ mod tests {
             .expect("an authorization header");
 
         assert!(
-            authorization.contains("Credential=AKIDEXAMPLE/20150830/us-east-1/service/aws4_request"),
+            authorization
+                .contains("Credential=AKIDEXAMPLE/20150830/us-east-1/service/aws4_request"),
             "{authorization}"
         );
         assert!(
@@ -299,7 +300,13 @@ mod tests {
             body: b"{}",
         };
 
-        let signed = sign(&request, &credentials, "eu-west-1", "bedrock", "20260101T000000Z");
+        let signed = sign(
+            &request,
+            &credentials,
+            "eu-west-1",
+            "bedrock",
+            "20260101T000000Z",
+        );
         let names: Vec<&str> = signed.iter().map(|(name, _)| name.as_str()).collect();
         assert!(names.contains(&"x-amz-security-token"));
 
@@ -330,11 +337,17 @@ mod tests {
                 headers: vec![("host".into(), "example".into())],
                 body,
             };
-            sign(&request, &credentials, "us-east-1", "bedrock", "20260101T000000Z")
-                .into_iter()
-                .find(|(name, _)| name == "authorization")
-                .unwrap()
-                .1
+            sign(
+                &request,
+                &credentials,
+                "us-east-1",
+                "bedrock",
+                "20260101T000000Z",
+            )
+            .into_iter()
+            .find(|(name, _)| name == "authorization")
+            .unwrap()
+            .1
         };
         assert_ne!(make(b"{\"a\":1}"), make(b"{\"a\":2}"));
     }

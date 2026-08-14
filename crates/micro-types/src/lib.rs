@@ -4,6 +4,7 @@
 mod compat;
 mod events;
 mod model;
+mod tool;
 
 pub use compat::CacheControlFormat;
 pub use compat::Compat;
@@ -15,6 +16,10 @@ pub use events::AgentEvent;
 pub use events::StreamEvent;
 pub use model::Model;
 pub use model::ThinkingLevel;
+pub use tool::ConstrainedSampling;
+pub use tool::GrammarVariants;
+pub use tool::JsonSchemaStrictness;
+pub use tool::ToolExecutionMode;
 
 use serde::Deserialize;
 use serde::Serialize;
@@ -227,6 +232,11 @@ pub struct ToolDefinition {
     pub name: String,
     pub description: String,
     pub parameters: Value,
+    /// A provider-side sampling directive for this tool's arguments. `None` is by far the
+    /// common case: a provider crate reads this only for the small number of tools that
+    /// ask for it, and leaves everything else to ordinary sampling.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub constrained_sampling: Option<ConstrainedSampling>,
 }
 
 /// Everything a provider needs to issue one request.

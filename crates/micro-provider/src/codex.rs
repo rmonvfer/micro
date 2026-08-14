@@ -237,7 +237,7 @@ async fn run(
     }
 
     let response = crate::with_carried_headers(request, &context, &model.base_url)
-        .json(&build_payload(backend, &model, &context))
+        .json(&build_payload(backend, &model, &context)?)
         .send()
         .await
         .map_err(|error| format!("{service} request failed: {error}"))?;
@@ -306,7 +306,10 @@ fn azure_endpoint(base_url: &str) -> String {
     } else if address.ends_with("/openai") {
         format!("{address}/v1")
     } else if address.ends_with("/responses") {
-        address.trim_end_matches("/responses").trim_end_matches('/').to_string()
+        address
+            .trim_end_matches("/responses")
+            .trim_end_matches('/')
+            .to_string()
     } else {
         format!("{address}/openai/v1")
     };
@@ -354,7 +357,11 @@ fn endpoint(base_url: &str) -> String {
 }
 
 fn user_agent() -> String {
-    format!("micro ({} {})", std::env::consts::OS, std::env::consts::ARCH)
+    format!(
+        "micro ({} {})",
+        std::env::consts::OS,
+        std::env::consts::ARCH
+    )
 }
 
 /// The account a subscription token belongs to, read from the token's own claims.
@@ -417,7 +424,7 @@ const AZURE_API_VERSION_ENV: &str = "AZURE_OPENAI_API_VERSION";
 /// The resource serving this account, which is what the address is built from.
 const AZURE_RESOURCE_ENV: &str = "AZURE_OPENAI_RESOURCE_NAME";
 
-fn build_payload(backend: Backend, model: &Model, context: &Context) -> Value {
+fn build_payload(backend: Backend, model: &Model, context: &Context) -> Result<Value, String> {
     let mut payload = json!({
         "model": model.id,
         // The backend refuses anything else: a conversation it stored would be one micro
@@ -436,20 +443,33 @@ fn build_payload(backend: Backend, model: &Model, context: &Context) -> Value {
     });
 
     if !context.tools.is_empty() {
-        payload["tools"] = Value::Array(
-            context
-                .tools
-                .iter()
-                .map(|tool| {
-                    json!({
-                        "type": "function",
-                        "name": tool.name,
-                        "description": tool.description,
-                        "parameters": tool.parameters,
-                    })
-                })
-                .collect(),
-        );
+        let mut tools: Vec<Value> = Vec::with_capacity(context.tools.len());
+        for tool in &context.tools {
+            let strict = crate::constrained_sampling::resolve_json_schema_strict_sampling(
+                tool,
+                model.compat.supports_strict_mode,
+            )?;
+            let parameters =
+                crate::constrained_sampling::json_schema_tool_parameters(tool, strict)?;
+            let mut described = json!({
+                "type": "function",
+                "name": tool.name,
+                "description": tool.description,
+                "parameters": parameters,
+            });
+            // Some services reject a tool definition carrying fields they do not know.
+            // Unlike the completions shape, a tool that did not resolve to strict is told
+            // `null` here rather than `false` — the Responses API default this backend
+            // asks for is "unset," not "explicitly off."
+            if model.compat.supports_strict_mode {
+                described["strict"] = match strict {
+                    Some(true) => Value::Bool(true),
+                    _ => Value::Null,
+                };
+            }
+            tools.push(described);
+        }
+        payload["tools"] = Value::Array(tools);
     }
 
     if let Some(effort) = reasoning_effort(model.thinking) {
@@ -466,15 +486,18 @@ fn build_payload(backend: Backend, model: &Model, context: &Context) -> Value {
         payload["model"] = json!(azure_deployment(&model.id));
     }
 
-    payload
+    Ok(payload)
 }
 
 fn reasoning_effort(level: ThinkingLevel) -> Option<&'static str> {
     match level {
         ThinkingLevel::Off => None,
+        ThinkingLevel::Minimal => Some("low"),
         ThinkingLevel::Low => Some("low"),
         ThinkingLevel::Medium => Some("medium"),
         ThinkingLevel::High => Some("high"),
+        ThinkingLevel::XHigh => Some("high"),
+        ThinkingLevel::Max => Some("high"),
     }
 }
 
@@ -703,7 +726,10 @@ impl Accumulator {
         delta: &str,
         sender: &UnboundedSender<StreamEvent>,
     ) {
-        let output_index = value.get("output_index").and_then(Value::as_u64).unwrap_or(0);
+        let output_index = value
+            .get("output_index")
+            .and_then(Value::as_u64)
+            .unwrap_or(0);
         let is_text = matches!(kind, Kind::Text);
         let position = self.slot_for(output_index, kind, sender);
         let slot = &mut self.blocks[position];
@@ -731,7 +757,10 @@ impl Accumulator {
         if delta.is_empty() {
             return;
         }
-        let output_index = value.get("output_index").and_then(Value::as_u64).unwrap_or(0);
+        let output_index = value
+            .get("output_index")
+            .and_then(Value::as_u64)
+            .unwrap_or(0);
         let position = self.slot_for(output_index, Kind::ToolCall, sender);
         let slot = &mut self.blocks[position];
         slot.buffer.push_str(&delta);
@@ -742,8 +771,13 @@ impl Accumulator {
     /// A slot the stream has just opened. A tool call is announced here, because this is
     /// where its name first arrives.
     fn open(&mut self, value: &Value, sender: &UnboundedSender<StreamEvent>) {
-        let Some(item) = value.get("item") else { return };
-        let output_index = value.get("output_index").and_then(Value::as_u64).unwrap_or(0);
+        let Some(item) = value.get("item") else {
+            return;
+        };
+        let output_index = value
+            .get("output_index")
+            .and_then(Value::as_u64)
+            .unwrap_or(0);
         let item_type = item.get("type").and_then(Value::as_str).unwrap_or_default();
 
         let kind = match item_type {
@@ -778,8 +812,13 @@ impl Accumulator {
     /// A slot the stream has finished. The item carries the whole thing, which is what is
     /// kept: a delta stream can be lossy, an item is not.
     fn close(&mut self, value: &Value, sender: &UnboundedSender<StreamEvent>) {
-        let Some(item) = value.get("item") else { return };
-        let output_index = value.get("output_index").and_then(Value::as_u64).unwrap_or(0);
+        let Some(item) = value.get("item") else {
+            return;
+        };
+        let output_index = value
+            .get("output_index")
+            .and_then(Value::as_u64)
+            .unwrap_or(0);
         let item_type = item.get("type").and_then(Value::as_str).unwrap_or_default();
 
         match item_type {
@@ -976,7 +1015,8 @@ mod tests {
             for chunk in bytes.chunks(3) {
                 let mut buffer = [0_u8; 3];
                 buffer[..chunk.len()].copy_from_slice(chunk);
-                let value = ((buffer[0] as u32) << 16) | ((buffer[1] as u32) << 8) | buffer[2] as u32;
+                let value =
+                    ((buffer[0] as u32) << 16) | ((buffer[1] as u32) << 8) | buffer[2] as u32;
                 let characters = chunk.len() + 1;
                 for position in 0..characters {
                     let shift = 18 - position * 6;
@@ -985,10 +1025,7 @@ mod tests {
             }
             out
         };
-        format!(
-            "header.{}.signature",
-            encode(claims.to_string().as_bytes())
-        )
+        format!("header.{}.signature", encode(claims.to_string().as_bytes()))
     }
 
     fn model() -> Model {
@@ -1019,7 +1056,10 @@ mod tests {
         assert!(error.contains("no ChatGPT account"), "{error}");
 
         let error = account_id("not-a-token").expect_err("not a token");
-        assert!(error.contains("not a token this endpoint accepts"), "{error}");
+        assert!(
+            error.contains("not a token this endpoint accepts"),
+            "{error}"
+        );
     }
 
     #[test]
@@ -1053,11 +1093,12 @@ mod tests {
                 name: "read".into(),
                 description: "read a file".into(),
                 parameters: json!({ "type": "object" }),
+                constrained_sampling: None,
             }],
             headers: Vec::new(),
             cache_key: None,
         };
-        let payload = build_payload(Backend::ChatGpt, &model(), &context);
+        let payload = build_payload(Backend::ChatGpt, &model(), &context).unwrap();
 
         assert_eq!(payload["store"], false);
         assert_eq!(payload["stream"], true);
@@ -1066,7 +1107,109 @@ mod tests {
         assert_eq!(payload["input"][0]["content"][0]["type"], "input_text");
         assert_eq!(payload["tools"][0]["type"], "function");
         assert_eq!(payload["tools"][0]["name"], "read");
+        // A tool that never asked for constrained sampling is still told `strict: null`
+        // rather than left silent or told `false` — this backend's default is "unset,"
+        // which is a different wire value than the completions shape's explicit `false`.
+        assert_eq!(payload["tools"][0]["strict"], Value::Null);
         assert!(payload.get("reasoning").is_none(), "effort was off");
+    }
+
+    fn tool_asking_for_json_schema_sampling(
+        strict: micro_types::JsonSchemaStrictness,
+    ) -> ToolDefinition {
+        ToolDefinition {
+            name: "grep".into(),
+            description: "search".into(),
+            parameters: json!({
+                "type": "object",
+                "properties": { "pattern": { "type": "string" } },
+                "required": ["pattern"],
+            }),
+            constrained_sampling: Some(micro_types::ConstrainedSampling::JsonSchema { strict }),
+        }
+    }
+
+    /// This backend shares the same strict-mode gate and default as plain OpenAI: assumed
+    /// supported unless the catalog says otherwise.
+    #[test]
+    fn a_tool_preferring_strict_sampling_gets_it_by_default() {
+        let context = Context {
+            tools: vec![tool_asking_for_json_schema_sampling(
+                micro_types::JsonSchemaStrictness::Prefer,
+            )],
+            ..Context::default()
+        };
+        let payload = build_payload(Backend::ChatGpt, &model(), &context).unwrap();
+
+        assert_eq!(payload["tools"][0]["strict"], true);
+        assert_eq!(
+            payload["tools"][0]["parameters"]["additionalProperties"],
+            false
+        );
+    }
+
+    /// A tool that prefers strict sampling but whose schema cannot be made strict falls
+    /// back the same way a tool that never asked does: `strict: null`, not `strict: false`
+    /// — this backend has no notion of "explicitly off," only "unresolved."
+    #[test]
+    fn a_schema_that_cannot_be_strict_falls_back_to_null_rather_than_false() {
+        let unstrictifiable = ToolDefinition {
+            name: "grep".into(),
+            description: "search".into(),
+            parameters: json!({
+                "type": "object",
+                "properties": { "target": { "$ref": "#/$defs/target" } },
+            }),
+            constrained_sampling: Some(micro_types::ConstrainedSampling::JsonSchema {
+                strict: micro_types::JsonSchemaStrictness::Prefer,
+            }),
+        };
+        let context = Context {
+            tools: vec![unstrictifiable],
+            ..Context::default()
+        };
+        let payload = build_payload(Backend::ChatGpt, &model(), &context).unwrap();
+
+        assert_eq!(payload["tools"][0]["strict"], Value::Null);
+    }
+
+    /// A service that does not understand `strict` is unaffected by a tool merely
+    /// preferring constrained sampling: no field is added, and the schema is untouched.
+    #[test]
+    fn an_unsupported_service_is_unaffected_by_a_tool_preferring_strict_sampling() {
+        let original_parameters = json!({
+            "type": "object",
+            "properties": { "pattern": { "type": "string" } },
+            "required": ["pattern"],
+        });
+        let mut unsupported = model();
+        unsupported.compat.supports_strict_mode = false;
+        let context = Context {
+            tools: vec![tool_asking_for_json_schema_sampling(
+                micro_types::JsonSchemaStrictness::Prefer,
+            )],
+            ..Context::default()
+        };
+        let payload = build_payload(Backend::ChatGpt, &unsupported, &context).unwrap();
+
+        assert!(payload["tools"][0].get("strict").is_none());
+        assert_eq!(payload["tools"][0]["parameters"], original_parameters);
+    }
+
+    /// `"require"` on a service that does not support strict sampling fails the request
+    /// rather than silently sending it under ordinary sampling.
+    #[test]
+    fn requiring_strict_sampling_on_an_unsupported_service_fails_the_request() {
+        let mut unsupported = model();
+        unsupported.compat.supports_strict_mode = false;
+        let context = Context {
+            tools: vec![tool_asking_for_json_schema_sampling(
+                micro_types::JsonSchemaStrictness::Require,
+            )],
+            ..Context::default()
+        };
+        let error = build_payload(Backend::ChatGpt, &unsupported, &context).unwrap_err();
+        assert!(error.contains("\"grep\""), "got {error:?}");
     }
 
     #[test]
@@ -1083,7 +1226,8 @@ mod tests {
                 headers: Vec::new(),
                 cache_key: None,
             },
-        );
+        )
+        .unwrap();
         assert_eq!(payload["reasoning"]["effort"], "high");
         assert_eq!(payload["reasoning"]["summary"], "auto");
         assert_eq!(payload["instructions"], "You are a helpful assistant.");
@@ -1297,8 +1441,10 @@ mod platform {
             "https://api.openai.com/v1/responses"
         );
         // The ChatGPT backend keeps its own path.
-        assert!(endpoint_for(Backend::ChatGpt, "https://chatgpt.com/backend-api")
-            .ends_with("/codex/responses"));
+        assert!(
+            endpoint_for(Backend::ChatGpt, "https://chatgpt.com/backend-api")
+                .ends_with("/codex/responses")
+        );
     }
 
     /// The platform takes an output limit and refuses one below its floor.
@@ -1313,7 +1459,8 @@ mod platform {
                 tools: Vec::new(),
                 ..Default::default()
             },
-        );
+        )
+        .unwrap();
         assert_eq!(payload["max_output_tokens"], 32_000);
 
         let mut tiny = platform_model();
@@ -1327,7 +1474,8 @@ mod platform {
                 tools: Vec::new(),
                 ..Default::default()
             },
-        );
+        )
+        .unwrap();
         assert_eq!(
             payload["max_output_tokens"], MIN_OUTPUT_TOKENS,
             "raised to what the service will accept",
@@ -1348,7 +1496,8 @@ mod platform {
                     tools: Vec::new(),
                     ..Default::default()
                 },
-            );
+            )
+            .unwrap();
             assert_eq!(payload["include"][0], "reasoning.encrypted_content");
             assert_eq!(payload["store"], false, "nothing is stored either way");
         }

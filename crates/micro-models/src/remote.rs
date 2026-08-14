@@ -548,7 +548,11 @@ mod tests {
     #[test]
     fn merging_a_copilot_listing_keeps_bundled_pricing_and_headers() {
         let mut catalog = Catalog::bundled();
-        let priced_before = catalog.get("github-copilot", "claude-opus-5").unwrap().cost.clone();
+        let priced_before = catalog
+            .get("github-copilot", "claude-opus-5")
+            .unwrap()
+            .cost
+            .clone();
 
         catalog.merge_listing(parse_copilot(COPILOT_SAMPLE, COPILOT_BASE_URL).unwrap());
 

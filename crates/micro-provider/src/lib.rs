@@ -6,18 +6,21 @@
 mod anthropic;
 mod bedrock;
 mod codex;
+mod constrained_sampling;
+mod credential;
 mod eventstream;
-mod sigv4;
-mod vertex;
 mod gemini;
 mod json;
 mod openai;
 mod registry;
+mod sigv4;
 mod sse;
+mod vertex;
 
 pub use anthropic::Anthropic;
 pub use codex::Codex;
 pub use codex::Transport;
+pub use credential::ApiKey;
 pub use gemini::Gemini;
 pub use openai::OpenAi;
 pub use registry::client_for;
@@ -147,13 +150,16 @@ mod attribution_tests {
     /// name of the program on its own request.
     #[test]
     fn a_request_says_which_program_made_it() {
-        let named = |url: &str| -> Vec<&str> {
-            attribution(url).iter().map(|(name, _)| *name).collect()
-        };
+        let named =
+            |url: &str| -> Vec<&str> { attribution(url).iter().map(|(name, _)| *name).collect() };
 
         assert_eq!(
             named("https://openrouter.ai/api/v1"),
-            vec!["HTTP-Referer", "X-OpenRouter-Title", "X-OpenRouter-Categories"]
+            vec![
+                "HTTP-Referer",
+                "X-OpenRouter-Title",
+                "X-OpenRouter-Categories"
+            ]
         );
         assert_eq!(
             attribution("https://openrouter.ai/api/v1")[1].1,
@@ -176,8 +182,14 @@ mod attribution_tests {
     /// another — and something that is not an address at all names nobody.
     #[test]
     fn the_host_is_read_from_the_address_and_nothing_else() {
-        assert_eq!(host_of("https://openrouter.ai:443/api").as_deref(), Some("openrouter.ai"));
-        assert_eq!(host_of("https://user@OpenRouter.AI/api").as_deref(), Some("openrouter.ai"));
+        assert_eq!(
+            host_of("https://openrouter.ai:443/api").as_deref(),
+            Some("openrouter.ai")
+        );
+        assert_eq!(
+            host_of("https://user@OpenRouter.AI/api").as_deref(),
+            Some("openrouter.ai")
+        );
         assert_eq!(host_of("not a url").as_deref(), None);
         assert!(attribution("https://example.test/openrouter.ai").is_empty());
     }

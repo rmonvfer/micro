@@ -41,6 +41,10 @@ pub struct CompatOverrides {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub supports_strict_mode: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub supports_strict_tools: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bedrock_supports_strict_tools: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cache_control_format: Option<CacheControlFormat>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub send_session_affinity_headers: Option<bool>,
@@ -108,6 +112,12 @@ pub fn resolve(
     if let Some(value) = stated.supports_strict_mode {
         compat.supports_strict_mode = value;
     }
+    if let Some(value) = stated.supports_strict_tools {
+        compat.supports_strict_tools = value;
+    }
+    if let Some(value) = stated.bedrock_supports_strict_tools {
+        compat.bedrock_supports_strict_tools = value;
+    }
     if let Some(value) = stated.cache_control_format {
         compat.cache_control_format = Some(value);
     }
@@ -149,8 +159,9 @@ fn detect(provider: &str, base_url: &str, model_id: &str) -> Compat {
     let is_together = provider == "together"
         || base_url.contains("api.together.ai")
         || base_url.contains("api.together.xyz");
-    let is_moonshot =
-        provider == "moonshotai" || provider == "moonshotai-cn" || base_url.contains("api.moonshot.");
+    let is_moonshot = provider == "moonshotai"
+        || provider == "moonshotai-cn"
+        || base_url.contains("api.moonshot.");
     let is_openrouter = provider == "openrouter" || base_url.contains("openrouter.ai");
     let is_cloudflare_workers =
         provider == "cloudflare-workers-ai" || base_url.contains("api.cloudflare.com");
@@ -161,6 +172,12 @@ fn detect(provider: &str, base_url: &str, model_id: &str) -> Compat {
     let is_grok = provider == "xai" || base_url.contains("api.x.ai");
     let is_deepseek = provider == "deepseek" || base_url.contains("deepseek.com");
     let is_mistral = provider == "mistral" || base_url.contains("api.mistral.ai");
+    // Only the first-party Messages API understands `strict` on a tool. A Claude model
+    // served through Bedrock, Vertex, or a gateway speaks a different protocol entirely
+    // and never reaches this flag; one served through OpenRouter or Copilot speaks the
+    // genuine Messages API but is not Anthropic's own service, so it is not assumed to
+    // have kept pace with a beta feature.
+    let is_anthropic_native = provider == "anthropic";
 
     let is_nonstandard = is_nvidia
         || provider == "cerebras"
@@ -220,6 +237,11 @@ fn detect(provider: &str, base_url: &str, model_id: &str) -> Compat {
         },
         zai_tool_stream: false,
         supports_strict_mode: !is_moonshot && !is_together && !is_cloudflare_gateway && !is_nvidia,
+        supports_strict_tools: is_anthropic_native,
+        // Nothing infers this true for any provider — matching pi, which has no
+        // `generate-models.ts` rule for Bedrock the way it does for OpenAI-Responses and
+        // Anthropic-Messages. A model gets it only from an explicit catalog override.
+        bedrock_supports_strict_tools: false,
         cache_control_format: match provider == "openrouter" && model_id.starts_with("anthropic/") {
             true => Some(CacheControlFormat::Anthropic),
             false => None,
@@ -259,8 +281,19 @@ const MISTRAL_TOOL_CALL_ID_LENGTH: usize = 9;
 
 fn decides_its_own_thinking(model_id: &str) -> bool {
     const ADAPTIVE: &[&str] = &[
-        "opus-4-6", "opus-4.6", "opus-4-7", "opus-4.7", "opus-4-8", "opus-4.8", "opus-5", "opus.5",
-        "sonnet-4-6", "sonnet-4.6", "sonnet-5", "sonnet.5", "fable-5",
+        "opus-4-6",
+        "opus-4.6",
+        "opus-4-7",
+        "opus-4.7",
+        "opus-4-8",
+        "opus-4.8",
+        "opus-5",
+        "opus.5",
+        "sonnet-4-6",
+        "sonnet-4.6",
+        "sonnet-5",
+        "sonnet.5",
+        "fable-5",
     ];
     ADAPTIVE.iter().any(|name| model_id.contains(name))
 }
@@ -278,6 +311,44 @@ mod tests {
         assert_eq!(compat.thinking_format, ThinkingFormat::Openai);
     }
 
+    /// Only Anthropic's own service is assumed to have kept pace with a beta feature.
+    /// Something else answering the same wire shape — a gateway, a reimplementation, a
+    /// Claude model reached through GitHub Copilot — is not assumed to support it.
+    #[test]
+    fn only_anthropics_own_service_is_assumed_to_support_strict_tools() {
+        let anthropic = detect("anthropic", "https://api.anthropic.com/v1", "claude-opus-5");
+        assert!(anthropic.supports_strict_tools);
+
+        let copilot = detect(
+            "github-copilot",
+            "https://api.githubcopilot.com",
+            "claude-fable-5",
+        );
+        assert!(!copilot.supports_strict_tools);
+
+        let openrouter = detect(
+            "openrouter",
+            "https://openrouter.ai/api/v1",
+            "anthropic/claude-opus-5",
+        );
+        assert!(!openrouter.supports_strict_tools);
+    }
+
+    /// Nothing infers Bedrock strict-tool support — not for a Claude model reached through
+    /// it, not for anything else. pi is in the same state: its catalog generator has a
+    /// rule that turns this on for genuine Anthropic and OpenAI-Responses models, and has
+    /// none for Bedrock. A model gets it only from an explicit catalog override; the
+    /// consumer in `bedrock.rs` is built and correct, and simply never fires today.
+    #[test]
+    fn nothing_infers_bedrock_strict_tool_support() {
+        let bedrock = detect(
+            "bedrock",
+            "https://bedrock-runtime.us-east-1.amazonaws.com",
+            "anthropic.claude-opus-4-v1:0",
+        );
+        assert!(!bedrock.bedrock_supports_strict_tools);
+    }
+
     /// A service that reimplements the protocol rarely takes all of it.
     #[test]
     fn a_reimplementation_is_assumed_to_take_less() {
@@ -285,7 +356,11 @@ mod tests {
         assert!(!compat.supports_store);
         assert!(!compat.supports_developer_role);
 
-        let together = detect("together", "https://api.together.ai/v1", "openai/gpt-oss-20b");
+        let together = detect(
+            "together",
+            "https://api.together.ai/v1",
+            "openai/gpt-oss-20b",
+        );
         assert_eq!(together.max_tokens_field, MaxTokensField::MaxTokens);
         assert_eq!(together.thinking_format, ThinkingFormat::Together);
         assert!(!together.supports_strict_mode);
@@ -306,9 +381,16 @@ mod tests {
             Some(CacheControlFormat::Anthropic)
         );
         assert_eq!(anthropic.thinking_format, ThinkingFormat::Openrouter);
-        assert_eq!(anthropic.session_affinity_format, SessionAffinity::Openrouter);
+        assert_eq!(
+            anthropic.session_affinity_format,
+            SessionAffinity::Openrouter
+        );
 
-        let other = detect("openrouter", "https://openrouter.ai/api/v1", "qwen/qwen3-max");
+        let other = detect(
+            "openrouter",
+            "https://openrouter.ai/api/v1",
+            "qwen/qwen3-max",
+        );
         assert!(!other.supports_developer_role);
         assert_eq!(other.cache_control_format, None);
     }
@@ -340,7 +422,13 @@ mod tests {
             ("off".to_string(), None),
             ("low".to_string(), Some("high".to_string())),
         ]);
-        let compat = resolve("zai", "https://api.z.ai/api/coding/paas/v4", "glm-5", &Default::default(), &thinking);
+        let compat = resolve(
+            "zai",
+            "https://api.z.ai/api/coding/paas/v4",
+            "glm-5",
+            &Default::default(),
+            &thinking,
+        );
 
         assert_eq!(compat.level(micro_types::ThinkingLevel::Off), None);
         assert_eq!(
@@ -369,10 +457,7 @@ mod tests {
             "anthropic/claude-opus-5",
         ];
         for id in adaptive {
-            assert!(
-                decides_its_own_thinking(id),
-                "{id} is asked for an effort",
-            );
+            assert!(decides_its_own_thinking(id), "{id} is asked for an effort",);
         }
 
         let budgeted = [

@@ -13,13 +13,13 @@ use micro_types::now_ms;
 use micro_types::AssistantMessage;
 use micro_types::ContentBlock;
 use micro_types::Context;
-use micro_types::Message;
 use micro_types::MaxTokensField;
-use micro_types::OffLevel;
+use micro_types::Message;
 use micro_types::Model;
-use micro_types::ThinkingFormat;
+use micro_types::OffLevel;
 use micro_types::StopReason;
 use micro_types::StreamEvent;
+use micro_types::ThinkingFormat;
 use micro_types::ThinkingLevel;
 use micro_types::Usage;
 use serde_json::json;
@@ -111,7 +111,7 @@ async fn run(
     api_key: String,
     sender: &UnboundedSender<StreamEvent>,
 ) -> Result<(), String> {
-    let payload = build_payload(&model, &context);
+    let payload = build_payload(&model, &context)?;
     let mut request = client
         .post(endpoint(&model.base_url))
         .bearer_auth(api_key)
@@ -488,7 +488,6 @@ fn stream_error(label: &str, value: &Value) -> Option<String> {
     }
 }
 
-
 /// A JSON string with something in it.
 fn non_empty(value: Option<&Value>) -> Option<String> {
     value
@@ -617,18 +616,20 @@ fn apply_thinking(payload: &mut Map<String, Value>, model: &Model) {
     }
 }
 
-
 /// The longest a prompt cache key may be. A longer one is refused rather than truncated
 /// by the provider, so it is cut here.
 const PROMPT_CACHE_KEY_MAX: usize = 64;
 
-pub(crate) fn build_payload(model: &Model, context: &Context) -> Value {
+pub(crate) fn build_payload(model: &Model, context: &Context) -> Result<Value, String> {
     let compat = &model.compat;
     let mut payload = Map::new();
     payload.insert("model".into(), json!(model.id));
     payload.insert(
         "messages".into(),
-        Value::Array(build_messages_for(context, model.compat.tool_call_id_length)),
+        Value::Array(build_messages_for(
+            context,
+            model.compat.tool_call_id_length,
+        )),
     );
     payload.insert("stream".into(), json!(true));
     payload.insert(
@@ -662,22 +663,25 @@ pub(crate) fn build_payload(model: &Model, context: &Context) -> Value {
     }
 
     if !context.tools.is_empty() {
-        let tools: Vec<Value> = context
-            .tools
-            .iter()
-            .map(|tool| {
-                let mut function = json!({
-                    "name": tool.name,
-                    "description": tool.description,
-                    "parameters": tool.parameters,
-                });
-                // Some services reject a tool definition carrying fields they do not know.
-                if compat.supports_strict_mode {
-                    function["strict"] = json!(false);
-                }
-                json!({ "type": "function", "function": function })
-            })
-            .collect();
+        let mut tools: Vec<Value> = Vec::with_capacity(context.tools.len());
+        for tool in &context.tools {
+            let strict = crate::constrained_sampling::resolve_json_schema_strict_sampling(
+                tool,
+                compat.supports_strict_mode,
+            )?;
+            let parameters =
+                crate::constrained_sampling::json_schema_tool_parameters(tool, strict)?;
+            let mut function = json!({
+                "name": tool.name,
+                "description": tool.description,
+                "parameters": parameters,
+            });
+            // Some services reject a tool definition carrying fields they do not know.
+            if compat.supports_strict_mode {
+                function["strict"] = json!(strict.unwrap_or(false));
+            }
+            tools.push(json!({ "type": "function", "function": function }));
+        }
         payload.insert("tools".into(), Value::Array(tools));
         if compat.zai_tool_stream {
             payload.insert("tool_stream".into(), json!(true));
@@ -688,7 +692,7 @@ pub(crate) fn build_payload(model: &Model, context: &Context) -> Value {
         payload.insert("tools".into(), Value::Array(Vec::new()));
     }
 
-    Value::Object(payload)
+    Ok(Value::Object(payload))
 }
 
 /// Who the request is on behalf of: the person, or the agent carrying on by itself.
@@ -943,10 +947,11 @@ mod tests {
                 name: "grep".into(),
                 description: "search".into(),
                 parameters: parameters.clone(),
+                constrained_sampling: None,
             }],
             ..Context::default()
         };
-        let payload = build_payload(&served_by("openai", "gpt-5.6-terra"), &context);
+        let payload = build_payload(&served_by("openai", "gpt-5.6-terra"), &context).unwrap();
 
         assert_eq!(payload["tools"][0]["function"]["parameters"], parameters);
     }
@@ -966,12 +971,17 @@ mod tests {
     /// Which field carries the limit is the service's own business.
     #[test]
     fn each_service_spells_its_output_limit_its_own_way() {
-        let payload = build_payload(&served_by("together", "openai/gpt-oss-120b"), &Context::default());
+        let payload = build_payload(
+            &served_by("together", "openai/gpt-oss-120b"),
+            &Context::default(),
+        )
+        .unwrap();
         assert_eq!(payload["max_tokens"], 4_096);
         assert_eq!(payload["stream"], true);
         assert_eq!(payload["stream_options"]["include_usage"], true);
 
-        let payload = build_payload(&served_by("openai", "gpt-5.6-terra"), &Context::default());
+        let payload =
+            build_payload(&served_by("openai", "gpt-5.6-terra"), &Context::default()).unwrap();
         assert_eq!(payload["max_completion_tokens"], 4_096);
         assert!(payload.get("max_tokens").is_none());
     }
@@ -982,6 +992,7 @@ mod tests {
     fn a_service_is_only_told_thinking_is_off_when_it_has_a_word_for_it() {
         let unsaid = served_by("openai", "o1");
         assert!(build_payload(&unsaid, &Context::default())
+            .unwrap()
             .get("reasoning_effort")
             .is_none());
 
@@ -989,13 +1000,13 @@ mod tests {
         let named = served_by("openai", "gpt-5.6-terra");
         assert_eq!(named.compat.off(), OffLevel::Named("none".into()));
         assert_eq!(
-            build_payload(&named, &Context::default())["reasoning_effort"],
+            build_payload(&named, &Context::default()).unwrap()["reasoning_effort"],
             "none"
         );
 
         // A gateway has a word for it of its own, so it is told either way.
         assert_eq!(
-            build_payload(&model(), &Context::default())["reasoning"]["effort"],
+            build_payload(&model(), &Context::default()).unwrap()["reasoning"]["effort"],
             "none"
         );
     }
@@ -1005,19 +1016,20 @@ mod tests {
     fn reasoning_is_asked_for_in_the_shape_the_service_accepts() {
         let openrouter = model().with_thinking(ThinkingLevel::High);
         assert_eq!(
-            build_payload(&openrouter, &Context::default())["reasoning"]["effort"],
+            build_payload(&openrouter, &Context::default()).unwrap()["reasoning"]["effort"],
             "high"
         );
 
         let openai = served_by("openai", "gpt-5.6-terra").with_thinking(ThinkingLevel::High);
         assert_eq!(
-            build_payload(&openai, &Context::default())["reasoning_effort"],
+            build_payload(&openai, &Context::default()).unwrap()["reasoning_effort"],
             "high"
         );
 
         // A service that offers no reasoning control is not asked for one.
         let copilot = served_by("github-copilot", "gpt-4.1").with_thinking(ThinkingLevel::High);
         assert!(build_payload(&copilot, &Context::default())
+            .unwrap()
             .get("reasoning_effort")
             .is_none());
     }
@@ -1029,10 +1041,11 @@ mod tests {
                 name: "read".into(),
                 description: "read a file".into(),
                 parameters: json!({ "type": "object" }),
+                constrained_sampling: None,
             }],
             ..Context::default()
         };
-        let payload = build_payload(&model(), &context);
+        let payload = build_payload(&model(), &context).unwrap();
 
         assert_eq!(payload["tools"][0]["type"], "function");
         assert_eq!(payload["tools"][0]["function"]["name"], "read");
@@ -1040,6 +1053,92 @@ mod tests {
             payload["tools"][0]["function"]["parameters"]["type"],
             "object"
         );
+    }
+
+    /// A model whose service does not understand `strict` at all — the gate
+    /// `constrained_sampling` runs through before it can change anything about a request.
+    fn model_without_strict_mode() -> Model {
+        let mut model = model();
+        model.compat.supports_strict_mode = false;
+        model
+    }
+
+    fn tool_asking_for_json_schema_sampling(
+        strict: micro_types::JsonSchemaStrictness,
+    ) -> ToolDefinition {
+        ToolDefinition {
+            name: "grep".into(),
+            description: "search".into(),
+            parameters: json!({
+                "type": "object",
+                "properties": { "pattern": { "type": "string" } },
+                "required": ["pattern"],
+            }),
+            constrained_sampling: Some(micro_types::ConstrainedSampling::JsonSchema { strict }),
+        }
+    }
+
+    /// A tool asking to prefer strict sampling gets it, and its schema is rewritten into
+    /// the strict subset, once the provider says it understands `strict`.
+    #[test]
+    fn a_supported_provider_sends_strict_sampling_a_tool_asked_to_prefer() {
+        let context = Context {
+            tools: vec![tool_asking_for_json_schema_sampling(
+                micro_types::JsonSchemaStrictness::Prefer,
+            )],
+            ..Context::default()
+        };
+        let payload = build_payload(&model(), &context).unwrap();
+
+        assert_eq!(payload["tools"][0]["function"]["strict"], true);
+        assert_eq!(
+            payload["tools"][0]["function"]["parameters"]["additionalProperties"],
+            false
+        );
+    }
+
+    /// `supports_strict_mode: false` is exactly the gate the field name says: a tool that
+    /// only prefers strict sampling gets ordinary sampling instead, silently, and its
+    /// schema is not touched.
+    #[test]
+    fn an_unsupported_provider_is_unaffected_by_a_tool_preferring_strict_sampling() {
+        let original_parameters = json!({
+            "type": "object",
+            "properties": { "pattern": { "type": "string" } },
+            "required": ["pattern"],
+        });
+        let context = Context {
+            tools: vec![tool_asking_for_json_schema_sampling(
+                micro_types::JsonSchemaStrictness::Prefer,
+            )],
+            ..Context::default()
+        };
+        let payload = build_payload(&model_without_strict_mode(), &context).unwrap();
+
+        assert!(
+            payload["tools"][0]["function"].get("strict").is_none(),
+            "a service that was never told about strict fields is not sent one"
+        );
+        assert_eq!(
+            payload["tools"][0]["function"]["parameters"],
+            original_parameters,
+            "the schema is exactly what the tool wrote, untouched"
+        );
+    }
+
+    /// `"require"` is a stronger request than `"prefer"`: offering the tool at all without
+    /// strict sampling would go back on what the caller asked for, so the request fails
+    /// instead of silently downgrading.
+    #[test]
+    fn requiring_strict_sampling_on_an_unsupported_provider_fails_the_request() {
+        let context = Context {
+            tools: vec![tool_asking_for_json_schema_sampling(
+                micro_types::JsonSchemaStrictness::Require,
+            )],
+            ..Context::default()
+        };
+        let error = build_payload(&model_without_strict_mode(), &context).unwrap_err();
+        assert!(error.contains("\"grep\""), "got {error:?}");
     }
 
     #[test]
@@ -1346,19 +1445,20 @@ mod tests {
             ..Context::default()
         };
 
-        let cached = build_payload(&served_by("openai", "gpt-5.6-terra"), &context);
+        let cached = build_payload(&served_by("openai", "gpt-5.6-terra"), &context).unwrap();
         assert_eq!(cached["prompt_cache_key"], "session-1786");
         // Nothing is left behind on the provider's side.
         assert_eq!(cached["store"], false);
 
         // A gateway keeps a prompt only for the few minutes it takes to answer, so
         // naming the conversation buys nothing and is left out.
-        let elsewhere = build_payload(&model(), &context);
+        let elsewhere = build_payload(&model(), &context).unwrap();
         assert!(elsewhere.get("prompt_cache_key").is_none());
         assert_eq!(elsewhere["store"], false);
 
         // A service that does not understand being told not to store is not told.
-        let reimplementation = build_payload(&served_by("cerebras", "gpt-oss-120b"), &context);
+        let reimplementation =
+            build_payload(&served_by("cerebras", "gpt-oss-120b"), &context).unwrap();
         assert!(reimplementation.get("store").is_none());
     }
 
@@ -1370,7 +1470,7 @@ mod tests {
             cache_key: Some("x".repeat(200)),
             ..Context::default()
         };
-        let payload = build_payload(&served_by("openai", "gpt-5.6-terra"), &context);
+        let payload = build_payload(&served_by("openai", "gpt-5.6-terra"), &context).unwrap();
         assert_eq!(
             payload["prompt_cache_key"].as_str().unwrap().len(),
             PROMPT_CACHE_KEY_MAX
@@ -1388,11 +1488,12 @@ mod tests {
             ],
             ..Context::default()
         };
-        let payload = build_payload(&served_by("openai", "gpt-5.6-terra"), &context);
+        let payload = build_payload(&served_by("openai", "gpt-5.6-terra"), &context).unwrap();
         assert_eq!(payload["tools"], serde_json::json!([]));
 
         // A conversation with no tools in it at all says nothing about them.
-        let plain = build_payload(&served_by("openai", "gpt-5.6-terra"), &Context::default());
+        let plain =
+            build_payload(&served_by("openai", "gpt-5.6-terra"), &Context::default()).unwrap();
         assert!(plain.get("tools").is_none());
     }
 
@@ -1559,12 +1660,10 @@ mod short_ids {
     /// see one call answered twice.
     #[test]
     fn two_calls_never_become_one() {
-        let mut wire = vec![
-            json!({ "role": "assistant", "tool_calls": [
+        let mut wire = vec![json!({ "role": "assistant", "tool_calls": [
                 { "id": "call_same_prefix_one" },
                 { "id": "call_same_prefix_two" }
-            ] }),
-        ];
+            ] })];
         shorten_tool_call_ids(&mut wire, 9);
 
         let first = wire[0]["tool_calls"][0]["id"].as_str().unwrap();
@@ -1578,7 +1677,12 @@ mod short_ids {
     #[test]
     fn an_unlimited_service_keeps_its_ids() {
         let context = Context {
-            messages: vec![Message::tool_result("call_abc123def456", "read", "ok", false)],
+            messages: vec![Message::tool_result(
+                "call_abc123def456",
+                "read",
+                "ok",
+                false,
+            )],
             ..Default::default()
         };
         let wire = build_messages_for(&context, None);

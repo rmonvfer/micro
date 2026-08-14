@@ -217,7 +217,10 @@ mod tests {
         let mut decoder = Decoder::new();
         let frames = decoder.push(&bytes).unwrap();
         let names: Vec<&str> = frames.iter().map(|f| f.event_type.as_str()).collect();
-        assert_eq!(names, vec!["messageStart", "contentBlockDelta", "messageStop"]);
+        assert_eq!(
+            names,
+            vec!["messageStart", "contentBlockDelta", "messageStop"]
+        );
     }
 
     /// An exception says so in its message type, which is how an error is told from an
@@ -225,7 +228,10 @@ mod tests {
     #[test]
     fn an_exception_is_marked_as_one() {
         let mut headers = Vec::new();
-        for (name, value) in [(":message-type", "exception"), (":exception-type", "throttling")] {
+        for (name, value) in [
+            (":message-type", "exception"),
+            (":exception-type", "throttling"),
+        ] {
             headers.push(name.len() as u8);
             headers.extend_from_slice(name.as_bytes());
             headers.push(7);

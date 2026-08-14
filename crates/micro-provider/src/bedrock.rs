@@ -172,7 +172,7 @@ async fn run(
 ) -> Result<(), String> {
     let region = region(&model.base_url);
     let address = endpoint(&model.base_url, &region, &model.id);
-    let payload = build_payload(&model, &context);
+    let payload = build_payload(&model, &context)?;
     let body = serde_json::to_vec(&payload).map_err(|error| error.to_string())?;
 
     let host = address
@@ -267,7 +267,7 @@ async fn run(
 }
 
 /// Bedrock's own request shape.
-pub(crate) fn build_payload(model: &Model, context: &Context) -> Value {
+pub(crate) fn build_payload(model: &Model, context: &Context) -> Result<Value, String> {
     let mut payload = json!({
         "messages": build_messages(&context.messages),
         "inferenceConfig": { "maxTokens": model.max_tokens },
@@ -283,22 +283,32 @@ pub(crate) fn build_payload(model: &Model, context: &Context) -> Value {
     }
 
     if !context.tools.is_empty() {
-        payload["toolConfig"] = json!({
-            "tools": context
-                .tools
-                .iter()
-                .map(|tool| json!({
-                    "toolSpec": {
-                        "name": tool.name,
-                        "description": tool.description,
-                        "inputSchema": { "json": tool.parameters },
-                    }
-                }))
-                .collect::<Vec<_>>(),
-        });
+        let mut tools: Vec<Value> = Vec::with_capacity(context.tools.len());
+        for tool in &context.tools {
+            let strict = crate::constrained_sampling::resolve_json_schema_strict_sampling(
+                tool,
+                model.compat.bedrock_supports_strict_tools,
+            )?;
+            let parameters =
+                crate::constrained_sampling::json_schema_tool_parameters(tool, strict)?;
+            let mut spec = json!({
+                "name": tool.name,
+                "description": tool.description,
+                "inputSchema": { "json": parameters },
+            });
+            // Unlike the completions and Responses shapes, Bedrock's toolSpec has no
+            // "unresolved" spelling of `strict` — the field is only ever added, never
+            // sent false or null, so a tool that did not resolve to strict is left
+            // exactly as it always was: no such key at all.
+            if strict == Some(true) {
+                spec["strict"] = json!(true);
+            }
+            tools.push(json!({ "toolSpec": spec }));
+        }
+        payload["toolConfig"] = json!({ "tools": tools });
     }
 
-    payload
+    Ok(payload)
 }
 
 /// The conversation as Bedrock reads it.
@@ -434,8 +444,9 @@ impl Accumulator {
                         delta: text.to_string(),
                     });
                     self.push_text(text);
-                } else if let Some(partial) =
-                    event.pointer("/delta/toolUse/input").and_then(Value::as_str)
+                } else if let Some(partial) = event
+                    .pointer("/delta/toolUse/input")
+                    .and_then(Value::as_str)
                 {
                     if let Some((_, _, _, arguments)) = self.open_tool.as_mut() {
                         arguments.push_str(partial);
@@ -580,7 +591,7 @@ mod tests {
             messages: vec![Message::user("hello")],
             ..Default::default()
         };
-        let payload = build_payload(&model(), &context);
+        let payload = build_payload(&model(), &context).unwrap();
 
         assert_eq!(payload["system"][0]["text"], "be brief");
         assert_eq!(payload["messages"].as_array().unwrap().len(), 1);
@@ -591,10 +602,15 @@ mod tests {
     #[test]
     fn a_tool_result_names_the_call_it_answers() {
         let context = Context {
-            messages: vec![Message::tool_result("call-1", "read", "file contents", false)],
+            messages: vec![Message::tool_result(
+                "call-1",
+                "read",
+                "file contents",
+                false,
+            )],
             ..Default::default()
         };
-        let payload = build_payload(&model(), &context);
+        let payload = build_payload(&model(), &context).unwrap();
         let result = &payload["messages"][0]["content"][0]["toolResult"];
 
         assert_eq!(payload["messages"][0]["role"], "user");
@@ -610,7 +626,7 @@ mod tests {
             messages: vec![Message::tool_result("call-1", "read", "no such file", true)],
             ..Default::default()
         };
-        let payload = build_payload(&model(), &context);
+        let payload = build_payload(&model(), &context).unwrap();
         assert_eq!(
             payload["messages"][0]["content"][0]["toolResult"]["status"],
             "error"
@@ -625,15 +641,95 @@ mod tests {
                 name: "read".into(),
                 description: "read a file".into(),
                 parameters: json!({ "type": "object" }),
+                constrained_sampling: None,
             }],
             ..Default::default()
         };
-        let payload = build_payload(&model(), &context);
+        let payload = build_payload(&model(), &context).unwrap();
         let spec = &payload["toolConfig"]["tools"][0]["toolSpec"];
 
         assert_eq!(spec["name"], "read");
         assert_eq!(spec["description"], "read a file");
         assert_eq!(spec["inputSchema"]["json"]["type"], "object");
+    }
+
+    fn tool_asking_for_json_schema_sampling(
+        strict: micro_types::JsonSchemaStrictness,
+    ) -> ToolDefinition {
+        ToolDefinition {
+            name: "grep".into(),
+            description: "search".into(),
+            parameters: json!({
+                "type": "object",
+                "properties": { "pattern": { "type": "string" } },
+                "required": ["pattern"],
+            }),
+            constrained_sampling: Some(micro_types::ConstrainedSampling::JsonSchema { strict }),
+        }
+    }
+
+    /// No model in the bundled catalog claims this yet — matching pi, which has no
+    /// `generate-models.ts` rule for Bedrock the way it does for OpenAI-Responses and
+    /// Anthropic-Messages — so the default here is what every real request sees today.
+    /// A test states the flag explicitly to exercise the consumer regardless.
+    #[test]
+    fn a_tool_preferring_strict_sampling_gets_it_when_the_service_claims_support() {
+        let mut model = model();
+        model.compat.bedrock_supports_strict_tools = true;
+        let context = Context {
+            tools: vec![tool_asking_for_json_schema_sampling(
+                micro_types::JsonSchemaStrictness::Prefer,
+            )],
+            ..Default::default()
+        };
+        let payload = build_payload(&model, &context).unwrap();
+        let spec = &payload["toolConfig"]["tools"][0]["toolSpec"];
+
+        assert_eq!(spec["strict"], true);
+        assert_eq!(spec["inputSchema"]["json"]["additionalProperties"], false);
+    }
+
+    /// The default state: unaffected by a tool merely preferring constrained sampling, no
+    /// `strict` key at all, schema untouched — the same request Bedrock has always been
+    /// sent.
+    #[test]
+    fn a_service_that_has_not_claimed_support_is_unaffected_by_a_tool_preferring_strict_sampling(
+    ) {
+        let original_parameters = json!({
+            "type": "object",
+            "properties": { "pattern": { "type": "string" } },
+            "required": ["pattern"],
+        });
+        let model = model();
+        assert!(
+            !model.compat.bedrock_supports_strict_tools,
+            "the default this test relies on"
+        );
+        let context = Context {
+            tools: vec![tool_asking_for_json_schema_sampling(
+                micro_types::JsonSchemaStrictness::Prefer,
+            )],
+            ..Default::default()
+        };
+        let payload = build_payload(&model, &context).unwrap();
+        let spec = &payload["toolConfig"]["tools"][0]["toolSpec"];
+
+        assert!(spec.get("strict").is_none());
+        assert_eq!(spec["inputSchema"]["json"], original_parameters);
+    }
+
+    /// `"require"` on a service that has not claimed support fails the request rather than
+    /// silently sending it under ordinary sampling.
+    #[test]
+    fn requiring_strict_sampling_on_a_service_that_does_not_support_it_fails_the_request() {
+        let context = Context {
+            tools: vec![tool_asking_for_json_schema_sampling(
+                micro_types::JsonSchemaStrictness::Require,
+            )],
+            ..Default::default()
+        };
+        let error = build_payload(&model(), &context).unwrap_err();
+        assert!(error.contains("\"grep\""), "got {error:?}");
     }
 
     /// Text arrives in pieces and is joined into one block.

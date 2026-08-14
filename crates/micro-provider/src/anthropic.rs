@@ -12,8 +12,8 @@ use micro_types::Context;
 use micro_types::Message;
 use micro_types::Model;
 use micro_types::StopReason;
-use micro_types::ToolDefinition;
 use micro_types::StreamEvent;
+use micro_types::ToolDefinition;
 use micro_types::Usage;
 use serde_json::json;
 use serde_json::Map;
@@ -134,14 +134,17 @@ async fn run(
     sender: &UnboundedSender<StreamEvent>,
 ) -> Result<(), String> {
     let subscription = is_oauth(&api_key);
-    let payload = build_payload(&model, &context, subscription);
+    let payload = build_payload(&model, &context, subscription)?;
     let request = client
         .post(endpoint(&model.base_url))
         .header("anthropic-version", API_VERSION)
         .header("content-type", "application/json")
         .header("accept", "application/json")
         .header("anthropic-dangerous-direct-browser-access", "true")
-        .header("anthropic-beta", betas(&api_key, &model, &context).join(","));
+        .header(
+            "anthropic-beta",
+            betas(&api_key, &model, &context).join(","),
+        );
     // A subscription credential is a bearer token issued to a named client, and is
     // refused when it is sent as an API key. A gateway's token is a bearer too, but
     // carries none of that client's identity.
@@ -540,13 +543,20 @@ fn name_for(name: &str, subscription: bool) -> String {
 fn effort_for(level: micro_types::ThinkingLevel) -> &'static str {
     match level {
         micro_types::ThinkingLevel::Off => "low",
+        micro_types::ThinkingLevel::Minimal => "low",
         micro_types::ThinkingLevel::Low => "low",
         micro_types::ThinkingLevel::Medium => "medium",
         micro_types::ThinkingLevel::High => "high",
+        micro_types::ThinkingLevel::XHigh => "high",
+        micro_types::ThinkingLevel::Max => "high",
     }
 }
 
-pub(crate) fn build_payload(model: &Model, context: &Context, subscription: bool) -> Value {
+pub(crate) fn build_payload(
+    model: &Model,
+    context: &Context,
+    subscription: bool,
+) -> Result<Value, String> {
     let mut payload = Map::new();
     payload.insert("model".into(), json!(model.id));
     payload.insert("max_tokens".into(), json!(model.max_tokens));
@@ -589,29 +599,38 @@ pub(crate) fn build_payload(model: &Model, context: &Context, subscription: bool
     );
 
     if !context.tools.is_empty() {
-        let tools: Vec<Value> = context
-            .tools
-            .iter()
-            .map(|tool| {
-                let mut described = json!({
-                    "name": name_for(&tool.name, subscription),
-                    "description": tool.description,
-                    "input_schema": tool.parameters,
-                });
-                // A service that streams a tool's arguments as they are decided is told
-                // to; one that does not is asked for the same thing as a beta instead.
-                if model.compat.supports_eager_tool_input_streaming {
-                    described["eager_input_streaming"] = json!(true);
-                }
-                described
-            })
-            .collect();
+        let mut tools: Vec<Value> = Vec::with_capacity(context.tools.len());
+        for tool in &context.tools {
+            let strict = crate::constrained_sampling::resolve_json_schema_strict_sampling(
+                tool,
+                model.compat.supports_strict_tools,
+            )?;
+            // A tool that never asked for constrained sampling keeps its schema exactly
+            // as written — only one that resolved to strict gets the rewritten shape,
+            // which is what earns it the `strict` field alongside it below.
+            let parameters =
+                crate::constrained_sampling::json_schema_tool_parameters(tool, strict)?;
+            let mut described = json!({
+                "name": name_for(&tool.name, subscription),
+                "description": tool.description,
+                "input_schema": parameters,
+            });
+            // A service that streams a tool's arguments as they are decided is told
+            // to; one that does not is asked for the same thing as a beta instead.
+            if model.compat.supports_eager_tool_input_streaming {
+                described["eager_input_streaming"] = json!(true);
+            }
+            if strict == Some(true) {
+                described["strict"] = json!(true);
+            }
+            tools.push(described);
+        }
         payload.insert("tools".into(), Value::Array(tools));
     }
 
     let mut payload = Value::Object(payload);
     apply_cache_breakpoints(&mut payload, model.compat.supports_cache_control_on_tools);
-    payload
+    Ok(payload)
 }
 
 /// Convert the conversation to Anthropic's wire shape.
@@ -653,7 +672,9 @@ fn build_messages(messages: &[Message], subscription: bool) -> Vec<Value> {
             }
             Message::User { content, .. } => {
                 flush(&mut pending_results, &mut wire);
-                wire.push(json!({ "role": "user", "content": encode_blocks(content, subscription) }));
+                wire.push(
+                    json!({ "role": "user", "content": encode_blocks(content, subscription) }),
+                );
             }
             Message::Assistant(assistant) => {
                 flush(&mut pending_results, &mut wire);
@@ -787,6 +808,7 @@ mod tests {
                 name: "read".into(),
                 description: "read a file".into(),
                 parameters: json!({ "type": "object" }),
+                constrained_sampling: None,
             }],
             headers: Vec::new(),
             cache_key: None,
@@ -807,12 +829,101 @@ mod tests {
                 name: "grep".into(),
                 description: "search".into(),
                 parameters: parameters.clone(),
+                constrained_sampling: None,
             }],
             ..Context::default()
         };
-        let payload = build_payload(&Model::anthropic("claude-opus-5"), &context, false);
+        let payload = build_payload(&Model::anthropic("claude-opus-5"), &context, false).unwrap();
 
         assert_eq!(payload["tools"][0]["input_schema"], parameters);
+    }
+
+    fn tool_asking_for_json_schema_sampling(
+        strict: micro_types::JsonSchemaStrictness,
+    ) -> ToolDefinition {
+        ToolDefinition {
+            name: "grep".into(),
+            description: "search".into(),
+            parameters: json!({
+                "type": "object",
+                "properties": { "pattern": { "type": "string" } },
+                "required": ["pattern"],
+            }),
+            constrained_sampling: Some(micro_types::ConstrainedSampling::JsonSchema { strict }),
+        }
+    }
+
+    /// `Model::anthropic`'s bare `Compat::default()` does not claim strict-tools support on
+    /// its own — that inference belongs to `micro-models`' catalog resolution, not to this
+    /// crate — so a test for the genuine service states the flag the way the catalog would
+    /// resolve it, and a test for everyone else relies on the same default meaning "no."
+    #[test]
+    fn a_tool_preferring_strict_sampling_gets_it_when_the_service_claims_support() {
+        let mut model = Model::anthropic("claude-opus-5");
+        model.compat.supports_strict_tools = true;
+        let context = Context {
+            tools: vec![tool_asking_for_json_schema_sampling(
+                micro_types::JsonSchemaStrictness::Prefer,
+            )],
+            ..Context::default()
+        };
+        let payload = build_payload(&model, &context, false).unwrap();
+
+        assert_eq!(payload["tools"][0]["strict"], true);
+        assert_eq!(
+            payload["tools"][0]["input_schema"]["additionalProperties"],
+            false
+        );
+    }
+
+    /// A service that never claimed to support strict tools — the default, matching a
+    /// Claude model served through something other than Anthropic's own API — is
+    /// unaffected by a tool merely preferring constrained sampling: the schema is not
+    /// touched, and no `strict` field is added, same as a tool that never asked at all.
+    #[test]
+    fn a_service_that_has_not_claimed_support_is_unaffected_by_a_tool_preferring_strict_sampling() {
+        let original_parameters = json!({
+            "type": "object",
+            "properties": { "pattern": { "type": "string" } },
+            "required": ["pattern"],
+        });
+        let model = Model::anthropic("claude-opus-5");
+        assert!(
+            !model.compat.supports_strict_tools,
+            "the default this test relies on"
+        );
+        let context = Context {
+            tools: vec![tool_asking_for_json_schema_sampling(
+                micro_types::JsonSchemaStrictness::Prefer,
+            )],
+            ..Context::default()
+        };
+        let payload = build_payload(&model, &context, false).unwrap();
+
+        assert!(
+            payload["tools"][0].get("strict").is_none(),
+            "a service that was never told about strict fields is not sent one"
+        );
+        assert_eq!(
+            payload["tools"][0]["input_schema"],
+            original_parameters,
+            "the schema is exactly what the tool wrote, untouched"
+        );
+    }
+
+    /// `"require"` on a service that never claimed to support it fails the request rather
+    /// than silently sending it under ordinary sampling.
+    #[test]
+    fn requiring_strict_sampling_on_a_service_that_does_not_support_it_fails_the_request() {
+        let model = Model::anthropic("claude-opus-5");
+        let context = Context {
+            tools: vec![tool_asking_for_json_schema_sampling(
+                micro_types::JsonSchemaStrictness::Require,
+            )],
+            ..Context::default()
+        };
+        let error = build_payload(&model, &context, false).unwrap_err();
+        assert!(error.contains("\"grep\""), "got {error:?}");
     }
 
     #[test]
@@ -889,7 +1000,8 @@ mod tests {
             &Model::anthropic("claude-opus-5"),
             &context_with(vec![Message::user("one"), Message::user("two")]),
             false,
-        );
+        )
+        .unwrap();
 
         assert_eq!(payload["tools"][0]["cache_control"]["type"], "ephemeral");
         assert_eq!(payload["system"][0]["cache_control"]["type"], "ephemeral");
@@ -918,7 +1030,12 @@ mod tests {
 
     #[test]
     fn thinking_budget_is_sent_only_when_enabled() {
-        let plain = build_payload(&Model::anthropic("claude-opus-5"), &Context::default(), false);
+        let plain = build_payload(
+            &Model::anthropic("claude-opus-5"),
+            &Context::default(),
+            false,
+        )
+        .unwrap();
         // Turned off outright rather than left unsaid, so a model that thinks by default
         // does not keep thinking and billing for it.
         assert_eq!(plain["thinking"]["type"], "disabled");
@@ -927,7 +1044,8 @@ mod tests {
             &Model::anthropic("claude-opus-5").with_thinking(micro_types::ThinkingLevel::High),
             &Context::default(),
             false,
-        );
+        )
+        .unwrap();
         assert_eq!(thinking["thinking"]["budget_tokens"], 32_000);
     }
 
@@ -964,18 +1082,24 @@ mod tests {
         let model = Model::anthropic("claude-opus-5");
 
         let plain = betas("sk-ant-api03-abc", &model, &context);
-        assert!(!plain.contains(&FINE_GRAINED_TOOL_STREAMING_BETA), "{plain:?}");
+        assert!(
+            !plain.contains(&FINE_GRAINED_TOOL_STREAMING_BETA),
+            "{plain:?}"
+        );
         assert!(!plain.contains(&INTERLEAVED_THINKING_BETA), "{plain:?}");
         assert_eq!(
-            build_payload(&model, &context, false)["tools"][0]["eager_input_streaming"],
+            build_payload(&model, &context, false).unwrap()["tools"][0]["eager_input_streaming"],
             true
         );
 
         let mut legacy = model.clone();
         legacy.compat.supports_eager_tool_input_streaming = false;
         let asked = betas("sk-ant-api03-abc", &legacy, &context);
-        assert!(asked.contains(&FINE_GRAINED_TOOL_STREAMING_BETA), "{asked:?}");
-        assert!(build_payload(&legacy, &context, false)["tools"][0]
+        assert!(
+            asked.contains(&FINE_GRAINED_TOOL_STREAMING_BETA),
+            "{asked:?}"
+        );
+        assert!(build_payload(&legacy, &context, false).unwrap()["tools"][0]
             .get("eager_input_streaming")
             .is_none());
 
@@ -992,10 +1116,10 @@ mod tests {
         let context = context_with(vec![Message::user("hi")]);
         let model = Model::anthropic("claude-opus-5");
 
-        let sent = build_payload(&model, &context, true);
+        let sent = build_payload(&model, &context, true).unwrap();
         assert_eq!(sent["tools"][0]["name"], "Read");
         assert_eq!(
-            build_payload(&model, &context, false)["tools"][0]["name"],
+            build_payload(&model, &context, false).unwrap()["tools"][0]["name"],
             "read"
         );
 
@@ -1012,12 +1136,14 @@ mod tests {
             &Model::anthropic("claude-opus-5"),
             &context_with(vec![Message::user("hi")]),
             false,
-        );
+        )
+        .unwrap();
         assert_eq!(payload["thinking"]["type"], "disabled");
 
         let thinking =
             Model::anthropic("claude-opus-5").with_thinking(micro_types::ThinkingLevel::Medium);
-        let payload = build_payload(&thinking, &context_with(vec![Message::user("hi")]), false);
+        let payload = build_payload(&thinking, &context_with(vec![Message::user("hi")]), false)
+            .unwrap();
         assert_eq!(payload["thinking"]["type"], "enabled");
         assert!(payload["thinking"]["budget_tokens"].as_u64().unwrap() > 0);
     }
@@ -1031,7 +1157,8 @@ mod tests {
             Model::anthropic("claude-opus-5").with_thinking(micro_types::ThinkingLevel::High);
         model.compat.force_adaptive_thinking = true;
 
-        let payload = build_payload(&model, &context_with(vec![Message::user("hi")]), false);
+        let payload = build_payload(&model, &context_with(vec![Message::user("hi")]), false)
+            .unwrap();
         assert_eq!(payload["thinking"]["type"], "adaptive");
         assert_eq!(payload["thinking"]["display"], "summarized");
         assert_eq!(payload["output_config"]["effort"], "high");
@@ -1048,7 +1175,8 @@ mod tests {
         let mut model = Model::anthropic("claude-opus-5");
         model.compat.force_adaptive_thinking = true;
 
-        let payload = build_payload(&model, &context_with(vec![Message::user("hi")]), false);
+        let payload = build_payload(&model, &context_with(vec![Message::user("hi")]), false)
+            .unwrap();
         assert_eq!(payload["thinking"]["type"], "disabled");
         assert!(payload.get("output_config").is_none());
     }

@@ -24,15 +24,16 @@
 //! # Ok::<(), micro_models::Error>(())
 //! ```
 
-pub mod fuzzy;
 mod bundled;
 mod catalog;
 mod compat;
 mod cost;
 mod error;
+pub mod fuzzy;
 mod overrides;
 mod remote;
 mod resolve;
+mod wire_json;
 
 pub use catalog::{Catalog, Modality, ModelCost, ModelDef, WireApi};
 pub use compat::CompatOverrides;
@@ -44,3 +45,7 @@ pub use remote::{
     COPILOT_BASE_URL, COPILOT_PROVIDER, OPENROUTER_BASE_URL, OPENROUTER_PROVIDER,
 };
 pub use resolve::Resolution;
+pub use wire_json::catalog_json;
+pub use wire_json::model_json;
+pub use wire_json::modality_name;
+pub use wire_json::wire_api_name;
