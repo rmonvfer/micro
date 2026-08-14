@@ -137,10 +137,7 @@ fn parse_decl(s: &str) -> Option<(String, Option<String>, Option<String>, &str)>
 /// The remainder of a `group`/`service` line after its declaration: empty,
 /// or `in <parent id>`. The parent must already have been declared — a
 /// forward reference to a group not seen yet is unreadable.
-fn read_in_suffix(
-    suffix: &str,
-    group_index: &HashMap<String, usize>,
-) -> Option<Option<usize>> {
+fn read_in_suffix(suffix: &str, group_index: &HashMap<String, usize>) -> Option<Option<usize>> {
     if suffix.is_empty() {
         return Some(None);
     }
@@ -163,7 +160,11 @@ fn parse_connection(st: &str) -> Option<(String, String)> {
     let (left, right) = st.split_once("--")?;
     let from = left.trim().split(':').next()?.trim();
     let to = right.trim().rsplit(':').next()?.trim();
-    if from.is_empty() || to.is_empty() || from.chars().any(char::is_whitespace) || to.chars().any(char::is_whitespace) {
+    if from.is_empty()
+        || to.is_empty()
+        || from.chars().any(char::is_whitespace)
+        || to.chars().any(char::is_whitespace)
+    {
         return None;
     }
     Some((from.to_string(), to.to_string()))
@@ -191,7 +192,10 @@ mod tests {
         let text = rows.join("\n");
         assert!(text.contains("API"), "{text}");
         assert!(text.contains("Database"), "{text}");
-        assert!(text.contains("«database»"), "the icon reads as a stereotype: {text}");
+        assert!(
+            text.contains("«database»"),
+            "the icon reads as a stereotype: {text}"
+        );
         // The frame's own border sits outside the service's border — two
         // separate top-left corners, one for each box.
         assert_eq!(text.matches('┌').count(), 2, "{text}");
@@ -208,7 +212,10 @@ mod tests {
              db:R -- L:srv",
         );
         let text = rows.join("\n");
-        assert!(text.contains("Database") && text.contains("Server"), "{text}");
+        assert!(
+            text.contains("Database") && text.contains("Server"),
+            "{text}"
+        );
         assert!(text.contains('─') || text.contains('│'), "{text}");
     }
 
@@ -225,7 +232,10 @@ mod tests {
     #[test]
     fn what_is_not_an_architecture_diagram_is_left_alone() {
         assert!(render_architecture("graph TD\n A --> B").is_none());
-        assert!(render_architecture("architecture-beta").is_none(), "nothing declared");
+        assert!(
+            render_architecture("architecture-beta").is_none(),
+            "nothing declared"
+        );
         assert!(
             render_architecture("architecture-beta\n  service db(database)[Database] in nowhere")
                 .is_none(),

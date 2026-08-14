@@ -45,7 +45,11 @@ struct Mark {
 
 enum Connector {
     /// A branch forking off its parent at `col`.
-    Branch { child: usize, parent: usize, col: usize },
+    Branch {
+        child: usize,
+        parent: usize,
+        col: usize,
+    },
     /// `from` merging into `to`, landing on the mark at `col`.
     Merge { from: usize, to: usize, col: usize },
     /// A cherry-pick copying the commit at `(from_lane, from_col)` onto the
@@ -334,7 +338,10 @@ fn place(canvas: &mut Canvas, text: &str, row: usize, start_x: usize) {
 }
 
 fn mark_label(mark: &Mark) -> Option<String> {
-    let tag = mark.tag.as_deref().map(|t| format!("({})", fit_label(t, LABEL_WIDTH)));
+    let tag = mark
+        .tag
+        .as_deref()
+        .map(|t| format!("({})", fit_label(t, LABEL_WIDTH)));
     let id = mark.id.as_deref().map(|i| fit_label(i, LABEL_WIDTH));
     match (tag, id) {
         (Some(tag), Some(id)) => Some(format!("{tag} {id}")),
@@ -354,7 +361,12 @@ fn glyph(kind: MarkKind) -> &'static str {
 }
 
 fn draw(graph: &GitGraph) -> Option<Canvas> {
-    let label_w = graph.lanes.iter().map(|l| string_width(&l.name)).max().unwrap_or(0);
+    let label_w = graph
+        .lanes
+        .iter()
+        .map(|l| string_width(&l.name))
+        .max()
+        .unwrap_or(0);
     let left = label_w + 1;
 
     let content_w = graph
@@ -386,7 +398,11 @@ fn draw(graph: &GitGraph) -> Option<Canvas> {
 
     for (i, lane) in graph.lanes.iter().enumerate() {
         draw_text(&mut canvas, &lane.name, 0, row(i), Cls::Text);
-        let end = if lane.touched { lane.last_col } else { lane.start_col + 1 };
+        let end = if lane.touched {
+            lane.last_col
+        } else {
+            lane.start_col + 1
+        };
         canvas.seg_h(row(i), x(lane.start_col), x(end));
     }
 
@@ -436,7 +452,10 @@ mod tests {
     use super::*;
 
     fn drawn(src: &str) -> Vec<String> {
-        render_gitgraph(src).expect("it is a git graph").to_lines().plain
+        render_gitgraph(src)
+            .expect("it is a git graph")
+            .to_lines()
+            .plain
     }
 
     /// Commits on the one branch mermaid starts with land in a single row, in order.
@@ -476,7 +495,13 @@ mod tests {
         // main gets a second mark for the merge commit, after the fork column.
         assert_eq!(rows[0].matches('●').count(), 2);
         assert_eq!(rows[1].matches('●').count(), 1);
-        let merge_col = rows[0].chars().enumerate().filter(|&(_, c)| c == '●').last().unwrap().0;
+        let merge_col = rows[0]
+            .chars()
+            .enumerate()
+            .filter(|&(_, c)| c == '●')
+            .last()
+            .unwrap()
+            .0;
         assert!(
             rows[1].chars().nth(merge_col).is_some_and(|c| c != ' '),
             "expected the feature lane to carry a connector under the merge point: {rows:?}"

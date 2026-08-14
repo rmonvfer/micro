@@ -121,7 +121,11 @@ fn draw(flows: &[Flow]) -> Canvas {
         .map(|flow| INDENT + 2 + string_width(&flow.target))
         .max()
         .unwrap_or(0);
-    let widest_source = order.iter().map(|name| string_width(name)).max().unwrap_or(0);
+    let widest_source = order
+        .iter()
+        .map(|name| string_width(name))
+        .max()
+        .unwrap_or(0);
     let label_width = widest_target.max(widest_source + widest_amount + 3);
 
     let bar_at = label_width + 1;
@@ -174,16 +178,14 @@ mod tests {
     use super::*;
 
     fn drawn(src: &str) -> Vec<String> {
-        render_sankey(src)
-            .expect("it is a sankey")
-            .to_lines()
-            .plain
+        render_sankey(src).expect("it is a sankey").to_lines().plain
     }
 
     /// Flows are grouped under the node they leave, with that node's total beside it.
     #[test]
     fn flows_are_grouped_under_where_they_leave_from() {
-        let rows = drawn("sankey-beta\nAgriculture,Food,120\nAgriculture,Waste,30\nFood,Households,90");
+        let rows =
+            drawn("sankey-beta\nAgriculture,Food,120\nAgriculture,Waste,30\nFood,Households,90");
         assert!(rows[0].starts_with("Agriculture (150)"), "{rows:?}");
         assert!(rows[1].contains("→ Food"), "{rows:?}");
         assert!(rows[2].contains("→ Waste"), "{rows:?}");
@@ -215,7 +217,10 @@ mod tests {
         assert!(render_sankey("sankey-beta").is_none(), "nothing flows");
         assert!(render_sankey("sankey-beta\nA,B").is_none(), "no value");
         assert!(render_sankey("sankey-beta\nA,B,nonsense").is_none());
-        assert!(render_sankey("sankey-beta\nA,B,0").is_none(), "nothing is not a flow");
+        assert!(
+            render_sankey("sankey-beta\nA,B,0").is_none(),
+            "nothing is not a flow"
+        );
         assert!(render_sankey("sankey-beta\nA,B,-5").is_none());
     }
 

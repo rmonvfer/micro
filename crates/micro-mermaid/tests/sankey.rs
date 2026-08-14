@@ -47,7 +47,11 @@ fn bars_are_drawn_in_proportion() {
     let big = rows[1].matches('█').count();
     let small = rows[2].matches('█').count();
     assert!(big > small, "{rows:?}");
-    assert_eq!(small * 4, big, "a quarter of the volume, a quarter of the bar");
+    assert_eq!(
+        small * 4,
+        big,
+        "a quarter of the volume, a quarter of the bar"
+    );
 }
 
 /// A source that is not a sankey is refused, and the caller shows the source instead.

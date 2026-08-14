@@ -137,7 +137,9 @@ fn resolved(idx: usize, arena: &[Node], cache: &mut [Option<f64>]) -> f64 {
 
 fn draw(title: Option<&str>, arena: &[Node], roots: &[usize]) -> Canvas {
     let mut cache = vec![None; arena.len()];
-    let values: Vec<f64> = (0..arena.len()).map(|i| resolved(i, arena, &mut cache)).collect();
+    let values: Vec<f64> = (0..arena.len())
+        .map(|i| resolved(i, arena, &mut cache))
+        .collect();
     let grand_total: f64 = roots.iter().map(|&r| values[r]).sum();
 
     let mut rows = Vec::new();
@@ -193,7 +195,14 @@ fn collect_rows(
             value_text: format!("({}, {pct:.0}%)", trim_number(value)),
         });
         let child_prefix = format!("{prefix}{}", if is_last { "   " } else { "│  " });
-        collect_rows(arena, &arena[idx].children, &child_prefix, values, value, rows);
+        collect_rows(
+            arena,
+            &arena[idx].children,
+            &child_prefix,
+            values,
+            value,
+            rows,
+        );
     }
 }
 
@@ -212,25 +221,39 @@ mod tests {
     use super::*;
 
     fn drawn(src: &str) -> Vec<String> {
-        render_treemap(src).expect("it is a treemap").to_lines().plain
+        render_treemap(src)
+            .expect("it is a treemap")
+            .to_lines()
+            .plain
     }
 
     /// A leaf's value and its share of its parent are written beside it.
     #[test]
     fn a_leaf_carries_its_value_and_share_of_its_parent() {
-        let rows = drawn(
-            "treemap-beta\ntitle Budget\n\"Category A\"\n  \"Item 1\": 10\n  \"Item 2\": 30",
-        );
+        let rows =
+            drawn("treemap-beta\ntitle Budget\n\"Category A\"\n  \"Item 1\": 10\n  \"Item 2\": 30");
         assert_eq!(rows[0], "Budget");
-        assert!(rows.iter().any(|r| r.contains("Item 1") && r.contains("(10, 25%)")), "{rows:?}");
-        assert!(rows.iter().any(|r| r.contains("Item 2") && r.contains("(30, 75%)")), "{rows:?}");
+        assert!(
+            rows.iter()
+                .any(|r| r.contains("Item 1") && r.contains("(10, 25%)")),
+            "{rows:?}"
+        );
+        assert!(
+            rows.iter()
+                .any(|r| r.contains("Item 2") && r.contains("(30, 75%)")),
+            "{rows:?}"
+        );
     }
 
     /// A parent with no value of its own is worth the sum of its children.
     #[test]
     fn a_parent_with_no_value_sums_its_children() {
         let rows = drawn("treemap-beta\n\"Category A\"\n  \"Item 1\": 10\n  \"Item 2\": 30");
-        assert!(rows.iter().any(|r| r.contains("Category A") && r.contains("(40, 100%)")), "{rows:?}");
+        assert!(
+            rows.iter()
+                .any(|r| r.contains("Category A") && r.contains("(40, 100%)")),
+            "{rows:?}"
+        );
     }
 
     /// The tree connectors close the way any other tree in this crate does:
@@ -245,12 +268,14 @@ mod tests {
     /// A grandchild's percentage is of its own parent, not the grand total.
     #[test]
     fn a_grandchilds_share_is_of_its_own_parent() {
-        let rows = drawn(
-            "treemap-beta\n\"A\"\n  \"B\"\n    \"C\": 5\n    \"D\": 5\n\"E\": 10",
-        );
+        let rows = drawn("treemap-beta\n\"A\"\n  \"B\"\n    \"C\": 5\n    \"D\": 5\n\"E\": 10");
         // B is worth 10 (the sum of C and D), which is half of the grand
         // total of 20, but C is half of B, not a quarter of the total.
-        assert!(rows.iter().any(|r| r.contains('C') && r.contains("(5, 50%)")), "{rows:?}");
+        assert!(
+            rows.iter()
+                .any(|r| r.contains('C') && r.contains("(5, 50%)")),
+            "{rows:?}"
+        );
     }
 
     /// Anything that is not a treemap, or is one but malformed, is refused
@@ -259,7 +284,10 @@ mod tests {
     fn what_is_not_a_treemap_is_left_alone() {
         assert!(render_treemap("graph TD\n A --> B").is_none());
         assert!(render_treemap("treemap-beta").is_none(), "nothing in it");
-        assert!(render_treemap("treemap-beta\n\"\"").is_none(), "an empty label");
+        assert!(
+            render_treemap("treemap-beta\n\"\"").is_none(),
+            "an empty label"
+        );
     }
 
     /// A tree this deep is a filesystem, not a diagram, so it is refused.

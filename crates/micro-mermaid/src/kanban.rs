@@ -202,7 +202,13 @@ fn draw(columns: &[Column]) -> Canvas {
 
     let mut x = 0;
     for (col, &w) in columns.iter().zip(&widths) {
-        draw_text(&mut canvas, &fit_label(&col.label, WRAP_WIDTH), x, 0, Cls::Text);
+        draw_text(
+            &mut canvas,
+            &fit_label(&col.label, WRAP_WIDTH),
+            x,
+            0,
+            Cls::Text,
+        );
         let mut y = 1;
         for task in &col.tasks {
             draw_card(&mut canvas, x, y, w, task);
@@ -237,9 +243,21 @@ fn draw_card(canvas: &mut Canvas, x: usize, y: usize, w: usize, task: &Task) {
     // One cell of padding inside the border on every side, the same as any
     // other bordered box this crate draws.
     let inner = w.saturating_sub(4);
-    draw_text(canvas, &fit_label(&task.label, inner), x + 2, y + 1, Cls::Text);
+    draw_text(
+        canvas,
+        &fit_label(&task.label, inner),
+        x + 2,
+        y + 1,
+        Cls::Text,
+    );
     if let Some(meta) = meta {
-        draw_text(canvas, &fit_label(&meta, inner), x + 2, y + 2, Cls::EdgeLabel);
+        draw_text(
+            canvas,
+            &fit_label(&meta, inner),
+            x + 2,
+            y + 2,
+            Cls::EdgeLabel,
+        );
     }
 }
 
@@ -267,7 +285,8 @@ mod tests {
     /// Priority and assignee draw as a second line on the card.
     #[test]
     fn priority_and_assignee_draw_as_the_cards_second_line() {
-        let rows = drawn("kanban\n  todo[To Do]\n    t1[Ship it]@{ assigned: 'Alice', priority: 'High' }");
+        let rows =
+            drawn("kanban\n  todo[To Do]\n    t1[Ship it]@{ assigned: 'Alice', priority: 'High' }");
         assert!(rows.iter().any(|r| r.contains("High · Alice")), "{rows:?}");
     }
 

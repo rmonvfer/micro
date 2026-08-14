@@ -14,7 +14,10 @@ use std::collections::HashMap;
 
 use crate::canvas::{draw_text_over_edges, Canvas, D, L, R, U};
 use crate::graph::Shape;
-use crate::labels::{ascii_lower, clean_label, fit_label, is_id_char, strip_controls, wrap_label, MAX_LINES, WRAP_WIDTH};
+use crate::labels::{
+    ascii_lower, clean_label, fit_label, is_id_char, strip_controls, wrap_label, MAX_LINES,
+    WRAP_WIDTH,
+};
 use crate::layout::{draw_box, Placed};
 use crate::types::Cls;
 use crate::width::string_width;
@@ -50,9 +53,15 @@ enum Cell {
 }
 
 enum Content {
-    Leaf { lines: Vec<String>, shape: Shape },
+    Leaf {
+        lines: Vec<String>,
+        shape: Shape,
+    },
     Space,
-    Group { label: String, children: Vec<(usize, usize, MeasuredCell)> },
+    Group {
+        label: String,
+        children: Vec<(usize, usize, MeasuredCell)>,
+    },
 }
 
 struct MeasuredCell {
@@ -149,7 +158,11 @@ fn apply(line: &str, p: &mut Parser) -> Option<()> {
 
     if lower == "end" {
         let group = p.stack.pop()?;
-        let label = if group.label.is_empty() { group.id.clone() } else { group.label };
+        let label = if group.label.is_empty() {
+            group.id.clone()
+        } else {
+            group.label
+        };
         p.current_children().push(Cell::Group {
             id: group.id,
             label,
@@ -202,7 +215,8 @@ fn apply(line: &str, p: &mut Parser) -> Option<()> {
         }
         p.cell_count += 1;
         let label = label.unwrap_or_else(|| id.clone());
-        p.current_children().push(Cell::Leaf(Leaf { id, label, shape }));
+        p.current_children()
+            .push(Cell::Leaf(Leaf { id, label, shape }));
     }
     Some(())
 }
@@ -289,13 +303,23 @@ fn measure(cell: &Cell) -> MeasuredCell {
         },
         Cell::Leaf(leaf) => {
             let lines = wrap_label(&leaf.label, WRAP_WIDTH, MAX_LINES);
-            let w = lines.iter().map(|l| string_width(l)).max().unwrap_or(0).max(1) + 2 * PAD + 2;
+            let w = lines
+                .iter()
+                .map(|l| string_width(l))
+                .max()
+                .unwrap_or(0)
+                .max(1)
+                + 2 * PAD
+                + 2;
             let h = lines.len() + 2;
             MeasuredCell {
                 id: Some(leaf.id.clone()),
                 w,
                 h,
-                content: Content::Leaf { lines, shape: leaf.shape },
+                content: Content::Leaf {
+                    lines,
+                    shape: leaf.shape,
+                },
             }
         }
         Cell::Group {
@@ -324,7 +348,10 @@ fn measure(cell: &Cell) -> MeasuredCell {
 /// Lay `cells` into a grid of `columns` columns, filled row-major, every cell
 /// sharing the width and height of the widest and tallest one: a block
 /// diagram reads as a table, and a table's cells line up.
-fn pack_grid(cells: Vec<MeasuredCell>, columns: usize) -> (Vec<(usize, usize, MeasuredCell)>, usize, usize) {
+fn pack_grid(
+    cells: Vec<MeasuredCell>,
+    columns: usize,
+) -> (Vec<(usize, usize, MeasuredCell)>, usize, usize) {
     let cell_w = cells.iter().map(|c| c.w).max().unwrap_or(1);
     let cell_h = cells.iter().map(|c| c.h).max().unwrap_or(1);
     let mut placed = Vec::with_capacity(cells.len());
@@ -341,7 +368,13 @@ fn pack_grid(cells: Vec<MeasuredCell>, columns: usize) -> (Vec<(usize, usize, Me
     (placed, inner_w, inner_h)
 }
 
-fn place(canvas: &mut Canvas, cell: &MeasuredCell, x: usize, y: usize, positions: &mut HashMap<String, (usize, usize, usize, usize)>) {
+fn place(
+    canvas: &mut Canvas,
+    cell: &MeasuredCell,
+    x: usize,
+    y: usize,
+    positions: &mut HashMap<String, (usize, usize, usize, usize)>,
+) {
     if let Some(id) = &cell.id {
         positions.insert(id.clone(), (x, y, cell.w, cell.h));
     }
@@ -410,7 +443,11 @@ fn draw(parser: &Parser) -> Option<Canvas> {
 /// own edges are not guaranteed clear of everything they pass near. The
 /// arrowhead itself is drawn unconditionally, so the target is always
 /// visibly the one being pointed to even on a route that loses a few cells.
-fn connect(canvas: &mut Canvas, from: (usize, usize, usize, usize), to: (usize, usize, usize, usize)) {
+fn connect(
+    canvas: &mut Canvas,
+    from: (usize, usize, usize, usize),
+    to: (usize, usize, usize, usize),
+) {
     let (fx, fy, fw, fh) = from;
     let (tx, ty, tw, th) = to;
     let f_cx = fx + fw / 2;
@@ -450,7 +487,10 @@ mod tests {
     use super::*;
 
     fn drawn(src: &str) -> Vec<String> {
-        render_block(src).expect("it is a block diagram").to_lines().plain
+        render_block(src)
+            .expect("it is a block diagram")
+            .to_lines()
+            .plain
     }
 
     /// `columns N` arranges the blocks into a grid that many wide, wrapping
@@ -473,7 +513,11 @@ mod tests {
     fn space_leaves_a_gap_in_the_grid() {
         let with_space = drawn("block-beta\n  columns 3\n  a\n  space\n  b");
         let without = drawn("block-beta\n  columns 3\n  a\n  b");
-        let col_of = |rows: &[String], c: char| rows.iter().find_map(|r| r.chars().position(|ch| ch == c)).unwrap();
+        let col_of = |rows: &[String], c: char| {
+            rows.iter()
+                .find_map(|r| r.chars().position(|ch| ch == c))
+                .unwrap()
+        };
         assert!(col_of(&with_space, 'b') > col_of(&without, 'b'));
     }
 
@@ -485,7 +529,10 @@ mod tests {
         let joined = rows.join("\n");
         assert!(joined.contains("grp"), "{rows:?}");
         assert!(joined.contains('a') && joined.contains('b'), "{rows:?}");
-        assert!(joined.contains('┌') && joined.contains('┘'), "framed: {rows:?}");
+        assert!(
+            joined.contains('┌') && joined.contains('┘'),
+            "framed: {rows:?}"
+        );
     }
 
     /// An arrow between two top-level blocks is drawn as a right-angle line
@@ -520,9 +567,18 @@ mod tests {
     fn what_is_not_a_block_diagram_is_left_alone() {
         assert!(render_block("graph TD\n A --> B").is_none());
         assert!(render_block("block-beta").is_none(), "no blocks at all");
-        assert!(render_block("block-beta\n  block:grp\n    a").is_none(), "unclosed group");
-        assert!(render_block("block-beta\n  end").is_none(), "end with nothing open");
-        assert!(render_block("block-beta\n  a\n  a --> nope").is_none(), "arrow to an undeclared id");
+        assert!(
+            render_block("block-beta\n  block:grp\n    a").is_none(),
+            "unclosed group"
+        );
+        assert!(
+            render_block("block-beta\n  end").is_none(),
+            "end with nothing open"
+        );
+        assert!(
+            render_block("block-beta\n  a\n  a --> nope").is_none(),
+            "arrow to an undeclared id"
+        );
         assert!(render_block("block-beta\n  columns 0\n  a").is_none());
     }
 

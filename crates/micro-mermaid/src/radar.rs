@@ -171,9 +171,18 @@ fn draw(chart: &Chart) -> Canvas {
     let legend_row = axes_start + chart.axes.len() + 1;
     let rows = legend_row + 1;
 
-    let label_w = chart.axes.iter().map(|a| string_width(&a.label)).max().unwrap_or(0);
+    let label_w = chart
+        .axes
+        .iter()
+        .map(|a| string_width(&a.label))
+        .max()
+        .unwrap_or(0);
     let track_x = label_w + 1;
-    let scale_text = format!("scale {}–{}", trim_number(chart.min), trim_number(chart.max));
+    let scale_text = format!(
+        "scale {}–{}",
+        trim_number(chart.min),
+        trim_number(chart.max)
+    );
     let legend_w = legend_width(&chart.curves);
 
     let width = (track_x + SCALE_WIDTH)
@@ -249,7 +258,10 @@ mod tests {
     use super::*;
 
     fn drawn(src: &str) -> Vec<String> {
-        render_radar(src).expect("it is a radar chart").to_lines().plain
+        render_radar(src)
+            .expect("it is a radar chart")
+            .to_lines()
+            .plain
     }
 
     /// Each axis gets its own row, and each curve's value is marked on that
@@ -269,9 +281,15 @@ mod tests {
         let comm_row = rows.iter().find(|r| r.contains("Communication")).unwrap();
         // Alice is 0 on this axis (left end) and Bob is 5 (right end), so
         // Alice's glyph comes first on the row.
-        assert!(comm_row.find('●').unwrap() < comm_row.find('○').unwrap(), "{comm_row:?}");
+        assert!(
+            comm_row.find('●').unwrap() < comm_row.find('○').unwrap(),
+            "{comm_row:?}"
+        );
         let tech_row = rows.iter().find(|r| r.contains("Technical")).unwrap();
-        assert!(tech_row.find('○').unwrap() < tech_row.find('●').unwrap(), "{tech_row:?}");
+        assert!(
+            tech_row.find('○').unwrap() < tech_row.find('●').unwrap(),
+            "{tech_row:?}"
+        );
     }
 
     /// The legend names which glyph belongs to which curve.
@@ -284,7 +302,10 @@ mod tests {
              curve y[\"Bob\"]{2}",
         );
         let legend = rows.last().unwrap();
-        assert!(legend.contains('●') && legend.contains("Alice"), "{legend:?}");
+        assert!(
+            legend.contains('●') && legend.contains("Alice"),
+            "{legend:?}"
+        );
         assert!(legend.contains('○') && legend.contains("Bob"), "{legend:?}");
     }
 
@@ -302,7 +323,10 @@ mod tests {
     fn what_is_not_a_radar_chart_is_left_alone() {
         assert!(render_radar("graph TD\n A --> B").is_none());
         assert!(render_radar("radar-beta").is_none(), "no axes or curves");
-        assert!(render_radar("radar-beta\n  axis a[\"A\"]").is_none(), "no curves");
+        assert!(
+            render_radar("radar-beta\n  axis a[\"A\"]").is_none(),
+            "no curves"
+        );
         assert!(
             render_radar("radar-beta\n  axis a[\"A\"], b[\"B\"]\n  curve x[\"X\"]{1}").is_none(),
             "a curve missing a value for one of the axes"

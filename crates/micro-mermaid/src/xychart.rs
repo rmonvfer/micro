@@ -193,8 +193,17 @@ fn draw(chart: &Chart) -> Option<Canvas> {
     };
     let baseline = row_for(lo.max(0.0).min(hi));
 
-    let points = chart.series.iter().map(|s| s.values.len()).max().unwrap_or(0);
-    let bar_count = chart.series.iter().filter(|s| matches!(s.kind, SeriesKind::Bar)).count();
+    let points = chart
+        .series
+        .iter()
+        .map(|s| s.values.len())
+        .max()
+        .unwrap_or(0);
+    let bar_count = chart
+        .series
+        .iter()
+        .filter(|s| matches!(s.kind, SeriesKind::Bar))
+        .count();
     let slot_w = bar_count.max(1) + 3;
 
     let min_label = trim_number(lo);
@@ -204,8 +213,10 @@ fn draw(chart: &Chart) -> Option<Canvas> {
     let plot_w = points * slot_w;
 
     let header_rows = usize::from(chart.title.is_some()) + usize::from(chart.y_title.is_some());
-    let footer_rows = 1 + usize::from(!chart.x_categories.is_empty()) + usize::from(chart.x_title.is_some());
-    let canvas_w = (plot_left + plot_w + 1).max(plot_left + string_width(chart.y_title.as_deref().unwrap_or("")));
+    let footer_rows =
+        1 + usize::from(!chart.x_categories.is_empty()) + usize::from(chart.x_title.is_some());
+    let canvas_w = (plot_left + plot_w + 1)
+        .max(plot_left + string_width(chart.y_title.as_deref().unwrap_or("")));
     let canvas_h = header_rows + PLOT_H + footer_rows;
     if canvas_w.saturating_mul(canvas_h) > MAX_CANVAS_CELLS || points == 0 {
         return None;
@@ -224,7 +235,13 @@ fn draw(chart: &Chart) -> Option<Canvas> {
     let plot_top = row0;
     let plot_bottom = plot_top + PLOT_H - 1;
 
-    draw_text(&mut canvas, &max_label, plot_left.saturating_sub(string_width(&max_label) + 1), plot_top, Cls::EdgeLabel);
+    draw_text(
+        &mut canvas,
+        &max_label,
+        plot_left.saturating_sub(string_width(&max_label) + 1),
+        plot_top,
+        Cls::EdgeLabel,
+    );
     draw_text(
         &mut canvas,
         &min_label,
@@ -259,8 +276,14 @@ fn draw(chart: &Chart) -> Option<Canvas> {
                 bar_series += 1;
             }
             SeriesKind::Line => {
-                let xs: Vec<usize> = (0..series.values.len()).map(|i| slot_x(i) + bar_count / 2).collect();
-                let ys: Vec<usize> = series.values.iter().map(|&v| plot_top + row_for(v)).collect();
+                let xs: Vec<usize> = (0..series.values.len())
+                    .map(|i| slot_x(i) + bar_count / 2)
+                    .collect();
+                let ys: Vec<usize> = series
+                    .values
+                    .iter()
+                    .map(|&v| plot_top + row_for(v))
+                    .collect();
                 for w in 1..xs.len() {
                     connect(&mut canvas, xs[w - 1], ys[w - 1], xs[w], ys[w]);
                 }
@@ -310,7 +333,10 @@ mod tests {
     use super::*;
 
     fn drawn(src: &str) -> Vec<String> {
-        render_xychart(src).expect("it is an xy chart").to_lines().plain
+        render_xychart(src)
+            .expect("it is an xy chart")
+            .to_lines()
+            .plain
     }
 
     /// A bar chart draws one filled column per value, each reaching a height
@@ -325,7 +351,10 @@ mod tests {
                     .count()
             })
             .collect();
-        assert!(heights[0] > heights[1] && heights[1] > heights[2], "{heights:?}: {rows:?}");
+        assert!(
+            heights[0] > heights[1] && heights[1] > heights[2],
+            "{heights:?}: {rows:?}"
+        );
         assert_eq!(heights[2], 0, "a zero value draws no bar: {rows:?}");
     }
 
@@ -371,7 +400,12 @@ mod tests {
     fn two_bar_series_draw_side_by_side() {
         let rows = drawn("xychart-beta\n  y-axis 0 --> 10\n  bar [10, 0]\n  bar [0, 10]");
         let bottom = rows.iter().find(|r| r.contains('█')).unwrap();
-        let cols: Vec<usize> = bottom.chars().enumerate().filter(|&(_, c)| c == '█').map(|(i, _)| i).collect();
+        let cols: Vec<usize> = bottom
+            .chars()
+            .enumerate()
+            .filter(|&(_, c)| c == '█')
+            .map(|(i, _)| i)
+            .collect();
         assert_eq!(cols.len(), 2, "two distinct bar columns: {rows:?}");
         assert!(cols[1] > cols[0] + 1, "{cols:?}: {rows:?}");
     }
@@ -383,8 +417,14 @@ mod tests {
         assert!(render_xychart("graph TD\n A --> B").is_none());
         assert!(render_xychart("xychart-beta").is_none(), "no series at all");
         assert!(render_xychart("xychart-beta\n  bar [1, nonsense]").is_none());
-        assert!(render_xychart("xychart-beta\n  y-axis 10 --> 0").is_none(), "an inverted range");
-        assert!(render_xychart("xychart-beta\n  bar []").is_none(), "an empty series");
+        assert!(
+            render_xychart("xychart-beta\n  y-axis 10 --> 0").is_none(),
+            "an inverted range"
+        );
+        assert!(
+            render_xychart("xychart-beta\n  bar []").is_none(),
+            "an empty series"
+        );
     }
 
     /// A series with more points than can be read as a shape is refused.

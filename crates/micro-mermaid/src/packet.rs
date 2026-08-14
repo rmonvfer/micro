@@ -152,7 +152,14 @@ fn row_bit_count(row: u32, total_bits: u32) -> u32 {
     total_bits.saturating_sub(row_start).min(ROW_BITS)
 }
 
-fn draw_row(canvas: &mut Canvas, y0: usize, row: u32, bit_count: u32, row_w: usize, fields: &[Field]) {
+fn draw_row(
+    canvas: &mut Canvas,
+    y0: usize,
+    row: u32,
+    bit_count: u32,
+    row_w: usize,
+    fields: &[Field],
+) {
     let y_header = y0;
     let y_top = y0 + 1;
     let y_label = y0 + 2;
@@ -245,13 +252,25 @@ mod tests {
         );
         assert_eq!(rows[0], "IP header");
         assert!(rows.iter().any(|r| r.contains("Source Port")), "{rows:?}");
-        assert!(rows.iter().any(|r| r.contains("Destination Port")), "{rows:?}");
-        assert!(rows.iter().any(|r| r.trim_start().starts_with('0')), "{rows:?}");
+        assert!(
+            rows.iter().any(|r| r.contains("Destination Port")),
+            "{rows:?}"
+        );
+        assert!(
+            rows.iter().any(|r| r.trim_start().starts_with('0')),
+            "{rows:?}"
+        );
         assert!(rows.iter().any(|r| r.contains("31")), "{rows:?}");
         // The right edge closes every row it opened, not just the left.
-        let top_border = rows.iter().find(|r| r.starts_with('┌')).expect("a top border");
+        let top_border = rows
+            .iter()
+            .find(|r| r.starts_with('┌'))
+            .expect("a top border");
         assert!(top_border.ends_with('┐'), "{top_border:?}");
-        let bottom_border = rows.iter().find(|r| r.starts_with('└')).expect("a bottom border");
+        let bottom_border = rows
+            .iter()
+            .find(|r| r.starts_with('└'))
+            .expect("a bottom border");
         assert!(bottom_border.ends_with('┘'), "{bottom_border:?}");
     }
 
@@ -260,7 +279,10 @@ mod tests {
     #[test]
     fn a_gap_between_fields_gets_an_unlabelled_cell() {
         let rows = drawn("packet-beta\n0-3: \"Version\"\n8-15: \"Length\"");
-        let border_row = rows.iter().find(|r| r.starts_with('┌')).expect("a border row");
+        let border_row = rows
+            .iter()
+            .find(|r| r.starts_with('┌'))
+            .expect("a border row");
         // Version, the gap, and Length are three separate cells, so the top
         // border has two internal tees besides its own corners.
         assert_eq!(border_row.matches('┬').count(), 2, "{border_row:?}");
