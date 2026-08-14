@@ -38,11 +38,17 @@ fn note_geometry(xs: &[usize], anchor: &NoteAnchor, text_w: usize) -> NoteGeomet
         NoteAnchor::Over { from, to } => {
             let center = half(xs[from] + xs[to]);
             let w = (xs[to] - xs[from] + 5).max(text_w + 2 * PAD + 2);
-            NoteGeometry { x: sat(center, half(w)), w }
+            NoteGeometry {
+                x: sat(center, half(w)),
+                w,
+            }
         }
         NoteAnchor::Left { at } => {
             let w = text_w + 2 * PAD + 2;
-            NoteGeometry { x: sat(xs[at], 2 + w - 1), w }
+            NoteGeometry {
+                x: sat(xs[at], 2 + w - 1),
+                w,
+            }
         }
         NoteAnchor::Right { at } => {
             let w = text_w + 2 * PAD + 2;
@@ -57,8 +63,15 @@ fn item_text_w(text: &Option<String>) -> usize {
 
 pub fn layout_sequence(seq: &Sequence) -> CanvasResult {
     let n = seq.labels.len();
-    let labels: Vec<String> = seq.labels.iter().map(|l| fit_label(l, WRAP_WIDTH)).collect();
-    let box_w: Vec<usize> = labels.iter().map(|l| string_width(l).max(1) + 2 * PAD + 2).collect();
+    let labels: Vec<String> = seq
+        .labels
+        .iter()
+        .map(|l| fit_label(l, WRAP_WIDTH))
+        .collect();
+    let box_w: Vec<usize> = labels
+        .iter()
+        .map(|l| string_width(l).max(1) + 2 * PAD + 2)
+        .collect();
     let box_h = 3usize;
 
     let mut gaps: Vec<usize> = (0..sat(n, 1))
@@ -202,11 +215,28 @@ fn row_height(item: &SeqItem) -> usize {
 
 /// Geometry for a box drawn by position and size; ranks are irrelevant here.
 fn box_at(x: usize, y: usize, w: usize, h: usize) -> Placed {
-    Placed { x, y, w, h, cx: x + half(w), cy: y + 1, rank: 0 }
+    Placed {
+        x,
+        y,
+        w,
+        h,
+        cx: x + half(w),
+        cy: y + 1,
+        rank: 0,
+    }
 }
 
 fn draw_message(canvas: &mut Canvas, item: &SeqItem, xs: &[usize], r: usize) {
-    let SeqItem::Message { from, to, text, dashed, head } = item else { return };
+    let SeqItem::Message {
+        from,
+        to,
+        text,
+        dashed,
+        head,
+    } = item
+    else {
+        return;
+    };
     let line_ch = if *dashed { "╌" } else { "─" };
 
     if from == to {
@@ -217,7 +247,12 @@ fn draw_message(canvas: &mut Canvas, item: &SeqItem, xs: &[usize], r: usize) {
         canvas.set(x + 2, r, line_ch, Cls::Edge);
         canvas.set(x + 3, r, "╮", Cls::Edge);
         canvas.set(x + 3, r + 1, "│", Cls::Edge);
-        canvas.set(x + 1, r + 2, if *head == SeqHead::Cross { "×" } else { "◄" }, Cls::Edge);
+        canvas.set(
+            x + 1,
+            r + 2,
+            if *head == SeqHead::Cross { "×" } else { "◄" },
+            Cls::Edge,
+        );
         canvas.set(x + 2, r + 2, line_ch, Cls::Edge);
         canvas.set(x + 3, r + 2, "╯", Cls::Edge);
         if let Some(text) = text {
@@ -245,12 +280,23 @@ fn draw_message(canvas: &mut Canvas, item: &SeqItem, xs: &[usize], r: usize) {
     } else {
         "◄"
     };
-    canvas.set(if rightward { x1 - 1 } else { x1 + 1 }, arrow_row, head_ch, Cls::Edge);
+    canvas.set(
+        if rightward { x1 - 1 } else { x1 + 1 },
+        arrow_row,
+        head_ch,
+        Cls::Edge,
+    );
 
     if let Some(text) = text {
         let span = hi - lo - 1;
         let t = fit_label(text, span.max(1));
-        draw_text_over_edges(canvas, &t, lo + 1 + half(sat(span, string_width(&t))), r, Cls::Text);
+        draw_text_over_edges(
+            canvas,
+            &t,
+            lo + 1 + half(sat(span, string_width(&t))),
+            r,
+            Cls::Text,
+        );
     }
 }
 

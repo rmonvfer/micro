@@ -297,7 +297,9 @@ fn assign_positions(
     if !min_left.is_finite() {
         min_left = 0.0;
     }
-    (0..n).map(|v| (pos[v] - min_left).round().max(0.0) as usize).collect()
+    (0..n)
+        .map(|v| (pos[v] - min_left).round().max(0.0) as usize)
+        .collect()
 }
 
 fn relax_rank(nodes: &[usize], neigh: &[Vec<usize>], pos: &mut [f64], size: &[usize], sep: usize) {
@@ -370,7 +372,9 @@ fn assign_tracks(spans: &[Span5]) -> TrackAssignment {
     let mut assigned: Vec<(usize, usize)> = Vec::new();
     for &(s, e, f, t, idx) in &sorted {
         let slot = tracks.iter().position(|members| {
-            members.iter().all(|&(s2, e2, f2, t2)| e2 + 2 <= s || e + 2 <= s2 || f2 == f || t2 == t)
+            members
+                .iter()
+                .all(|&(s2, e2, f2, t2)| e2 + 2 <= s || e + 2 <= s2 || f2 == f || t2 == t)
         });
         let slot = match slot {
             Some(slot) => slot,
@@ -382,11 +386,20 @@ fn assign_tracks(spans: &[Span5]) -> TrackAssignment {
         tracks[slot].push((s, e, f, t));
         assigned.push((idx, slot));
     }
-    TrackAssignment { assigned, count: tracks.len() }
+    TrackAssignment {
+        assigned,
+        count: tracks.len(),
+    }
 }
 
 /// Edges from rank `r` to `r + 1` that must jog sideways, so need a bus row.
-fn bus_spans(graph: &Graph, ranks: &[usize], centers: &[usize], r: usize, exact: bool) -> Vec<Span5> {
+fn bus_spans(
+    graph: &Graph,
+    ranks: &[usize],
+    centers: &[usize],
+    r: usize,
+    exact: bool,
+) -> Vec<Span5> {
     let mut out = Vec::new();
     for (i, e) in graph.edges.iter().enumerate() {
         let jogs = if exact {
@@ -458,7 +471,10 @@ fn place_td(
             if row.is_empty() {
                 3
             } else {
-                row.iter().map(|&i| sizes.box_h[i] + sizes.extra_h[i]).max().unwrap()
+                row.iter()
+                    .map(|&i| sizes.box_h[i] + sizes.extra_h[i])
+                    .max()
+                    .unwrap()
             }
         })
         .collect();
@@ -477,7 +493,15 @@ fn place_td(
             let cx = centers[idx];
             let x = sat(cx, half(w));
             let y = rank_y[r] + half(rank_h[r] - h - sizes.extra_h[idx]);
-            placed[idx] = Placed { x, y, w, h, cx, cy: y + half(h), rank: r };
+            placed[idx] = Placed {
+                x,
+                y,
+                w,
+                h,
+                cx,
+                cy: y + half(h),
+                rank: r,
+            };
             diagram_w = diagram_w.max(x + w);
             if sizes.extra_h[idx] > 0 && sizes.self_label_w[idx] > 0 {
                 diagram_w = diagram_w.max(x + w + 2 + sizes.self_label_w[idx]);
@@ -512,7 +536,14 @@ fn place_td(
         lane_base = content_w + 1;
     }
 
-    RoutePlan { canvas_w, canvas_h, band_end, edge_bus, lane_base, edge_lane }
+    RoutePlan {
+        canvas_w,
+        canvas_h,
+        band_end,
+        edge_bus,
+        lane_base,
+        edge_lane,
+    }
 }
 
 fn place_lr(
@@ -583,7 +614,15 @@ fn place_lr(
             let h = sizes.box_h[idx];
             let cy = centers[idx];
             let y = sat(cy, half(h + sizes.extra_h[idx]));
-            placed[idx] = Placed { x, y, w, h, cx: x + half(w), cy: y + half(h), rank: r };
+            placed[idx] = Placed {
+                x,
+                y,
+                w,
+                h,
+                cx: x + half(w),
+                cy: y + half(h),
+                rank: r,
+            };
             diagram_h = diagram_h.max(y + h + sizes.extra_h[idx]);
         }
     }
@@ -601,7 +640,14 @@ fn place_lr(
         lane_base = diagram_h + 1;
     }
 
-    RoutePlan { canvas_w, canvas_h, band_end, edge_bus, lane_base, edge_lane }
+    RoutePlan {
+        canvas_w,
+        canvas_h,
+        band_end,
+        edge_bus,
+        lane_base,
+        edge_lane,
+    }
 }
 
 // -------------------------------------------------------------------- canvas
@@ -622,13 +668,21 @@ pub fn layout_canvas(graph: &Graph, extras: &[NodeExtra]) -> CanvasResult {
     }
     order_ranks(&mut by_rank, &graph.edges, &ranks);
 
-    let wrapped: Vec<Vec<String>> =
-        graph.nodes.iter().map(|node| wrap_label(&node.label, WRAP_WIDTH, MAX_LINES)).collect();
+    let wrapped: Vec<Vec<String>> = graph
+        .nodes
+        .iter()
+        .map(|node| wrap_label(&node.label, WRAP_WIDTH, MAX_LINES))
+        .collect();
     let widest = |lines: &[String]| -> usize {
         if lines.is_empty() {
             1
         } else {
-            lines.iter().map(|l| string_width(l)).max().unwrap_or(0).max(1)
+            lines
+                .iter()
+                .map(|l| string_width(l))
+                .max()
+                .unwrap_or(0)
+                .max(1)
         }
     };
 
@@ -681,9 +735,19 @@ pub fn layout_canvas(graph: &Graph, extras: &[NodeExtra]) -> CanvasResult {
         lay_w: box_w
             .iter()
             .enumerate()
-            .map(|(i, &w)| w + if self_label_w[i] > 0 { 2 * (self_label_w[i] + 3) } else { 0 })
+            .map(|(i, &w)| {
+                w + if self_label_w[i] > 0 {
+                    2 * (self_label_w[i] + 3)
+                } else {
+                    0
+                }
+            })
             .collect(),
-        lay_h: box_h.iter().enumerate().map(|(i, &h)| h + extra_h[i]).collect(),
+        lay_h: box_h
+            .iter()
+            .enumerate()
+            .map(|(i, &h)| h + extra_h[i])
+            .collect(),
         box_w,
         box_h,
         extra_h,
@@ -712,9 +776,12 @@ pub fn layout_canvas(graph: &Graph, extras: &[NodeExtra]) -> CanvasResult {
             NodeExtra::Compartments { sections } => {
                 draw_class_box(&mut canvas, &placed[idx], sections)
             }
-            NodeExtra::Plain => {
-                draw_box(&mut canvas, &placed[idx], &wrapped[idx], graph.nodes[idx].shape)
-            }
+            NodeExtra::Plain => draw_box(
+                &mut canvas,
+                &placed[idx],
+                &wrapped[idx],
+                graph.nodes[idx].shape,
+            ),
         }
     }
 
@@ -824,10 +891,14 @@ pub fn layout_grouped(graph: &Graph) -> CanvasResult {
     };
     let endpoint = |n: usize| -> Endpoint {
         match proxy.get(&n) {
-            None => Endpoint { key: ItemKey::Node(n), chain: group_chain(graph.node_group[n]) },
-            Some(&gi) => {
-                Endpoint { key: ItemKey::Group(gi), chain: group_chain(graph.groups[gi].parent) }
-            }
+            None => Endpoint {
+                key: ItemKey::Node(n),
+                chain: group_chain(graph.node_group[n]),
+            },
+            Some(&gi) => Endpoint {
+                key: ItemKey::Group(gi),
+                chain: group_chain(graph.groups[gi].parent),
+            },
         }
     };
 
@@ -842,14 +913,25 @@ pub fn layout_grouped(graph: &Graph) -> CanvasResult {
             k += 1;
         }
         let scope = if k == 0 { None } else { Some(f.chain[k - 1]) };
-        let f_key = if f.chain.len() > k { ItemKey::Group(f.chain[k]) } else { f.key };
-        let t_key = if t.chain.len() > k { ItemKey::Group(t.chain[k]) } else { t.key };
+        let f_key = if f.chain.len() > k {
+            ItemKey::Group(f.chain[k])
+        } else {
+            f.key
+        };
+        let t_key = if t.chain.len() > k {
+            ItemKey::Group(t.chain[k])
+        } else {
+            t.key
+        };
         for key in [f_key, t_key] {
             if let ItemKey::Group(gi) = key {
                 referenced[gi] = true;
             }
         }
-        scope_edges.entry(scope).or_default().push((f_key, t_key, ei));
+        scope_edges
+            .entry(scope)
+            .or_default()
+            .push((f_key, t_key, ei));
     }
 
     let mut direct_nodes: HashMap<Option<usize>, Vec<usize>> = HashMap::new();
@@ -864,8 +946,11 @@ pub fn layout_grouped(graph: &Graph) -> CanvasResult {
     let mut keep = vec![false; graph.groups.len()];
     for gi in (0..graph.groups.len()).rev() {
         let has_nodes = direct_nodes.get(&Some(gi)).is_some_and(|v| !v.is_empty());
-        let has_children =
-            graph.groups.iter().enumerate().any(|(c, g)| g.parent == Some(gi) && keep[c]);
+        let has_children = graph
+            .groups
+            .iter()
+            .enumerate()
+            .any(|(c, g)| g.parent == Some(gi) && keep[c]);
         keep[gi] = has_nodes || has_children || referenced[gi];
     }
 
@@ -880,8 +965,12 @@ fn build_scope(
     direct_nodes: &HashMap<Option<usize>, Vec<usize>>,
     keep: &[bool],
 ) -> CanvasResult {
-    let mut items: Vec<ItemKey> =
-        direct_nodes.get(&scope).into_iter().flatten().map(|&ni| ItemKey::Node(ni)).collect();
+    let mut items: Vec<ItemKey> = direct_nodes
+        .get(&scope)
+        .into_iter()
+        .flatten()
+        .map(|&ni| ItemKey::Node(ni))
+        .collect();
     let child_groups: Vec<usize> = (0..graph.groups.len())
         .filter(|&gi| graph.groups[gi].parent == scope && keep[gi])
         .collect();
@@ -906,7 +995,10 @@ fn build_scope(
             }
             ItemKey::Group(i) => {
                 let sub = build_scope(graph, Some(i), scope_edges, direct_nodes, keep)?;
-                nodes.push(Node { label: graph.groups[i].label.clone(), shape: Shape::Rect });
+                nodes.push(Node {
+                    label: graph.groups[i].label.clone(),
+                    shape: Shape::Rect,
+                });
                 extras.push(NodeExtra::Frame { sub });
             }
         }
@@ -915,7 +1007,9 @@ fn build_scope(
     let mut edges: Vec<Edge> = Vec::new();
     if let Some(list) = scope_edges.get(&scope) {
         for &(f, t, ei) in list {
-            let (Some(&fi), Some(&ti)) = (index_of.get(&f), index_of.get(&t)) else { continue };
+            let (Some(&fi), Some(&ti)) = (index_of.get(&f), index_of.get(&t)) else {
+                continue;
+            };
             let e = &graph.edges[ei];
             edges.push(Edge {
                 from: fi,
@@ -1011,7 +1105,11 @@ fn draw_frame(canvas: &mut Canvas, p: &Placed, title: &str, sub: &Canvas) {
     draw_box(canvas, p, &[], Shape::Rect);
     let t = fit_label(title, sat(p.w, 4));
     draw_text_over_edges(canvas, &format!(" {t} "), p.x + 1, p.y, Cls::Text);
-    canvas.blit(sub, p.x + 1 + half(p.w - 2 - sub.w), p.y + 1 + half(p.h - 2 - sub.h));
+    canvas.blit(
+        sub,
+        p.x + 1 + half(p.w - 2 - sub.w),
+        p.y + 1 + half(p.h - 2 - sub.h),
+    );
 }
 
 // ------------------------------------------------------------------- routing
@@ -1038,7 +1136,11 @@ fn head_glyph(head: Head, arrow: &str) -> String {
 fn route_forward(canvas: &mut Canvas, from: &Placed, to: &Placed, edge: &Edge, bus: usize) {
     let tx = to.cx;
     // A jog of one column reads as a kink; snap straight instead.
-    let bx = if from.cx.abs_diff(tx) <= 1 { tx } else { from.cx };
+    let bx = if from.cx.abs_diff(tx) <= 1 {
+        tx
+    } else {
+        from.cx
+    };
     let by = from.y + from.h - 1;
     let head_row = to.y - 1;
 
@@ -1115,7 +1217,12 @@ fn route_back(canvas: &mut Canvas, from: &Placed, to: &Placed, edge: &Edge, lane
     }
 
     if let Some(label) = &edge.label {
-        place_label(canvas, label, sat(tyc, 1), sat(lane_x, string_width(label) + 1));
+        place_label(
+            canvas,
+            label,
+            sat(tyc, 1),
+            sat(lane_x, string_width(label) + 1),
+        );
     }
 }
 

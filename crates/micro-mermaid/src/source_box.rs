@@ -45,26 +45,52 @@ pub fn source_box(src: &str, columns: usize) -> Art {
     let rule = "─".repeat(sat(inner, string_width(&title)));
     plain.push(format!("╭{title}{rule}╮"));
     styled.push(vec![
-        Span { text: "╭".to_string(), cls: Cls::Border },
-        Span { text: title.clone(), cls: Cls::Title },
-        Span { text: format!("{rule}╮"), cls: Cls::Border },
+        Span {
+            text: "╭".to_string(),
+            cls: Cls::Border,
+        },
+        Span {
+            text: title.clone(),
+            cls: Cls::Title,
+        },
+        Span {
+            text: format!("{rule}╮"),
+            cls: Cls::Border,
+        },
     ]);
 
     for line in &body {
         let pad = " ".repeat(sat(content_w, string_width(line)));
         plain.push(format!("│ {line}{pad} │"));
         styled.push(vec![
-            Span { text: "│ ".to_string(), cls: Cls::Border },
-            Span { text: line.clone(), cls: Cls::Text },
-            Span { text: format!("{pad} │"), cls: Cls::Border },
+            Span {
+                text: "│ ".to_string(),
+                cls: Cls::Border,
+            },
+            Span {
+                text: line.clone(),
+                cls: Cls::Text,
+            },
+            Span {
+                text: format!("{pad} │"),
+                cls: Cls::Border,
+            },
         ]);
     }
 
     let bottom = format!("╰{}╯", "─".repeat(inner));
     plain.push(bottom.clone());
-    styled.push(vec![Span { text: bottom, cls: Cls::Border }]);
+    styled.push(vec![Span {
+        text: bottom,
+        cls: Cls::Border,
+    }]);
 
-    Art { plain, styled, width: inner + 2, warnings: Vec::new() }
+    Art {
+        plain,
+        styled,
+        width: inner + 2,
+        warnings: Vec::new(),
+    }
 }
 
 /// Hard-break a line at `limit` columns, never splitting a wide glyph.

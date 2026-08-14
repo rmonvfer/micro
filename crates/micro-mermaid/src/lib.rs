@@ -14,6 +14,7 @@ mod labels;
 mod layout;
 mod layout_seq;
 mod parse;
+mod pie;
 mod source_box;
 mod types;
 mod width;
@@ -62,7 +63,12 @@ pub fn render(src: &str) -> Option<Art> {
     }
     let drawn = attempt(&src)?;
     let lines = drawn.canvas.to_lines();
-    Some(Art { plain: lines.plain, styled: lines.styled, width: lines.width, warnings: drawn.warnings })
+    Some(Art {
+        plain: lines.plain,
+        styled: lines.styled,
+        width: lines.width,
+        warnings: drawn.warnings,
+    })
 }
 
 struct Drawn {
@@ -90,13 +96,19 @@ fn attempt(src: &str) -> Option<Drawn> {
     let dropped = body[cut + 1..].trim();
     let mut warnings = salvaged.warnings;
     warnings.push(format!("dropped, unreadable final line: \"{dropped}\""));
-    Some(Drawn { canvas: salvaged.canvas, warnings })
+    Some(Drawn {
+        canvas: salvaged.canvas,
+        warnings,
+    })
 }
 
 /// Dispatch on the declared diagram type; `None` means nothing was drawn.
 fn draw(src: &str) -> Option<Drawn> {
     fn plain(canvas: CanvasResult) -> Option<Drawn> {
-        canvas.map(|canvas| Drawn { canvas, warnings: Vec::new() })
+        canvas.map(|canvas| Drawn {
+            canvas,
+            warnings: Vec::new(),
+        })
     }
 
     match parse::diagram_kind(src)? {
@@ -107,8 +119,14 @@ fn draw(src: &str) -> Option<Drawn> {
             } else {
                 layout_grouped(&graph)
             };
-            canvas.map(|canvas| Drawn { canvas, warnings: graph.warnings })
+            canvas.map(|canvas| Drawn {
+                canvas,
+                warnings: graph.warnings,
+            })
         }
+        // A pie reads its own source: it is rows of values rather than a graph, and has
+        // nothing to gain from the node-and-edge model the others share.
+        DiagramKind::Pie => plain(pie::render_pie(src)),
         DiagramKind::State => {
             let state = parse_state(src)?;
             plain(layout_flowchart(&state))

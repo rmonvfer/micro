@@ -98,6 +98,7 @@ pub enum DiagramKind {
     Class,
     Er,
     Sequence,
+    Pie,
 }
 
 /// The kind of diagram `src` declares, or `None` if its header names no type
@@ -123,6 +124,8 @@ pub fn diagram_kind(src: &str) -> Option<DiagramKind> {
         Some(DiagramKind::Er)
     } else if kind == "sequencediagram" {
         Some(DiagramKind::Sequence)
+    } else if kind == "pie" {
+        Some(DiagramKind::Pie)
     } else {
         None
     }
@@ -208,7 +211,9 @@ fn parse_statement(st: &str, graph: &mut Graph) {
     let head = match parse_node_group(&chars, 0, graph) {
         Some(h) => h,
         None => {
-            graph.warnings.push(format!("dropped, does not start with a node: \"{st}\""));
+            graph
+                .warnings
+                .push(format!("dropped, does not start with a node: \"{st}\""));
             return;
         }
     };
@@ -224,7 +229,9 @@ fn parse_statement(st: &str, graph: &mut Graph) {
             Some(l) => l,
             None => {
                 let rest: String = chars[i..].iter().collect();
-                graph.warnings.push(format!("dropped, expected a link: \"{rest}\""));
+                graph
+                    .warnings
+                    .push(format!("dropped, expected a link: \"{rest}\""));
                 break;
             }
         };
@@ -232,7 +239,9 @@ fn parse_statement(st: &str, graph: &mut Graph) {
         let target = match parse_node_group(&chars, i, graph) {
             Some(t) => t,
             None => {
-                graph.warnings.push(format!("dropped, link has no target: \"{st}\""));
+                graph
+                    .warnings
+                    .push(format!("dropped, link has no target: \"{st}\""));
                 break;
             }
         };
@@ -311,10 +320,15 @@ fn parse_node(chars: &[char], start: usize, graph: &mut Graph) -> Option<NodeRef
 
     let shaped = read_shape_at(chars, i);
     if let Some(unclosed) = shaped.unclosed {
-        graph.warnings.push(format!("node \"{id}\": label is missing its closing `{unclosed}`"));
+        graph.warnings.push(format!(
+            "node \"{id}\": label is missing its closing `{unclosed}`"
+        ));
     }
     let index = graph.node_index(&id, shaped.label.as_deref(), shaped.shape)?;
-    Some(NodeRef { index, next: shaped.after })
+    Some(NodeRef {
+        index,
+        next: shaped.after,
+    })
 }
 
 /// What a shape bracket yielded. `unclosed` is set when the bracket never closed.
@@ -346,7 +360,12 @@ fn read_shape_at(chars: &[char], i: usize) -> Shaped {
             _ => read_shape(chars, i + 1, "}", Shape::Diamond),
         },
         Some('>') => read_shape(chars, i + 1, "]", Shape::Rect),
-        _ => Shaped { shape: Shape::Rect, label: None, after: i, unclosed: None },
+        _ => Shaped {
+            shape: Shape::Rect,
+            label: None,
+            after: i,
+            unclosed: None,
+        },
     }
 }
 
@@ -387,7 +406,12 @@ fn read_shape(chars: &[char], start: usize, closer: &'static str, shape: Shape) 
     }
     // Ran off the end still looking for the closer: everything after the opening
     // bracket became label text, so any link operator in it was swallowed.
-    Shaped { shape, label: Some(clean_label(&text)), after: chars.len(), unclosed: Some(closer) }
+    Shaped {
+        shape,
+        label: Some(clean_label(&text)),
+        after: chars.len(),
+        unclosed: Some(closer),
+    }
 }
 
 fn is_link_char(c: char) -> bool {
@@ -415,8 +439,10 @@ fn trailing_head(chars: &[char], i: usize) -> Option<Trailing> {
         _ => return None,
     };
     let after = chars.get(i + 1);
-    let boundary =
-        matches!(after, None | Some(&' ') | Some(&'\t') | Some(&'|') | Some(&'&') | Some(&';'));
+    let boundary = matches!(
+        after,
+        None | Some(&' ') | Some(&'\t') | Some(&'|') | Some(&'&') | Some(&';')
+    );
     if boundary {
         Some(Trailing { head, next: i + 1 })
     } else {
@@ -445,7 +471,11 @@ fn parse_link(chars: &[char], start: usize) -> Option<Link> {
     if matches!(chars.get(i), Some(&'o') | Some(&'x'))
         && matches!(chars.get(i + 1), Some(&'-') | Some(&'.') | Some(&'='))
     {
-        left = if chars[i] == 'o' { Head::Circle } else { Head::Cross };
+        left = if chars[i] == 'o' {
+            Head::Circle
+        } else {
+            Head::Cross
+        };
         i += 1;
     }
 
@@ -462,7 +492,11 @@ fn parse_link(chars: &[char], start: usize) -> Option<Link> {
     }
 
     let mut line = line_kind(&op1);
-    let mut right = if op1.contains('>') { Head::Arrow } else { Head::None };
+    let mut right = if op1.contains('>') {
+        Head::Arrow
+    } else {
+        Head::None
+    };
     if right == Head::None {
         if let Some(trailing) = trailing_head(chars, i) {
             right = trailing.head;
@@ -480,7 +514,13 @@ fn parse_link(chars: &[char], start: usize) -> Option<Link> {
         if chars.get(i) == Some(&'|') {
             i += 1;
         }
-        return Some(Link { left, right, line, label: non_empty(label), next: i });
+        return Some(Link {
+            left,
+            right,
+            line,
+            label: non_empty(label),
+            next: i,
+        });
     }
 
     if right == Head::None {
@@ -515,7 +555,13 @@ fn parse_link(chars: &[char], start: usize) -> Option<Link> {
         }
     }
 
-    Some(Link { left, right, line, label: None, next: i })
+    Some(Link {
+        left,
+        right,
+        line,
+        label: None,
+        next: i,
+    })
 }
 
 // --------------------------------------------------------------------- state
@@ -548,7 +594,10 @@ pub fn parse_state(src: &str) -> Option<Graph> {
             }
         } else if first == "state" {
             parse_state_decl(st, &mut graph)?;
-        } else if matches!(first.as_str(), "classdef" | "class" | "hide" | "scale" | "}" | "--") {
+        } else if matches!(
+            first.as_str(),
+            "classdef" | "class" | "hide" | "scale" | "}" | "--"
+        ) {
             // Styling and composite-state punctuation carry no layout meaning.
         } else if st.contains("-->") {
             parse_transition(st, &mut graph)?;
@@ -580,14 +629,19 @@ fn parse_state_decl(st: &str, graph: &mut Graph) -> Option<()> {
         let label = &after_quote[..close];
         let after = after_quote[close + 1..].trim();
         let id = after.strip_prefix("as").map(|s| s.trim()).unwrap_or(label);
-        return graph.node_label(id, &decode_html_entities(label)).map(|_| ());
+        return graph
+            .node_label(id, &decode_html_entities(label))
+            .map(|_| ());
     }
 
     let mut shape = Shape::Round;
     let mut id = rest;
     let mut stereotyped = false;
     if let Some(pos) = rest.find("<<") {
-        let stereo = rest[pos + 2..].strip_suffix(">>").unwrap_or(&rest[pos + 2..]).trim();
+        let stereo = rest[pos + 2..]
+            .strip_suffix(">>")
+            .unwrap_or(&rest[pos + 2..])
+            .trim();
         if stereo == "choice" {
             shape = Shape::Diamond;
         }
@@ -597,7 +651,9 @@ fn parse_state_decl(st: &str, graph: &mut Graph) -> Option<()> {
     if id.is_empty() || id.chars().any(char::is_whitespace) {
         return None;
     }
-    graph.node_index(id, if stereotyped { Some(id) } else { None }, shape).map(|_| ())
+    graph
+        .node_index(id, if stereotyped { Some(id) } else { None }, shape)
+        .map(|_| ())
 }
 
 /// `A --> B: label`, including chains `A --> B --> C`.
@@ -675,7 +731,9 @@ fn parse_state_desc(st: &str, graph: &mut Graph) -> Option<()> {
         if id.is_empty() || id.chars().any(char::is_whitespace) || desc.is_empty() {
             return None;
         }
-        return graph.node_label(id, &decode_html_entities(desc)).map(|_| ());
+        return graph
+            .node_label(id, &decode_html_entities(desc))
+            .map(|_| ());
     }
     if st.chars().any(char::is_whitespace) {
         return None;
@@ -762,7 +820,11 @@ pub fn parse_class(src: &str) -> Option<(Graph, Vec<ClassInfo>)> {
         if first == "class" {
             let rest = st["class".len()..].trim();
             let open = rest.ends_with('{');
-            let name = if open { rest[..rest.len() - 1].trim() } else { rest };
+            let name = if open {
+                rest[..rest.len() - 1].trim()
+            } else {
+                rest
+            };
             if name.is_empty() || name.chars().any(char::is_whitespace) {
                 return None;
             }
@@ -830,7 +892,11 @@ pub fn push_member(info: &mut ClassInfo, raw: &str) {
         return;
     }
     let member = decode_html_entities(&display_generics(raw.trim()));
-    let list = if member.contains('(') { &mut info.methods } else { &mut info.attrs };
+    let list = if member.contains('(') {
+        &mut info.methods
+    } else {
+        &mut info.attrs
+    };
     if list.len() < MAX_MEMBERS {
         list.push(member);
     } else if list.len() == MAX_MEMBERS {
@@ -897,13 +963,24 @@ fn parse_class_relation(st: &str) -> Option<ClassRelation> {
     }
 
     let label = non_empty(
-        [card_from.as_str(), rel_label.as_deref().unwrap_or(""), card_to.as_str()]
-            .into_iter()
-            .filter(|s| !s.is_empty())
-            .collect::<Vec<_>>()
-            .join(" "),
+        [
+            card_from.as_str(),
+            rel_label.as_deref().unwrap_or(""),
+            card_to.as_str(),
+        ]
+        .into_iter()
+        .filter(|s| !s.is_empty())
+        .collect::<Vec<_>>()
+        .join(" "),
     );
-    Some(ClassRelation { from: lhs, to: to_id, head_from, head_to, line, label })
+    Some(ClassRelation {
+        from: lhs,
+        to: to_id,
+        head_from,
+        head_to,
+        line,
+        label,
+    })
 }
 
 /// `Class "1"` — a quoted cardinality trailing the left-hand name.
@@ -922,7 +999,10 @@ fn strip_cardinality_prefix(s: &str) -> (String, String) {
     let t = s.trim_start();
     if let Some(rest) = t.strip_prefix('"') {
         if let Some(q) = rest.find('"') {
-            return (rest[q + 1..].trim_start().to_string(), rest[..q].to_string());
+            return (
+                rest[q + 1..].trim_start().to_string(),
+                rest[..q].to_string(),
+            );
         }
     }
     (t.to_string(), String::new())
@@ -981,7 +1061,11 @@ pub fn parse_er(src: &str) -> Option<(Graph, Vec<ClassInfo>)> {
         }
 
         let open = st.ends_with('{');
-        let decl = if open { st[..st.len() - 1].trim() } else { st.as_str() };
+        let decl = if open {
+            st[..st.len() - 1].trim()
+        } else {
+            st.as_str()
+        };
         if decl.is_empty() || words(decl).len() != 1 {
             return None;
         }
@@ -1027,7 +1111,10 @@ fn split_er_relationship(st: &str) -> Option<ErRelationship> {
     let rel = split.map(|(a, _)| a).unwrap_or(st);
     let label = split.map(|(_, b)| b.trim().to_string());
     if words(rel).iter().any(|t| parse_er_op(t).is_some()) {
-        Some(ErRelationship { rel: rel.to_string(), label })
+        Some(ErRelationship {
+            rel: rel.to_string(),
+            label,
+        })
     } else {
         None
     }
@@ -1054,7 +1141,11 @@ fn parse_er_op(tok: &str) -> Option<ErOp> {
     };
     let card_l = er_card(&tok[0..2])?;
     let card_r = er_card(&tok[4..6])?;
-    Some(ErOp { card_l, card_r, line })
+    Some(ErOp {
+        card_l,
+        card_r,
+        line,
+    })
 }
 
 fn er_card(tok: &str) -> Option<String> {
@@ -1118,9 +1209,20 @@ pub enum NoteAnchor {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SeqItem {
-    Message { from: usize, to: usize, text: Option<String>, dashed: bool, head: SeqHead },
-    Note { anchor: NoteAnchor, text: String },
-    Divider { text: String },
+    Message {
+        from: usize,
+        to: usize,
+        text: Option<String>,
+        dashed: bool,
+        head: SeqHead,
+    },
+    Note {
+        anchor: NoteAnchor,
+        text: String,
+    },
+    Divider {
+        text: String,
+    },
 }
 
 #[derive(Debug, Default)]
@@ -1205,7 +1307,10 @@ pub fn parse_sequence(src: &str) -> Option<Sequence> {
             if seq.items.len() >= MAX_EDGES {
                 return None;
             }
-            seq.items.push(SeqItem::Note { anchor: note.anchor, text: note.text });
+            seq.items.push(SeqItem::Note {
+                anchor: note.anchor,
+                text: note.text,
+            });
             continue;
         }
         if matches!(
@@ -1223,7 +1328,9 @@ pub fn parse_sequence(src: &str) -> Option<Sequence> {
             if seq.items.len() >= MAX_EDGES {
                 return None;
             }
-            seq.items.push(SeqItem::Divider { text: decode_html_entities(st) });
+            seq.items.push(SeqItem::Divider {
+                text: decode_html_entities(st),
+            });
             continue;
         }
         if lower == "rect" || lower == "box" {
@@ -1235,7 +1342,9 @@ pub fn parse_sequence(src: &str) -> Option<Sequence> {
                 if seq.items.len() >= MAX_EDGES {
                     return None;
                 }
-                seq.items.push(SeqItem::Divider { text: "end".to_string() });
+                seq.items.push(SeqItem::Divider {
+                    text: "end".to_string(),
+                });
             }
             continue;
         }
@@ -1293,22 +1402,37 @@ fn parse_note_anchor(rest: &str, seq: &mut Sequence) -> Option<NoteResult> {
 
     let (ids_part, text_part) = ids_and_text.split_once(':')?;
     let text = decode_html_entities(text_part.trim());
-    let parts: Vec<&str> =
-        ids_part.split(',').map(|s| s.trim()).filter(|s| !s.is_empty()).collect();
+    let parts: Vec<&str> = ids_part
+        .split(',')
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .collect();
     if parts.is_empty() {
         return None;
     }
     let a = seq.participant(parts[0], None)?;
 
     match kind {
-        Kind::Left => Some(NoteResult { text, anchor: NoteAnchor::Left { at: a } }),
-        Kind::Right => Some(NoteResult { text, anchor: NoteAnchor::Right { at: a } }),
+        Kind::Left => Some(NoteResult {
+            text,
+            anchor: NoteAnchor::Left { at: a },
+        }),
+        Kind::Right => Some(NoteResult {
+            text,
+            anchor: NoteAnchor::Right { at: a },
+        }),
         Kind::Over => {
             let b = match parts.get(1) {
                 Some(&second_name) => seq.participant(second_name, None)?,
                 None => a,
             };
-            Some(NoteResult { text, anchor: NoteAnchor::Over { from: a.min(b), to: a.max(b) } })
+            Some(NoteResult {
+                text,
+                anchor: NoteAnchor::Over {
+                    from: a.min(b),
+                    to: a.max(b),
+                },
+            })
         }
     }
 }
@@ -1355,5 +1479,11 @@ fn parse_seq_message(st: &str, seq: &mut Sequence) -> Option<SeqMessage> {
 
     let from = seq.participant(&from_id, None)?;
     let to = seq.participant(&to_id, None)?;
-    Some(SeqMessage { from, to, text, dashed, head })
+    Some(SeqMessage {
+        from,
+        to,
+        text,
+        dashed,
+        head,
+    })
 }

@@ -257,13 +257,19 @@ impl Canvas {
                 let cls = self.cls[i];
                 plain_row.push_str(c);
                 if cls != run_cls && !run.is_empty() {
-                    spans.push(Span { text: std::mem::take(&mut run), cls: run_cls });
+                    spans.push(Span {
+                        text: std::mem::take(&mut run),
+                        cls: run_cls,
+                    });
                 }
                 run_cls = cls;
                 run.push_str(c);
             }
             if !run.is_empty() {
-                spans.push(Span { text: run, cls: run_cls });
+                spans.push(Span {
+                    text: run,
+                    cls: run_cls,
+                });
             }
             styled.push(spans);
             // Only ASCII spaces, which is all a blank cell ever holds. Trimming

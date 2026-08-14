@@ -21,13 +21,25 @@ const LABEL_BREAK_CHARS: [char; 4] = ['_', '-', '.', '/'];
 /// only the plain ASCII letters are folded.
 pub fn ascii_lower(s: &str) -> String {
     s.chars()
-        .map(|c| if c.is_ascii_uppercase() { c.to_ascii_lowercase() } else { c })
+        .map(|c| {
+            if c.is_ascii_uppercase() {
+                c.to_ascii_lowercase()
+            } else {
+                c
+            }
+        })
         .collect()
 }
 
 pub fn ascii_upper(s: &str) -> String {
     s.chars()
-        .map(|c| if c.is_ascii_lowercase() { c.to_ascii_uppercase() } else { c })
+        .map(|c| {
+            if c.is_ascii_lowercase() {
+                c.to_ascii_uppercase()
+            } else {
+                c
+            }
+        })
         .collect()
 }
 
@@ -131,7 +143,10 @@ pub fn decode_html_entities(s: &str) -> String {
         // Scan a bounded window including the terminating `;`, so a stray `&` or an
         // over-long run stays literal.
         let hi = (i + 1 + ENTITY_LOOKAHEAD).min(chars.len());
-        let semi = chars[i + 1..hi].iter().position(|&c| c == ';').map(|p| i + 1 + p);
+        let semi = chars[i + 1..hi]
+            .iter()
+            .position(|&c| c == ';')
+            .map(|p| i + 1 + p);
         let decoded = semi.and_then(|j| {
             let body: String = chars[i + 1..j].iter().collect();
             decode_entity_body(&body)
