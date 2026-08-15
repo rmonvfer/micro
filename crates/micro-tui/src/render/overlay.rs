@@ -97,7 +97,10 @@ pub fn inspection_lines(
             theme.body()
         };
         out.push(clip(
-            Line::from(vec![Span::styled(marker, style), Span::styled(item.label.clone(), style)]),
+            Line::from(vec![
+                Span::styled(marker, style),
+                Span::styled(item.label.clone(), style),
+            ]),
             width,
         ));
     }
