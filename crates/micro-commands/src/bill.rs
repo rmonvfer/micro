@@ -1210,10 +1210,10 @@ mod tests {
         assert!(billed.unpriced.is_empty(), "the model was found");
 
         let report = billed.report();
-        assert!(report.contains("what a subscription reports"), "{report}");
+        assert!(report.contains("uses subscription billing"), "{report}");
         assert!(
-            !report.contains("carries no price for"),
-            "which is not the same as a model nobody could price: {report}"
+            !report.contains("No catalog price for"),
+            "subscription-backed models should not be reported as unpriced: {report}"
         );
     }
 
@@ -1237,7 +1237,7 @@ mod tests {
         assert_eq!(billed.total, 0.0);
         assert_eq!(billed.unpriced, vec!["openai/test-model".to_string()]);
         assert!(
-            billed.report().contains("carries no price for"),
+            billed.report().contains("No catalog price for"),
             "{}",
             billed.report()
         );
