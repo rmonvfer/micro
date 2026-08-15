@@ -135,7 +135,6 @@ When enabled, micro reports turns that write a prompt cache without reading from
 micro auth login <PROVIDER>
 micro auth logout <PROVIDER>
 micro auth status
-micro auth import
 ```
 
 The file is created with user-only permissions. A stored credential takes precedence over the provider's environment variable.
