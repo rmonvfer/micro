@@ -10,7 +10,10 @@ permissions:
 
 jobs:
   check:
-    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
@@ -20,4 +23,8 @@ jobs:
       - name: Compile
         run: cargo check --workspace --all-targets
       - name: Unit tests
+        if: runner.os == 'Linux'
         run: cargo test --workspace --lib
+      - name: Sandbox tests
+        if: runner.os == 'macOS'
+        run: cargo test -p micro-sandbox --lib
