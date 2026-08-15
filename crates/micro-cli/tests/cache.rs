@@ -120,7 +120,7 @@ fn a_second_turn_sends_the_first_turns_prefix_unchanged() {
     );
 
     // The session can say so itself, which is the whole point of recording it.
-    let explained = fixture.micro_run(&["why-miss", &session_id(&fixture)]);
+    let explained = fixture.micro_run(&["why-miss", &session_id(&fixture), "2"]);
     explained.expect_success("micro why-miss");
     assert!(
         explained.stdout.contains("The prefix held"),
@@ -216,7 +216,7 @@ fn reloading_mid_session_reaches_the_next_request_and_why_miss_names_the_span() 
     assert_eq!(changes[0].2["reason"], "reload");
     assert_ne!(changes[0].2["from_hash"], changes[0].2["to_hash"]);
 
-    let explained = fixture.micro_run(&["why-miss", &session_id(&fixture)]);
+    let explained = fixture.micro_run(&["why-miss", &session_id(&fixture), "2"]);
     explained.expect_success("micro why-miss");
     let printed = &explained.stdout;
     assert!(

@@ -275,13 +275,13 @@ pub fn declared(entry: &Path) -> Option<Vec<String>> {
 /// How far above an entry file a package manifest is looked for.
 const MANIFEST_SEARCH_DEPTH: usize = 3;
 
-/// The capabilities one `package.json` declares, under whichever of the three names it
-/// declared them — the same three [`crate::entries_of`] reads a package's entry points
+/// The capabilities one `package.json` declares under `micro` or `pi`, the same names
+/// [`crate::entries_of`] reads a package's entry points
 /// from, so a package published for pi declares both in one place.
 fn in_manifest(path: &Path) -> Option<Vec<String>> {
     let raw = std::fs::read_to_string(path).ok()?;
     let manifest: serde_json::Value = serde_json::from_str(&raw).ok()?;
-    for section in ["micro", "ohm", "pi"] {
+    for section in ["micro", "pi"] {
         let Some(declared) = manifest.get(section).and_then(|section| section.get("capabilities"))
         else {
             continue;

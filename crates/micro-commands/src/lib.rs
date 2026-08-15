@@ -21,6 +21,7 @@ mod bill;
 mod model;
 mod outcome;
 mod parse;
+mod request;
 mod session;
 mod why_miss;
 
@@ -30,7 +31,9 @@ pub use bill::BillLine;
 pub use bill::CompactionBill;
 pub use bill::Side;
 pub use bill::TurnBill;
+pub use bill::UnknownAttempt;
 pub use outcome::CommandOutcome;
+pub use outcome::InspectionItem;
 pub use outcome::MessageKind;
 pub use outcome::RemoteAction;
 pub use outcome::Picker;
@@ -227,6 +230,11 @@ static COMMANDS: &[Command] = &[
         description: "say why a turn did not reuse the cached prompt",
     },
     Command {
+        name: "request",
+        argument: Some("<turn> [--raw]"),
+        description: "inspect the recorded provider request",
+    },
+    Command {
         name: "compact",
         argument: None,
         description: "summarize the conversation to reclaim context",
@@ -373,6 +381,7 @@ pub async fn run(
         "debug" => debug(context),
         "bill" => bill::command(argument, context).await,
         "why-miss" => why_miss::command(argument, context).await,
+        "request" => request::command(argument, context).await,
         "thinking" => thinking(argument),
         "theme" => theme(argument),
         "compact" => compact(context),

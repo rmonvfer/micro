@@ -10,13 +10,9 @@
 ; start with closed-by-default
 (deny default)
 
-; child processes inherit the policy of their parent
-(allow process-exec)
-(allow process-fork)
-(allow signal (target same-sandbox))
-
 ; process-info
 (allow process-info* (target same-sandbox))
+(allow signal (target same-sandbox))
 
 (allow file-write-data
   (require-all

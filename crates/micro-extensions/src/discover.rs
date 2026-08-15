@@ -19,14 +19,11 @@ pub const PROJECT_DIR: &str = ".micro/extensions";
 
 /// What a `package.json` says about the extensions it carries.
 ///
-/// Entries are declared under `micro` or `pi`. A legacy key is accepted alongside those, so
-/// a package that still writes one loads here without being repackaged.
+/// Entries are declared under `micro` or `pi`.
 #[derive(Debug, Clone, Default, Deserialize)]
 struct Manifest {
     #[serde(default)]
     micro: Option<ManifestSection>,
-    #[serde(default)]
-    ohm: Option<ManifestSection>,
     #[serde(default)]
     pi: Option<ManifestSection>,
 }
@@ -34,7 +31,7 @@ struct Manifest {
 impl Manifest {
     /// The entries it declares, under whichever name it declared them.
     fn extensions(self) -> Vec<String> {
-        for section in [self.micro, self.ohm, self.pi].into_iter().flatten() {
+        for section in [self.micro, self.pi].into_iter().flatten() {
             if !section.extensions.is_empty() {
                 return section.extensions;
             }
@@ -230,24 +227,9 @@ mod tests {
         assert!(found[0].ends_with("index.ts"));
     }
 
-    /// A package declaring its entries under the legacy manifest key still loads, as does
-    /// one declaring them under `pi`.
+    /// A package declaring its entries under `pi` still loads.
     #[test]
-    fn a_package_written_for_ohm_still_loads() {
-        let root = scratch("ohm-manifest");
-        write(
-            &root.join("adapter/package.json"),
-            r#"{ "name": "ohm-mcp-adapter", "ohm": { "extensions": ["dist/index.js"] } }"#,
-        );
-        write(
-            &root.join("adapter/dist/index.js"),
-            "export default () => {}",
-        );
-
-        let found = in_directory(&root);
-        assert_eq!(found.len(), 1, "{found:?}");
-        assert!(found[0].ends_with("dist/index.js"));
-
+    fn a_package_written_for_pi_still_loads() {
         let root = scratch("pi-manifest");
         write(
             &root.join("adapter/package.json"),

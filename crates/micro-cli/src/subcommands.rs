@@ -81,24 +81,6 @@ pub async fn auth_login(provider: &str) -> Result<()> {
     Ok(())
 }
 
-/// Adopt the credentials agent47 already holds, so a user with a working setup does not
-/// have to authenticate a second time.
-pub async fn auth_import(overwrite: bool) -> Result<()> {
-    let store = AuthStore::open()?;
-    let report = store.import_agent47(overwrite)?;
-
-    println!("Read {}", report.source.display());
-    for entry in &report.entries {
-        println!("  {:<16} {}", entry.provider, entry.outcome.reason());
-    }
-
-    match report.imported() {
-        0 => println!("\nNothing imported."),
-        count => println!("\nImported {count} credential(s). Run `micro auth status` to check."),
-    }
-    Ok(())
-}
-
 pub async fn auth_logout(provider: &str) -> Result<()> {
     AuthStore::open()?.remove(provider)?;
     println!("Removed the stored credential for {provider}.");
@@ -258,7 +240,7 @@ pub async fn sessions_export(id: &str) -> Result<()> {
     Ok(())
 }
 
-/// `micro bill [session] [--diff <turn>]` — what a session cost, and what it went on.
+/// `micro bill <session> [--diff <turn>]` — what a session cost, and what it went on.
 ///
 /// The reading of the ledger is [`micro_commands::bill`], the same one `/bill` shows.
 /// Priced against the catalog as it stands, which is what makes an old session billable at
@@ -284,9 +266,9 @@ pub async fn bill(id: &str, diff: Option<u64>) -> Result<()> {
 ///
 /// The reading of the ledger is [`micro_commands::why_miss`], the same one `/why-miss`
 /// shows, so what a session says about itself does not depend on where it was asked.
-pub async fn why_miss(id: &str, turn: Option<u64>) -> Result<()> {
+pub async fn why_miss(id: &str, turn: u64) -> Result<()> {
     let store = SessionStore::from_env()?;
-    let explanation = micro_commands::why_miss(&store, id, turn)
+    let explanation = micro_commands::why_miss(&store, id, Some(turn))
         .await
         .map_err(|reason| anyhow::anyhow!(reason))?;
     println!("{explanation}");
@@ -382,8 +364,27 @@ fn print_turn(id: &str, turn: &micro_session::ReconstructedTurn) {
     println!("request  {}", turn.request_hash);
 }
 
-/// The request as it went out, rebuilt from what the turn recorded.
+/// The request as it went out. New ledgers retain the exact serialized body. Older ones
+/// are reconstructed and printed only when that reconstruction matches the recorded hash.
 fn print_request(id: &str, turn: &micro_session::ReconstructedTurn) -> Result<()> {
+    if let Some(body) = &turn.recorded_request_body {
+        let hash = micro_types::content_hash(body);
+        if hash != turn.request_hash {
+            anyhow::bail!(
+                "stored request body for session {id} turn {} failed verification: expected {}, got {}",
+                turn.turn,
+                turn.request_hash,
+                hash
+            );
+        }
+        serde_json::from_slice::<serde_json::Value>(body)?;
+        std::io::stdout().write_all(body)?;
+        if !body.ends_with(b"\n") {
+            println!();
+        }
+        return Ok(());
+    }
+
     let catalog = Catalog::load().unwrap_or_else(|_| Catalog::bundled());
     let model = catalog.get(&turn.provider, &turn.model_id).ok_or_else(|| {
         anyhow::anyhow!(
@@ -409,13 +410,16 @@ fn print_request(id: &str, turn: &micro_session::ReconstructedTurn) -> Result<()
     // rebuilding is what is wrong, and saying so is better than printing it as if it were
     // the request.
     if micro_types::content_hash(&body) != turn.request_hash {
-        eprintln!(
-            "note: this rebuilds to a different request than the one recorded ({}). \
-             Something changed the request after it was recorded.",
-            short(&turn.request_hash)
+        anyhow::bail!(
+            "request reconstruction failed verification for session {id} turn {} (expected {})",
+            turn.turn,
+            short(&turn.request_hash),
         );
     }
-    println!("{}", serde_json::to_string_pretty(&payload)?);
+    std::io::stdout().write_all(&body)?;
+    if !body.ends_with(b"\n") {
+        println!();
+    }
     Ok(())
 }
 

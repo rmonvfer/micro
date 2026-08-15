@@ -66,7 +66,7 @@ Read-only getters do not require a capability. Host operations outside the decla
 
 Extensions without a manifest use a compatibility path. micro determines the capabilities they request and may ask for a one-time decision. The answer is saved in `capabilities.json`.
 
-Capabilities control access to micro's host API. They do not sandbox arbitrary code running inside Bun. See [Security model](security.md).
+Capabilities control access to micro's host API. Bun itself runs in a separate process sandbox with no inherited environment, network, or write access and with reads limited to the host and loaded extension packages. See [Security model](security.md).
 
 ## Register a tool
 
@@ -105,7 +105,9 @@ const result = await ctx.exec("git", ["status", "--short"]);
 
 The result includes stdout, stderr, exit status, and sandbox-denial fields. The extension needs the `exec` capability.
 
-The Bun host process itself is not inside that sandbox. Only commands sent through micro are confined.
+The Bun host has its own read-allowlisted sandbox. `ctx.exec` is separate: it requires the `exec` capability and the requested command still runs under the session's command policy. If the session is `workspace-write`, an extension cannot use `ctx.exec` to write outside the workspace or use the network.
+
+On a platform where micro cannot enforce the Bun-host sandbox, extensions do not run.
 
 ## Events
 

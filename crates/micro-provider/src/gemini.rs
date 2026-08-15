@@ -109,6 +109,20 @@ impl Provider for Gemini {
         context: Context,
         api_key: String,
     ) -> UnboundedReceiver<StreamEvent> {
+        let payload = match self.request_payload(&model, &context, &api_key) {
+            Ok(payload) => payload,
+            Err(error) => return crate::error_stream(error),
+        };
+        self.stream_prepared(model, context, api_key, payload)
+    }
+
+    fn stream_prepared(
+        &self,
+        model: Model,
+        context: Context,
+        api_key: String,
+        payload: Value,
+    ) -> UnboundedReceiver<StreamEvent> {
         let (sender, receiver) = mpsc::unbounded_channel();
         let client = self.client.clone();
         let backend = self.backend;
@@ -124,7 +138,10 @@ impl Provider for Gemini {
 
         tokio::spawn(async move {
             if let Err(message) =
-                run(client, backend, model, context, api_key, counter, &sender).await
+                run(
+                    client, backend, model, context, api_key, payload, counter, &sender,
+                )
+                .await
             {
                 let _ = sender.send(StreamEvent::Error { message });
             }
@@ -135,6 +152,15 @@ impl Provider for Gemini {
 
     fn payload(&self, model: &Model, context: &Context) -> Value {
         build_payload(model, context).unwrap_or(Value::Null)
+    }
+
+    fn request_payload(
+        &self,
+        model: &Model,
+        context: &Context,
+        _api_key: &str,
+    ) -> Result<Value, String> {
+        build_payload(model, context)
     }
 }
 
@@ -170,10 +196,10 @@ async fn run(
     model: Model,
     context: Context,
     api_key: String,
+    payload: Value,
     next_call: Arc<AtomicUsize>,
     sender: &UnboundedSender<StreamEvent>,
 ) -> Result<(), String> {
-    let payload = build_payload(&model, &context)?;
     let request = match backend {
         Backend::Google => client
             .post(endpoint(&model.base_url, &model.id))

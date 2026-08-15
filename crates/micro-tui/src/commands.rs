@@ -108,6 +108,13 @@ pub struct Listings {
 /// credentials, the session log and the conversation these outcomes change.
 #[async_trait]
 pub trait Commands: Send {
+    /// Re-read durable cost and usage from the persisted ledger.
+    async fn session_observability(
+        &mut self,
+    ) -> Option<(Option<f64>, micro_types::Usage, micro_types::Usage)> {
+        None
+    }
+
     /// Tell whatever is listening what the user typed, before anything is done with it.
     ///
     /// The line comes back, possibly changed: an extension may rewrite what was submitted,

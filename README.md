@@ -26,7 +26,7 @@ cargo run --bin micro -- "explain this repository"
 - Reports provider usage and estimated cost by turn with `micro bill`.
 - Explains prompt-cache misses with `micro why-miss`.
 - Uses Seatbelt on macOS and Landlock with seccomp on Linux to restrict commands.
-- Loads TypeScript extensions in a separate Bun process with explicit host capabilities.
+- Loads TypeScript extensions in a confined Bun process with explicit host capabilities.
 
 The core agent is a native Rust binary. Bun is only needed for TypeScript extensions.
 
@@ -77,7 +77,9 @@ micro bill <SESSION_ID>
 micro why-miss <SESSION_ID> 4
 ```
 
-`--raw` rebuilds the provider request from the recorded data and checks it against the stored request hash before printing it.
+New sessions retain the serialized provider request as a content-addressed blob. `--raw` verifies that body against the recorded hash before printing it. Older sessions are reconstructed and printed only when reconstruction produces the same hash.
+
+Inside the TUI, `/bill`, `/why-miss [turn]`, and `/request <turn> [--raw]` open local inspection views. In `/bill`, select a model turn and press Enter for its prompt-source and usage breakdown. These views do not add messages to the conversation.
 
 ## Command sandbox
 
@@ -91,6 +93,10 @@ micro sandbox try -- touch ../outside.txt
 ```
 
 See [Security model](docs/security.md) and [Command sandbox](docs/sandbox.md) before using `full` or trusting project-provided configuration.
+
+## Extension host
+
+TypeScript extensions run in a Bun process with an empty inherited environment, no network or write access, and a filesystem read allowlist limited to the host and loaded extension packages. Host API calls still pass through the capability broker, and brokered command execution still uses the session sandbox. On a platform where micro cannot enforce the host sandbox, extensions do not run.
 
 ## Documentation
 

@@ -1,0 +1,30 @@
+name: Rust
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - uses: Swatinem/rust-cache@v2
+      - name: Compile
+        run: cargo check --workspace --all-targets
+      - name: Unit tests
+        if: runner.os == 'Linux'
+        run: cargo test --workspace --lib
+      - name: Sandbox tests
+        if: runner.os == 'macOS'
+        run: cargo test -p micro-sandbox --lib

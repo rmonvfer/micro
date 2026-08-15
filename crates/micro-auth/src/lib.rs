@@ -6,15 +6,7 @@
 //! and falls back to the conventional environment variable when nothing is stored.
 
 pub mod copilot;
-mod import;
 mod lockfile;
-
-pub use import::agent47_available;
-pub use import::agent47_path;
-pub use import::ImportEntry;
-pub use import::ImportOutcome;
-pub use import::ImportReport;
-pub use import::AGENT47_DIR_ENV;
 
 use serde::Deserialize;
 use serde::Serialize;

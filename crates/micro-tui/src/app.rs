@@ -26,6 +26,7 @@ use crate::render::transcript::Rendered;
 use crate::theme::Theme;
 use crate::transcript::NoticeLevel;
 use crate::transcript::Transcript;
+use micro_commands::InspectionItem;
 use micro_commands::MessageKind;
 use micro_types::AgentEvent;
 use micro_types::ContentBlock;
@@ -111,6 +112,10 @@ pub struct TuiOptions {
     pub auto_compact: bool,
     /// What the model charges, for the session's running cost.
     pub price: Option<micro_models::ModelCost>,
+    /// Durable cost read from the session ledger.
+    pub session_cost: Option<f64>,
+    /// Durable all-turn and latest-turn usage read from the session ledger.
+    pub session_usage: Option<(micro_types::Usage, micro_types::Usage)>,
     /// Whether this run has experimental behavior turned on, which is worth showing
     /// because it changes what micro does.
     pub experimental: bool,
@@ -154,6 +159,8 @@ impl Default for TuiOptions {
             subscription: false,
             auto_compact: true,
             price: None,
+            session_cost: None,
+            session_usage: None,
             experimental: false,
             tui_mode: Default::default(),
             resources: Default::default(),
@@ -318,6 +325,8 @@ pub struct App {
     pub provider: String,
     /// What a million tokens costs, for the running total. Absent when nothing is charged.
     pub price: Option<micro_models::ModelCost>,
+    session_cost: Option<f64>,
+    session_usage: Option<(micro_types::Usage, micro_types::Usage)>,
     /// Images taken off the clipboard, riding with the next prompt.
     attachments: Vec<ContentBlock>,
     /// The tool result the reader has selected, as an index into the transcript.
@@ -385,6 +394,8 @@ pub struct App {
     /// A live component shown with keyboard focus, from `custom()`. `None` when nothing is
     /// open this way.
     component_overlay: Option<ComponentOverlay>,
+    /// A local, read-only ledger view opened by `/bill`, `/why-miss`, or `/request`.
+    inspection: Option<InspectionOverlay>,
     /// The component `setEditorComponent` replaced the built-in editor with, and what it
     /// last looked like. `None` is the built-in editor.
     editor_component: Option<ComponentOverlay>,
@@ -449,6 +460,16 @@ pub struct CompletionRequest {
 struct ComponentOverlay {
     component_id: String,
     lines: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct InspectionOverlay {
+    title: String,
+    text: String,
+    items: Vec<InspectionItem>,
+    selected: usize,
+    detail_open: bool,
+    scroll: usize,
 }
 
 /// A real [`Editor`] shown for an extension's `editor()`, unlike [`ComponentOverlay`] — there
@@ -633,6 +654,8 @@ impl App {
             auto_compact: options.auto_compact,
             provider: options.provider,
             price: options.price,
+            session_cost: options.session_cost,
+            session_usage: options.session_usage,
             attachments: Vec::new(),
             focus: None,
             scroll: 0,
@@ -667,6 +690,7 @@ impl App {
             drawn: Drawn::default(),
             retired_tools: Vec::new(),
             component_overlay: None,
+            inspection: None,
             editor_component: None,
             self_framed_tools,
             extension_editor: None,
@@ -842,6 +866,7 @@ impl App {
         self.key_prompt.is_some()
             || self.picker.is_some()
             || self.component_overlay.is_some()
+            || self.inspection.is_some()
             || self.extension_editor.is_some()
     }
 
@@ -978,6 +1003,30 @@ impl App {
             .map(|overlay| overlay.lines.as_slice())
     }
 
+    pub fn inspection(&self) -> Option<(&str, &str, &[InspectionItem], usize, bool, usize)> {
+        self.inspection.as_ref().map(|overlay| {
+            (
+                overlay.title.as_str(),
+                overlay.text.as_str(),
+                overlay.items.as_slice(),
+                overlay.selected,
+                overlay.detail_open,
+                overlay.scroll,
+            )
+        })
+    }
+
+    pub fn open_inspection(&mut self, title: String, text: String, items: Vec<InspectionItem>) {
+        self.inspection = Some(InspectionOverlay {
+            title,
+            text,
+            items,
+            selected: 0,
+            detail_open: false,
+            scroll: 0,
+        });
+    }
+
     /// Redraw the open `custom()` overlay with what its component looked like after
     /// handling a key. A stale answer for an overlay that has since closed changes nothing.
     pub fn set_component_overlay_lines(&mut self, component_id: &str, lines: Vec<String>) {
@@ -1089,26 +1138,31 @@ impl App {
         self.picker.as_mut()
     }
 
-    /// What the session has cost so far, priced against the model it is running.
-    ///
-    /// Absent when there is no price to apply, which is what a subscription-backed
-    /// provider reports.
+    /// What the persisted ledger says the complete session has cost so far.
     pub fn session_cost(&self) -> Option<f64> {
-        let price = self.price.as_ref()?;
-        if price.is_free() {
-            return None;
+        self.session_cost
+    }
+
+    pub fn set_session_observability(
+        &mut self,
+        observed: Option<(Option<f64>, micro_types::Usage, micro_types::Usage)>,
+    ) {
+        if let Some((cost, total, last)) = observed {
+            self.session_cost = cost;
+            self.session_usage = Some((total, last));
         }
-        let total = self.transcript.total_usage();
-        Some(
-            price
-                .price(micro_models::TokenUsage {
-                    input: total.input as u64,
-                    output: total.output as u64,
-                    cache_read: total.cache_read as u64,
-                    cache_write: total.cache_write as u64,
-                })
-                .total(),
-        )
+    }
+
+    pub fn total_usage(&self) -> micro_types::Usage {
+        self.session_usage
+            .map(|(total, _)| total)
+            .unwrap_or_else(|| self.transcript.total_usage())
+    }
+
+    pub fn last_usage(&self) -> micro_types::Usage {
+        self.session_usage
+            .map(|(_, last)| last)
+            .unwrap_or_else(|| self.transcript.last_usage())
     }
 
     /// The provider to name in the footer, which is nothing when the model already says
@@ -1929,6 +1983,9 @@ impl App {
         if self.component_overlay.is_some() {
             return self.handle_component_overlay(action);
         }
+        if self.inspection.is_some() {
+            return self.handle_inspection(action);
+        }
         if self.extension_editor.is_some() {
             return self.handle_extension_editor(action);
         }
@@ -2479,6 +2536,64 @@ impl App {
         }
     }
 
+    fn handle_inspection(&mut self, action: Action) -> Outcome {
+        if matches!(action, Action::Cancel | Action::Interrupt) {
+            if self
+                .inspection
+                .as_ref()
+                .is_some_and(|overlay| overlay.detail_open)
+            {
+                if let Some(overlay) = self.inspection.as_mut() {
+                    overlay.detail_open = false;
+                    overlay.scroll = 0;
+                }
+            } else {
+                self.inspection = None;
+            }
+            return Outcome::Handled;
+        }
+        if matches!(action, Action::QuitOrDelete) {
+            return Outcome::Quit;
+        }
+        let page = self.rows as usize / 2;
+        let Some(overlay) = self.inspection.as_mut() else {
+            return Outcome::Handled;
+        };
+        if !overlay.items.is_empty() && !overlay.detail_open {
+            match action {
+                Action::MoveUp | Action::ScrollUp => {
+                    overlay.selected = overlay.selected.saturating_sub(1)
+                }
+                Action::MoveDown | Action::ScrollDown => {
+                    overlay.selected = (overlay.selected + 1).min(overlay.items.len() - 1)
+                }
+                Action::PageUp => overlay.selected = overlay.selected.saturating_sub(page),
+                Action::PageDown => {
+                    overlay.selected = (overlay.selected + page).min(overlay.items.len() - 1)
+                }
+                Action::MoveLineStart => overlay.selected = 0,
+                Action::MoveLineEnd => overlay.selected = overlay.items.len() - 1,
+                Action::Submit => {
+                    overlay.detail_open = true;
+                    overlay.scroll = 0;
+                }
+                _ => {}
+            }
+            return Outcome::Handled;
+        }
+        match action {
+            Action::MoveUp | Action::ScrollUp => overlay.scroll = overlay.scroll.saturating_sub(1),
+            Action::MoveDown | Action::ScrollDown => {
+                overlay.scroll = overlay.scroll.saturating_add(1)
+            }
+            Action::PageUp => overlay.scroll = overlay.scroll.saturating_sub(page),
+            Action::PageDown => overlay.scroll = overlay.scroll.saturating_add(page),
+            Action::MoveLineStart => overlay.scroll = 0,
+            _ => {}
+        }
+        Outcome::Handled
+    }
+
     /// Drive an extension's `editor()` overlay. Unlike a `custom()` component this is a real
     /// [`Editor`], entirely local, so every editing and motion key is handled the same way
     /// the built-in prompt handles it — see the same actions in [`App::handle`]'s own match —
@@ -2710,6 +2825,36 @@ mod tests {
 
     fn type_text(app: &mut App, text: &str) {
         app.handle(Action::Insert(text.to_string()));
+    }
+
+    #[test]
+    fn inspection_items_open_a_detail_before_escape_closes_the_overlay() {
+        let mut app = app();
+        app.open_inspection(
+            "Session bill".to_string(),
+            "summary".to_string(),
+            vec![
+                InspectionItem {
+                    label: "turn 1".to_string(),
+                    detail: "first".to_string(),
+                },
+                InspectionItem {
+                    label: "turn 2".to_string(),
+                    detail: "second".to_string(),
+                },
+            ],
+        );
+
+        app.handle(Action::MoveDown);
+        app.handle(Action::Submit);
+        let (_, _, _, selected, detail_open, _) = app.inspection().unwrap();
+        assert_eq!(selected, 1);
+        assert!(detail_open);
+
+        app.handle(Action::Cancel);
+        assert!(!app.inspection().unwrap().4);
+        app.handle(Action::Cancel);
+        assert!(app.inspection().is_none());
     }
 
     /// Press up until the conversation has no more to show and the key reaches the history.

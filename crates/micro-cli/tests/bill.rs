@@ -261,11 +261,9 @@ fn blocks(report: &str) -> Vec<Block> {
     read
 }
 
-/// `micro bill` against a ledger written by hand: every figure in it is known in advance,
+/// `micro bill <session>` against a ledger written by hand: every figure in it is known in advance,
 /// so what the subcommand prints can be checked rather than merely parsed.
 ///
-/// With no session named it bills the latest one from this workspace, which is the form
-/// somebody actually types.
 #[test]
 fn the_bill_subcommand_reads_a_recorded_ledger() {
     let api = FakeApi::start([]);
@@ -273,7 +271,7 @@ fn the_bill_subcommand_reads_a_recorded_ledger() {
     priced(&fixture, &api);
     let id = written(&fixture, &[(1, 1_000, 0, 200), (2, 1_500, 1_000, 100)]);
 
-    let billed = fixture.micro_run(&["bill"]);
+    let billed = fixture.micro_run(&["bill", &id]);
     billed.expect_success("micro bill");
     let report = &billed.stdout;
     assert!(

@@ -797,6 +797,40 @@ impl CliCommands {
 
 #[async_trait]
 impl Commands for CliCommands {
+    async fn session_observability(
+        &mut self,
+    ) -> Option<(Option<f64>, micro_types::Usage, micro_types::Usage)> {
+        let bill = micro_commands::bill(&self.sessions, &self.catalog, &self.session_id)
+            .await
+            .ok()?;
+        let cost = if bill.total == 0.0
+            && (!bill.unmetered.is_empty() || !bill.unpriced.is_empty())
+        {
+            None
+        } else {
+            Some(bill.total)
+        };
+        let total = bill
+            .turns
+            .iter()
+            .filter(|turn| turn.on_current_branch)
+            .fold(micro_types::Usage::default(), |mut total, turn| {
+                total.input = total.input.saturating_add(turn.usage.input);
+                total.output = total.output.saturating_add(turn.usage.output);
+                total.cache_read = total.cache_read.saturating_add(turn.usage.cache_read);
+                total.cache_write = total.cache_write.saturating_add(turn.usage.cache_write);
+                total
+            });
+        let last = bill
+            .turns
+            .iter()
+            .rev()
+            .find(|turn| turn.on_current_branch)
+            .map(|turn| turn.usage)
+            .unwrap_or_default();
+        Some((cost, total, last))
+    }
+
     /// What the user typed, before anything is done with it. An extension may rewrite it,
     /// or swallow it by answering that it handled it.
     ///

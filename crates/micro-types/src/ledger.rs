@@ -46,8 +46,8 @@ pub fn content_hash(bytes: &[u8]) -> String {
 pub enum LedgerEvent {
     /// One request to a provider, described completely enough to rebuild it.
     ///
-    /// The bodies themselves are not here: the system prompt, the tool definitions and the
-    /// model are stored once each, content-addressed, and named by hash, and the
+    /// The bodies themselves are stored content-addressed and named by hash. The system
+    /// prompt, tool definitions and model are kept separately for inspection, and the
     /// conversation is named by the entries it was read from. What is here is what makes
     /// the request identifiable — the hash of the assembled body — and what makes it
     /// explicable — where each span of the prompt came from.
@@ -62,6 +62,10 @@ pub enum LedgerEvent {
         /// The hash of the serialized request body, which is what identifies this request
         /// among every other one.
         request_hash: String,
+        /// The exact serialized provider request body. Older ledgers may not have one and
+        /// must reconstruct the body before they can verify it against `request_hash`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        request_body_blob: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         system_prompt_blob: Option<String>,
         tools_blob: String,
@@ -85,6 +89,15 @@ pub enum LedgerEvent {
         provider: String,
         model: String,
     },
+    /// A provider attempt ended without usage. It may or may not have been billed; the
+    /// ledger keeps that uncertainty instead of treating it as a known zero.
+    RequestAttemptFailed {
+        turn: u64,
+        attempt: u32,
+        error: String,
+        #[serde(default)]
+        usage_unknown: bool,
+    },
     /// A stretch of the conversation replaced by a summary of it.
     ///
     /// Summarizing is itself a request to a model, so it has a price, and it is the one
@@ -94,6 +107,9 @@ pub enum LedgerEvent {
     Compaction {
         summary_blob: String,
         kept: usize,
+        /// The branch path that was summarized.
+        #[serde(default)]
+        message_entry_ids: Vec<String>,
         #[serde(default)]
         cost: CompactionCost,
     },
@@ -320,6 +336,7 @@ mod tests {
             model: "test-model".into(),
             prefix_hash: "aa".into(),
             request_hash: "bb".into(),
+            request_body_blob: Some("body".into()),
             system_prompt_blob: Some("cc".into()),
             tools_blob: "dd".into(),
             model_blob: "ee".into(),
@@ -355,6 +372,7 @@ mod tests {
             LedgerEvent::Compaction {
                 summary_blob: "aa".into(),
                 kept: 4,
+                message_entry_ids: Vec::new(),
                 cost: CompactionCost {
                     usage: Usage {
                         input: 900,
@@ -422,6 +440,7 @@ mod tests {
             LedgerEvent::Compaction {
                 summary_blob: "aa".into(),
                 kept: 4,
+                message_entry_ids: Vec::new(),
                 cost: CompactionCost::default(),
             }
         );
