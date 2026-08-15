@@ -126,3 +126,7 @@ tools exist and the tools have no idea a model is calling them.
 
 [docs/architecture.md](docs/architecture.md) covers why the seams fall where they do.
 [docs/providers.md](docs/providers.md) covers the providers and the model catalog.
+[docs/extensions.md](docs/extensions.md) covers writing and installing an extension, and
+what an extension written for pi can expect here.
+[docs/extension-testing.md](docs/extension-testing.md) covers the two harnesses that check
+extensions, and why one of them drives a real terminal.
