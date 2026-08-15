@@ -1,196 +1,115 @@
-# The sandbox
+# Command sandbox
 
-A coding agent runs commands. The sandbox decides what those commands may touch, and the
-operating system is what enforces it: by default a session may write inside its workspace
-and nowhere else, and may not reach the network. Every refusal is told to the model in terms
-it can act on and written into the session's ledger.
+The sandbox restricts commands and file operations performed on behalf of the model. The default policy is `workspace-write`.
 
-## The three policies
+## Policies
 
-`read-only` reads anything and writes nothing. `workspace-write` — the default — reads
-anything and writes inside the workspace, minus the paths listed below, with the network
-off. `full` confines nothing: whatever micro runs, your account can do.
+| Policy | Command reads | Command writes | Network |
+| --- | --- | --- | --- |
+| `read-only` | allowed | blocked | blocked |
+| `workspace-write` | allowed | workspace only | blocked by default |
+| `full` | allowed | unrestricted | unrestricted |
 
-Reading is unrestricted under every policy. An agent that cannot read the system it is
-working on is useless, and the damage worth preventing — writing outside the workspace,
-reaching the network — is on the other side.
+Under `workspace-write`, `.git`, `.micro`, and micro's own configuration and data directories remain read-only even when they are inside the workspace.
 
-Inside a writable workspace, `.git` and `.micro` stay read-only, whether or not they exist
-yet. A process that can write a git hook decides what runs on your next commit, and one
-that can write `.micro/settings.json` decides what the next session is allowed to do; both
-would turn a confined run into an unconfined one, one step later. micro's own directories —
-`~/.micro`, or the XDG directories on a fresh install — are read-only for the same reason
-wherever they fall inside a writable root, which is what happens when you work on your own
-configuration.
+Because `.git` is protected, agent-run commands cannot commit under the default policy. Run the commit yourself or explicitly use `full` for that session.
 
-That has a consequence worth knowing before you meet it: under `workspace-write` the agent
-can edit your files but cannot commit them, because committing writes inside `.git`. Ask
-for the commit yourself, or run that session under `full`.
+There is no default writable exception for `/tmp` or `$TMPDIR`. Configure a writable root when a toolchain needs one.
 
-There is no grant for `/tmp` or `$TMPDIR`. A toolchain that insists on a scratch directory
-outside the workspace will notice; give it one explicitly rather than leaving every
-session's commands a shared directory to write through.
+## Select a policy
 
-## Saying which one
+For one run:
 
-```
-micro --sandbox read-only              for this run
-micro sandbox try -- <command>         what would happen to this command
-/set sandbox read-only                 for every run
+```bash
+micro --sandbox read-only
+micro --sandbox workspace-write
+micro --sandbox full
 ```
 
-Three places can settle the policy, each beating the one after it: `--sandbox` on the
-command line, then `sandbox` in the project's `.micro/settings.json`, then `sandbox` in your
-own `config.json`. With nothing said anywhere it is `workspace-write`.
-
-A project's settings are read only once the project has been trusted, like everything else
-it ships. Widening what a session may do is exactly what trust is asked about, so a checkout
-nobody has vouched for gets no say.
-
-A policy name nobody recognizes ends the run and says who asked for it. Falling back to a
-default would run the session under something other than what was asked for, which is the
-one outcome a policy exists to prevent.
-
-`workspace-write` can also be spelled out, to grant more than the workspace:
+Set a default in `config.json`:
 
 ```json
-{ "sandbox": { "mode": "workspace-write", "writable_roots": ["/srv/cache"], "allow_network": true } }
+{ "sandbox": "workspace-write" }
 ```
 
-That is how a project gives a toolchain the scratch directory it insists on, and it is what
-`--sandbox` takes as well — a value starting with `{` is read as this table rather than as
-a name.
+A trusted project may set the same key in `.micro/settings.json`. Command-line selection takes precedence over project configuration, which takes precedence over user configuration.
 
-## Two enforcers
+Add writable roots or network access with a policy object:
 
-A command micro spawns is wrapped before it runs, so the kernel decides what it may touch.
-The file tools spawn nothing, so no kernel is in a position to stop them: they ask the same
-policy about every path before they open it, and a symlink pointing out of the workspace is
-judged by where it points rather than where it sits. One policy, answered in two places,
-recorded in one.
-
-| | macOS | Linux | Windows |
-|---|---|---|---|
-| Commands | Seatbelt profile | Landlock and seccomp | not yet |
-| File tools | in-process checks | in-process checks | in-process checks |
-| Network off | yes | yes | not yet |
-
-On Windows, and anywhere else micro has no sandbox for, the file tools still enforce the
-policy in process and commands run unconfined. `micro sandbox try` says so rather than
-implying confinement it does not have.
-
-The two answers are meant to agree, and differ in one place: Landlock can only rule on a
-path that exists, so a protected directory that has not been created yet — a workspace with
-no `.git` in it — is refused in process but not by the Linux kernel rules. Seatbelt takes
-the path as a string and has no such gap.
-
-## What is not confined
-
-The policy covers what a session runs on the model's behalf: the `bash` tool, the file
-tools, and anything an extension asks micro to run through `ctx.exec` or one of micro's own
-built-in tools. It does not cover the programs you configured micro to start — the
-extension host and any MCP servers — which are launched once at startup, from your own
-settings, and run as you do. Nor does it cover a command you type yourself with `!`, which
-is you running a command in your own terminal rather than the agent running one.
-
-## The Linux helper
-
-macOS confines a command from the outside. Linux cannot: the restrictions have to be applied
-by the process that then becomes the command. So on Linux micro re-runs itself as that
-process —
-
-```
-/path/to/micro __micro-sandbox-helper --rules <json> -- /bin/bash -c ls
+```json
+{
+  "sandbox": {
+    "mode": "workspace-write",
+    "writable_roots": ["/srv/cache"],
+    "allow_network": true
+  }
+}
 ```
 
-— and the second run recognizes that first argument before it parses anything else, applies
-the rules, and `execvp`s the command. The rules are worked out by the parent, where the
-policy and the workspace are known, and handed over whole; the helper resolves nothing
-itself. A build that did not dispatch on that argument would leave every command unconfined,
-which is why it happens at the top of `main` rather than anywhere a failure could get past
-it.
+`--sandbox` also accepts a JSON object.
 
-## What a refusal looks like
+## Platform support
 
-The model is told which policy stopped it, along with everything the command printed:
+| Platform | Commands | Built-in file tools | Network blocking |
+| --- | --- | --- | --- |
+| macOS | Seatbelt | in-process path checks | yes |
+| Linux | Landlock and seccomp | in-process path checks | yes |
+| Windows | not yet confined | in-process path checks | not yet |
 
-```
+When command confinement is unavailable, micro reports that commands are running unconfined. File tools still apply path checks.
+
+Built-in file tools are always limited to the workspace, for reads as well as writes. They resolve symlinks before checking the target, so a link inside the workspace does not grant access to a path outside it. The selected policy still decides whether an in-workspace write is allowed.
+
+## What is covered
+
+The policy applies to:
+
+- the built-in command and file tools;
+- commands an extension runs through `ctx.exec`;
+- commands run through micro's other built-in agent tools.
+
+It does not wrap configured extension-host or MCP-server processes, manual `!` commands, or micro's provider connections. See [Security model](security.md).
+
+## Refusals
+
+A denied command returns a normal tool result with a non-zero exit code and an explanation:
+
+```text
 denied by policy workspace-write: exit code 1
 touch: /etc/hosts: Operation not permitted
 ```
 
-A file tool refuses before it opens anything, and says what the policy allows instead:
+A denied file operation is rejected before the file is opened:
 
-```
+```text
 cannot write /etc/hosts: workspace-write allows writes under /home/you/project only
 ```
 
-An extension that runs a command through `ctx.exec` gets the same judgment as two extra
-fields on the answer it already receives, `denied: true` and `policy`, so it can act on a
-refusal without reading the platform's wording out of `stderr` itself.
+The model receives the refusal and can choose another approach. A `sandbox_decision` event is appended to the session ledger.
 
-One shape follows from that. What micro spawns is the wrapper rather than the command
-itself, so the wrapper is what reports a command it could not run: a binary that does not
-exist comes back as an ordinary result with a non-zero `code` and a `stderr` naming the
-command, rather than as an `error` field with no exit code. An extension deciding whether a
-command worked reads the exit code, not the absence of an error.
+Extension calls through `ctx.exec` receive `denied: true` and the policy name in addition to the command result.
 
-There is no reliable signal for "the kernel refused this". A command that fails inside your
-shell profile looks much like one that was turned down, so micro reads the exit status for
-the signal seccomp raises and otherwise falls back to the wording the platforms use. It
-decides how a failure is phrased, never whether something was allowed.
+## Test a command
 
-Every refusal becomes a `sandbox_decision` in the session's [ledger](ledger.md), with the
-policy, the operation, what was being reached for, and which way it went. Ordinary work that
-went through is not recorded; the ledger is for what did not. Two allowances are worth a
-line all the same: a
-command that looks refused while nothing was confining it, which is otherwise an afternoon
-of confusion, and the start of a session running under `full`, which is said on screen at
-the same time. Running unconfined is never quiet.
+Use the same policy resolution as an agent session without contacting a model:
 
-## Trying it out
-
-```
-$ micro sandbox try -- touch ../outside.txt
-policy: workspace-write
-enforced: yes, by a Seatbelt profile
-running: /usr/bin/sandbox-exec -p <131 lines of policy> -DWRITABLE_ROOT_0=/home/you/project
-  -DWRITABLE_ROOT_0_READ_ONLY_0=/home/you/project/.git
-  -DWRITABLE_ROOT_0_READ_ONLY_1=/home/you/project/.micro -- touch ../outside.txt
-output:
-  touch: ../outside.txt: Operation not permitted
-exit: exit status: 1
-looks denied: true
+```bash
+micro sandbox try -- touch ../outside.txt
+micro sandbox try --sandbox read-only -- touch inside.txt
 ```
 
-It resolves the policy the same way a session does, so it answers what this workspace would
-actually do rather than what a default would.
+The output reports the resolved policy, whether OS enforcement is available, the wrapped command, its output, exit status, and whether the result looks like a denial.
 
-The profile itself is summarized by its length; the paths it is parameterized with are
-printed in full, since those are what there is to check. Paths never go into the profile
-text — they are passed as parameters, so a directory whose name contains policy syntax is a
-directory name and not a policy.
+## Linux helper
 
-## Checking it on macOS
+Linux applies Landlock and seccomp in the process that becomes the command. micro starts an internal helper, passes it the resolved policy, applies restrictions, and then replaces the helper process with the requested command.
 
-The automated tests cover this platform when they run on it, and a checkout without a macOS
-machine behind it cannot. This is the pass to make by hand. In a scratch workspace, with
-somewhere outside it to aim at:
+The parent process resolves paths and policy. The helper does not reinterpret them.
 
-1. `micro sandbox try -- touch ../outside.txt` refuses, and the file is not created.
-2. `micro sandbox try -- touch inside.txt` succeeds, and the file is.
-3. `micro sandbox try -- curl -s -o /dev/null -w '%{http_code}' https://example.com` fails
-   to resolve the host; the same command under
-   `--sandbox '{"mode":"workspace-write","allow_network":true}'` answers `200`.
-4. `micro sandbox try --sandbox read-only -- touch inside.txt` refuses.
-5. `micro sandbox try --sandbox full -- touch ../outside.txt` succeeds and reports
-   `enforced: no`.
-6. In a session: ask for a shell command that writes outside the workspace. The model is
-   told `denied by policy workspace-write`, and `micro sessions export <id>` holds a
-   `sandbox_decision` with `"allowed":false`.
+## Known gaps
 
-## Windows
+- Windows command confinement is not implemented.
+- Landlock can only apply path rules to entries that already exist. In-process file checks still protect reserved paths that do not yet exist.
+- A non-zero command result is not always distinguishable from an OS-level denial. micro uses platform signals and known error text to classify it for reporting; the kernel or file-tool check remains the authority on whether the operation was allowed.
 
-Not yet. The policy resolves, the file tools enforce it, and commands run unconfined.
-A Windows sandbox is a job for restricted tokens and AppContainer, and it is on the roadmap
-rather than in the binary.
+Use `micro sandbox try` on the target platform when policy behavior is part of a deployment or CI requirement.

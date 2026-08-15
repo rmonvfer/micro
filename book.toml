@@ -1,0 +1,40 @@
+[book]
+title = "micro"
+description = "Documentation for micro, a terminal coding agent with local session records and command sandboxing."
+src = "docs"
+language = "en"
+text-direction = "ltr"
+
+[build]
+build-dir = "book"
+create-missing = false
+
+[output.html]
+default-theme = "light"
+preferred-dark-theme = "navy"
+smart-punctuation = false
+no-section-label = true
+git-repository-url = "https://github.com/rmonvfer/micro"
+git-repository-icon = "fab-github"
+edit-url-template = "https://github.com/rmonvfer/micro/edit/main/docs/{path}"
+site-url = "/micro/"
+input-404 = "404.md"
+sidebar-header-nav = true
+additional-css = ["docs/theme/custom.css"]
+
+[output.html.search]
+enable = true
+limit-results = 30
+teaser-word-count = 24
+use-boolean-and = true
+boost-title = 3
+boost-hierarchy = 2
+boost-paragraph = 1
+expand = true
+heading-split-level = 3
+
+[output.html.playground]
+runnable = false
+
+[output.html.print]
+enable = false

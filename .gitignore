@@ -1,4 +1,5 @@
 target/
+book/
 
 # Reference checkouts kept beside the workspace, never part of it.
 /codex/
