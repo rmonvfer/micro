@@ -1,9 +1,30 @@
 //! Syntax highlighting for fenced code blocks.
+//!
+//! Scopes are named as highlight.js names them — `keyword`, `built_in`, `title`, and the
+//! rest — and each one lands on a theme color. The lexing is hand-written rather than pulled
+//! from a grammar library, because the Rust equivalents of highlight.js cost megabytes of
+//! binary for what is a cosmetic feature. What that trades away is breadth: this knows the
+//! handful of languages that actually turn up in a coding agent's output rather than every
+//! language a grammar library ships.
+//!
+//! Two rules hold whatever the language:
+//!
+//! Text is never changed. Every byte of a line ends up in exactly one token, in order, so
+//! the text recovered from the tokens is the line that went in. A language that is not
+//! recognized produces no tokens at all and the caller renders the line as it always did.
+//!
+//! Lexing is line at a time, with only the state a block comment or a triple-quoted string
+//! needs carried across. That keeps a half-streamed response legible, which is the whole
+//! reason the interface renders markdown a line at a time in the first place.
 
 use crate::theme::Theme;
 use ratatui::style::Style;
 
 /// A highlight scope, named as highlight.js names it.
+///
+/// Only the scopes this lexer emits are listed. Several wider highlight.js scopes collapse
+/// onto these: `built_in` and `class` join `Type`, `title` joins `Function`, `attr` and
+/// `params` join `Variable`, and `literal` joins `Number`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Scope {
     Comment,
@@ -15,7 +36,8 @@ pub enum Scope {
     Type,
     Operator,
     Punctuation,
-    /// Attributes, decorators, preprocessor lines.
+    /// Attributes, decorators, preprocessor lines. These are painted `muted` rather than
+    /// with a syntax color of their own.
     Meta,
 }
 
@@ -38,7 +60,8 @@ impl Scope {
     }
 }
 
-/// A run of characters that share a scope.
+/// A run of characters that share a scope. `scope` is `None` for text that carries none,
+/// which the caller paints with the code block's own color.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Token {
     pub scope: Option<Scope>,
@@ -293,7 +316,7 @@ impl Highlighter {
         })
     }
 
-    /// Lex one line.
+    /// Lex one line. The tokens concatenate back to exactly the line that went in.
     pub fn line(&mut self, line: &str) -> Vec<Token> {
         let tokens = match self.kind {
             Kind::Table(syntax) => self.table_line(syntax, line),
@@ -307,7 +330,8 @@ impl Highlighter {
         let mut tokens = Vec::new();
         let mut index = 0;
 
-        
+        // A block comment or triple-quoted string left open by an earlier line swallows
+        // whatever comes before its terminator.
         match self.state.clone() {
             State::Block => {
                 let (end, closed) = scan_until(&characters, 0, syntax.block_comment.unwrap().1);
@@ -331,7 +355,7 @@ impl Highlighter {
             _ => {}
         }
 
-        
+        // A line-level annotation claims the rest of the line.
         if index == 0 {
             let leading: String = characters.iter().collect();
             let trimmed = leading.trim_start();
@@ -399,7 +423,8 @@ impl Highlighter {
 
             if syntax.quotes.contains(&character) {
                 let end = scan_string(&characters, index, character, syntax.escapes);
-                
+                // A double-quoted shell string still expands what it holds, so the names
+                // inside it are variables rather than more string.
                 if character == '"' && !syntax.sigils.is_empty() {
                     push_interpolated(&mut tokens, &characters[index..end], syntax);
                 } else {
@@ -414,7 +439,7 @@ impl Highlighter {
                 while end < characters.len() && is_word(characters[end]) {
                     end += 1;
                 }
-                
+                // A lone sigil is punctuation; one that names something is a variable.
                 let scope = if end > index + 1 {
                     Scope::Variable
                 } else {
@@ -464,7 +489,7 @@ impl Highlighter {
                 continue;
             }
 
-            
+            // Whitespace and anything unrecognized carry no scope.
             let start = index;
             while index < characters.len()
                 && !is_word_start(characters[index])
@@ -594,24 +619,26 @@ fn word_scope(word: &str, characters: &[char], end: usize, syntax: &Syntax) -> S
     if syntax.types.contains(&word) {
         return Scope::Type;
     }
-    
+    // A word with a call's parentheses after it is a function, which is what highlight.js
+    // marks `title.function`. Whitespace between the two still counts as a call.
     let next = characters[end..].iter().find(|c| !c.is_whitespace());
     if next == Some(&'(') {
         return Scope::Function;
     }
-    
+    // A quoted key is JSON's `attr`; an unquoted one before `=` is TOML's.
     if next == Some(&':') || next == Some(&'=') {
         return Scope::Variable;
     }
-    
+    // Leading capital reads as a type in every language here that has them.
     if word.chars().next().is_some_and(|c| c.is_uppercase()) {
         return Scope::Type;
     }
     Scope::Variable
 }
 
-/// Advances past a string opened at `start`, stopping after its closing quote or at the end of the
-/// line.
+/// Advances past a string opened at `start`, stopping after its closing quote or at the end
+/// of the line. An unterminated string simply runs to the line's end rather than consuming
+/// what follows it.
 fn scan_string(characters: &[char], start: usize, quote: char, escapes: bool) -> usize {
     let mut index = start + 1;
     while index < characters.len() {
@@ -682,8 +709,8 @@ fn is_punctuation(character: char) -> bool {
     )
 }
 
-/// Splits a string that expands what it holds into the parts that are string and the parts that
-/// name something.
+/// Splits a string that expands what it holds into the parts that are string and the parts
+/// that name something. Every character still lands in exactly one token.
 fn push_interpolated(tokens: &mut Vec<Token>, characters: &[char], syntax: &Syntax) {
     let mut index = 0;
     let mut plain = 0;
@@ -695,7 +722,7 @@ fn push_interpolated(tokens: &mut Vec<Token>, characters: &[char], syntax: &Synt
         }
 
         let mut end = index + 1;
-        
+        // `${name}` is as common as `$name`, and both name the same thing.
         let braced = characters.get(end) == Some(&'{');
         if braced {
             end += 1;
@@ -784,11 +811,11 @@ mod tests {
     const SAMPLES: &[(&str, &str)] = &[
         (
             "rust",
-            "
+            "// count things\n#[derive(Debug)]\npub fn main() {\n    let total: u32 = 0x1f + 2;\n    println!(\"hi {total}\");\n    /* a block\n       comment */\n}",
         ),
         (
             "typescript",
-            "
+            "// a note\nimport { readFile } from \"fs\";\nexport async function main(): Promise<void> {\n  const total: number = 1_000;\n  await readFile(`./x`);\n}",
         ),
         (
             "python",
@@ -899,7 +926,7 @@ mod tests {
         assert!(painted("typescript", code, Scope::Type).contains(&"Promise".to_string()));
         assert!(painted("typescript", code, Scope::Type).contains(&"number".to_string()));
         assert!(painted("typescript", code, Scope::Number).contains(&"1_000".to_string()));
-        
+        // Backticks open a string, as they do in the language.
         assert!(painted("typescript", code, Scope::String).contains(&"`./x`".to_string()));
         assert!(painted("typescript", code, Scope::Comment).contains(&"// a note".to_string()));
     }
@@ -997,7 +1024,7 @@ mod tests {
         assert_eq!(tokens.last().unwrap().scope, Some(Scope::String));
         assert_eq!(tokens.last().unwrap().text, "\"never closed");
 
-        
+        // The next line is lexed normally rather than as more string.
         let next = highlighter.line("let y = 1;");
         assert_eq!(next[0].scope, Some(Scope::Keyword));
     }
@@ -1016,7 +1043,8 @@ mod tests {
     #[test]
     fn neighbouring_tokens_of_one_scope_become_one() {
         let tokens = scopes("rust", "a.b.c");
-        
+        // The dots are punctuation and the names are variables, so nothing collapses; but
+        // no two neighbours ever share a scope.
         for pair in tokens.windows(2) {
             assert_ne!(pair[0].0, pair[1].0, "{pair:?} should have been merged");
         }
@@ -1035,7 +1063,7 @@ mod tests {
             (Scope::Type, theme.syntax_type),
             (Scope::Operator, theme.syntax_operator),
             (Scope::Punctuation, theme.syntax_punctuation),
-            
+            // Meta goes to `muted`, not to a syntax color.
             (Scope::Meta, theme.muted),
         ] {
             assert_eq!(scope.style(&theme).fg, Some(expected), "{scope:?}");
