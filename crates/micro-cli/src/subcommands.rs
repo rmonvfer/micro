@@ -462,13 +462,23 @@ pub async fn latest_session(workspace: &std::path::Path) -> Result<String> {
         .ok_or_else(|| anyhow::anyhow!("no session to continue in this workspace"))
 }
 
+/// Where a user install of an extension package goes: micro's data directory.
+///
+/// A package is fetched rather than written by hand, and can be fetched again, so it goes
+/// with the sessions rather than with the settings — what the settings keep is the source
+/// it was fetched from.
+fn install_root() -> Result<PathBuf> {
+    micro_dirs::data_dir()
+        .ok_or_else(|| anyhow::anyhow!("no home directory; set {}", micro_dirs::MICRO_DIR_ENV))
+}
+
 /// `micro install <source>` — fetch a package and remember it.
 ///
 /// The source is written into the settings, so the next run loads it without being told
 /// again. A package that will not fetch leaves the settings alone.
 pub async fn install(source: &str, local: bool, workspace: &Path) -> Result<()> {
     let parsed = micro_extensions::Source::parse(source).map_err(anyhow::Error::msg)?;
-    let home = micro_context::micro_home()?;
+    let home = install_root()?;
 
     println!("Installing {}...", parsed.canonical());
     let installed = micro_extensions::install(&parsed, &home, workspace, local)
@@ -531,7 +541,7 @@ pub async fn install(source: &str, local: bool, workspace: &Path) -> Result<()> 
 /// the chance to put it back, which is the only chance it will get.
 pub async fn remove(source: &str, local: bool, workspace: &Path) -> Result<()> {
     let parsed = micro_extensions::Source::parse(source).map_err(anyhow::Error::msg)?;
-    let home = micro_context::micro_home()?;
+    let home = install_root()?;
 
     deactivate(&parsed.install_path(&home, workspace, local), &home, workspace).await;
     micro_extensions::remove(&parsed, &home, workspace, local).map_err(anyhow::Error::msg)?;
@@ -586,7 +596,7 @@ pub async fn list_packages() -> Result<()> {
         return Ok(());
     }
 
-    let home = micro_context::micro_home()?;
+    let home = install_root()?;
     let workspace = std::env::current_dir().unwrap_or_default();
 
     // What each package's own extensions may do. Worked out for the whole listing at once,

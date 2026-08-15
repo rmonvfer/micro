@@ -10,8 +10,9 @@
 // nothing sent up it can come back before the function that asked has already returned. Two
 // different answers to that, depending on what is being read:
 //
-// - A theme is a file on disk (`$MICRO_DIR/themes`, the same place micro itself reads them
-//   from) or one of the two built in. Reading it synchronously here means reading it the
+// - A theme is a file on disk (the `themes` directory of micro's configuration directory,
+//   the same place micro itself reads them from) or one of the two built in. Reading it
+//   synchronously here means reading it the
 //   same way micro does rather than asking micro to, which keeps `getTheme`, `setTheme` and
 //   `getAllThemes` the synchronous functions pi declares them as.
 // - The editor's text and whether tool output is expanded are not files anywhere; they are
@@ -45,7 +46,7 @@
 
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { isAbsolute, join } from "node:path";
 // pi-tui's own keybindings — vendored by the compat layer into this same process's
 // `node_modules`, resolved the ordinary way rather than reached for by a relative path into
 // where that layer happens to keep its files. `getKeybindings()` is pi-tui's own current
@@ -302,15 +303,28 @@ const BUILT_IN_THEMES: Record<string, Record<string, string>> = {
 	},
 };
 
-/** Where a user's own themes live: `$MICRO_DIR/themes`, else `~/.micro/themes` — the same
- * rule `crates/micro-tui/src/theme/custom.rs`'s `themes_dir` applies. */
+/** Where a user's own themes live: the `themes` directory of micro's configuration
+ * directory, the same place `crates/micro-tui/src/theme/custom.rs`'s `themes_dir` reads. */
 function themesDir(): string {
+	return join(configDir(), "themes");
+}
+
+/** micro's configuration directory, resolved the way `crates/micro-dirs` resolves it:
+ * `MICRO_DIR` holds everything when it names a directory, an existing `~/.micro` holds
+ * everything when it is there, and otherwise what the user wrote lives under
+ * `XDG_CONFIG_HOME`. A relative XDG path is not a base directory, so it is read as unset. */
+function configDir(): string {
 	const configured = process.env.MICRO_DIR?.trim();
 	if (configured) {
-		return join(configured, "themes");
+		return configured;
 	}
 	const home = process.env.HOME?.trim() || process.env.USERPROFILE?.trim() || homedir();
-	return join(home, ".micro", "themes");
+	const legacy = join(home, ".micro");
+	if (existsSync(legacy)) {
+		return legacy;
+	}
+	const base = process.env.XDG_CONFIG_HOME?.trim();
+	return join(base && isAbsolute(base) ? base : join(home, ".config"), "micro");
 }
 
 /** A theme file's `colors` block, every token resolved through its `vars` block. Throws the

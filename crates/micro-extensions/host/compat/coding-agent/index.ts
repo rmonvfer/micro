@@ -22,7 +22,7 @@
 //   just data, not behavior — carried through as themselves since there is nothing to get
 //   wrong about a string.
 import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
-import { dirname, join, resolve as resolvePath } from "node:path";
+import { dirname, isAbsolute as isAbsolutePath, join, resolve as resolvePath } from "node:path";
 import { randomUUID } from "node:crypto";
 // `CustomEditor` below subclasses pi-tui's real `Editor` (`class ModalEditor extends
 // CustomEditor` is pi's own documented usage — a real extension's own subclass, which
@@ -500,21 +500,26 @@ export function getSettingsListTheme(): {
 // ============================================================================
 // Agent directory — config.ts's getAgentDir
 //
-// Real: micro's own home directory, the same one `crates/micro-session`'s
-// `default_root` and `crates/micro-config`'s `default_path` resolve to — `$MICRO_DIR`,
-// falling back to `~/.micro`. pi's own `getAgentDir` answers `~/.pi/agent`; the shape an
-// extension actually depends on is "the directory micro keeps its own state under", not
-// that exact path, so this answers with micro's real one rather than a directory nothing
-// on this machine uses.
+// Real: micro's own data directory, the same one `crates/micro-session`'s `default_root`
+// sits under, resolved by the rule `crates/micro-dirs` holds — `MICRO_DIR` when it names a
+// directory, an existing `~/.micro` when it is there, and `XDG_DATA_HOME` otherwise. pi's
+// own `getAgentDir` answers `~/.pi/agent`; the shape an extension actually depends on is
+// "the directory micro keeps its own state under", not that exact path, so this answers
+// with micro's real one rather than a directory nothing on this machine uses.
 // ============================================================================
 
 export function getAgentDir(): string {
-	const configured = process.env.MICRO_DIR;
-	if (configured && configured.trim()) {
-		return configured.trim();
+	const configured = process.env.MICRO_DIR?.trim();
+	if (configured) {
+		return configured;
 	}
-	const home = process.env.HOME ?? process.env.USERPROFILE ?? "";
-	return join(home, ".micro");
+	const home = process.env.HOME?.trim() || process.env.USERPROFILE?.trim() || "";
+	const legacy = join(home, ".micro");
+	if (existsSync(legacy)) {
+		return legacy;
+	}
+	const base = process.env.XDG_DATA_HOME?.trim();
+	return join(base && isAbsolutePath(base) ? base : join(home, ".local", "share"), "micro");
 }
 
 // ============================================================================

@@ -37,9 +37,11 @@ pub struct CliCommands {
     /// How a re-read instruction file reaches the model: asked for here, applied by the
     /// agent at its next turn boundary, recorded as a prefix change.
     prefix: micro_agent::PrefixControl,
-    /// Where micro keeps what it remembers between runs, which is where a trust decision
-    /// is written.
-    home: PathBuf,
+    /// Where micro keeps what the user has settled, which is where a trust decision and a
+    /// remembered model are written.
+    config_home: PathBuf,
+    /// Where micro keeps what it produced, which is where a phone pairing is written.
+    data_home: PathBuf,
     /// Whether skills are announced to the model at all, so `/reload` rebuilds what the
     /// run was built with rather than something else.
     skills_enabled: bool,
@@ -93,7 +95,8 @@ pub struct HostParts {
     pub session_id: String,
     /// The agent's handle for what the model is told before the conversation.
     pub prefix: micro_agent::PrefixControl,
-    pub home: PathBuf,
+    pub config_home: PathBuf,
+    pub data_home: PathBuf,
     pub skills_enabled: bool,
     /// The models the workspace put on its shortlist, which the model list opens on.
     pub scoped_models: Vec<String>,
@@ -125,7 +128,8 @@ impl CliCommands {
             session: parts.session,
             session_id: parts.session_id,
             prefix: parts.prefix,
-            home: parts.home,
+            config_home: parts.config_home,
+            data_home: parts.data_home,
             skills_enabled: parts.skills_enabled,
             scoped_models: parts.scoped_models,
             resources: parts.resources,
@@ -152,7 +156,7 @@ impl CliCommands {
     /// because the agent is its, but only here are the catalog and the credential store.
     /// Write the chosen model to the settings, so the next run starts on it.
     fn remember_model(&self, model: &ModelDef) -> Result<(), String> {
-        let path = self.home.join(micro_config::FILE_NAME);
+        let path = self.config_home.join(micro_config::FILE_NAME);
         let mut config = micro_config::Config::load_from(&path)
             .map_err(|error| format!("cannot read the settings: {error}"))?;
         config.model = Some(model.qualified_id());
@@ -164,7 +168,7 @@ impl CliCommands {
 
     /// Write the chosen thinking level to the settings, so the next run uses it.
     fn remember_thinking(&self, level: micro_types::ThinkingLevel) -> Result<(), String> {
-        let path = self.home.join(micro_config::FILE_NAME);
+        let path = self.config_home.join(micro_config::FILE_NAME);
         let mut config = micro_config::Config::load_from(&path)
             .map_err(|error| format!("cannot read the settings: {error}"))?;
         config.thinking = Some(match level {
@@ -530,13 +534,13 @@ impl CliCommands {
     /// someone reaching for their phone is already looking.
     async fn remote(&mut self, action: micro_commands::RemoteAction) -> Applied {
         if let micro_commands::RemoteAction::Pair { qr } = action {
-            return match crate::remote::pair(&self.home, qr).await {
+            return match crate::remote::pair(&self.data_home, qr).await {
                 Ok(lines) => Applied::note(lines.join("\n")),
                 Err(error) => Applied::error(format!("Could not pair a phone: {error}")),
             };
         }
 
-        if !crate::remote::is_paired(&self.home) {
+        if !crate::remote::is_paired(&self.data_home) {
             return Applied::warning(
                 "No phone is paired with this machine yet. Run /remote pair to bond one.",
             );
@@ -571,7 +575,7 @@ impl CliCommands {
             Arc::clone(&self.snapshot),
             self.session_id.clone(),
             models,
-            &self.home,
+            &self.data_home,
         )
         .await;
 
@@ -623,7 +627,7 @@ impl CliCommands {
     /// the screen needs to hear about it.
     async fn reload(&self) -> Applied {
         let trusted = !micro_config::requires_decision(&self.workspace)
-            || micro_config::TrustStore::load_from(&self.home)
+            || micro_config::TrustStore::load_from(&self.config_home)
                 .await
                 .unwrap_or_default()
                 .is_trusted(&self.workspace);
@@ -684,12 +688,12 @@ impl CliCommands {
     /// The decision is read when a run starts, so it takes effect from the next one: the
     /// policy this run is enforcing was settled before the first tool call.
     async fn trust(&self, trusted: bool) -> Applied {
-        let mut store = match micro_config::TrustStore::load_from(&self.home).await {
+        let mut store = match micro_config::TrustStore::load_from(&self.config_home).await {
             Ok(store) => store,
             Err(error) => return Applied::error(format!("Cannot read the trust store: {error}")),
         };
         store.decide(&self.workspace, trusted);
-        if let Err(error) = store.save_to(&self.home).await {
+        if let Err(error) = store.save_to(&self.config_home).await {
             return Applied::error(format!("Could not save the decision: {error}"));
         }
 
@@ -1178,7 +1182,10 @@ mod tests {
             // Not attached to an agent here: what a command asks of the prefix is read
             // back from this handle rather than from whoever would have applied it.
             prefix: Default::default(),
-            home: root.join("home"),
+            // One scratch directory standing in for both halves, the way an install with a
+            // `MICRO_DIR` or a `~/.micro` resolves them.
+            config_home: root.join("home"),
+            data_home: root.join("home"),
             skills_enabled: true,
             scoped_models: Vec::new(),
             resources: Default::default(),

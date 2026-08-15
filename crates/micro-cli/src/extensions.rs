@@ -162,6 +162,9 @@ fn request_needs(request: &str) -> Option<Capability> {
         "run_builtin_tool" => Some(Capability::BuiltinTools),
         "provider_stream" => Some(Capability::ProviderStream),
         "append_entry" | "set_label" | "set_session_name" => Some(Capability::SessionWrite),
+        // Asked rather than acted on, since `setModel` answers whether it could — and
+        // confined the same way the action of that name is.
+        "set_model" => Some(Capability::SessionControl),
         "reload" | "new_session" | "switch_session" | "navigate_tree" | "fork" => {
             Some(Capability::SessionControl)
         }
@@ -179,6 +182,9 @@ fn action_needs(action: &str) -> Option<Capability> {
         // so narrowing it is changing what the model is told rather than moving the
         // conversation — the same capability that covers rewriting the prompt.
         "set_active_tools" => Some(Capability::Context),
+        // Written rather than asked about: pi answers nothing for these, so they arrive as
+        // actions and are confined the same way the requests of the same name were.
+        "append_entry" | "set_label" | "set_session_name" => Some(Capability::SessionWrite),
         "set_thinking_level" | "set_model" | "shutdown" | "compact" | "abort" => {
             Some(Capability::SessionControl)
         }
@@ -249,6 +255,7 @@ pub async fn serve(
                     asker.as_ref(),
                     Some(&host),
                     Some(&state),
+                    Some(&session),
                 )
                 .await
             }
@@ -506,6 +513,8 @@ async fn answer(
                 // both ride along with every snapshot rather than being fetched when one
                 // is asked for.
                 "activeTools": state.tools,
+                "allTools": state.all_tools,
+                "commands": state.all_commands,
                 "sessionName": session_name,
                 "session": session_snapshot(&*session.lock().await),
             });
@@ -572,6 +581,31 @@ async fn answer(
                 Ok(()) => json!({ "ok": true }),
                 Err(error) => json!({ "error": error.to_string() }),
             }
+        }
+        // Answered rather than acted on and forgotten, because pi's `setModel` reports
+        // whether it could — false when nothing is signed in to the service the chosen
+        // model is served by. The change itself is still the interface's to make, so this
+        // asks for it the same way the action did and reports that the ask went through.
+        "set_model" => {
+            let named = payload
+                .get("model")
+                .and_then(|model| model.get("id").and_then(Value::as_str))
+                .or_else(|| payload.get("model").and_then(Value::as_str));
+            let Some(model) = named else {
+                return json!({ "ok": false, "error": "no model to switch to" });
+            };
+            let Some(asker) = asker else {
+                return json!({ "ok": false, "error": "there is no interface to switch in" });
+            };
+            asker
+                .ask(
+                    "send_user_message",
+                    format!("/model {model}"),
+                    None,
+                    Vec::new(),
+                )
+                .await;
+            json!({ "ok": true })
         }
         // These five all move the conversation somewhere else, which is the interface's
         // to do: it holds the agent, and a slash command is how anything else asks it to.
@@ -687,6 +721,97 @@ fn resolve_scoped_models(patterns: &[String]) -> Value {
 /// there is nothing to gain by asking again on every command, and `State` holding the
 /// result rather than a handle onto the host is what keeps answering a plain request from
 /// needing a running one to test against.
+/// Every tool that exists, as `getAllTools()` describes one.
+///
+/// A tool registered by an extension is named by the file that registered it; a built-in
+/// belongs to micro itself and says so, rather than borrowing a path it never came from.
+pub fn all_tools(
+    registered: &[micro_extensions::Registered],
+    builtin: &[micro_types::ToolDefinition],
+    names: &[String],
+) -> Value {
+    let described: Vec<Value> = names
+        .iter()
+        .map(|name| {
+            // A built-in describes itself; only an extension's tool has to be looked up by
+            // the extension that registered it.
+            let own = builtin.iter().find(|tool| &tool.name == name);
+            // Which extension registered it, since the path belongs to the extension
+            // rather than to the tool. Nothing found means micro's own.
+            let owner = registered
+                .iter()
+                .find(|extension| extension.tools.iter().any(|tool| &tool.name == name));
+            let found = owner
+                .and_then(|extension| extension.tools.iter().find(|tool| &tool.name == name));
+            let source = owner.map(|extension| extension.path.clone()).unwrap_or_default();
+            json!({
+                "name": name,
+                "description": found
+                    .map(|tool| tool.description.clone())
+                    .or_else(|| own.map(|tool| tool.description.clone()))
+                    .unwrap_or_default(),
+                "parameters": found
+                    .map(|tool| tool.parameters.clone())
+                    .or_else(|| own.map(|tool| tool.parameters.clone()))
+                    .unwrap_or_else(|| json!({ "type": "object", "properties": {} })),
+                "promptGuidelines": found
+                    .map(|tool| tool.prompt_guidelines.clone())
+                    .unwrap_or_default(),
+                "sourceInfo": {
+                    "path": source,
+                    "source": match found {
+                        Some(_) => "extension",
+                        None => "builtin",
+                    },
+                    "scope": "user",
+                    "origin": "top-level",
+                },
+            })
+        })
+        .collect();
+    Value::Array(described)
+}
+
+/// Every command that can be typed, as `getCommands()` describes one.
+pub fn all_commands(registered: &[micro_extensions::Registered]) -> Value {
+    let mut described: Vec<Value> = micro_commands::commands()
+        .iter()
+        .map(|command| {
+            json!({
+                "name": command.name,
+                "description": command.description,
+                // Nothing micro answers to itself came from an extension, a prompt or a
+                // skill, which are the three sources pi distinguishes. Saying "extension"
+                // for a built-in would be the wrong one of those three, so it says what it
+                // is and leaves the path empty.
+                "source": "builtin",
+                "sourceInfo": {
+                    "path": "",
+                    "source": "builtin",
+                    "scope": "user",
+                    "origin": "top-level",
+                },
+            })
+        })
+        .collect();
+    described.extend(registered.iter().flat_map(|extension| {
+        extension.commands.iter().map(|command| {
+            json!({
+                "name": command.name,
+                "description": command.description,
+                "source": "extension",
+                "sourceInfo": {
+                    "path": extension.path,
+                    "source": "extension",
+                    "scope": "user",
+                    "origin": "top-level",
+                },
+            })
+        })
+    }));
+    Value::Array(described)
+}
+
 pub fn tool_prompt_options(tools: &[micro_extensions::RegisteredTool], active: &[String]) -> (Value, Vec<String>) {
     let active: std::collections::HashSet<&str> = active.iter().map(String::as_str).collect();
     let mut snippets = serde_json::Map::new();
@@ -1155,6 +1280,7 @@ async fn carry_out(
     asker: Option<&micro_tui::UiAsker>,
     host: Option<&Arc<Host>>,
     state: Option<&Arc<tokio::sync::RwLock<State>>>,
+    session: Option<&Arc<Mutex<micro_session::Session>>>,
 ) {
     // Nothing goes back to an action, so a refusal is said where a person will find it and
     // written where an audit will: the extension is not waiting to be told.
@@ -1214,6 +1340,42 @@ async fn carry_out(
             }
             if let Some(asker) = asker {
                 asker.ask("custom_message", custom_type, None, lines).await;
+            }
+        }
+        // Three that write the session and answer nothing, the way pi's own do. What went
+        // wrong is reported where a reader can see it rather than handed back to a caller
+        // that, by the shape of the call, is not waiting for it.
+        "append_entry" => {
+            let Some(session) = session else { return };
+            let custom_type = payload
+                .get("customType")
+                .and_then(Value::as_str)
+                .unwrap_or("custom");
+            let data = payload.get("data").cloned().unwrap_or(Value::Null);
+            if let Err(error) = session.lock().await.append_custom(custom_type, data).await {
+                eprintln!("note: an extension could not keep an entry: {error}");
+            }
+        }
+        "set_label" => {
+            let Some(session) = session else { return };
+            let Some(entry_id) = payload.get("entryId").and_then(Value::as_str) else {
+                return;
+            };
+            let label = payload
+                .get("label")
+                .and_then(Value::as_str)
+                .map(str::to_string);
+            if let Err(error) = session.lock().await.set_label(entry_id, label).await {
+                eprintln!("note: an extension could not label an entry: {error}");
+            }
+        }
+        "set_session_name" => {
+            let Some(session) = session else { return };
+            let Some(name) = payload.get("name").and_then(Value::as_str) else {
+                return;
+            };
+            if let Err(error) = session.lock().await.rename(name).await {
+                eprintln!("note: an extension could not name the session: {error}");
             }
         }
         // Which tools the model is told about from the next turn on. Unlike the two below
@@ -1686,6 +1848,12 @@ pub struct State {
     /// reaches the next turn. `None` inside means nothing has been narrowed.
     pub offered_tools: Arc<std::sync::RwLock<Option<Vec<String>>>>,
     pub commands: Vec<String>,
+    /// Every tool that exists, described the way `getAllTools()` answers — name,
+    /// description, parameters, guidelines and where it came from. Settled once: what a
+    /// tool is does not change after loading, only whether it is currently offered.
+    pub all_tools: Value,
+    /// Every command that can be typed, described the way `getCommands()` answers.
+    pub all_commands: Value,
     /// What the model was told before the conversation started, so an extension asking
     /// can be answered without waiting on the agent. This is the base prompt the session
     /// was built with — a `context` handler that rewrites it for a single turn is not
@@ -2290,6 +2458,8 @@ mod tests {
             offered_tools: Default::default(),
             tools: vec!["read".into(), "write".into()],
             commands: vec!["help".into()],
+            all_tools: json!([]),
+            all_commands: json!([]),
             system_prompt: "you are micro".into(),
             scoped_models: Vec::new(),
             custom_prompt: None,
@@ -2876,7 +3046,7 @@ mod tests {
     async fn shutdown_and_compact_are_typed_as_slash_commands() {
         let (asker, mut requests) = micro_tui::ui_channel();
         let quitting = tokio::spawn(async move {
-            carry_out("shutdown", &json!({}), None, &Broker::open(), Some(&asker), None, None).await
+            carry_out("shutdown", &json!({}), None, &Broker::open(), Some(&asker), None, None, None).await
         });
         let mut request = requests.recv().await.expect("a quit");
         assert_eq!(request.title, "/quit");
@@ -2885,7 +3055,7 @@ mod tests {
 
         let (asker, mut requests) = micro_tui::ui_channel();
         let compacting = tokio::spawn(async move {
-            carry_out("compact", &json!({}), None, &Broker::open(), Some(&asker), None, None).await
+            carry_out("compact", &json!({}), None, &Broker::open(), Some(&asker), None, None, None).await
         });
         let mut request = requests.recv().await.expect("a compact");
         assert_eq!(request.title, "/compact");
@@ -2899,7 +3069,7 @@ mod tests {
     async fn abort_reaches_the_interface_as_its_own_method() {
         let (asker, mut requests) = micro_tui::ui_channel();
         let aborting =
-            tokio::spawn(async move { carry_out("abort", &json!({}), None, &Broker::open(), Some(&asker), None, None).await });
+            tokio::spawn(async move { carry_out("abort", &json!({}), None, &Broker::open(), Some(&asker), None, None, None).await });
         let mut request = requests.recv().await.expect("an abort");
         assert_eq!(request.method, "abort");
         request.answer(json!({ "interrupted": true }));
@@ -2917,6 +3087,7 @@ mod tests {
                 None,
                 &Broker::open(),
                 Some(&asker),
+                None,
                 None,
                 None,
             ).await
@@ -2938,6 +3109,7 @@ mod tests {
             None,
             &Broker::open(),
             Some(&asker),
+            None,
             None,
             None,
         ).await;
@@ -3089,7 +3261,7 @@ mod tests {
     async fn watching_and_unwatching_terminal_input_reach_the_interface() {
         let (asker, mut requests) = micro_tui::ui_channel();
         let watching =
-            tokio::spawn(async move { carry_out("watch_terminal_input", &json!({}), None, &Broker::open(), Some(&asker), None, None).await });
+            tokio::spawn(async move { carry_out("watch_terminal_input", &json!({}), None, &Broker::open(), Some(&asker), None, None, None).await });
         let mut request = requests.recv().await.expect("a watch");
         assert_eq!(request.method, "watch_terminal_input");
         request.answer(json!({}));
@@ -3097,7 +3269,7 @@ mod tests {
 
         let (asker, mut requests) = micro_tui::ui_channel();
         let unwatching = tokio::spawn(async move {
-            carry_out("unwatch_terminal_input", &json!({}), None, &Broker::open(), Some(&asker), None, None).await
+            carry_out("unwatch_terminal_input", &json!({}), None, &Broker::open(), Some(&asker), None, None, None).await
         });
         let mut request = requests.recv().await.expect("an unwatch");
         assert_eq!(request.method, "unwatch_terminal_input");

@@ -496,6 +496,49 @@ fn help_and_version_exit_zero() {
     assert!(version.stdout.contains("micro"));
 }
 
+/// A machine with no `~/.micro` and nothing naming one directory keeps the two halves
+/// apart. The credential and the catalog are read from where XDG puts configuration —
+/// which reaching the fake provider at all proves — and the session log is written where
+/// XDG puts data.
+#[test]
+fn a_fresh_install_reads_its_configuration_and_writes_its_sessions_where_xdg_says() {
+    let api = FakeApi::start([Reply::text("split")]);
+    let fixture = Fixture::new(&api);
+
+    Output::run(
+        fixture
+            .micro_split()
+            .args(["--print", "-m", "test", "say split"]),
+    )
+    .expect_success("micro --print on a fresh install");
+
+    assert_eq!(
+        api.headers(0)
+            .get("authorization")
+            .cloned()
+            .unwrap_or_default(),
+        "Bearer test-key",
+        "the credential was not read from the configuration directory"
+    );
+
+    let sessions = fixture.xdg_data().join("sessions");
+    let written: Vec<_> = std::fs::read_dir(&sessions)
+        .unwrap_or_else(|error| panic!("read {}: {error}", sessions.display()))
+        .filter_map(|entry| entry.ok().map(|entry| entry.path()))
+        .filter(|path| path.extension().is_some_and(|kind| kind == "jsonl"))
+        .collect();
+    assert_eq!(written.len(), 1, "logs under {}", sessions.display());
+
+    assert!(
+        !fixture.xdg_config().join("sessions").exists(),
+        "a session log landed among the settings"
+    );
+    assert!(
+        !fixture.xdg_home().join(".micro").exists(),
+        "a fresh install made the directory the split exists to avoid"
+    );
+}
+
 #[test]
 fn sessions_list_is_empty_before_anything_runs() {
     let api = FakeApi::start([]);

@@ -14,6 +14,8 @@ import { dirname, join, resolve } from "node:path";
 import * as components from "./host-components.ts";
 import {
 	activeTools,
+	allTools,
+	commands,
 	contextFor,
 	contextFrom,
 	located,
@@ -193,9 +195,9 @@ function apiFor(registration: Registration) {
 			send({ type: "action", action: "send_message", message, options: options ?? {} });
 		},
 
-		async setSessionName(name: string): Promise<boolean> {
-			const answer = await ask({ type: "request", request: "set_session_name", name });
-			return answer.ok === true;
+		/** Name the session. Fire-and-forget, as pi's own is. */
+		setSessionName(name: string): void {
+			send({ type: "action", action: "set_session_name", name });
 		},
 
 		async exec(command: string, args: string[], options?: Json): Promise<Json> {
@@ -217,10 +219,10 @@ function apiFor(registration: Registration) {
 			send({ type: "action", action: "set_active_tools", toolNames });
 		},
 
-		/** Keep something in the session that the model never sees. */
-		async appendEntry(customType: string, data?: unknown): Promise<boolean> {
-			const answer = await ask({ type: "request", request: "append_entry", customType, data });
-			return answer.ok === true;
+		/** Keep something in the session that the model never sees. Fire-and-forget: the
+		 * session is the interface's to write, and pi's own answers nothing either. */
+		appendEntry(customType: string, data?: unknown): void {
+			send({ type: "action", action: "append_entry", customType, data });
 		},
 
 		/** Read back everything this or any other extension kept. */
@@ -230,19 +232,20 @@ function apiFor(registration: Registration) {
 		},
 
 		/** Name an entry, or take its name away by passing nothing. */
-		async setLabel(entryId: string, label?: string): Promise<boolean> {
-			const answer = await ask({ type: "request", request: "set_label", entryId, label });
-			return answer.ok === true;
+		setLabel(entryId: string, label?: string): void {
+			send({ type: "action", action: "set_label", entryId, label });
 		},
 
-		async getAllTools(): Promise<string[]> {
-			const answer = await ask({ type: "request", request: "get_all_tools" });
-			return (answer.tools as string[]) ?? [];
+		/** Every tool that exists, described rather than merely named — parameters,
+		 * guidelines and where it came from. Answered from the snapshot, since pi's own is
+		 * a plain array an extension reads without awaiting. */
+		getAllTools(): Json[] {
+			return allTools();
 		},
 
-		async getCommands(): Promise<string[]> {
-			const answer = await ask({ type: "request", request: "get_commands" });
-			return (answer.commands as string[]) ?? [];
+		/** Every command that can be typed, from micro's own and from every extension. */
+		getCommands(): Json[] {
+			return commands();
 		},
 
 		/** What the session is called, if anything. Answered from the snapshot every event
@@ -257,8 +260,11 @@ function apiFor(registration: Registration) {
 			return answer.model as Json | undefined;
 		},
 
-		setModel(model: Json | string): void {
-			send({ type: "action", action: "set_model", model });
+		/** Change the model, answering whether it could be. False when there is no
+		 * credential for the service the chosen model is served by. */
+		async setModel(model: Json | string): Promise<boolean> {
+			const answer = await ask({ type: "request", request: "set_model", model });
+			return answer.ok === true;
 		},
 
 		/** The thinking level in force, answered from the same snapshot and for the same

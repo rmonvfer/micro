@@ -13,20 +13,24 @@ use micro_sandbox::Sandbox;
 use micro_sandbox::SandboxPolicy;
 use std::path::Path;
 
-/// A sandbox enforcing `policy` around `workspace`, with micro's own directory protected.
+/// A sandbox enforcing `policy` around `workspace`, with micro's own directories
+/// protected.
 ///
-/// A workspace that contains `~/.micro` — someone working on their own configuration —
+/// A workspace that contains one of them — someone working on their own configuration —
 /// would otherwise let a command rewrite the credentials and the settings that decide what
-/// the next run may do.
+/// the next run may do, or the session logs that say what this one did. Both are named
+/// because a fresh install keeps them apart, and either is inside a home directory
+/// somebody could be standing in.
 pub fn around(policy: SandboxPolicy, workspace: &Path) -> Sandbox {
-    let sandbox = Sandbox::new(policy, workspace);
-    match micro_context::micro_home()
-        .ok()
-        .filter(|home| !home.as_os_str().is_empty())
+    let mut sandbox = Sandbox::new(policy, workspace);
+    for own in [micro_dirs::config_dir(), micro_dirs::data_dir()]
+        .into_iter()
+        .flatten()
+        .filter(|own| !own.as_os_str().is_empty())
     {
-        Some(home) => sandbox.with_micro_home(home),
-        None => sandbox,
+        sandbox = sandbox.with_micro_home(own);
     }
+    sandbox
 }
 
 /// The policy in force for this run, from whichever of the three places settled it.
