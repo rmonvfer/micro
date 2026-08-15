@@ -1,0 +1,11 @@
+micro-sandbox
+
+This crate includes code derived from OpenAI Codex
+(https://github.com/openai/codex), which is licensed under the Apache License,
+Version 2.0. A copy of that license sits beside this file in LICENSE.
+
+OpenAI Codex
+Copyright 2025 OpenAI
+
+The derived files have been modified. Each one carries a header naming the
+upstream path and the commit it was taken from.

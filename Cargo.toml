@@ -9,6 +9,7 @@ members = [
     "crates/micro-rpc",
     "crates/micro-models",
     "crates/micro-tools",
+    "crates/micro-sandbox",
     "crates/micro-session",
     "crates/micro-context",
     "crates/micro-skills",
@@ -37,6 +38,7 @@ micro-extensions = { path = "crates/micro-extensions" }
 micro-rpc = { path = "crates/micro-rpc" }
 micro-models = { path = "crates/micro-models" }
 micro-tools = { path = "crates/micro-tools" }
+micro-sandbox = { path = "crates/micro-sandbox" }
 micro-session = { path = "crates/micro-session" }
 micro-context = { path = "crates/micro-context" }
 micro-skills = { path = "crates/micro-skills" }
