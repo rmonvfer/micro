@@ -52,8 +52,7 @@ pub struct Model {
     pub max_tokens: u32,
     #[serde(default)]
     pub thinking: ThinkingLevel,
-    /// Whether asking this model to reason means anything. A model that does not reason
-    /// is never sent a reasoning parameter, whatever level is selected.
+    /// Whether asking this model to reason means anything.
     #[serde(default)]
     pub reasoning: bool,
     /// What the service serving this model accepts, on top of the protocol it speaks.

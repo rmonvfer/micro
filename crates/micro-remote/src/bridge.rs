@@ -1,9 +1,4 @@
 //! What a phone asks for, carried out against the session running here.
-//!
-//! The bridge holds no agent of its own. It works through [`Session`], a narrow surface
-//! the caller implements over whatever is actually running — which keeps the rules about
-//! what a phone may do in one testable place, and keeps the session's own machinery out
-//! of it.
 
 use crate::protocol::MachinePayload;
 use crate::protocol::PhoneCommand;
@@ -12,10 +7,6 @@ use serde_json::json;
 use serde_json::Value;
 
 /// One model a session can switch to.
-///
-/// The provider travels with every model rather than being left for the phone to work
-/// out: two providers can serve models with the same name, and a phone picking one by
-/// name alone would sometimes pick the other.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AvailableModel {
     pub id: String,
@@ -43,25 +34,16 @@ pub struct SessionState {
 }
 
 /// What the bridge can ask of the session it is driving.
-///
-/// Deliberately narrow. Everything here is something a phone can actually cause, and
-/// nothing here reaches further into micro than that — which is what lets the rules
-/// below be tested against a fake instead of against a live agent.
 pub trait Session {
-    /// Submits text the way a line typed into the terminal is submitted: text naming a
-    /// command runs as that command, anything else goes to the model.
-    ///
-    /// The bridge does not decide which — it cannot, since only the session knows what
-    /// commands it has.
+    
     fn submit(&mut self, text: &str, delivery: Delivery) -> Result<(), String>;
     fn abort(&mut self);
     fn is_idle(&self) -> bool;
-    /// The session's entries, in the shape the phone rebuilds a transcript from.
+    
     fn entries(&self) -> Vec<Value>;
     fn state(&self) -> SessionState;
     fn available_models(&self) -> Vec<AvailableModel>;
-    /// The commands the phone is offered, which are the ones that can be carried out
-    /// without something opening on the machine's own screen.
+    /// The commands the phone is offered.
     fn commands(&self) -> Vec<SlashCommand>;
     fn set_model(&mut self, model_id: &str) -> Result<(), String>;
     fn set_thinking_level(&mut self, level: &str) -> Result<(), String>;
@@ -99,11 +81,6 @@ impl Bridge {
     }
 
     /// Carries out one thing the phone asked for, and says what came of it.
-    ///
-    /// A phone can hold a session this machine no longer runs — a stale screen, or one
-    /// from an earlier process. Such a command is answered rather than carried out:
-    /// running it would drive the wrong session, and dropping it silently would leave
-    /// the phone waiting for an answer that never comes.
     pub fn handle(&self, session: &mut impl Session, payload: PhonePayload) -> MachinePayload {
         let PhonePayload::Command {
             session_id,
@@ -125,9 +102,7 @@ impl Bridge {
 
     fn run(&self, session: &mut impl Session, command: &PhoneCommand) -> Result<Option<Value>, String> {
         match command {
-            // A prompt starts a turn, so there has to be no turn to start it inside.
-            // The phone has two ways to reach a running turn and is told to use them
-            // rather than having one chosen for it.
+            
             PhoneCommand::Prompt { text } => match session.is_idle() {
                 true => session.submit(text, Delivery::Prompt).map(|()| None),
                 false => Err("agent is busy — use steer or follow_up".into()),
@@ -163,8 +138,7 @@ impl Bridge {
                     }))
                     .collect::<Vec<_>>(),
             }))),
-            // The phone is told the names and the descriptions; how each one runs stays
-            // on this machine.
+            
             PhoneCommand::GetCommands => Ok(Some(json!({
                 "commands": session
                     .commands()
@@ -326,8 +300,7 @@ mod tests {
         );
     }
 
-    /// A prompt cannot start a turn inside one, and the phone is told which of the two
-    /// ways to reach the running turn it should use instead.
+    
     #[test]
     fn a_prompt_while_busy_is_refused_with_the_alternatives() {
         let mut session = Fake::default();
@@ -346,8 +319,7 @@ mod tests {
         assert!(session.submitted.is_empty());
     }
 
-    /// Both ways of reaching a running turn work while it runs, which is the whole
-    /// point of them.
+    /// Both ways of reaching a running turn work while it runs, which is the whole point of them.
     #[test]
     fn a_steer_and_a_follow_up_reach_a_running_turn() {
         let mut session = Fake::default();
@@ -435,8 +407,7 @@ mod tests {
         assert_eq!(session.thinking.as_deref(), Some("high"));
     }
 
-    /// A refusal from the session is the phone's answer, so the phone that asked hears
-    /// about it rather than only the terminal.
+    
     #[test]
     fn a_session_that_refuses_is_answered_with_its_reason() {
         let mut session = Fake {
@@ -457,8 +428,7 @@ mod tests {
         assert_eq!(error.unwrap(), "unknown model \"gpt-9\"");
     }
 
-    /// A phone holding a session this machine no longer runs is told so, rather than
-    /// having its command drive whatever session is running instead.
+    
     #[test]
     fn a_command_for_another_session_is_answered_rather_than_run() {
         let mut session = Fake::idle();
@@ -479,8 +449,7 @@ mod tests {
         assert!(session.submitted.is_empty());
     }
 
-    /// A command from a newer phone is answered rather than ignored: the phone is
-    /// waiting on a response either way.
+    
     #[test]
     fn a_command_this_machine_does_not_know_is_answered_with_a_reason() {
         let mut session = Fake::idle();
@@ -491,8 +460,8 @@ mod tests {
         assert!(error.unwrap().contains("does not know"));
     }
 
-    /// Every answer carries back the id it was asked under, which is how a phone with
-    /// several requests in flight tells the answers apart.
+    /// Every answer carries back the id it was asked under, which is how a phone with several
+    /// requests in flight tells the answers apart.
     #[test]
     fn an_answer_carries_the_id_and_the_command_it_answers() {
         let mut session = Fake::idle();

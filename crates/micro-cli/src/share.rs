@@ -1,15 +1,11 @@
 //! Publishing a conversation as a secret GitHub gist.
-//!
-//! Secret rather than public: a gist is shared by sending someone the link, and a
-//! conversation with a codebase in it is not something to put in a search index. Secret is
-//! still not private, which is why the address is reported in full rather than as "done".
 
 use micro_types::ContentBlock;
 use micro_types::Message;
 use serde_json::json;
 use serde_json::Value;
 
-/// Where the token is looked for, in order. The first one set wins.
+/// Where the token is looked for, in order.
 pub const TOKEN_VARIABLES: [&str; 2] = ["GITHUB_TOKEN", "GH_TOKEN"];
 
 const GISTS_URL: &str = "https://api.github.com/gists";
@@ -28,8 +24,7 @@ pub async fn publish(title: &str, conversation: &[Message], token: &str) -> Resu
     publish_to(GISTS_URL, title, conversation, token).await
 }
 
-/// Upload to a named endpoint. Split out from [`publish`] so the request itself can be
-/// exercised against a server that is not GitHub.
+/// Upload to a named endpoint.
 async fn publish_to(
     endpoint: &str,
     title: &str,
@@ -113,8 +108,7 @@ fn markdown(title: &str, conversation: &[Message]) -> String {
                     }
                 }
             }
-            // Tool output is the workspace's, not the conversation's, and a shared log is
-            // read for what was said. What was called is already named above it.
+            
             Message::ToolResult { .. } => {}
         }
     }
@@ -181,8 +175,8 @@ mod tests {
         assert!(odd.contains("upstream fell over"), "{odd}");
     }
 
-    /// One request, answered by a server of our own: the body GitHub would receive, and
-    /// the address that comes back.
+    /// One request, answered by a server of our own: the body GitHub would receive, and the address
+    /// that comes back.
     #[tokio::test]
     async fn a_conversation_is_uploaded_and_its_address_returned() {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -207,7 +201,7 @@ mod tests {
 
         assert_eq!(url, "https://gist.github.com/x/abc123");
 
-        // Read back lowercased, since a header's case is the client's business.
+        
         let request = server.await.unwrap();
         assert!(request.contains("post /gists"), "{request}");
         assert!(
@@ -215,7 +209,7 @@ mod tests {
             "{request}"
         );
         assert!(request.contains("user-agent: micro"), "{request}");
-        // Secret, because a conversation holds whatever was being worked on.
+        
         assert!(request.contains("\"public\":false"), "{request}");
         assert!(request.contains("conversation.md"), "{request}");
         assert!(request.contains("what does this do"), "{request}");

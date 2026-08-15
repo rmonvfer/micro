@@ -1,13 +1,4 @@
 //! One tool result, drawn.
-//!
-//! The whole result sits in a band of background whose color says how the call went:
-//! pending while it runs, then success or error. That band is what marks a tool block, and
-//! it does the work a marker glyph and a frame would otherwise be doing, so there is
-//! neither.
-//!
-//! The header is always one line: what ran, what it acted on, and how it went. Everything
-//! below it is the body the reader can open, styled by what the row means — a diff line, a
-//! search hit, a line of output.
 
 use crate::diff;
 use crate::diff::DiffLine;
@@ -24,8 +15,8 @@ use ratatui::style::Style;
 use ratatui::text::Line;
 use ratatui::text::Span;
 
-/// Columns a row is inset by when it is drawn under a heading of its own, as it is inside
-/// an approval prompt. Inside the band the header and the body share a column.
+/// Columns a row is inset by when it is drawn under a heading of its own, as it is inside an
+/// approval prompt.
 const INDENT: usize = 2;
 /// Width of the line-number column beside a search hit.
 const NUMBER_WIDTH: usize = 5;
@@ -59,13 +50,7 @@ pub fn lines(tool: &ToolEntry, focused: bool, theme: &Theme, width: usize) -> Ve
     band(rows, width, ground(tool, focused, theme))
 }
 
-/// A call an extension is drawing itself, through renderCall/renderResult. Its lines are
-/// already composed on the other side of the wire; what is left is where they land.
-///
-/// Most such tools still want micro's own frame — the padded band whose color says how the
-/// call went — and only supply what goes inside it. A tool whose `render_shell` asked for
-/// `"self"` wants none of that: it means to draw its own frame on the far side, so this
-/// leaves the band off entirely and only spaces the result off from whatever came before.
+/// A call an extension is drawing itself, through renderCall/renderResult.
 fn custom_lines(
     tool: &ToolEntry,
     focused: bool,
@@ -85,8 +70,7 @@ fn custom_lines(
     band(rows, width, ground(tool, focused, theme))
 }
 
-/// The color behind the result: what the call is doing, or — when the reader has picked
-/// this one out — that it is the one picked.
+
 fn ground(tool: &ToolEntry, focused: bool, theme: &Theme) -> Color {
     if focused {
         return theme.selected_bg;
@@ -133,9 +117,6 @@ fn header(
 }
 
 /// Draw a body, painting each run of diff lines as one block.
-///
-/// A diff is painted whole rather than a row at a time because a line that replaced exactly
-/// one other is marked word by word, and that comparison needs both sides in hand.
 fn body_lines(
     rows: &[Row],
     view: &tools::ToolView,
@@ -182,8 +163,7 @@ fn body_lines(
 
 fn row_lines(row: &Row, theme: &Theme, width: usize, indent: usize) -> Vec<Line<'static>> {
     let pad = " ".repeat(indent);
-    // A row that carries code or output is broken at the edge, not re-flowed as prose, and
-    // a row it wraps onto is stepped in past the marker so the marker column stays readable.
+    
     let hard = |spans: Vec<Span<'static>>| wrap_spans_hard(&spans, width, indent + 1);
 
     match row {
@@ -191,7 +171,7 @@ fn row_lines(row: &Row, theme: &Theme, width: usize, indent: usize) -> Vec<Line<
             Span::raw(pad),
             Span::styled(text.clone(), Style::new().fg(theme.tool_output)),
         ]),
-        // Painted as part of a block, never on its own.
+        
         Row::Diff(_) => Vec::new(),
         Row::Path { path, count } => {
             let mut spans = vec![
@@ -226,7 +206,7 @@ fn hidden_line(hidden: usize, expanded: bool, focused: bool, theme: &Theme) -> L
         format!("… +{hidden} {noun}"),
         Style::new().fg(theme.tool_output),
     )];
-    // The key only helps on the result it would act on, so it is offered only there.
+    
     if focused && !expanded {
         spans.push(Span::styled("  ctrl+o", Style::new().fg(theme.dim)));
     }
@@ -260,8 +240,7 @@ mod tests {
                     .iter()
                     .map(|span| span.content.as_ref())
                     .collect::<String>()
-                    // The band's own padding column is not content; dropping exactly it
-                    // keeps every assertion about relative indentation honest.
+                    
                     .strip_prefix(' ')
                     .unwrap_or_default()
                     .trim_end()
@@ -283,9 +262,7 @@ mod tests {
             .collect()
     }
 
-    /// A tool with a registered component draws exactly what it answered rather than the
-    /// built-in view — the call and the result lines stacked in that order, the way pi's
-    /// own `ToolExecutionComponent` stacks its two renderers.
+    
     #[test]
     fn a_tool_with_a_registered_component_draws_what_it_answered_instead_of_the_built_in_view() {
         let theme = Theme::dark();
@@ -301,10 +278,7 @@ mod tests {
         );
     }
 
-    /// `render_shell: "self"` skips micro's own band entirely: no background tint marking
-    /// how the call went, no padding column, just the extension's own lines behind one blank
-    /// row that keeps them off whatever came before — no trailing blank row, since nothing
-    /// here is closing a frame the extension is still drawing.
+    
     #[test]
     fn a_self_framed_tool_draws_without_the_band() {
         let theme = Theme::dark();
@@ -333,8 +307,7 @@ mod tests {
         );
     }
 
-    /// A component answering for only one of the two renderers still draws — the built-in
-    /// view is not a fallback for the half nothing registered.
+    /// A component answering for only one of the two renderers still draws.
     #[test]
     fn only_a_call_component_still_draws_on_its_own() {
         let theme = Theme::dark();
@@ -392,8 +365,7 @@ mod tests {
             .all(|bg| *bg == Some(theme.selected_bg)));
     }
 
-    /// A band spans the content it was given plus the column of ground either side of it,
-    /// so it reaches both edges of the screen rather than floating inside them.
+    /// A band spans the content it was given plus the column of ground either side of it.
     #[test]
     fn every_row_of_the_band_reaches_both_edges() {
         let theme = Theme::dark();
@@ -411,7 +383,7 @@ mod tests {
         let theme = Theme::dark();
         let tool = entry("read", json!({ "path": "a.rs" }), Some("one"));
         let out = lines(&tool, false, &theme, 60);
-        // The first span is the band's padding column; the header begins after it.
+        
         let header: Vec<_> = out[1].spans.iter().skip(1).collect();
 
         assert_eq!(header[0].content.as_ref(), "read");
@@ -443,7 +415,7 @@ mod tests {
             Some("Edited a.rs"),
         );
         let out = lines(&tool, false, &theme, 60);
-        // Span 0 is the band's padding column, so the row's own first span is the next one.
+        
         let colour = |row: usize| out[row].spans[1].style.fg;
         assert_eq!(colour(2), Some(theme.tool_diff_context));
         assert_eq!(colour(3), Some(theme.tool_diff_removed));
@@ -534,8 +506,8 @@ mod tests {
         }
     }
 
-    /// Painting a diff as a block is what keeps the word-level marks: a line that replaced
-    /// exactly one other is compared against it, which needs both sides in one call.
+    /// Painting a diff as a block is what keeps the word-level marks: a line that replaced exactly
+    /// one other is compared against it.
     #[test]
     fn a_one_for_one_replacement_keeps_its_word_marks() {
         let tool = ToolEntry {
@@ -564,8 +536,7 @@ mod tests {
             marked.iter().all(|text| !text.starts_with(' ')),
             "indentation should not be lit up: {marked:?}"
         );
-        // Only the tail that actually changed: `let total = compute(a,` is common to both
-        // sides and stays unlit, as does the indentation ahead of it.
+        
         assert!(
             marked.iter().any(|text| text.contains("c);")),
             "the added argument should be marked: {marked:?}"

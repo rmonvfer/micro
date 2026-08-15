@@ -1,7 +1,4 @@
 //! Terminal input translated into intent.
-//!
-//! Keeping the mapping pure — a crossterm event in, an [`Action`] out — is what lets the key
-//! bindings be tested without a terminal, and keeps the event loop free of key matching.
 
 use crossterm::event::Event;
 use crossterm::event::KeyCode;
@@ -14,10 +11,6 @@ pub enum Action {
     /// Ctrl+C: abort the running turn, or leave when there is nothing to abort.
     Interrupt,
     /// Ctrl+D: leave when there is nothing written, delete forward when there is.
-    ///
-    /// The same key means both because that is what a readline prompt has always meant,
-    /// and a half-written message is not something to lose to a keystroke reaching for
-    /// the character in front of the cursor.
     QuitOrDelete,
     Submit,
     Insert(String),
@@ -45,7 +38,7 @@ pub enum Action {
     ToggleThinking,
     /// Step reasoning effort to the next level.
     CycleThinking,
-    /// Send the prompt after the turn in flight rather than instead of it.
+    
     QueueFollowUp,
     /// Pull everything queued back into the buffer.
     Dequeue,
@@ -79,7 +72,7 @@ pub enum Action {
     YankPop,
     /// Step back one edit.
     Undo,
-    /// Text arriving from the terminal's paste, rather than typed.
+    
     Paste(String),
     /// Back out of whatever is asking: an approval, a picker, the command menu.
     Cancel,
@@ -93,16 +86,9 @@ pub enum Action {
 pub fn action_for(event: &Event) -> Action {
     match event {
         Event::Key(key) => key_action(key),
-        // Bracketed paste arrives whole, so a pasted newline inserts a line break instead of
-        // submitting the prompt.
-        // A paste is its own action: it is cleaned, and a large one is held aside behind a
-        // marker rather than filling the prompt.
+        
         Event::Paste(text) => Action::Paste(text.clone()),
-        // The mouse is the terminal's, so nothing here asks for it. Taking it would buy
-        // the wheel and cost selection, and micro has no selection of its own to put in
-        // its place: a conversation you cannot copy out of is worse than one you scroll
-        // with the keyboard. Wheel events still arrive from a terminal that sends them
-        // unasked, and are answered when they do.
+        
         Event::Mouse(mouse) => match mouse.kind {
             crossterm::event::MouseEventKind::ScrollUp => Action::ScrollUp,
             crossterm::event::MouseEventKind::ScrollDown => Action::ScrollDown,
@@ -114,8 +100,7 @@ pub fn action_for(event: &Event) -> Action {
 }
 
 fn key_action(key: &KeyEvent) -> Action {
-    // Terminals that speak the kitty protocol report releases and repeats; acting on a
-    // release would double every keystroke.
+    
     if key.kind == KeyEventKind::Release {
         return Action::Ignored;
     }
@@ -125,8 +110,7 @@ fn key_action(key: &KeyEvent) -> Action {
     let shift = key.modifiers.contains(KeyModifiers::SHIFT);
 
     match key.code {
-        // Alt+Enter queues the prompt behind the turn in flight rather than breaking the
-        // line, so a follow-up can be written while an answer is arriving.
+        
         KeyCode::Enter if alt => Action::QueueFollowUp,
         KeyCode::Enter if shift || control => Action::Newline,
         KeyCode::Enter => Action::Submit,
@@ -140,15 +124,14 @@ fn key_action(key: &KeyEvent) -> Action {
         KeyCode::Left => Action::MoveLeft,
         KeyCode::Right if control || alt => Action::MoveWordRight,
         KeyCode::Right => Action::MoveRight,
-        // Alt+Up pulls everything queued back into the buffer to be edited.
+        
         KeyCode::Up if alt => Action::Dequeue,
         KeyCode::Up if control => Action::FocusPrevious,
         KeyCode::Up => Action::MoveUp,
         KeyCode::Down if control => Action::FocusNext,
         KeyCode::Down => Action::MoveDown,
 
-        // These belong to the input. The transcript is the terminal's to scroll, and it
-        // has its own wheel and its own keys for that.
+        
         KeyCode::PageUp => Action::PageUp,
         KeyCode::PageDown => Action::PageDown,
 
@@ -157,13 +140,13 @@ fn key_action(key: &KeyEvent) -> Action {
 
         KeyCode::Esc => Action::Cancel,
 
-        // Combinations the plain control table cannot express, matched before it.
+        
         KeyCode::Char(']') if control && alt => Action::ArmJump { forward: false },
         KeyCode::Char('p' | 'P') if control && shift => Action::CycleModel { forward: false },
         KeyCode::Char(character) if control => control_action(character),
         KeyCode::Char(character) if alt => alt_action(character),
         KeyCode::Char(character) => Action::Insert(character.to_string()),
-        // Shift+Tab cycles reasoning effort, which recolours the rules around the input.
+        
         KeyCode::BackTab => Action::CycleThinking,
         KeyCode::Tab if shift => Action::CycleThinking,
         KeyCode::Tab => Action::Tab,
@@ -195,7 +178,7 @@ fn control_action(character: char) -> Action {
         'x' => Action::CopyMessage,
         'v' => Action::PasteImage,
         'z' => Action::Suspend,
-        // Undo is bound to ctrl+-, which most terminals deliver as ctrl+_.
+        
         '-' | '_' => Action::Undo,
         _ => Action::Ignored,
     }
@@ -207,16 +190,13 @@ fn alt_action(character: char) -> Action {
         'f' => Action::MoveWordRight,
         'd' => Action::DeleteWordAfter,
         'y' => Action::YankPop,
-        // Some terminals send Alt+Backspace as Alt+Delete's control character.
+        
         '\u{7f}' => Action::DeleteWordBefore,
         _ => Action::Ignored,
     }
 }
 
 /// A key press as a person writes it: `ctrl+h`, `alt+enter`, `shift+f5`.
-///
-/// The spelling a registered shortcut is written in, so a key an extension asked for is
-/// recognised by the name it asked for it under.
 pub fn key_name(event: &Event) -> Option<String> {
     let Event::Key(key) = event else {
         return None;
@@ -232,8 +212,7 @@ pub fn key_name(event: &Event) -> Option<String> {
     if key.modifiers.contains(KeyModifiers::ALT) {
         parts.push("alt".to_string());
     }
-    // Shift is written only where it is not already in the character: `shift+f5`, but `A`
-    // rather than `shift+a`.
+    
     let named = match key.code {
         KeyCode::Char(character) => character.to_ascii_lowercase().to_string(),
         KeyCode::Enter => "enter".to_string(),
@@ -259,14 +238,7 @@ pub fn key_name(event: &Event) -> Option<String> {
     Some(parts.join("+"))
 }
 
-/// A key press as the terminal would have sent it: the bytes a program reading raw stdin
-/// sees, which is what `ctx.ui.onTerminalInput` hands an extension.
-///
-/// crossterm keeps only the key it parsed those bytes into, not the bytes themselves, so
-/// this reconstructs the common ones — a printable character as its own UTF-8, a control
-/// key as the escape sequence a terminal emits for it — rather than replaying what was
-/// actually typed. `None` for anything with no terminal representation worth reconstructing
-/// (a mouse event, a resize), which is not offered to an extension in the first place.
+/// A key press as the terminal would have sent it: the bytes a program reading raw stdin sees.
 pub fn key_to_data(event: &Event) -> Option<String> {
     let Event::Key(key) = event else {
         return None;
@@ -280,9 +252,7 @@ pub fn key_to_data(event: &Event) -> Option<String> {
 
     let plain = match key.code {
         KeyCode::Char(character) if control => {
-            // A terminal sends a lowercase letter under control as the control byte for
-            // it: ctrl+a is 0x01 through ctrl+z is 0x1a, following the letter's position
-            // in the alphabet.
+            
             let lower = character.to_ascii_lowercase();
             if lower.is_ascii_lowercase() {
                 let byte = (lower as u8) - b'a' + 1;
@@ -309,8 +279,7 @@ pub fn key_to_data(event: &Event) -> Option<String> {
         _ => return None,
     };
 
-    // Alt is sent as the escape character ahead of the key it modifies, the way a terminal
-    // in the common 8-bit-clean convention sends it.
+    
     Some(match alt {
         true => format!("\x1b{plain}"),
         false => plain,
@@ -336,7 +305,7 @@ mod tests {
             action_for(&key(KeyCode::Enter, KeyModifiers::SHIFT)),
             Action::Newline
         );
-        // Alt+Enter queues a follow-up rather than breaking the line.
+        
         assert_eq!(
             action_for(&key(KeyCode::Enter, KeyModifiers::ALT)),
             Action::QueueFollowUp
@@ -490,7 +459,7 @@ mod tests {
             Some("shift+f5")
         );
         assert_eq!(key_name(&plain(KeyCode::Esc)).as_deref(), Some("escape"));
-        // A capital letter is the character, not a modifier and a letter.
+        
         assert_eq!(
             key_name(&key(KeyCode::Char('A'), KeyModifiers::SHIFT)).as_deref(),
             Some("a")

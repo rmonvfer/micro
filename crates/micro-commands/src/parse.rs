@@ -24,9 +24,6 @@ pub enum Input<'a> {
 }
 
 /// Read a submitted line.
-///
-/// Only a leading slash followed by a plausible command name is treated as a command, so
-/// a line that opens with a path — `/usr/bin/env` — still reaches the model.
 pub fn parse(line: &str) -> Input<'_> {
     let trimmed = line.trim();
     let Some(rest) = trimmed.strip_prefix('/') else {
@@ -38,7 +35,7 @@ pub fn parse(line: &str) -> Input<'_> {
         None => (rest, ""),
     };
 
-    // A bare slash, and anything that is not shaped like a command name, is just text.
+    
     if !is_command_name(name) {
         return Input::Prompt(trimmed);
     }
@@ -64,9 +61,6 @@ fn is_command_name(name: &str) -> bool {
 }
 
 /// The known command closest to `name`, when one is close enough to be worth offering.
-///
-/// Names an equal distance away are separated by their first letter, which a typo very
-/// rarely changes.
 pub fn suggest(name: &str) -> Option<&'static str> {
     let name = name.to_ascii_lowercase();
     let first = name.chars().next();

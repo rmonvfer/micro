@@ -1,12 +1,4 @@
 //! Headless operation over JSON lines.
-//!
-//! Commands arrive on stdin, one JSON object per line; responses and the agent's own
-//! events go out on stdout the same way. It is the interface without a terminal: the same
-//! agent, the same session, driven by a program instead of by a person.
-//!
-//! Everything a command changes is changed here rather than reported as intended. A
-//! command micro cannot carry out comes back as `success: false` with the reason, which is
-//! the one thing a caller can act on.
 
 mod jsonl;
 mod protocol;
@@ -63,10 +55,6 @@ impl Rpc {
     }
 
     /// Read commands until the stream ends.
-    ///
-    /// Reading happens on its own task, so a line that arrives while a turn is running is
-    /// available immediately rather than after the turn. That is what makes `abort` mean
-    /// anything: the caller can be heard while the thing it wants to stop is still going.
     pub async fn run<R, W>(&mut self, input: R, output: W) -> std::io::Result<()>
     where
         R: AsyncRead + Unpin + Send + 'static,
@@ -90,7 +78,7 @@ impl Rpc {
             self.dispatch(command, &mut output, &mut incoming).await?;
             output.flush().await?;
 
-            // Whatever was queued while the turn ran is run now, in the order it arrived.
+            
             while let Some(prompt) = self.pending.first().cloned() {
                 self.pending.remove(0);
                 self.turn(prompt, &mut output, &mut incoming).await?;
@@ -101,8 +89,7 @@ impl Rpc {
         Ok(())
     }
 
-    /// One line, parsed. An unreadable line is reported and skipped rather than ending
-    /// the session: the next line may be perfectly good.
+    /// One line, parsed.
     async fn read<W>(&self, raw: &str, output: &mut W) -> std::io::Result<Option<Command>>
     where
         W: AsyncWrite + Unpin,
@@ -142,8 +129,7 @@ impl Rpc {
                 self.turn(prompt, output, incoming).await?;
             }
 
-            // Nothing is running when one of these arrives here, so it is a prompt like
-            // any other. Sent while a turn is running, they are taken by the turn itself.
+            
             Command::Steer {
                 message, images, ..
             }
@@ -157,9 +143,7 @@ impl Rpc {
             }
 
             Command::Abort { .. } => {
-                // Nothing is running when this arrives here, so aborting means dropping
-                // whatever was waiting — both what is queued for a run and what is
-                // queued behind one.
+                
                 self.pending.clear();
                 let _ = self.agent.steering().take_all();
                 self.answer(Response::ok(id, name), output).await?;
@@ -270,8 +254,7 @@ impl Rpc {
                 ..
             } => {
                 let result = self.bash(&command).await;
-                // The model is told what the caller ran unless it was asked not to be, so
-                // the next turn knows what happened in the workspace.
+                
                 if !exclude_from_context {
                     self.agent.record(Message::user(format!(
                         "<bash command=\"{command}\">\n{}\n</bash>",
@@ -293,7 +276,7 @@ impl Rpc {
                 .await?;
             }
 
-            // Nothing runs in the background here, so there is never a command to stop.
+            
             Command::AbortBash { .. } => {
                 self.answer(Response::ok(id, name), output).await?;
             }
@@ -464,11 +447,6 @@ impl Rpc {
     }
 
     /// Run one turn, writing every event the agent reports as it happens.
-    /// Run one turn, listening while it runs.
-    ///
-    /// A caller is heard mid-turn: `abort` drops the turn where it stands, and a steer or
-    /// follow-up joins the queue to run after it. Anything else waits, because it is about
-    /// a state the turn is still changing.
     async fn turn<W>(
         &mut self,
         prompt: Message,
@@ -481,11 +459,10 @@ impl Rpc {
         let (sender, mut receiver) = tokio::sync::mpsc::unbounded_channel::<AgentEvent>();
         let mut deferred: Vec<String> = Vec::new();
         let mut aborted = false;
-        // Taken before the run, since the run borrows the agent for as long as it lasts.
+        
         let steering = self.agent.steering();
 
-        // Scoped so the borrow of the agent ends with the turn, leaving whatever arrived
-        // while it ran to be dealt with afterwards.
+        
         {
             let turn = self.agent.run(prompt, &sender);
             tokio::pin!(turn);
@@ -506,9 +483,7 @@ impl Rpc {
                                 aborted = true;
                                 break;
                             }
-                            // Steering reaches the turn at its next boundary; a
-                            // follow-up waits for it to be over. Both go to the run
-                            // itself rather than being held and replayed afterwards.
+                            
                             Ok(Command::Steer { id, message, images }) => {
                                 steering.steer(build_prompt(&message, images));
                                 let answer = Response::ok(id.as_deref(), "steer");
@@ -521,8 +496,7 @@ impl Rpc {
                                 output.write_all(line(&answer).as_bytes()).await?;
                                 output.flush().await?;
                             }
-                            // Anything else is about state this turn is still changing, so it
-                            // is answered once the turn has finished changing it.
+                            
                             _ => deferred.push(raw),
                         }
                     }
@@ -530,8 +504,7 @@ impl Rpc {
                 }
             }
 
-            // Dropping the future abandons the turn. Whatever it already reported still
-            // belongs on the stream.
+            
             drop(turn);
         }
 
@@ -541,8 +514,7 @@ impl Rpc {
         output.flush().await?;
 
         if aborted {
-            // What was queued behind an abandoned turn was queued behind the thing that
-            // was abandoned, so it goes with it.
+            
             let _ = steering.take_all();
         }
 
@@ -561,8 +533,7 @@ impl Rpc {
             model: self.agent.model().id.clone(),
             provider: self.agent.model().provider.clone(),
             thinking_level: self.agent.model().thinking,
-            // Only reachable between turns: a turn defers everything but abort and
-            // steer until it has finished.
+            
             is_streaming: false,
             is_compacting: false,
             session_id: meta.id.clone(),
@@ -570,8 +541,7 @@ impl Rpc {
             session_name: (!meta.title.is_empty()).then(|| meta.title.clone()),
             auto_compaction_enabled: self.auto_compaction,
             message_count: self.agent.messages().len(),
-            // Everything waiting to be said, whether it is queued for a run or behind
-            // one that is going.
+            
             pending_message_count: self.pending.len() + self.agent.steering().waiting(),
         }
     }
@@ -612,13 +582,13 @@ impl Rpc {
         *self.session.lock().await = started;
         self.agent.set_messages(Vec::new());
         self.pending.clear();
-        // A new session starts empty, including of anything said to the one before it.
+        
         let _ = self.agent.steering().take_all();
         Ok(session_id)
     }
 
     async fn switch_session(&mut self, path: &str) -> Result<usize, String> {
-        // A caller may name the file or the id; the id is what the store knows.
+        
         let id = std::path::Path::new(path)
             .file_stem()
             .and_then(|stem| stem.to_str())
@@ -648,8 +618,7 @@ impl Rpc {
         Ok(count)
     }
 
-    /// Copy the conversation up to an entry into a session of its own, and carry on in
-    /// the copy. What it was copied from is left exactly as it was.
+    /// Copy the conversation up to an entry into a session of its own, and carry on in the copy.
     async fn fork_at(&mut self, entry_id: &str) -> Result<(String, usize), String> {
         let (id, through_index) = {
             let session = self.session.lock().await;

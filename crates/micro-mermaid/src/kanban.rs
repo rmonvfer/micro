@@ -1,21 +1,14 @@
 //! Kanban boards: columns of cards, side by side.
-//!
-//! A board is read left to right, column by column, so that is how it is
-//! drawn: each column a heading over a stack of its own cards, the columns
-//! placed side by side in the order they were declared. A card is a small
-//! bordered box of its own rather than a plain line of text, because a
-//! kanban board is a board of physical-feeling cards even when it is text.
 
 use crate::canvas::{draw_text, Canvas, D, L, R, U};
 use crate::labels::{clean_label, fit_label, strip_controls, WRAP_WIDTH};
 use crate::types::Cls;
 use crate::width::string_width;
 
-/// Columns past this and the board is refused: this many side by side no
-/// longer fits a terminal at a width worth reading.
+/// Columns past this and the board is refused: this many side by side no longer fits a terminal at
+/// a width worth reading.
 const MAX_COLUMNS: usize = 12;
-/// Cards past this in total and the board is refused, the same reasoning as
-/// `graph::MAX_NODES`.
+/// Cards past this in total and the board is refused, the same reasoning as `graph::MAX_NODES`.
 const MAX_TASKS: usize = 128;
 /// Columns between one column and the next.
 const GAP: usize = 2;
@@ -40,9 +33,7 @@ pub(crate) fn render_kanban(src: &str) -> Option<Canvas> {
     }
 
     let mut columns: Vec<Column> = Vec::new();
-    // The indentation of the first column line is what every later column
-    // line is compared against; anything indented past it is a task
-    // belonging to whichever column came before it.
+    
     let mut column_indent: Option<usize> = None;
     let mut task_count = 0usize;
 
@@ -77,8 +68,7 @@ pub(crate) fn render_kanban(src: &str) -> Option<Canvas> {
     Some(draw(&columns))
 }
 
-/// `id` or `id[Title]`; the id itself is discarded once the label it stands
-/// for is known, since nothing here is ever referenced back by id.
+
 fn read_column(line: &str) -> Option<Column> {
     let (id, title) = read_id_and_label(line)?;
     Some(Column {
@@ -87,9 +77,7 @@ fn read_column(line: &str) -> Option<Column> {
     })
 }
 
-/// `id[Task text]`, optionally followed by `@{ assigned: 'x', priority:
-/// 'High' }`. Metadata keys this does not recognise are read past rather
-/// than rejected, so a board carrying keys beyond these two still draws.
+/// `id[Task text]`, optionally followed by `@{ assigned: 'x', priority: 'High' }`.
 fn read_task(line: &str) -> Option<Task> {
     let open = line.find('[')?;
     let after_open = &line[open + 1..];
@@ -151,8 +139,7 @@ fn read_id_and_label(line: &str) -> Option<(String, Option<String>)> {
     }
 }
 
-/// A card's second line, `priority · assigned`, whichever of the two were
-/// given. `None` when neither was, so a plain task keeps a plain card.
+/// A card's second line, `priority · assigned`, whichever of the two were given.
 fn task_meta(task: &Task) -> Option<String> {
     let parts: Vec<&str> = [task.priority.as_deref(), task.assigned.as_deref()]
         .into_iter()
@@ -166,8 +153,7 @@ fn task_meta(task: &Task) -> Option<String> {
 }
 
 fn card_height(task: &Task) -> usize {
-    // Border, label, border — plus a fourth row for the metadata line when
-    // there is one.
+    
     3 + usize::from(task_meta(task).is_some())
 }
 
@@ -240,8 +226,7 @@ fn draw_card(canvas: &mut Canvas, x: usize, y: usize, w: usize, task: &Task) {
         canvas.add_bits(right, cy, U | D, Cls::Border);
     }
 
-    // One cell of padding inside the border on every side, the same as any
-    // other bordered box this crate draws.
+    
     let inner = w.saturating_sub(4);
     draw_text(
         canvas,
@@ -307,8 +292,7 @@ mod tests {
         assert_eq!(rows, vec!["To Do      Done"]);
     }
 
-    /// Anything that is not a kanban board, or is one but malformed, is
-    /// refused rather than guessed at.
+    
     #[test]
     fn what_is_not_a_kanban_board_is_left_alone() {
         assert!(render_kanban("graph TD\n A --> B").is_none());
@@ -320,7 +304,7 @@ mod tests {
         assert!(render_kanban("kanban\n  todo[To Do]\n    t1[No closing bracket").is_none());
     }
 
-    /// A board this wide is refused rather than squeezed into a terminal.
+    
     #[test]
     fn too_many_columns_are_refused() {
         let mut source = String::from("kanban\n");

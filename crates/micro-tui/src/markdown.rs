@@ -1,15 +1,4 @@
 //! Just enough markdown for a terminal.
-//!
-//! Model output is markdown, and reading it raw is worse than reading nothing. This covers
-//! what actually shows up in an answer — fenced code, headings, lists, quotes, links, rules
-//! and inline emphasis — and leaves anything more elaborate as plain text rather than
-//! guessing.
-//!
-//! Every element takes its color from a theme token, so a heading and the fence around a
-//! code block are colored from one palette rather than element by element. The source is
-//! read a line at a time rather than parsed into a token tree, which is what keeps a
-//! half-streamed response legible. Where that costs something, it is noted at the point
-//! it matters.
 
 pub mod syntax;
 
@@ -37,11 +26,9 @@ pub struct Block {
     pub image: Option<String>,
     /// Columns to indent continuation rows by when this line wraps.
     pub indent: usize,
-    /// Whether the line's background extends to the full width. No background is painted
-    /// behind code, so nothing sets this; it is kept for a caller that still reads it.
+    /// Whether the line's background extends to the full width.
     pub filled: bool,
-    /// Whether a blank row belongs after this block when the source does not already have
-    /// one — true for a heading, a quote and a rule, which are set apart from what follows.
+    /// Whether a blank row belongs after this block when the source does not already have one.
     pub spaced_after: bool,
 }
 
@@ -62,11 +49,7 @@ impl Block {
     }
 }
 
-/// Style `text` line by line. `width` is the column budget a horizontal rule spans.
-/// Render markdown, recording every link so the frame can make them clickable.
-///
-/// The collector is what carries a URL from here to the terminal: link text is marked as it
-/// is styled, and the escapes go on after layout, where they cost no columns.
+/// Style `text` line by line.
 pub fn render_linked(
     text: &str,
     theme: &Theme,
@@ -76,24 +59,21 @@ pub fn render_linked(
 ) -> Vec<Block> {
     let mut blocks = Vec::new();
     let mut fence: Option<Fence> = None;
-    // Rows accumulate until the table ends, because how wide a column should be is only
-    // known once every row has been read.
+    
     let mut table: Option<Table> = None;
-    // Display maths, gathering until its closing delimiter: it is set over several rows, so
-    // nothing of it can be drawn until all of it has arrived.
+    
     let mut maths: Option<Maths> = None;
-    // Where a numbered list has got to, so it counts on rather than echoing the source.
+    
     let mut ordinal: Option<usize> = None;
 
     let lines: Vec<&str> = text.split('\n').collect();
     for (index, line) in lines.iter().enumerate() {
         let line = *line;
         let trimmed = line.trim_start();
-        // Whether the source already leaves a gap after this line, which is what decides if
-        // one has to be made.
+        
         let next = lines.get(index + 1).map(|next| next.trim_start());
         let followed_by_blank = next.is_none_or(|next| next.is_empty());
-        // A run of quote lines is one block, so only the last of them is set apart.
+        
         let continues = next.is_some_and(|next| quote(trimmed).is_some() && quote(next).is_some());
 
         if let Some(open) = &mut maths {
@@ -112,11 +92,10 @@ pub fn render_linked(
         }
 
         match &mut fence {
-            // A fence closes on its own marker, so a `~~~` inside a ``` block is content.
+            
             Some(open) if trimmed.starts_with(open.marker) => {
                 match open.diagram.take() {
-                    // A diagram is drawn in place of the block that described it, and the
-                    // fence around it goes with the source it was fencing.
+                    
                     Some(source) => blocks.extend(diagram_blocks(&source, theme, width)),
                     None => blocks.push(Block::plain(vec![Span::styled(
                         trimmed.to_string(),
@@ -134,13 +113,12 @@ pub fn render_linked(
             },
             None => match fence_marker(trimmed) {
                 Some(marker) => {
-                    // A table cannot run into a code block, so it is finished here rather
-                    // than left open to be drawn after the block it precedes.
+                    
                     if let Some(open) = table.take() {
                         blocks.extend(open.render(theme, width, links));
                     }
                     let language = &trimmed[marker.len()..];
-                    // Left as the code it was written as when the reader asked for that.
+                    
                     let diagram = (mermaid != crate::commands::Mermaid::Off
                         && language
                             .trim()
@@ -148,9 +126,7 @@ pub fn render_linked(
                             .next()
                             .is_some_and(|word| word.eq_ignore_ascii_case("mermaid")))
                     .then(Vec::new);
-                    // The fence line is shown with its language rather than being
-                    // swallowed — unless what it fences is a drawing, which stands in place
-                    // of the block that described it, fence and all.
+                    
                     if diagram.is_none() {
                         blocks.push(Block::plain(vec![Span::styled(
                             trimmed.to_string(),
@@ -164,8 +140,7 @@ pub fn render_linked(
                     });
                 }
                 None => {
-                    // A table swallows the lines that belong to it and is drawn once, at
-                    // the line that ends it: a column's width is not known before then.
+                    
                     match table.take() {
                         Some(open) => match open.take_line(trimmed) {
                             Continued::Taken(open) => table = Some(open),
@@ -187,8 +162,7 @@ pub fn render_linked(
                                     block_for(line, trimmed, theme, width, links, &mut ordinal);
                                 let spaced = block.spaced_after;
                                 blocks.push(block);
-                                // A heading, a quote or a rule is followed by a blank row,
-                                // which is what sets it apart from the paragraph after it.
+                                
                                 if spaced && !followed_by_blank && !continues {
                                     blocks.push(Block::plain(Vec::new()));
                                 }
@@ -200,29 +174,23 @@ pub fn render_linked(
         }
     }
 
-    // Maths the text ends in the middle of is drawn with what it has, so a half-streamed
-    // answer shows the expression rather than the source it was written in.
+    
     if let Some(open) = maths {
         blocks.extend(open.drawn(theme));
     }
 
-    // A table the text ends in the middle of is drawn with what it has, so a half-streamed
-    // answer shows its rows rather than nothing.
+    
     if let Some(open) = table {
         blocks.extend(open.render(theme, width, links));
     }
 
-    // A fence the text never closed is closed here, so a half-written answer still reads as
-    // a code block rather than running on into whatever follows it. A diagram still being
-    // written is drawn from what has arrived, which is what keeps one on screen while it
-    // streams rather than flickering between source and drawing.
+    
     if let Some(open) = fence {
         match open
             .diagram
             .filter(|_| mermaid == crate::commands::Mermaid::Streaming)
         {
-            // Drawn while it is still arriving only if that is what was asked for; waiting
-            // for the last line keeps a half-written diagram from flickering as it lands.
+            
             Some(source) => blocks.extend(diagram_blocks(&source, theme, width)),
             None => blocks.push(Block::plain(vec![Span::styled(
                 open.marker.to_string(),
@@ -234,21 +202,16 @@ pub fn render_linked(
     blocks
 }
 
-/// An open fence: the marker that closes it, and the highlighter for its language when the
-/// language is one micro knows.
+/// An open fence: the marker that closes it, and the highlighter for its language when the language
+/// is one micro knows.
 struct Fence {
     marker: &'static str,
     highlighter: Option<Highlighter>,
-    /// A diagram gathers its source instead of showing it, because a drawing cannot be
-    /// made a line at a time — the shape it is about is only known once all of it is read.
+    /// A diagram gathers its source instead of showing it.
     diagram: Option<Vec<String>>,
 }
 
 /// One line inside a fence.
-///
-/// A language micro can lex is painted token by token; anything else keeps the block's own
-/// color, byte for byte as it arrived. An untagged block is never guessed at, for the same
-/// reason: guessing reads prose as code.
 fn code_line(line: &str, fence: &mut Fence, theme: &Theme) -> Block {
     let plain = Style::new().fg(theme.md_code_block);
     let mut spans = vec![Span::styled(CODE_INDENT, plain)];
@@ -294,8 +257,7 @@ fn block_for(
     }
 
     if let Some((level, rest)) = heading(trimmed) {
-        // The hashes are kept only from the third level down, where they are the only thing
-        // left to tell one heading from another.
+        
         let style = heading_style(level, theme);
         let mut spans = Vec::new();
         if level >= 3 {
@@ -366,22 +328,17 @@ fn heading(trimmed: &str) -> Option<(usize, &str)> {
     }
 }
 
-/// The text of a quote line. A bare `>` opens an empty quote line rather than nothing.
+/// The text of a quote line.
 fn quote(trimmed: &str) -> Option<&str> {
     let rest = trimmed.strip_prefix('>')?;
     Some(rest.strip_prefix(' ').unwrap_or(rest))
 }
 
 /// A list marker and the text after it.
-///
-/// An unordered marker is normalized to `- ` and an ordered one to its own number, and each
-/// level is indented by four columns. Source indentation is mapped onto that grid so a
-/// nested item lines up on the grid rather than however the model happened to space it.
 fn bullet<'a>(line: &'a str, ordinal: &mut Option<usize>) -> Option<(String, &'a str)> {
     let leading = line.len() - line.trim_start().len();
     let trimmed = &line[leading..];
-    // Two spaces is the shallowest nesting a model reliably emits, so depth counts by two
-    // and renders by four.
+    
     let depth = leading / 2;
     let padding = " ".repeat(depth * 4);
 
@@ -399,8 +356,7 @@ fn bullet<'a>(line: &'a str, ordinal: &mut Option<usize>) -> Option<(String, &'a
         for marker in [". ", ") "] {
             if let Some(rest) = after.strip_prefix(marker) {
                 let (task, rest) = task_marker(rest);
-                // A numbered list counts on from where it started rather than repeating
-                // whatever the source wrote, so `1. 2. 10.` reads `1. 2. 3.`.
+                
                 let number = match ordinal {
                     Some(previous) => {
                         *previous += 1;
@@ -420,7 +376,7 @@ fn bullet<'a>(line: &'a str, ordinal: &mut Option<usize>) -> Option<(String, &'a
     None
 }
 
-/// A task list checkbox, rendered as part of the marker rather than as part of the text.
+
 fn task_marker(rest: &str) -> (String, &str) {
     for (source, rendered) in [("[ ] ", "[ ] "), ("[x] ", "[x] "), ("[X] ", "[x] ")] {
         if let Some(after) = rest.strip_prefix(source) {
@@ -430,8 +386,7 @@ fn task_marker(rest: &str) -> (String, &str) {
     (String::new(), rest)
 }
 
-/// Apply inline emphasis. An unterminated marker stays literal rather than swallowing the
-/// rest of the line, which matters while a response is still streaming in.
+/// Apply inline emphasis.
 fn inline(text: &str, base: Style, theme: &Theme, links: &mut Links) -> Vec<Span<'static>> {
     let characters: Vec<char> = text.chars().collect();
     let mut spans: Vec<Span<'static>> = Vec::new();
@@ -450,7 +405,7 @@ fn inline(text: &str, base: Style, theme: &Theme, links: &mut Links) -> Vec<Span
             }
         }
 
-        // Maths reads as maths only once it is drawn: `\alpha` is a word, α is a letter.
+        
         if matches!(characters[index], '$' | '\\') {
             if let Some((rendered, next)) = math(&characters, index) {
                 if !buffer.is_empty() {
@@ -474,7 +429,7 @@ fn inline(text: &str, base: Style, theme: &Theme, links: &mut Links) -> Vec<Span
         }
 
         let matched = match characters[index] {
-            // Inline code is a color, not a tint; no background is painted behind it.
+            
             '`' => marker(&characters, index, "`")
                 .map(|(content, next)| (content, next, Style::new().fg(theme.md_code))),
             '*' if characters.get(index + 1) == Some(&'*') => marker(&characters, index, "**")
@@ -483,8 +438,7 @@ fn inline(text: &str, base: Style, theme: &Theme, links: &mut Links) -> Vec<Span
                 .map(|(content, next)| (content, next, base.add_modifier(Modifier::BOLD))),
             '~' if characters.get(index + 1) == Some(&'~') => marker(&characters, index, "~~")
                 .map(|(content, next)| (content, next, base.add_modifier(Modifier::CROSSED_OUT))),
-            // Single markers are emphasis. Checked after the doubled ones, so `**bold**` is
-            // never read as an empty italic wrapping a bold.
+            
             '*' => marker(&characters, index, "*")
                 .map(|(content, next)| (content, next, base.add_modifier(Modifier::ITALIC))),
             '_' => marker(&characters, index, "_")
@@ -514,9 +468,6 @@ fn inline(text: &str, base: Style, theme: &Theme, links: &mut Links) -> Vec<Span
 }
 
 /// An `<https://example.com>` autolink, whose text is its own target.
-///
-/// The angle brackets are the whole syntax, so what is shown is the URL itself and there is
-/// nothing to print after it — a link that already is its target does not say it twice.
 fn autolink(
     characters: &[char],
     start: usize,
@@ -525,7 +476,7 @@ fn autolink(
 ) -> Option<(Vec<Span<'static>>, usize)> {
     let end = find(characters, start + 1, '>')?;
     let href: String = characters[start + 1..end].iter().collect();
-    // Only a real scheme counts, or every comparison in prose becomes a link.
+    
     if !href.starts_with("http://") && !href.starts_with("https://") && !href.starts_with("mailto:")
     {
         return None;
@@ -541,9 +492,6 @@ fn autolink(
 }
 
 /// A `[text](href)` link starting at `start`, and the index past its closing paren.
-///
-/// The text is underlined and the target printed after it when the two differ, so a link
-/// whose text already is its target does not say it twice.
 fn link(
     characters: &[char],
     start: usize,
@@ -563,8 +511,7 @@ fn link(
         return None;
     }
 
-    // Marked here so the frame can wrap exactly this text in its escapes once the line has
-    // been laid out and every column is settled.
+    
     let style = links.mark(
         Style::new()
             .fg(theme.md_link)
@@ -572,10 +519,9 @@ fn link(
         &href,
     );
     let mut spans = inline(&text, style, theme, links);
-    // An autolinked address arrives as text without the scheme the href carries.
+    
     let bare = href.strip_prefix("mailto:").unwrap_or(&href);
-    // Where the terminal can make the text itself clickable the target is already carried,
-    // and printing it again would say the same thing twice.
+    
     if !links.is_enabled() && text != href && text != bare {
         spans.push(Span::styled(
             format!(" ({href})"),
@@ -591,13 +537,9 @@ fn find(characters: &[char], from: usize, wanted: char) -> Option<usize> {
 }
 
 /// A diagram, drawn if it can be and left as its source if it cannot.
-///
-/// What a diagram says is its shape, and the source hides exactly that — so it is worth
-/// drawing. What cannot be drawn is still shown, because the words in it say what was meant.
 fn diagram_blocks(source: &[String], theme: &Theme, width: usize) -> Vec<Block> {
     let text = source.join("\n");
-    // What cannot be drawn is framed as the source it was written as, which is what the
-    // drawing would have been made from: still readable, and still saying what was meant.
+    
     let art = micro_mermaid::render(&text)
         .filter(|art| art.width <= width)
         .unwrap_or_else(|| micro_mermaid::source_box(&text, width));
@@ -636,9 +578,6 @@ struct Maths {
 }
 
 /// Whether a line opens display maths, and what will close it.
-///
-/// `$$` and `\[` on a line of their own. Written on the same line as the expression they
-/// open, the expression is the rest of that line.
 fn opens_maths(trimmed: &str) -> Option<Maths> {
     let (opener, closer) = match trimmed {
         line if line.starts_with("$$") => ("$$", "$$"),
@@ -646,7 +585,7 @@ fn opens_maths(trimmed: &str) -> Option<Maths> {
         _ => return None,
     };
     let rest = trimmed[opener.len()..].trim();
-    // A closer on the same line makes it one line of maths rather than a block to gather.
+    
     if rest.ends_with(closer) && !rest.is_empty() {
         return Some(Maths {
             closer,
@@ -664,9 +603,6 @@ fn opens_maths(trimmed: &str) -> Option<Maths> {
 
 impl Maths {
     /// The expression, set out over as many rows as it needs.
-    ///
-    /// What cannot be drawn is shown as it was written: an expression micro does not
-    /// understand is still something the reader asked to see.
     fn drawn(&self, theme: &Theme) -> Vec<Block> {
         let source = self.lines.join("\n");
         let style = theme.body();
@@ -697,33 +633,27 @@ impl Maths {
     }
 }
 
-/// A table in progress. Rows accumulate until the table ends, because a column's width is
-/// only known once every row has been read.
+/// A table in progress.
 enum Table {
-    /// A line that contains a pipe but whose delimiter has not arrived yet. It may be a
-    /// header, or it may be prose with a pipe in it — the next line decides.
+    /// A line that contains a pipe but whose delimiter has not arrived yet.
     Pending { header: String },
-    /// A header whose delimiter confirmed it, and every row read since. The first entry in
-    /// `cells` is the header row.
+    /// A header whose delimiter confirmed it, and every row read since.
     Building { cells: Vec<Vec<String>> },
 }
 
-/// The start of a table: a line that holds more than one cell. Anything further is decided
-/// once the next line either delivers a delimiter or does not.
+/// The start of a table: a line that holds more than one cell.
 fn starts_table(trimmed: &str) -> Option<Table> {
     contains_cell(trimmed).then(|| Table::Pending {
         header: trimmed.to_string(),
     })
 }
 
-/// Whether a line holds more than one cell. A pipe on its own in prose — `a | b` — is not
-/// a table; two cells are demanded before a table is committed to.
+/// Whether a line holds more than one cell.
 fn contains_cell(trimmed: &str) -> bool {
     trimmed.contains('|') && split_cells(trimmed).len() >= 2
 }
 
-/// The cells of a table row, without the outer pipes. Interior pipes split; spaces around
-/// a cell are the source's own spacing and are not part of the value.
+/// The cells of a table row, without the outer pipes.
 fn split_cells(trimmed: &str) -> Vec<String> {
     let inner = trimmed.strip_prefix('|').unwrap_or(trimmed);
     let inner = inner.strip_suffix('|').unwrap_or(inner);
@@ -733,11 +663,7 @@ fn split_cells(trimmed: &str) -> Vec<String> {
         .collect()
 }
 
-/// The delimiter row that confirms a table, as the number of columns it names. A run of
-/// dashes alone, with no pipe, is a rule and is left to the rule renderer.
-///
-/// The colons that declare an alignment are read and let through, but nothing is done with
-/// them: every table is left-aligned whatever the delimiter asks for.
+/// The delimiter row that confirms a table, as the number of columns it names.
 fn delimiter(trimmed: &str) -> Option<usize> {
     let cells = split_cells(trimmed);
     for cell in &cells {
@@ -753,17 +679,13 @@ fn delimiter(trimmed: &str) -> Option<usize> {
 enum Continued {
     /// The line belonged to the table, which carries on.
     Taken(Table),
-    /// The line was not part of it, so the table is finished and the line is still to be
-    /// dealt with.
+    /// The line was not part of it, so the table is finished and the line is still to be dealt
+    /// with.
     Ended(Table),
 }
 
 impl Table {
     /// Offer the next line to the table.
-    ///
-    /// A header waits for a delimiter naming as many columns as it has; anything else means
-    /// the pipe was prose. Once building, a line goes on taking rows until one arrives with
-    /// no cells in it.
     fn take_line(self, trimmed: &str) -> Continued {
         match self {
             Table::Pending { header } => {
@@ -786,15 +708,9 @@ impl Table {
     }
 
     /// Draw the table boxed, one row of cells per row of the table.
-    ///
-    /// Columns take what they need where the whole table fits, and give way in proportion
-    /// where it does not, down to the longest word each column holds. A cell too long for
-    /// its column wraps rather than being cut, so nothing a table says is lost to its
-    /// shape. A terminal too narrow for even that shows the source, which is still
-    /// readable, where a table of one-character columns would not be.
     fn render(self, theme: &Theme, width: usize, links: &mut Links) -> Vec<Block> {
         let Self::Building { cells } = self else {
-            // A pending header never became a table, so it is the text it always was.
+            
             let Table::Pending { header } = self else {
                 unreachable!()
             };
@@ -806,7 +722,7 @@ impl Table {
             return Vec::new();
         }
 
-        // `│ ` before each cell and ` │` after the last: three columns per cell, plus one.
+        
         let overhead = 3 * columns + 1;
         let Some(for_cells) = width.checked_sub(overhead).filter(|room| *room >= columns) else {
             return cells
@@ -836,7 +752,7 @@ impl Table {
                 _ => theme.body(),
             };
             blocks.extend(row_blocks(row, &widths, style, theme, links, border));
-            // A rule under the header, and between every pair of rows after it.
+            
             if index + 1 < cells.len() {
                 blocks.push(rule("├─", "─┼─", "─┤"));
             }
@@ -902,10 +818,6 @@ fn row_blocks(
 }
 
 /// How wide each column is drawn.
-///
-/// What every column would like, held against what there is: where the table fits, each
-/// takes what it needs; where it does not, each falls back toward the longest word it
-/// holds and what is left over is shared out in proportion to what each gave up.
 fn column_widths(
     cells: &[Vec<String>],
     columns: usize,
@@ -922,8 +834,7 @@ fn column_widths(
         }
     }
 
-    // Not even the longest words fit, so every column starts at one and grows by how much
-    // it wanted.
+    
     let mut least: usize = smallest.iter().sum();
     if least > for_cells {
         let wanted: usize = smallest.iter().map(|width| width.saturating_sub(1)).sum();
@@ -969,7 +880,7 @@ fn column_widths(
         })
         .collect();
 
-    // Whatever the division left over goes to the columns still short of what they wanted.
+    
     let mut leftover = for_cells.saturating_sub(widths.iter().sum::<usize>());
     while leftover > 0 {
         let mut grew = false;
@@ -988,10 +899,6 @@ fn column_widths(
 }
 
 /// Inline maths, drawn as the characters it stands for, and the index past its closer.
-///
-/// The delimiters read here: `$...$`, `$$...$$` and `\(...\)`. A lone `$` before a space,
-/// or one that never closes on the same line, is a dollar sign and is left alone — a price
-/// in the middle of a sentence must not swallow the rest of it.
 fn math(characters: &[char], start: usize) -> Option<(String, usize)> {
     let (opener, closer) = match (characters[start], characters.get(start + 1)) {
         ('$', Some('$')) => ("$$", "$$"),
@@ -1002,13 +909,11 @@ fn math(characters: &[char], start: usize) -> Option<(String, usize)> {
 
     let (source, next) =
         marker(characters, start, opener).filter(|(source, _)| !source.is_empty())?;
-    // A single `$` is also a currency sign and a shell variable, so it has to earn being
-    // read as maths: what follows a price is a digit, what precedes the closing `$` of a
-    // sum of money is a space, and `$PATH` is a name rather than an expression.
+    
     if opener == "$" && !is_math(&source, characters.get(next)) {
         return None;
     }
-    // `marker` closes on the opener, which is the closer for every delimiter but `\(`.
+    
     let next = match closer == opener {
         true => next,
         false => {
@@ -1021,10 +926,7 @@ fn math(characters: &[char], start: usize) -> Option<(String, usize)> {
     crate::latex::render(&source).map(|drawn| (drawn, next))
 }
 
-/// Whether what a lone `$` fenced is maths rather than money or a variable.
-///
-/// `$5 and $10` closes on the second dollar with `5 and ` between them: it ends in a space,
-/// and a digit follows the closer. Either is enough to say this was never an expression.
+
 fn is_math(source: &str, after: Option<&char>) -> bool {
     if source.ends_with(char::is_whitespace) || source.contains('`') {
         return false;
@@ -1032,7 +934,7 @@ fn is_math(source: &str, after: Option<&char>) -> bool {
     if after.is_some_and(char::is_ascii_digit) {
         return false;
     }
-    // `$PATH` followed by a word: a name being spelled out, not a product being written.
+    
     let shouted = !source.is_empty()
         && source
             .trim_end_matches(|c: char| !c.is_alphanumeric() && c != '_')
@@ -1041,8 +943,7 @@ fn is_math(source: &str, after: Option<&char>) -> bool {
     !(shouted && after.is_some_and(|c| c.is_alphanumeric() || *c == '_'))
 }
 
-/// The longest run of non-space in a cell, which is the narrowest its column can usefully
-/// be. Capped, because one long identifier must not decide the whole table's shape.
+/// The longest run of non-space in a cell, which is the narrowest its column can usefully be.
 fn longest_word(cell: &str) -> usize {
     const LONGEST: usize = 30;
     cell.split_whitespace()
@@ -1071,8 +972,7 @@ fn marker(characters: &[char], start: usize, delimiter: &str) -> Option<(String,
 
 #[cfg(test)]
 mod tests {
-    /// A diagram is drawn in place of the block describing it, fence and all: what a
-    /// diagram says is its shape, and the source is exactly what hides that.
+    
     #[test]
     fn a_mermaid_block_is_drawn_as_a_diagram() {
         let rows = drawn("```mermaid\ngraph TD\n  A[Read] --> B[Answer]\n```");
@@ -1109,8 +1009,7 @@ mod tests {
         assert!(rows.iter().any(|row| row.contains("graph TD")), "{rows:?}");
     }
 
-    /// A diagram too wide for the terminal is framed as the text it was written as, named
-    /// by what it was going to be: still readable, where a drawing cut in half would not be.
+    
     #[test]
     fn a_diagram_too_wide_to_draw_is_framed_as_its_source() {
         let rows = drawn_at(
@@ -1154,8 +1053,7 @@ mod tests {
         .collect()
     }
 
-    /// A table is drawn boxed, a rule under the header and between every pair of rows,
-    /// with each column as wide as the widest thing in it.
+    
     #[test]
     fn a_table_is_drawn_boxed() {
         let rows = drawn("| Model | Context |\n| --- | ---: |\n| opus | 200k |\n| gemini | 1M |");
@@ -1171,9 +1069,7 @@ mod tests {
         assert_eq!(rows[6], "└────────┴─────────┘");
     }
 
-    /// A column is as wide as its cells are drawn, not as wide as they were written: a
-    /// cell holding `code` loses its backticks, and a column sized to the source would
-    /// leave every row below it a column short.
+    
     #[test]
     fn a_column_is_sized_by_what_is_drawn_not_what_was_typed() {
         let rows = drawn("| A | B |\n| --- | --- |\n| `xy` | z |");
@@ -1182,8 +1078,7 @@ mod tests {
         assert!(rows[3].contains("xy") && !rows[3].contains('`'));
     }
 
-    /// A cell too long for its column wraps rather than being cut, because a table is
-    /// worth nothing if what it says is lost to its shape.
+    
     #[test]
     fn a_long_cell_wraps_inside_its_column() {
         let mut links = Links::default();
@@ -1252,8 +1147,8 @@ mod tests {
         );
     }
 
-    /// A dollar is money and a shell variable more often than it is maths, so it has to
-    /// earn being read as an expression.
+    /// A dollar is money and a shell variable more often than it is maths, so it has to earn being
+    /// read as an expression.
     #[test]
     fn a_dollar_sign_is_left_alone() {
         assert_eq!(
@@ -1344,7 +1239,7 @@ mod tests {
         let blocks = render("before\n```rust\nlet x = 1;\n```\nafter", &theme);
         assert_eq!(
             rendered(&blocks),
-            // A closed fence is set apart from what follows it, the way pi sets it apart.
+            
             vec!["before", "```rust", "  let x = 1;", "```", "", "after"]
         );
         assert_eq!(
@@ -1362,7 +1257,7 @@ mod tests {
         let theme = theme();
         let blocks = render("```\nlet x = 1;\n```", &theme);
         assert_eq!(blocks[1].spans[0].style.fg, Some(theme.md_code_block));
-        // No background is painted behind a code block.
+        
         assert_eq!(blocks[1].spans[0].style.bg, None);
         assert!(!blocks[1].filled);
     }
@@ -1381,7 +1276,7 @@ mod tests {
         let theme = theme();
         let blocks = render("```\nstreaming code", &theme);
         assert_eq!(
-            rendered(&blocks), // A fence the answer never closed is closed for it, so it still reads as code.
+            rendered(&blocks), 
             vec!["```", "  streaming code", "```"]
         );
         assert_eq!(blocks[1].spans[0].style.fg, Some(theme.md_code_block));
@@ -1476,8 +1371,8 @@ mod tests {
     }
 
     #[test]
-    /// Where the terminal can make the text clickable, only the text is shown: the target
-    /// rides in the escape. Where it cannot, the target is printed so it is not lost.
+    /// Where the terminal can make the text clickable, only the text is shown: the target rides in
+    /// the escape.
     fn a_link_says_where_it_goes_only_when_it_cannot_be_clicked() {
         let theme = theme();
         let source = "see [the docs](https://example.com) now";
@@ -1561,7 +1456,7 @@ mod tests {
         assert_eq!(text_of(&blocks[0]), "─".repeat(20));
         assert_eq!(blocks[0].spans[0].style.fg, Some(theme.md_hr));
 
-        // Wider terminals stop at the cap of 80.
+        
         assert_eq!(
             text_of(
                 &render_linked(
@@ -1601,8 +1496,7 @@ mod tests {
     fn every_markdown_token_is_reachable() {
         let theme = theme();
         let source = "# One\n### Three\n- item\n> quote\n---\n```rs\ncode\n```\n`inline` [t](u)";
-        // Rendered without hyperlinks, since that is the path that prints a link's target
-        // and so the only one that reaches `md_link_url`.
+        
         let used: Vec<_> = render_linked(
             source,
             &theme,

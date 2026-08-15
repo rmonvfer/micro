@@ -1,13 +1,4 @@
 //! Finding the text an edit meant, when it is not quite the text that is there.
-//!
-//! A model writes what it read, and what it read came back through a terminal, a diff, or
-//! its own tokenizer. Along the way a straight quote can become a curly one, a hyphen an
-//! en-dash, a space a non-breaking space, and trailing whitespace can vanish. The file is
-//! unchanged; only the description of it drifted.
-//!
-//! An exact match is always preferred. When there is none, both sides are put into a form
-//! where those differences do not count, and the match is looked for again. What gets
-//! written back is the normalized text, so the file ends up saying what the edit meant.
 
 use unicode_normalization::UnicodeNormalization as _;
 
@@ -17,8 +8,8 @@ pub struct Match {
     pub start: usize,
     /// Byte length of the match within [`Match::haystack`].
     pub length: usize,
-    /// The text the offsets refer to: the original when the match was exact, the
-    /// normalized form when it was not.
+    /// The text the offsets refer to: the original when the match was exact, the normalized form
+    /// when it was not.
     pub haystack: String,
     /// Whether the differences had to be set aside to find it.
     pub fuzzy: bool,
@@ -36,15 +27,14 @@ pub fn normalize(text: &str) -> String {
         let mapped: String = line
             .chars()
             .map(|character| match character {
-                // Smart single quotes.
+                
                 '\u{2018}' | '\u{2019}' | '\u{201A}' | '\u{201B}' => '\'',
-                // Smart double quotes.
+                
                 '\u{201C}' | '\u{201D}' | '\u{201E}' | '\u{201F}' => '"',
-                // Hyphen, non-breaking hyphen, figure dash, en dash, em dash,
-                // horizontal bar, minus sign.
+                
                 '\u{2010}' | '\u{2011}' | '\u{2012}' | '\u{2013}' | '\u{2014}' | '\u{2015}'
                 | '\u{2212}' => '-',
-                // Spaces that are not the ordinary one.
+                
                 '\u{00A0}' | '\u{2002}'..='\u{200A}' | '\u{202F}' | '\u{205F}' | '\u{3000}' => ' ',
                 other => other,
             })
@@ -78,10 +68,6 @@ pub fn find(haystack: &str, needle: &str) -> Option<Match> {
 }
 
 /// How many times `needle` occurs in `haystack`, counting the way [`find`] looks.
-///
-/// Counting happens in whichever text a match was found in, so an exact match counts
-/// exact occurrences and a forgiving one counts forgiving occurrences. Mixing the two
-/// would report a count for text that is not the text being edited.
 pub fn count(haystack: &str, needle: &str) -> usize {
     let exact = haystack.matches(needle).count();
     if exact > 0 {
@@ -104,8 +90,7 @@ mod tests {
         );
     }
 
-    /// A curly quote in the edit against a straight one in the file, which is what comes
-    /// back when text has been through a renderer.
+    
     #[test]
     fn a_smart_quote_still_finds_a_straight_one() {
         let file = "let name = \"micro\";";
@@ -146,7 +131,7 @@ mod tests {
     #[test]
     fn occurrences_are_counted_the_way_they_are_matched() {
         assert_eq!(count("a a a", "a"), 3);
-        // No exact occurrence, so the forgiving reading is what counts.
+        
         assert_eq!(count("\"x\" and \"x\"", "\u{201C}x\u{201D}"), 2);
         assert_eq!(count("let a = 1;", "nope"), 0);
     }

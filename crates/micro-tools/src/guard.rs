@@ -8,12 +8,6 @@ use std::path::Path;
 use tokio::sync::mpsc::UnboundedSender;
 
 /// One policy, two enforcers, one record.
-///
-/// `bash` hands its command to the kernel wrapped in the policy, so what confines it is
-/// outside this process. The file tools spawn nothing, so nothing outside this process is
-/// in a position to stop them: they ask here before every path they open. Both report a
-/// refusal to the same place, which is what makes a session's account of what it was not
-/// allowed to do one list rather than two.
 #[derive(Clone)]
 pub struct Guard {
     sandbox: Sandbox,
@@ -67,10 +61,6 @@ impl Guard {
     }
 
     /// Write one decision into the ledger.
-    ///
-    /// Only what a reader would want to find later: a refusal, and a command that looked
-    /// refused while the sandbox was not the thing refusing it. Recording every allowed
-    /// read would bury both under the ordinary business of a run.
     pub(crate) fn record(&self, operation: &str, path_or_host: String, allowed: bool) {
         let Some(events) = &self.events else {
             return;
@@ -123,8 +113,8 @@ mod tests {
         }
     }
 
-    /// A run of ordinary work leaves nothing behind: the ledger is for what was refused,
-    /// not for every file that was opened.
+    /// A run of ordinary work leaves nothing behind: the ledger is for what was refused, not for
+    /// every file that was opened.
     #[test]
     fn what_the_policy_allows_is_not_written_down() {
         let root = workspace("allowed");
@@ -137,8 +127,7 @@ mod tests {
         assert!(events.try_recv().is_err());
     }
 
-    /// A guard with nowhere to report to still decides, which is what a tool built outside
-    /// a session needs.
+    
     #[test]
     fn a_guard_with_no_ledger_still_refuses() {
         let root = workspace("no-ledger");

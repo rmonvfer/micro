@@ -1,9 +1,4 @@
 //! Timelines, drawn as periods down a spine with what happened beside them.
-//!
-//! A timeline is a sequence of periods, each holding however many events. Drawn with the
-//! periods down the left against a vertical spine and their events to the right of it, the
-//! order is the order they are read in, and a period holding four events is plainly four
-//! events rather than four periods — which is the mistake a flat list invites.
 
 use crate::canvas::draw_text;
 use crate::canvas::Canvas;
@@ -11,8 +6,7 @@ use crate::labels::{clean_label, strip_controls};
 use crate::types::Cls;
 use crate::width::string_width;
 
-/// Periods past this and the timeline is refused: past a certain length it is a list, and
-/// a list is better read as the source it was written as.
+
 const MAX_PERIODS: usize = 64;
 
 /// Columns between the period and the spine, and between the spine and the events.
@@ -39,11 +33,10 @@ pub(crate) fn render_timeline(src: &str) -> Option<Canvas> {
             title = Some(clean_label(named.trim()));
             continue;
         }
-        // A section names a stretch of the timeline; it reads as a period holding whatever
-        // follows it, which is how it is drawn.
+        
         let line = line.strip_prefix("section ").unwrap_or(line);
 
-        // `period : event : event`, and a line with no colon is a period on its own.
+        
         let mut parts = line
             .split(':')
             .map(str::trim)
@@ -79,7 +72,7 @@ fn draw(title: Option<&str>, periods: &[Period]) -> Canvas {
         .max()
         .unwrap_or(0);
 
-    // A period with no events still takes a row, because it happened.
+    
     let rows: usize = periods
         .iter()
         .map(|period| period.events.len().max(1))
@@ -101,10 +94,7 @@ fn draw(title: Option<&str>, periods: &[Period]) -> Canvas {
         draw_text(&mut canvas, &period.label, 0, y, Cls::Text);
 
         for row in 0..height {
-            // The spine runs the whole way down, so the periods read as one sequence
-            // rather than as separate lists that happen to be stacked. A row with
-            // something coming off it branches; the last row of the last period
-            // closes the spine; anything else is the spine passing through.
+            
             let last = index + 1 == periods.len() && row + 1 == height;
             let branches = row == 0 || period.events.get(row).is_some();
             let glyph = match (last, branches) {
@@ -143,7 +133,7 @@ mod tests {
         assert_eq!(rows[0], "History");
         assert!(rows[1].starts_with("2020"), "{rows:?}");
         assert!(rows[1].contains("Started"), "{rows:?}");
-        // The second event of 2020 belongs to it, so it takes a row with no period beside it.
+        
         assert!(rows[2].contains("Grew"), "{rows:?}");
         assert!(!rows[2].contains("2021"), "{rows:?}");
         assert!(
@@ -152,8 +142,7 @@ mod tests {
         );
     }
 
-    /// The spine runs the whole way down and closes at the end, so the periods read as one
-    /// sequence rather than as stacked lists.
+    
     #[test]
     fn the_spine_runs_through_and_closes() {
         let rows = drawn("timeline\n  One : a\n  Two : b");
@@ -169,7 +158,7 @@ mod tests {
         assert_eq!(rows.len(), 2, "{rows:?}");
     }
 
-    /// What is not a timeline is refused rather than guessed at.
+    
     #[test]
     fn what_is_not_a_timeline_is_left_alone() {
         assert!(render_timeline("graph TD\n  A --> B").is_none());
@@ -177,7 +166,7 @@ mod tests {
         assert!(render_timeline("timeline\n  title Only a title").is_none());
     }
 
-    /// A timeline longer than this is a list, and reads better as the source it came from.
+    
     #[test]
     fn too_many_periods_are_refused() {
         let mut source = String::from("timeline\n");

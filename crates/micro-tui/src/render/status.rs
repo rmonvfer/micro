@@ -1,12 +1,4 @@
 //! The footer, and the activity line above the editor.
-//!
-//! The footer is two rows with no fill of its own: where the session is on the first row,
-//! what it has spent on the second, with the model pushed to the right edge. The one piece
-//! of color in it is the context reading, which warns as the window fills.
-//!
-//! The counts are cumulative over the session, because that is the number a reader is
-//! deciding on; the context reading comes from the last turn alone, because that is what
-//! occupies the window right now. The two are carried separately for that reason.
 
 use crate::theme::Theme;
 use crate::wrap::text_width;
@@ -39,8 +31,8 @@ pub fn spinner_frame(tick: usize) -> &'static str {
     SPINNER[tick % SPINNER.len()]
 }
 
-/// One line of what an extension had to say, with anything that would break the row
-/// taken out of it.
+/// One line of what an extension had to say, with anything that would break the row taken out of
+/// it.
 fn clean(text: &str) -> String {
     text.chars()
         .map(|character| match character.is_control() {
@@ -54,9 +46,6 @@ fn clean(text: &str) -> String {
 }
 
 /// Everything the footer reports.
-///
-/// Every part beyond the working directory is optional, and one that is absent is simply
-/// not drawn rather than leaving a gap where it would have been.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Footer<'a> {
     pub cwd: &'a str,
@@ -66,25 +55,22 @@ pub struct Footer<'a> {
     pub session: Option<&'a str>,
     /// Tokens summed over every turn of the session.
     pub total: Usage,
-    /// Tokens the most recent turn used, which is what fills the context window.
+    
     pub last: Usage,
     pub context_window: u32,
     pub model: &'a str,
-    /// Reasoning budget, `"off"` included. Absent when the model does not reason.
+    /// Reasoning budget, `"off"` included.
     pub thinking: Option<&'a str>,
-    /// Images waiting to go with the next prompt, so an attachment is visible before it is
-    /// sent rather than only in the notice that announced it.
+    /// Images waiting to go with the next prompt.
     pub attachments: usize,
-    /// What the session has cost so far, in dollars. Absent when the provider charges
-    /// nothing, which is what a subscription reports.
+    /// What the session has cost so far, in dollars.
     pub cost: Option<f64>,
-    /// Whether the credential in use is a subscription rather than metered billing, which
-    /// is why there is no cost to show.
+    
     pub subscription: bool,
     /// Whether the conversation is summarized on its own once it fills the window.
     pub auto_compact: bool,
-    /// The provider serving the model, shown only when more than one is signed in and
-    /// the model alone does not say which.
+    /// The provider serving the model, shown only when more than one is signed in and the model
+    /// alone does not say which.
     pub provider: Option<&'a str>,
     /// Whether anything experimental is turned on for this run.
     pub experimental: bool,
@@ -93,14 +79,13 @@ pub struct Footer<'a> {
 }
 
 impl<'a> Footer<'a> {
-    /// How many rows this footer needs. The extensions' row exists only when they have
-    /// something to say.
+    /// How many rows this footer needs.
     pub fn height(&self) -> u16 {
         HEIGHT + u16::from(!self.extension_status.is_empty())
     }
 
-    /// The footer's rows: where the session is, what it has used, and anything the
-    /// extensions have to say.
+    /// The footer's rows: where the session is, what it has used, and anything the extensions have
+    /// to say.
     pub fn rows(&self, theme: &Theme, width: usize) -> Vec<Line<'static>> {
         let mut rows = vec![self.place_row(theme, width), self.usage_row(theme, width)];
         if let Some(status) = self.status_row(theme, width) {
@@ -109,8 +94,7 @@ impl<'a> Footer<'a> {
         rows
     }
 
-    /// What the extensions are reporting, joined in a stable order. Nothing to say means
-    /// no row at all rather than an empty one.
+    /// What the extensions are reporting, joined in a stable order.
     fn status_row(&self, theme: &Theme, width: usize) -> Option<Line<'static>> {
         if self.extension_status.is_empty() {
             return None;
@@ -141,8 +125,7 @@ impl<'a> Footer<'a> {
         if let Some(session) = self.session.filter(|session| !session.is_empty()) {
             out.push_str(&format!(" • {session}"));
         }
-        // What is going with the next prompt belongs where the session is described, not in
-        // the token counts, which are about what has already been spent.
+        
         if self.attachments > 0 {
             out.push_str(&match self.attachments {
                 1 => " • 1 image attached".to_string(),
@@ -160,9 +143,6 @@ impl<'a> Footer<'a> {
     }
 
     /// The counts, then the context reading, then the model against the right edge.
-    ///
-    /// When the two halves cannot both fit, the model gives way first: the counts are what
-    /// changes turn to turn, and the model is on screen elsewhere.
     fn usage_row(&self, theme: &Theme, width: usize) -> Line<'static> {
         let dim = Style::new().fg(theme.dim);
 
@@ -233,8 +213,7 @@ impl<'a> Footer<'a> {
         if let Some(rate) = self.cache_hit_rate() {
             parts.push(format!("CH{rate:.1}%"));
         }
-        // A subscription bills a plan rather than a request, so there is no amount to
-        // show and saying which it is explains the absence.
+        
         match (self.cost, self.subscription) {
             (Some(cost), _) if cost > 0.0 => parts.push(format!("${cost:.3}")),
             (_, true) => parts.push("(sub)".to_string()),
@@ -243,8 +222,7 @@ impl<'a> Footer<'a> {
         parts.join(" ")
     }
 
-    /// Share of the last turn's prompt that came out of cache. Reported only once the
-    /// session has used a cache at all, since a flat 0% before then says nothing.
+    /// Share of the last turn's prompt that came out of cache.
     fn cache_hit_rate(&self) -> Option<f64> {
         if self.total.cache_read == 0 && self.total.cache_write == 0 {
             return None;
@@ -254,18 +232,13 @@ impl<'a> Footer<'a> {
     }
 
     /// How much of the window the conversation is using.
-    ///
-    /// Always said, because how much room is left is worth knowing before any of it has
-    /// been used as well as after. A share that cannot be worked out yet — nothing has come
-    /// back, or a compaction has just moved the ground — reads `?` rather than going away,
-    /// so the line does not change shape between turns.
     fn context(&self) -> String {
         let window = format_tokens(self.context_window);
         let share = match self.context_percent() {
             Some(percent) => format!("{percent:.1}%"),
             None => "?".to_string(),
         };
-        // Worth saying alongside the reading: what happens when it runs out.
+        
         match self.auto_compact {
             true => format!("{share}/{window} (auto)"),
             false => format!("{share}/{window}"),
@@ -290,9 +263,7 @@ impl<'a> Footer<'a> {
             true => NO_MODEL,
             false => self.model,
         };
-        // The model by its own name, with who is serving it in front: the same model is
-        // offered by several providers, and which one is answering is what the footer is
-        // there to say.
+        
         let model = match self.provider.filter(|provider| !provider.is_empty()) {
             Some(provider) => format!(
                 "({provider}) {}",
@@ -309,10 +280,6 @@ impl<'a> Footer<'a> {
 }
 
 /// The line above the editor while a turn runs.
-///
-/// `frame` is the spinner glyph already chosen for this tick — the built-in braille frame
-/// ordinarily, or whatever `setWorkingIndicator` asked for instead — so this draws the line
-/// without having to know which of the two it was given.
 pub fn activity_line(
     theme: &Theme,
     frame: &str,
@@ -341,10 +308,6 @@ pub fn activity_line(
 }
 
 /// Fraction of the context window a turn occupied, if it can be known.
-/// The share of the window in use, or nothing when there is no window to measure against.
-///
-/// A conversation that has used none of it has used none of it: that is nought per cent,
-/// not an unknown. Only a window nobody has said the size of leaves the share unanswerable.
 fn context_percent(usage: &Usage, window: u32) -> Option<f64> {
     if window == 0 {
         return None;
@@ -379,8 +342,7 @@ pub fn shorten_home(path: &str) -> String {
     let home = home.to_string_lossy();
     let home = home.strip_suffix('/').unwrap_or(home.as_ref());
     match path.strip_prefix(home) {
-        // Only a path that continues at a separator is inside the home directory. A
-        // sibling that merely starts with the same letters is left as it is.
+        
         Some(rest) if rest.is_empty() || rest.starts_with('/') => format!("~{rest}"),
         _ => path.to_string(),
     }
@@ -391,9 +353,6 @@ fn span_width(spans: &[Span<'static>]) -> usize {
 }
 
 /// `text` cut to `width` columns with nothing to mark the cut.
-///
-/// The model is cut rather than elided because the head of a model id is the part that
-/// identifies it, and two columns spent on an ellipsis are two fewer of the name.
 fn clip(text: &str, width: usize) -> String {
     let mut out = String::new();
     let mut used = 0;
@@ -428,8 +387,7 @@ fn clip_spans(spans: Vec<Span<'static>>, width: usize) -> Vec<Span<'static>> {
 mod tests {
     use super::*;
 
-    /// The home prefix only shortens a path that is genuinely inside it. A sibling
-    /// directory whose name merely starts the same way keeps its own name.
+    /// The home prefix only shortens a path that is genuinely inside it.
     #[test]
     fn shortening_home_respects_the_path_boundary() {
         let home = std::env::var_os("HOME").map(|home| home.to_string_lossy().into_owned());
@@ -563,7 +521,7 @@ mod tests {
     #[test]
     fn the_cache_hit_rate_comes_from_the_last_turn() {
         let footer = Footer {
-            // Cumulative reads are large; the last turn read 800 of a 1,000 token prompt.
+            
             total: usage(20_000, 5_000, 90_000, 1_000),
             last: usage(200, 50, 800, 0),
             ..footer()
@@ -669,7 +627,7 @@ mod tests {
             );
         }
 
-        // Wide enough for the counts and nothing else: the model is gone, the counts are not.
+        
         let text = rendered(&footer.rows(&Theme::dark(), 26)[1]);
         assert!(text.starts_with("↑1.2k"), "{text}");
         assert!(!text.contains("claude"), "{text}");
@@ -694,9 +652,7 @@ mod tests {
         }
     }
 
-    /// How much of the window is left is said from the first frame, before anything has
-    /// been used. A share that cannot be worked out yet reads `?` rather than going away,
-    /// so the line does not change shape the moment the first answer lands.
+    /// How much of the window is left is said from the first frame, before anything has been used.
     #[test]
     fn how_much_room_is_left_is_said_before_any_of_it_is_used() {
         let unmeasured = Footer {
@@ -752,8 +708,7 @@ mod tests {
         assert_eq!(rendered(&line), "stopping…");
     }
 
-    /// An empty frame — what `setWorkingIndicator({ frames: [] })` resolves to — leaves the
-    /// rest of the line alone rather than an empty gap where the glyph was.
+    /// An empty frame.
     #[test]
     fn an_empty_frame_hides_only_the_glyph() {
         let line = activity_line(&Theme::dark(), "", Duration::from_secs(3), false, "working");
@@ -797,11 +752,7 @@ mod added_fields {
             .unwrap_or_default()
     }
 
-    /// Three readings are meant to be on screen for the length of an ordinary session:
-    /// how full the context window is, what the session has cost, and how much of the last
-    /// prompt came out of cache. Each is tested on its own elsewhere; this is the one that
-    /// says an ordinary session gets all three at once, without being asked for any of
-    /// them.
+    
     #[test]
     fn an_ordinary_session_shows_context_cost_and_cache_hits_together() {
         let footer = Footer {
@@ -836,8 +787,7 @@ mod added_fields {
         assert!(row(&footer, 1).contains("$1.234"), "{}", row(&footer, 1));
     }
 
-    /// A plan is billed rather than the request, so it says which it is instead of a
-    /// number that would always read zero.
+    
     #[test]
     fn a_subscription_says_so_instead_of_a_cost() {
         let footer = Footer {
@@ -901,11 +851,11 @@ mod added_fields {
             ..base()
         };
         assert_eq!(talking.height(), HEIGHT + 1);
-        // Sorted by the key each extension reports under, so the order never wanders.
+        
         assert_eq!(row(&talking, 2), "first last");
     }
 
-    /// A status line that would break the row is flattened rather than drawn.
+    
     #[test]
     fn a_status_line_cannot_break_the_row() {
         let footer = Footer {

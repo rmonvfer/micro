@@ -1,9 +1,7 @@
-// pi-tui's own Spacer component, kept byte-for-byte — see the note in ../components/box.ts.
+
 import type { Component } from "../tui.ts";
 
-/**
- * Spacer component that renders empty lines
- */
+/** Spacer component that renders empty lines / */
 export class Spacer implements Component {
 	private lines: number;
 
@@ -16,7 +14,7 @@ export class Spacer implements Component {
 	}
 
 	invalidate(): void {
-		// No cached state to invalidate currently
+		
 	}
 
 	render(_width: number): string[] {

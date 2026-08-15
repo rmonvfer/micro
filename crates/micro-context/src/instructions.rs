@@ -1,8 +1,4 @@
 //! Project instruction discovery.
-//!
-//! Instruction files are collected from the workspace, from every directory above it, and
-//! from micro's own home directory, then concatenated into the text that goes into a
-//! system prompt.
 
 use crate::ContextError;
 use crate::Result;
@@ -11,24 +7,22 @@ use std::path::Path;
 use std::path::PathBuf;
 
 /// The instruction file names recognised in a directory, in ascending order of precedence:
-/// `AGENTS.md` is micro's own file, so it has the last word where both are present.
+/// `AGENTS.md` is micro's own file.
 pub const INSTRUCTION_FILE_NAMES: &[&str] = &["CLAUDE.md", "AGENTS.md"];
 
 /// How many levels of `@import` are followed before a directive is left as written.
 pub const DEFAULT_MAX_IMPORT_DEPTH: usize = 5;
 
-/// Marks where each file's contribution begins. An HTML comment keeps the boundary
-/// visible to a reader without adding a heading that would compete with the file's own.
+/// Marks where each file's contribution begins.
 const SOURCE_MARKER: &str = "<!-- source:";
 
 /// The assembled project instructions.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Instructions {
-    /// Every source concatenated, lowest precedence first, so the most specific
-    /// instructions are the last thing the model reads.
+    /// Every source concatenated, lowest precedence first, so the most specific instructions are
+    /// the last thing the model reads.
     pub text: String,
-    /// Every file that contributed, in the order it appears in `text`. Imported files are
-    /// listed at the position their contents were inlined.
+    /// Every file that contributed, in the order it appears in `text`.
     pub sources: Vec<PathBuf>,
 }
 
@@ -54,8 +48,7 @@ impl InstructionLoader {
         }
     }
 
-    /// A loader whose global instructions come from micro's configuration directory,
-    /// which is where the rest of what the user wrote for themselves lives.
+    /// A loader whose global instructions come from micro's configuration directory.
     pub fn from_env() -> Result<Self> {
         let home = micro_dirs::config_dir().ok_or(ContextError::NoHome {
             env: micro_dirs::MICRO_DIR_ENV,
@@ -69,10 +62,6 @@ impl InstructionLoader {
     }
 
     /// Collects the instructions that apply to `workspace`.
-    ///
-    /// Global files come first, then each ancestor directory from the filesystem root down
-    /// to the workspace itself, so a nearer file is read after — and therefore overrides —
-    /// a farther one.
     pub async fn load(&self, workspace: impl AsRef<Path>) -> Result<Instructions> {
         let workspace = absolute(workspace.as_ref());
 
@@ -109,7 +98,7 @@ fn project_candidates(workspace: &Path) -> Vec<PathBuf> {
         cursor = directory.parent();
     }
 
-    // Reversed so the outermost ancestor is read first and the workspace's own file last.
+    
     per_directory.into_iter().rev().flatten().collect()
 }
 
@@ -137,8 +126,7 @@ impl Assembly {
             return Ok(());
         };
 
-        // Expansion appends whatever this file imports, so the slot the importer belongs in
-        // is the one recorded before expanding.
+        
         let position = self.sources.len();
         let expanded = self.expand(&canonical, &contents, 0).await?;
         let trimmed = expanded.trim();
@@ -156,8 +144,7 @@ impl Assembly {
         Ok(())
     }
 
-    /// Claims a file: returns its canonical path and contents, or nothing when it is
-    /// missing, unreadable, or already part of the assembly.
+    
     async fn take(&mut self, path: &Path) -> Result<Option<(PathBuf, String)>> {
         let canonical = match tokio::fs::canonicalize(path).await {
             Ok(canonical) => canonical,
@@ -170,16 +157,12 @@ impl Assembly {
 
         match tokio::fs::read_to_string(&canonical).await {
             Ok(contents) => Ok(Some((canonical, contents))),
-            // A directory named AGENTS.md, or a file that is not text, is not instructions.
+            
             Err(_) => Ok(None),
         }
     }
 
     /// Replaces every `@path` directive with the contents of the file it names.
-    ///
-    /// Paths resolve against the importing file's directory. A directive is left exactly as
-    /// written when the depth limit is reached, when the file is missing, or when it is
-    /// already in the assembly, which is what stops a cycle.
     async fn expand(&mut self, importer: &Path, contents: &str, depth: usize) -> Result<String> {
         let directory = importer.parent().unwrap_or(importer).to_path_buf();
         let mut expanded = String::with_capacity(contents.len());
@@ -228,8 +211,7 @@ impl Assembly {
 fn import_directive(line: &str) -> Option<&str> {
     let trimmed = line.trim();
     let target = trimmed.strip_prefix('@')?.trim();
-    // Only a line that is nothing but a directive counts, so an address or a handle in
-    // prose is never mistaken for an import.
+    
     if target.is_empty() || target.contains(char::is_whitespace) {
         return None;
     }
@@ -259,8 +241,7 @@ fn home_dir() -> Option<PathBuf> {
         .map(PathBuf::from)
 }
 
-/// Normalizes a path lexically. The workspace may not exist yet, so this never touches
-/// the filesystem.
+/// Normalizes a path lexically.
 fn absolute(path: &Path) -> PathBuf {
     let joined = if path.is_absolute() {
         path.to_path_buf()
@@ -299,8 +280,8 @@ mod tests {
         path
     }
 
-    /// A loader whose global directory is inside the scratch tree, so no test reads the
-    /// caller's own configuration directory.
+    /// A loader whose global directory is inside the scratch tree, so no test reads the caller's
+    /// own configuration directory.
     fn loader(root: &Path) -> InstructionLoader {
         InstructionLoader::new(root.join("global"))
     }
@@ -417,7 +398,7 @@ mod tests {
 
         let loaded = loader(&root).load(root.join("project")).await.unwrap();
         assert!(loaded.text.contains("rule"));
-        // The unresolvable directive stays visible rather than silently vanishing.
+        
         assert!(loaded.text.contains("@AGENTS.md"));
         assert_eq!(loaded.sources, vec![root.join("project/AGENTS.md")]);
     }
@@ -490,8 +471,7 @@ mod tests {
         assert_eq!(loaded.sources, vec![root.join("project/CLAUDE.md")]);
     }
 
-    /// The user's own standing instructions sit with the rest of what they wrote, so a
-    /// profile that moves the configuration moves them too.
+    /// The user's own standing instructions sit with the rest of what they wrote.
     #[test]
     fn the_global_instructions_come_from_the_configuration_directory() {
         let loader = InstructionLoader::from_env().unwrap();

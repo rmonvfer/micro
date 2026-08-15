@@ -1,9 +1,4 @@
 //! The Linux sandbox helper as a program of its own.
-//!
-//! A host that would rather not dispatch on [`micro_sandbox::HELPER_ARG`] at the top of
-//! its own `main` points [`micro_sandbox::Sandbox::with_helper_program`] at this binary
-//! instead. Either way the argument list is the same one, so both routes enforce the same
-//! rules.
 
 fn main() {
     let mut args = std::env::args().skip(1);

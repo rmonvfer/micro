@@ -1,5 +1,4 @@
-//! `/sessions`, `/resume`, `/fork`, `/clone`, `/tree`, `/name` and `/session`: moving
-//! between conversations, and reporting on the one in hand.
+
 
 use crate::CommandContext;
 use crate::CommandOutcome;
@@ -30,7 +29,7 @@ pub(crate) async fn resume(argument: Option<&str>, context: &CommandContext<'_>)
         return CommandOutcome::Choose(session_picker(sessions, context));
     };
 
-    // Ids are long enough that nobody types one in full, so a unique prefix stands in.
+    
     let matches: Vec<SessionMeta> = sessions
         .into_iter()
         .filter(|meta| meta.id == query || meta.id.starts_with(query))
@@ -61,8 +60,7 @@ pub(crate) fn fork(argument: Option<&str>, context: &CommandContext<'_>) -> Comm
         return CommandOutcome::error("nothing to fork: the conversation is empty");
     }
 
-    // Forking through the last message copies the conversation whole, which is what a
-    // bare `/fork` means.
+    
     let last = context.message_count - 1;
     let through_index = match argument {
         None => last,
@@ -131,11 +129,8 @@ fn messages(meta: &SessionMeta) -> String {
     }
 }
 
-/// `/tree` with no argument offers the conversation's entries to choose from; with an
-/// entry id it continues from that entry.
-///
-/// Nothing is thrown away by continuing from an earlier point. What came after stays in
-/// the log as another branch, which is what makes it safe to go back and try again.
+/// `/tree` with no argument offers the conversation's entries to choose from; with an entry id it
+/// continues from that entry.
 pub(crate) async fn tree(argument: Option<&str>, context: &CommandContext<'_>) -> CommandOutcome {
     let Some(session_id) = context.session_id else {
         return CommandOutcome::error("this conversation is not being recorded");
@@ -157,8 +152,7 @@ pub(crate) async fn tree(argument: Option<&str>, context: &CommandContext<'_>) -
         return CommandOutcome::info("No entries in session");
     }
 
-    // The tree opens showing what the reader asked it to: the whole of it, the shape of
-    // the conversation without the tool calls that fill it out, or only what they wrote.
+    
     let shown: Vec<&micro_session::Row<'_>> = outline
         .iter()
         .filter(|row| keeps(context.tree_filter, row))
@@ -172,8 +166,7 @@ pub(crate) async fn tree(argument: Option<&str>, context: &CommandContext<'_>) -
     let items = shown
         .iter()
         .map(|row| {
-            // Depth is drawn into the label, so a branch reads as one at a glance and the
-            // list stays a flat thing to move through.
+            
             let label = format!("{}{}", "  ".repeat(row.depth), summary(&row.entry.message));
             PickerItem::new(label, where_it_sits(row), format!("/tree {}", row.entry.id))
                 .current(row.is_head)
@@ -191,15 +184,14 @@ fn keeps(filter: micro_config::TreeFilter, row: &micro_session::Row<'_>) -> bool
 
     match filter {
         TreeFilter::All => true,
-        // What the conversation is made of, which is everything but the tools filling it out.
+        
         TreeFilter::Default | TreeFilter::NoTools => !is_tool,
         TreeFilter::UserOnly => is_user,
         TreeFilter::LabeledOnly => row.label.is_some(),
     }
 }
 
-/// What an entry is to the conversation as it stands: where it continues from, what it is
-/// on the way to, or a branch that was left behind.
+
 fn where_it_sits(row: &micro_session::Row<'_>) -> &'static str {
     match (row.is_head, row.on_path) {
         (true, _) => "current",
@@ -230,8 +222,8 @@ fn text_of(content: &[micro_types::ContentBlock]) -> String {
         .to_string()
 }
 
-/// `/name` gives the session a title of its own, in place of the one taken from the first
-/// thing that was asked. With no argument it reports the title the session already has.
+/// `/name` gives the session a title of its own, in place of the one taken from the first thing
+/// that was asked.
 pub(crate) async fn name(argument: Option<&str>, context: &CommandContext<'_>) -> CommandOutcome {
     let Some(session_id) = context.session_id else {
         return CommandOutcome::error("this conversation is not being recorded");
@@ -251,7 +243,7 @@ pub(crate) async fn name(argument: Option<&str>, context: &CommandContext<'_>) -
         };
     };
 
-    // A title is one line, because that is how it is listed.
+    
     let title = requested
         .split(['\r', '\n'])
         .map(str::trim)
@@ -262,8 +254,8 @@ pub(crate) async fn name(argument: Option<&str>, context: &CommandContext<'_>) -
     CommandOutcome::Rename { title }
 }
 
-/// `/session` reports what is known about the conversation in hand: where it is written,
-/// what it holds, and what it has cost.
+/// `/session` reports what is known about the conversation in hand: where it is written, what it
+/// holds, and what it has cost.
 pub(crate) async fn info(context: &CommandContext<'_>) -> CommandOutcome {
     let Some(session_id) = context.session_id else {
         return CommandOutcome::error("this conversation is not being recorded");
@@ -320,8 +312,7 @@ pub(crate) async fn info(context: &CommandContext<'_>) -> CommandOutcome {
         thousands(usage.total_tokens() as u64)
     ));
 
-    // Priced against the model in use, since that is what the tokens were spent on. A
-    // subscription-backed provider reports no prices, and so no cost section.
+    
     if let Some(model) = context.model {
         let spent = model
             .price(
@@ -386,9 +377,8 @@ pub(crate) fn thousands(count: u64) -> String {
     out
 }
 
-/// `/clone` copies the conversation as it stands into a session of its own, leaving this
-/// one untouched. What was branched away from is not copied: a clone is the conversation
-/// in hand, not every conversation the log holds.
+/// `/clone` copies the conversation as it stands into a session of its own, leaving this one
+/// untouched.
 pub(crate) async fn clone(context: &CommandContext<'_>) -> CommandOutcome {
     let Some(session_id) = context.session_id else {
         return CommandOutcome::error("this conversation is not being recorded");

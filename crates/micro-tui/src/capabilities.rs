@@ -1,10 +1,4 @@
 //! What the terminal can actually do.
-//!
-//! Every terminal claims to be one of a handful of things and then differs anyway, so this
-//! identifies the emulator from its environment and reports only what that emulator is known
-//! to support. The default when nothing is recognised is *off*, which matters most for
-//! hyperlinks: a terminal that does not understand OSC 8 swallows the sequence, and the URL
-//! disappears from the output entirely. Better to print it plainly than to lose it.
 
 /// How a terminal draws an image, when it can.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -23,7 +17,7 @@ pub struct Capabilities {
 }
 
 impl Capabilities {
-    /// Nothing beyond plain text, which is what an unrecognised terminal gets.
+    
     const fn plain(true_color: bool) -> Self {
         Capabilities {
             images: None,
@@ -50,15 +44,12 @@ impl Capabilities {
 }
 
 /// Work out what this terminal supports.
-///
-/// The order matters: a multiplexer is checked first, because what it is running inside
-/// says nothing about what it will forward.
 pub fn detect() -> Capabilities {
     detect_from(&Environment::current())
 }
 
-/// The environment variables terminals identify themselves by, gathered so the detection
-/// can be tested without setting real ones.
+/// The environment variables terminals identify themselves by, gathered so the detection can be
+/// tested without setting real ones.
 #[derive(Debug, Clone, Default)]
 pub struct Environment {
     pub term_program: String,
@@ -103,12 +94,11 @@ pub fn detect_from(environment: &Environment) -> Capabilities {
     let true_color_hint =
         environment.color_term == "truecolor" || environment.color_term == "24bit";
 
-    // Image protocols are unreliable through a multiplexer, so they stay off even when the
-    // terminal underneath would manage them.
+    
     if environment.tmux {
         return Capabilities::text_only(true_color_hint, environment.tmux_forwards_hyperlinks);
     }
-    // screen forwards neither.
+    
     if environment.term.starts_with("screen") {
         return Capabilities::plain(true_color_hint);
     }
@@ -132,7 +122,7 @@ pub fn detect_from(environment: &Environment) -> Capabilities {
         return Capabilities::graphical(ImageProtocol::ITerm2);
     }
 
-    // Known, and known not to draw images.
+    
     if environment.windows_terminal
         || environment.term_program == "vscode"
         || environment.term_program == "alacritty"
@@ -143,8 +133,7 @@ pub fn detect_from(environment: &Environment) -> Capabilities {
         return Capabilities::text_only(true, false);
     }
 
-    // Unrecognised: assume nothing. A swallowed OSC 8 loses the URL, so the plain
-    // `text (url)` form is the safer default.
+    
     Capabilities::plain(true_color_hint)
 }
 
@@ -188,7 +177,7 @@ mod tests {
     }
 
     /// Images are unreliable through a multiplexer, and hyperlinks depend on whether that
-    /// multiplexer forwards them, so it is asked rather than assumed.
+    /// multiplexer forwards them.
     #[test]
     fn tmux_turns_images_off_and_defers_on_hyperlinks() {
         let inside = Environment {
@@ -216,8 +205,7 @@ mod tests {
         assert!(!capabilities.hyperlinks);
     }
 
-    /// An unknown terminal gets the plain form. A swallowed OSC 8 loses the URL entirely,
-    /// which is worse than printing it.
+    /// An unknown terminal gets the plain form.
     #[test]
     fn an_unrecognised_terminal_is_assumed_to_support_nothing() {
         let capabilities = detect_from(&Environment::default());

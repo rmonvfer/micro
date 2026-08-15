@@ -5,8 +5,7 @@ use crate::catalog::{Catalog, ModelDef};
 pub enum Resolution<'a> {
     /// Exactly one model matched.
     Match(&'a ModelDef),
-    /// Several models matched equally well. The caller decides — by asking, or
-    /// by reporting the candidates — rather than the catalog guessing.
+    /// Several models matched equally well.
     Ambiguous(Vec<&'a ModelDef>),
     NotFound,
 }
@@ -20,8 +19,7 @@ impl<'a> Resolution<'a> {
         }
     }
 
-    /// Every model the query matched: one for a match, several when ambiguous,
-    /// none when unknown.
+    /// Every model the query matched: one for a match, several when ambiguous, none when unknown.
     pub fn candidates(&self) -> Vec<&'a ModelDef> {
         match self {
             Resolution::Match(model) => vec![*model],
@@ -33,30 +31,13 @@ impl<'a> Resolution<'a> {
 
 impl Catalog {
     /// Resolve a user-typed string to a model.
-    ///
-    /// Tiers are tried in order and the first tier that matches anything
-    /// decides the outcome — one hit resolves, several are reported as
-    /// ambiguous rather than picked between:
-    ///
-    /// 1. provider-qualified id — `anthropic/claude-opus-5`, or
-    ///    `openrouter/anthropic/claude-opus-5` for a nested id
-    /// 2. exact model id on any provider — `claude-opus-5`
-    /// 3. alias — `opus`
-    /// 4. prefix of a provider-qualified id
-    /// 5. prefix of a model id
-    /// 6. substring of a model id or display name — `sonnet`
-    ///
-    /// Matching ignores case throughout.
     pub fn resolve<'a>(&'a self, query: &str) -> Resolution<'a> {
         let query = query.trim();
         if query.is_empty() {
             return Resolution::NotFound;
         }
 
-        // The qualified form is the one spelling that is unique by
-        // construction, so it is tried first and on its own: without that, a
-        // model whose id contains a slash would make every provider-qualified
-        // query ambiguous with the nested id it looks like.
+        
         if let Some(model) = self.match_qualified(query) {
             return Resolution::Match(model);
         }
@@ -77,9 +58,7 @@ impl Catalog {
             }
         }
 
-        // Nothing matched as written. A name typed from memory is usually close rather
-        // than exact — letters in the right order with the rest left out — so the last
-        // reading is the forgiving one, ranked best first.
+        
         match self.match_fuzzy(query).as_slice() {
             [] => Resolution::NotFound,
             [single] => Resolution::Match(single),
@@ -93,8 +72,7 @@ impl Catalog {
             .models()
             .iter()
             .filter_map(|model| {
-                // Judged on whichever spelling reads better, since a user may type either
-                // the id or the name.
+                
                 let qualified = model.qualified_id();
                 [
                     crate::fuzzy::match_score(query, &model.id),
@@ -109,7 +87,7 @@ impl Catalog {
             })
             .collect();
 
-        // Lower is better, and a tie is broken by the order the catalog presents.
+        
         scored.sort_by(|left, right| {
             left.0
                 .partial_cmp(&right.0)
@@ -176,8 +154,7 @@ fn contains(haystack: &str, needle: &str) -> bool {
 mod tests {
     use super::*;
 
-    /// A fixed catalog, so these tests describe how a query is matched rather than which
-    /// models a service happened to offer when the bundled catalog was last built.
+    /// A fixed catalog.
     fn catalog() -> Catalog {
         Catalog::from_json(include_str!("../testdata/resolve-catalog.json")).unwrap()
     }
@@ -203,9 +180,7 @@ mod tests {
 
     #[test]
     fn a_qualified_id_wins_over_a_nested_id_that_looks_the_same() {
-        // `anthropic/claude-sonnet-5` is both a qualified id on Anthropic and a
-        // bare model id on OpenRouter. The qualified reading wins, which keeps
-        // every model reachable by some unambiguous spelling.
+        
         let catalog = catalog();
         let model = catalog
             .resolve("anthropic/claude-sonnet-5")
@@ -231,8 +206,7 @@ mod tests {
         assert_eq!(model.qualified_id(), "openrouter/anthropic/claude-opus-5");
     }
 
-    /// The bundled catalog is assembled from what services publish, so it is checked for
-    /// shape rather than for any particular model.
+    
     #[test]
     fn the_bundled_catalog_resolves_what_it_lists() {
         let bundled = Catalog::bundled();
@@ -322,7 +296,7 @@ mod tests {
     #[test]
     fn a_substring_of_a_display_name_falls_back_to_matching() {
         let catalog = catalog();
-        // Matches "DeepSeek V4 Pro" by name; the id spells it with a hyphen.
+        
         let model = catalog.resolve("deepseek v4").model().unwrap();
         assert_eq!(model.id, "deepseek/deepseek-v4-pro");
     }
@@ -388,8 +362,7 @@ mod forgiving {
         Catalog::bundled()
     }
 
-    /// A name typed from memory finds the model, with the letters in order and the rest
-    /// left out.
+    /// A name typed from memory finds the model, with the letters in order and the rest left out.
     #[test]
     fn letters_in_order_are_enough() {
         let held = catalog();
@@ -408,8 +381,7 @@ mod forgiving {
         assert!(best.contains("opus"), "got {best}");
     }
 
-    /// The exact spellings still win: a forgiving reading is the last resort, never the
-    /// first, so an id typed in full is never beaten by something that merely resembles it.
+    /// The exact spellings still win: a forgiving reading is the last resort, never the first.
     #[test]
     fn an_exact_name_still_wins() {
         let catalog = catalog();
@@ -421,7 +393,7 @@ mod forgiving {
         assert_eq!(model.provider, "anthropic");
     }
 
-    /// Nonsense still finds nothing rather than the whole catalog.
+    
     #[test]
     fn nonsense_finds_nothing() {
         let held = catalog();

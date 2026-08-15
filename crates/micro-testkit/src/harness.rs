@@ -34,8 +34,8 @@ impl EventLog {
         &self.0
     }
 
-    /// The variant of each event, which is how a test asserts on ordering without
-    /// spelling out every payload.
+    /// The variant of each event, which is how a test asserts on ordering without spelling out
+    /// every payload.
     pub fn names(&self) -> Vec<&'static str> {
         self.0.iter().map(name_of).collect()
     }

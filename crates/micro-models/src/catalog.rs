@@ -5,8 +5,7 @@ use serde::{Deserialize, Serialize};
 use crate::cost::{RequestCost, TokenUsage};
 use crate::error::{Error, Result};
 
-/// Providers are listed in this order wherever the catalog is presented as a
-/// whole. Anything unlisted sorts after these, alphabetically.
+/// Providers are listed in this order wherever the catalog is presented as a whole.
 const PROVIDER_ORDER: &[&str] = &[
     "openrouter",
     "github-copilot",
@@ -15,9 +14,7 @@ const PROVIDER_ORDER: &[&str] = &[
     "openai-codex",
 ];
 
-/// The wire protocol a model speaks. A single provider often serves several —
-/// GitHub Copilot answers Claude models over the Anthropic Messages shape and
-/// GPT models over the OpenAI Responses shape — so this is a per-model property.
+/// The wire protocol a model speaks.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum WireApi {
@@ -25,8 +22,7 @@ pub enum WireApi {
     OpenaiCompletions,
     OpenaiResponses,
     GoogleGenerativeAi,
-    /// Amazon Bedrock's Converse Stream, which is signed rather than keyed and answers
-    /// in a binary event stream rather than in server-sent events.
+    /// Amazon Bedrock's Converse Stream.
     BedrockConverseStream,
     /// Google Vertex AI: the Gemini shape, addressed under a project and a location.
     GoogleVertex,
@@ -57,9 +53,6 @@ pub struct Rates {
 }
 
 /// Prices that replace the standard ones once a request is large enough.
-///
-/// Some services charge more for a long context, and charge it on the whole request
-/// rather than only on the tokens past the threshold.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct ModelCostTier {
     /// The tier applies to a request whose input is larger than this.
@@ -96,9 +89,6 @@ impl ModelCost {
     }
 
     /// The rates for a request of this size.
-    ///
-    /// Everything the model read counts towards the threshold, cached or not, and the
-    /// tier that matches applies to the whole request rather than to the part above it.
     fn rates_for(&self, usage: TokenUsage) -> Rates {
         let read = usage.input + usage.cache_read + usage.cache_write;
         self.tiers
@@ -109,9 +99,7 @@ impl ModelCost {
             .unwrap_or_else(|| self.rates())
     }
 
-    /// Price a single request. Token counts are taken as reported by the
-    /// provider, so `usage.input` must already exclude anything counted under
-    /// `cache_read` or `cache_write`.
+    /// Price a single request.
     pub fn price(&self, usage: TokenUsage) -> RequestCost {
         const PER_MILLION: f64 = 1_000_000.0;
         let rates = self.rates_for(usage);
@@ -124,7 +112,7 @@ impl ModelCost {
         }
     }
 
-    /// Whether any price is set. Subscription-backed providers report zeroes.
+    /// Whether any price is set.
     pub fn is_free(&self) -> bool {
         self.input == 0.0 && self.output == 0.0 && self.cache_read == 0.0 && self.cache_write == 0.0
     }
@@ -155,8 +143,7 @@ pub struct ModelDef {
     /// Where this service differs from the protocol it answers.
     #[serde(default, skip_serializing_if = "crate::CompatOverrides::is_empty")]
     pub compat: crate::CompatOverrides,
-    /// What this model calls each thinking level. A level mapped to nothing is one it
-    /// does not offer.
+    /// What this model calls each thinking level.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub thinking: BTreeMap<String, Option<String>>,
 }
@@ -203,15 +190,14 @@ impl From<&ModelDef> for micro_types::Model {
     }
 }
 
-/// The set of models the agent can choose from.
+
 #[derive(Debug, Clone, Default)]
 pub struct Catalog {
     models: Vec<ModelDef>,
 }
 
 impl Catalog {
-    /// The catalog compiled into the binary. Always available, no network, no
-    /// configuration.
+    /// The catalog compiled into the binary.
     pub fn bundled() -> Self {
         Self::from_json(crate::bundled::CATALOG_JSON)
             .expect("the bundled catalog is validated by the test suite")
@@ -225,8 +211,8 @@ impl Catalog {
         Ok(catalog)
     }
 
-    /// A catalog holding exactly these models, for a caller that has already decided
-    /// which ones a workspace may use.
+    /// A catalog holding exactly these models, for a caller that has already decided which ones a
+    /// workspace may use.
     pub fn from_models(models: Vec<ModelDef>) -> Self {
         Catalog { models }
     }
@@ -264,14 +250,12 @@ impl Catalog {
         self.models.iter().filter(move |m| m.provider == provider)
     }
 
-    /// Drop every model whose provider is not in `keep` — the way a caller
-    /// narrows the catalog to the providers it actually has credentials for.
+    /// Drop every model whose provider is not in `keep`.
     pub fn retain_providers(&mut self, keep: &[&str]) {
         self.models.retain(|m| keep.contains(&m.provider.as_str()));
     }
 
-    /// Insert a model, replacing any existing entry with the same
-    /// `provider`/`id`.
+    /// Insert a model, replacing any existing entry with the same `provider`/`id`.
     pub fn upsert(&mut self, model: ModelDef) {
         match self
             .models
@@ -285,11 +269,6 @@ impl Catalog {
     }
 
     /// Merge models discovered from a live provider listing.
-    ///
-    /// A listing is authoritative about what it states and silent about the
-    /// rest, so anything it leaves out — headers, aliases, prices a
-    /// subscription provider does not quote, limits it omits — is carried over
-    /// from what is already known rather than overwritten with a blank.
     pub fn merge_listing(&mut self, listing: impl IntoIterator<Item = ModelDef>) {
         for mut incoming in listing {
             if let Some(existing) = self.get(&incoming.provider, &incoming.id) {
@@ -328,9 +307,7 @@ impl Catalog {
         self.sort();
     }
 
-    /// Apply a user catalog document over this catalog: provider-level settings
-    /// re-point existing models, and model entries either patch a known model or
-    /// register a new one.
+    
     pub fn apply_overrides(&mut self, json: &str) -> Result<()> {
         let file: CatalogFile = serde_json::from_str(json)?;
         self.apply(file)
@@ -345,8 +322,7 @@ impl Catalog {
     }
 
     fn apply_provider(&mut self, provider: &str, entry: ProviderEntry) -> Result<()> {
-        // Provider-level settings re-point every model already registered under
-        // this provider — the way a user moves a whole provider to a proxy.
+        
         for model in self.models.iter_mut().filter(|m| m.provider == provider) {
             if let Some(base_url) = &entry.base_url {
                 model.base_url = base_url.clone();
@@ -364,8 +340,7 @@ impl Catalog {
         Ok(())
     }
 
-    /// The endpoint settings a new model inherits: whatever the document
-    /// declares, falling back to what the provider's existing models use.
+    
     fn provider_defaults(&self, provider: &str, entry: &ProviderEntry) -> ProviderDefaults {
         let existing = self.models.iter().find(|m| m.provider == provider);
         let mut headers = existing.map(|m| m.headers.clone()).unwrap_or_default();
@@ -461,8 +436,7 @@ impl Catalog {
         Ok(())
     }
 
-    /// Order by provider priority, then by the order models were registered
-    /// within a provider, so listings and resolution are reproducible.
+    /// Order by provider priority, then by the order models were registered within a provider.
     fn sort(&mut self) {
         let rank = |provider: &str| {
             PROVIDER_ORDER
@@ -481,8 +455,7 @@ impl Catalog {
 const DEFAULT_CONTEXT_WINDOW: u32 = 128_000;
 const DEFAULT_MAX_OUTPUT_TOKENS: u32 = 16_384;
 
-/// A limit a provider listing did not state. [`Catalog::merge_listing`] fills
-/// these in rather than overwriting a known value with a guess.
+/// A limit a provider listing did not state.
 pub(crate) const UNKNOWN_LIMIT: u32 = 0;
 
 struct ProviderDefaults {
@@ -510,9 +483,7 @@ struct ProviderEntry {
     models: Vec<ModelEntry>,
 }
 
-/// A model as written in a catalog document. Every field but `id` is optional:
-/// omitted fields are inherited from the provider, or left untouched when the
-/// entry patches a model that already exists.
+/// A model as written in a catalog document.
 #[derive(Debug, Deserialize)]
 struct ModelEntry {
     id: String,
@@ -630,7 +601,7 @@ mod tests {
                 "openai-codex"
             ]
         );
-        // The rest follow in name order, after the ranked ones.
+        
         let rest: Vec<&str> = listed.into_iter().skip(5).collect();
         let mut sorted = rest.clone();
         sorted.sort_unstable();
@@ -761,7 +732,7 @@ mod tests {
         let model = catalog.get("ollama", "qwen3-coder:30b").unwrap();
         assert_eq!(model.name, "Qwen3 Coder 30B");
         assert!(model.cost.is_free());
-        // An unranked provider sorts after every ranked one.
+        
         let listed = catalog.providers();
         let ollama = listed.iter().position(|name| *name == "ollama").unwrap();
         let ranked = listed

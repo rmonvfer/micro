@@ -1,29 +1,11 @@
-//! AWS's binary event stream, which is what Bedrock answers with.
-//!
-//! Not server-sent events. Each message is a length-prefixed frame carrying its own
-//! headers and a payload, so a reader has to know how long a frame is before it can find
-//! the next one:
-//!
-//! ```text
-//! total length   4 bytes, big endian, counting everything including itself
-//! header length  4 bytes, big endian
-//! prelude CRC    4 bytes
-//! headers        header-length bytes
-//! payload        total - headers - 16 bytes
-//! message CRC    4 bytes
-//! ```
-//!
-//! The checksums are not verified. The stream arrives over TLS, which already rejects a
-//! corrupted body, and a frame that survived that but is damaged fails to parse as JSON
-//! immediately afterwards. What the headers are for is the event's name: Bedrock puts it
-//! in `:event-type`, and that is what says how to read the payload.
+
 
 /// One frame: what kind of event it is, and the JSON it carried.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Frame {
     /// The `:event-type` header, which names the event.
     pub event_type: String,
-    /// The `:message-type` header. An `exception` says the payload is an error.
+    /// The `:message-type` header.
     pub message_type: String,
     pub payload: Vec<u8>,
 }
@@ -64,7 +46,7 @@ impl Decoder {
             if headers_length > total.saturating_sub(PRELUDE + TRAILER) {
                 return Err("event stream frame claims more headers than it holds".to_string());
             }
-            // Not all here yet, which is ordinary: the next read will bring the rest.
+            
             if self.buffer.len() < total {
                 break;
             }
@@ -95,10 +77,6 @@ impl Decoder {
 }
 
 /// The headers of one frame.
-///
-/// Only string-valued headers are read back as values; the rest are named but left empty,
-/// because the ones that matter here — the event's type and the message's kind — are
-/// strings, and skipping the others correctly is what keeps the walk in step.
 fn read_headers(mut bytes: &[u8]) -> Result<Vec<(String, String)>, String> {
     let mut headers = Vec::new();
 
@@ -111,19 +89,19 @@ fn read_headers(mut bytes: &[u8]) -> Result<Vec<(String, String)>, String> {
         let kind = bytes[1 + name_length];
         bytes = &bytes[1 + name_length + 1..];
 
-        // The value's length depends on what kind of value it is.
+        
         let value_length = match kind {
-            // true, false: the type is the value.
+            
             0 | 1 => 0,
-            // byte
+            
             2 => 1,
-            // short
+            
             3 => 2,
-            // integer
+            
             4 => 4,
-            // long, timestamp
+            
             5 | 8 => 8,
-            // byte array and string, both prefixed with a two-byte length.
+            
             6 | 7 => {
                 if bytes.len() < 2 {
                     return Err("event stream header value ends part way through".to_string());
@@ -132,7 +110,7 @@ fn read_headers(mut bytes: &[u8]) -> Result<Vec<(String, String)>, String> {
                 bytes = &bytes[2..];
                 length
             }
-            // uuid
+            
             9 => 16,
             other => return Err(format!("event stream header has an unknown type {other}")),
         };
@@ -155,14 +133,14 @@ fn read_headers(mut bytes: &[u8]) -> Result<Vec<(String, String)>, String> {
 mod tests {
     use super::*;
 
-    /// Build a frame the way Bedrock does, so the decoder is read against the shape it
-    /// will actually meet.
+    /// Build a frame the way Bedrock does, so the decoder is read against the shape it will
+    /// actually meet.
     fn frame(event_type: &str, payload: &[u8]) -> Vec<u8> {
         let mut headers = Vec::new();
         for (name, value) in [(":event-type", event_type), (":message-type", "event")] {
             headers.push(name.len() as u8);
             headers.extend_from_slice(name.as_bytes());
-            // 7 is the string type.
+            
             headers.push(7);
             headers.extend_from_slice(&(value.len() as u16).to_be_bytes());
             headers.extend_from_slice(value.as_bytes());
@@ -172,7 +150,7 @@ mod tests {
         let mut out = Vec::new();
         out.extend_from_slice(&total.to_be_bytes());
         out.extend_from_slice(&(headers.len() as u32).to_be_bytes());
-        // The checksums are not read, so what is written here does not matter.
+        
         out.extend_from_slice(&0u32.to_be_bytes());
         out.extend_from_slice(&headers);
         out.extend_from_slice(payload);
@@ -193,8 +171,8 @@ mod tests {
         assert_eq!(frames[0].payload, br#"{"delta":{"text":"hi"}}"#);
     }
 
-    /// A stream arrives in whatever pieces the network gives it, and a frame split across
-    /// two of them is still one frame.
+    /// A stream arrives in whatever pieces the network gives it, and a frame split across two of
+    /// them is still one frame.
     #[test]
     fn a_frame_split_across_reads_is_still_one_frame() {
         let whole = frame("messageStart", br#"{"role":"assistant"}"#);
@@ -223,8 +201,7 @@ mod tests {
         );
     }
 
-    /// An exception says so in its message type, which is how an error is told from an
-    /// answer.
+    /// An exception says so in its message type, which is how an error is told from an answer.
     #[test]
     fn an_exception_is_marked_as_one() {
         let mut headers = Vec::new();
@@ -252,7 +229,7 @@ mod tests {
         assert_eq!(frames[0].message_type, "exception");
     }
 
-    /// A length that cannot be right is reported rather than used to index into memory.
+    
     #[test]
     fn a_nonsense_length_is_refused() {
         let mut bytes = Vec::new();
@@ -262,17 +239,17 @@ mod tests {
         assert!(Decoder::new().push(&bytes).is_err());
     }
 
-    /// Headers of other types are stepped over correctly, so the ones that matter are
-    /// still found after them.
+    /// Headers of other types are stepped over correctly, so the ones that matter are still found
+    /// after them.
     #[test]
     fn headers_of_other_types_do_not_lose_the_walk() {
         let mut headers = Vec::new();
-        // A timestamp header, eight bytes, of the kind Bedrock includes.
+        
         headers.push(11u8);
         headers.extend_from_slice(b":event-time");
         headers.push(8);
         headers.extend_from_slice(&0u64.to_be_bytes());
-        // Then the one that matters.
+        
         headers.push(11u8);
         headers.extend_from_slice(b":event-type");
         headers.push(7);

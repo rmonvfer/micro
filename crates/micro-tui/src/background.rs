@@ -1,21 +1,4 @@
 //! Asking the terminal what colour its background is.
-//!
-//! `COLORFGBG` answers this without a round trip, but most terminals do not set it. The
-//! other way is OSC 11: write `ESC ] 11 ; ? BEL` and the terminal writes its background back
-//! on the input stream.
-//!
-//! The exchange happens before the event stream is built, and that ordering is the whole
-//! trick. Crossterm has no OSC parser: it strips the escape and re-reads the rest, so a
-//! reply reaching the event stream would arrive as `Alt+]` followed by every character of
-//! `11;rgb:...` typed into the prompt. Reading the reply off the terminal ourselves, before
-//! anything else is listening, is what keeps it out of the editor.
-//!
-//! Which is why the terminal is asked exactly once, at startup, and the answer kept. A
-//! session can ask for the automatic palette again — `/theme auto` — long after the event
-//! stream has taken the input, and a second round trip then would be read by two readers at
-//! once: some of the reply would land in the prompt, and some of what the user typed would
-//! be eaten as though it were the reply. A terminal's background does not change under a
-//! running program often enough to be worth that.
 
 use crate::theme::theme_for_rgb;
 use crate::theme::Confidence;
@@ -23,37 +6,30 @@ use crate::theme::Detection;
 use crate::theme::Theme;
 use std::time::Duration;
 
-/// The query. `?` asks for the current value rather than setting one.
+/// The query.
 pub const QUERY: &[u8] = b"\x1b]11;?\x07";
 
-/// How long to wait for a reply. Plenty for a terminal that answers, and short enough that
-/// one that never will is not felt at startup.
+/// How long to wait for a reply.
 const TIMEOUT: Duration = Duration::from_millis(100);
 
-/// What a reply opens with. Anything that diverges from this is not ours.
+/// What a reply opens with.
 const INTRODUCER: &[u8] = b"\x1b]11;";
 
-/// Longest reply worth accumulating. The longest real one is around thirty bytes.
+/// Longest reply worth accumulating.
 const MAX_REPLY: usize = 64;
 
 /// How the bytes read so far relate to an OSC 11 reply.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Progress {
-    /// A prefix of a reply so far. Keep reading.
+    /// A prefix of a reply so far.
     Incomplete,
     /// A whole reply, and the background it named if that could be read.
     Complete(Option<(u8, u8, u8)>),
-    /// Not a reply. Whoever is reading must stop at once, because these bytes belong to
-    /// somebody else — most likely the user, typing.
+    /// Not a reply.
     Foreign,
 }
 
 /// The palette to open with, asking the terminal if that is what it takes to know.
-///
-/// `MICRO_THEME` still decides. A name on its own settles the question without a round trip;
-/// only the `light-theme/dark-theme` form, and having nothing set at all, need an answer
-/// from the terminal. A terminal that does not answer falls back to `COLORFGBG`, and then to
-/// dark, exactly as before.
 pub fn detect_theme() -> Theme {
     let setting = std::env::var("MICRO_THEME").ok();
     if !needs_terminal(setting.as_deref()) {
@@ -73,18 +49,11 @@ pub fn detect_theme() -> Theme {
 }
 
 /// What the terminal said its background was, asking it the first time and remembering.
-///
-/// Called again once the event stream is running, this hands back what was learned at
-/// startup rather than asking a second time, because by then the input belongs to somebody
-/// else.
 fn asked() -> Option<(u8, u8, u8)> {
     *ANSWER.get_or_init(|| query(TIMEOUT))
 }
 
-/// Ask the terminal now, while nothing else is reading, so that asking later is free.
-///
-/// Called once before the event stream is built. Doing it here rather than leaving it to
-/// the first caller is what makes `/theme auto` mid-session safe.
+
 pub fn prime() {
     let _ = asked();
 }
@@ -92,10 +61,6 @@ pub fn prime() {
 static ANSWER: std::sync::OnceLock<Option<(u8, u8, u8)>> = std::sync::OnceLock::new();
 
 /// Whether the terminal has to be asked at all.
-///
-/// A setting naming one theme answers the question by itself, and asking anyway would spend
-/// the timeout on an answer nothing would read. The `light-theme/dark-theme` form is the
-/// one that still needs to know, and so is having no setting.
 fn needs_terminal(setting: Option<&str>) -> bool {
     match setting.map(str::trim).filter(|value| !value.is_empty()) {
         Some(value) => value.contains('/'),
@@ -120,7 +85,7 @@ pub fn progress(buffer: &[u8]) -> Progress {
                 .ok()
                 .and_then(parse_background),
         ),
-        // A reply that never ends is a terminal answering something else, or nothing.
+        
         None if buffer.len() >= MAX_REPLY => Progress::Foreign,
         None => Progress::Incomplete,
     }
@@ -138,7 +103,7 @@ pub fn parse_background(payload: &str) -> Option<(u8, u8, u8)> {
     let value = payload.trim();
 
     if let Some(hex) = value.strip_prefix('#') {
-        // `#rrggbb`, or `#rrrrggggbbbb` at the width X11 reports.
+        
         let width = match hex.len() {
             6 => 2,
             12 => 4,
@@ -230,10 +195,6 @@ fn query(_timeout: Duration) -> Option<(u8, u8, u8)> {
 }
 
 /// The exchange itself, driven against a pipe standing in for a terminal.
-///
-/// The parsing is covered by the tests below without any of this; these cover the part that
-/// only shows up against a real descriptor — that the wait is bounded, and that a terminal
-/// which says nothing is given up on rather than waited out.
 #[cfg(all(test, unix))]
 mod exchange {
     use super::*;
@@ -394,8 +355,8 @@ mod tests {
         assert_eq!(feed(b"\x1b]11;nonsense\x07"), Progress::Complete(None));
     }
 
-    /// The reason the reply cannot reach the editor: anything that is not one is refused on
-    /// the byte that gives it away, so nothing further is taken from the stream.
+    /// The reason the reply cannot reach the editor: anything that is not one is refused on the
+    /// byte that gives it away.
     #[test]
     fn a_keystroke_is_recognised_as_somebody_elses_the_moment_it_diverges() {
         assert_eq!(progress(b"h"), Progress::Foreign);

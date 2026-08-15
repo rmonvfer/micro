@@ -1,13 +1,4 @@
 //! Remote control: handing a running session to a phone.
-//!
-//! A session on this machine can be watched and driven from a phone across the room or
-//! across the world. The phone reaches it through a relay, which routes frames it
-//! cannot read: everything between the two ends is sealed under a key derived from a
-//! secret they share and the relay never sees ([`crypto`]).
-//!
-//! This is the machine's half. It is built in rather than shipped as an extension
-//! because the extension host is someone else's code running beside micro, and the
-//! thing being handed over is the session itself.
 
 mod bridge;
 mod crypto;

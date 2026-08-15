@@ -1,5 +1,5 @@
-//! Radar charts, exercised through the public `render` entry point the way
-//! `tests/render.rs` exercises every other kind.
+//! Radar charts, exercised through the public `render` entry point the way `tests/render.rs`
+//! exercises every other kind.
 
 use micro_mermaid::{diagram_kind, render};
 
@@ -7,8 +7,8 @@ fn plain(src: &str) -> Vec<String> {
     render(src).expect("drawn").plain
 }
 
-/// Each axis is a row with every curve's value marked on a shared scale,
-/// and a legend names which glyph belongs to which curve.
+/// Each axis is a row with every curve's value marked on a shared scale, and a legend names which
+/// glyph belongs to which curve.
 #[test]
 fn each_axis_is_a_row_with_a_legend_naming_the_glyphs() {
     let src = "radar-beta\n\
@@ -33,8 +33,7 @@ fn each_axis_is_a_row_with_a_legend_naming_the_glyphs() {
     assert!(legend.contains('○') && legend.contains("Bob"), "{legend:?}");
 }
 
-/// An unparseable radar chart renders nothing, the same way an unparseable
-/// class diagram does.
+
 #[test]
 fn an_unparseable_radar_chart_renders_nothing() {
     let src = "radar-beta\n  axis a[\"A\"]";

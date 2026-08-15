@@ -13,16 +13,11 @@ use std::path::PathBuf;
 use std::process::Stdio;
 use std::time::Duration;
 
-/// The longest a command may be given, which is as long as a millisecond count fits in a
-/// signed 32-bit integer. There is no default: a command runs until it is done, the way
-/// it would in a terminal, and a caller that wants a limit says so.
+/// The longest a command may be given, which is as long as a millisecond count fits in a signed
+/// 32-bit integer.
 const MAX_TIMEOUT_MS: u64 = 2_147_483_647;
 
 /// The shell a command is run in.
-///
-/// A command written for an agent is written for bash, so bash is what runs it where
-/// there is one. `sh` is a last resort rather than the default: on a system where it is
-/// dash or ash, bash-only syntax fails in ways that read as the command being wrong.
 fn shell() -> PathBuf {
     if Path::new("/bin/bash").exists() {
         return PathBuf::from("/bin/bash");
@@ -41,7 +36,7 @@ fn on_path(name: &str) -> Option<PathBuf> {
         .find(|candidate| candidate.is_file())
 }
 
-/// How long the command may run, in milliseconds. Nothing asked for means no limit.
+/// How long the command may run, in milliseconds.
 fn timeout_for(arguments: &Value) -> Result<Option<u64>, String> {
     let Some(seconds) = arguments.get("timeout") else {
         return Ok(None);
@@ -112,9 +107,7 @@ impl Tool for Bash {
         let command = required_str(arguments, "command")?;
         let timeout_ms = timeout_for(arguments)?;
 
-        // The policy is applied by the kernel rather than by anything here: what the
-        // sandbox hands back is an argument list that confines whatever it runs, and the
-        // shell is spawned from that instead of directly.
+        
         let shell = shell();
         let wrapped = self.guard.sandbox().wrap(
             &shell.to_string_lossy(),
@@ -126,13 +119,12 @@ impl Tool for Bash {
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
-            // The child dies with the parent rather than outliving an aborted turn.
+            
             .kill_on_drop(true)
             .spawn()
             .map_err(|error| format!("cannot start command: {error}"))?;
 
-        // Read both streams as they arrive, so what the command has printed is known
-        // before it finishes rather than only after.
+        
         let mut child = child;
         let stdout = child.stdout.take();
         let stderr = child.stderr.take();
@@ -145,9 +137,7 @@ impl Tool for Bash {
                 use tokio::io::AsyncBufReadExt as _;
                 let mut out = tokio::io::BufReader::new(stdout.unwrap()).lines();
                 let mut err = tokio::io::BufReader::new(stderr.unwrap()).lines();
-                // One stream ending is not both. A command that prints only to stdout
-                // closes stderr straight away, so an ended stream is retired and the
-                // other keeps being read until it ends too.
+                
                 let (mut out_ended, mut err_ended) = (false, false);
                 while !(out_ended && err_ended) {
                     let line = tokio::select! {
@@ -189,7 +179,7 @@ impl Tool for Bash {
                     }
                 }
             }
-            // Nothing was asked for, so the command runs until it is done.
+            
             None => {
                 let (_, status) = waiting.await;
                 status.map_err(|error| format!("command failed: {error}"))?
@@ -210,17 +200,12 @@ impl Tool for Bash {
             None => format!("terminated by signal\n{body}"),
         };
 
-        // A command the kernel turned down reads as an ordinary failure unless it is said
-        // otherwise, and a model told only "exit code 1" retries the same command. Saying
-        // which policy stopped it is what lets the model do something else instead.
+        
         if !micro_sandbox::is_likely_denied(&status, &body) {
             return Err(failure);
         }
         if !confined {
-            // Nothing was confining this, so whatever refused it was not the sandbox.
-            // Worth a line in the ledger all the same: a run that looks like it is being
-            // stopped by a policy which is not in force is exactly what a reader would
-            // otherwise spend an afternoon on.
+            
             self.guard.record("exec", command, true);
             return Err(failure);
         }
@@ -245,8 +230,7 @@ mod tests {
         dir.canonicalize().unwrap()
     }
 
-    /// A shell with nothing confining it, which is what these tests are about: what a
-    /// policy does to a command is the `sandboxed` tests' business.
+    /// A shell with nothing confining it.
     fn unconfined(root: PathBuf) -> Bash {
         let guard = Guard::new(Sandbox::new(SandboxPolicy::Full, root.clone()));
         Bash::new(root, guard)
@@ -292,8 +276,8 @@ mod tests {
         assert!(error.contains("timed out"));
     }
 
-    /// A command that prints as it goes is reported as it goes, and each report carries
-    /// everything printed so far.
+    /// A command that prints as it goes is reported as it goes, and each report carries everything
+    /// printed so far.
     #[tokio::test]
     async fn a_running_command_says_what_it_has_printed() {
         let root = scratch("reporting");
@@ -315,7 +299,7 @@ mod tests {
 
         assert!(seen.len() >= 2, "it reported as it went: {seen:?}");
         assert!(seen[0].contains("first"));
-        // Each report is everything so far, not only the newest line.
+        
         assert!(seen.last().unwrap().contains("first"));
         assert!(seen.last().unwrap().contains("third"));
         assert!(
@@ -343,13 +327,6 @@ mod tests {
 }
 
 /// What the policy does to a command, run against the real thing.
-///
-/// macOS confines a command from the outside with a Seatbelt profile, so these spawn a
-/// command that genuinely is refused and check the tool says so in the terms the model
-/// needs: which policy, and what the command itself printed. Linux applies its rules from
-/// inside a helper process, which is micro's own binary re-invoked — there is no binary to
-/// re-invoke from a unit test, so the same ground is covered there by the integration
-/// tests that run the built program.
 #[cfg(all(test, target_os = "macos"))]
 mod sandboxed {
     use super::*;
@@ -422,8 +399,7 @@ mod sandboxed {
         );
     }
 
-    /// Under `read-only` even the workspace is off limits, and the refusal reads the same
-    /// way: a policy, by name, and what the command printed.
+    
     #[tokio::test]
     async fn read_only_refuses_a_write_to_the_workspace_itself() {
         let (_dir, workspace) = workspace("read-only");

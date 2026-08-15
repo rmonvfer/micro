@@ -1,7 +1,4 @@
 //! The contract between micro and the copy of itself that enforces the Linux sandbox.
-//!
-//! Derived from openai/codex codex-rs/linux-sandbox/src/linux_run_main.rs at commit
-//! a8c7f5391c; modified.
 
 use crate::WritableRoot;
 use serde::Deserialize;
@@ -9,43 +6,23 @@ use serde::Serialize;
 use std::path::PathBuf;
 
 /// The first argument that turns a micro process into the sandbox helper.
-///
-/// Linux has no way to confine a command from the outside the way `sandbox-exec` does, so
-/// the restrictions have to be applied by a process that then becomes the command. micro
-/// re-runs its own executable with this marker, that process applies the rules to itself
-/// and `execvp`s the command, and the command inherits them. Dispatching on the marker
-/// has to happen before anything else in `main`, ahead of argument parsing.
 pub const HELPER_ARG: &str = "__micro-sandbox-helper";
 
-/// The exit code the helper uses when it could not run the command at all — the sandbox
-/// would not apply, or the arguments made no sense. It is distinct from anything the
-/// command itself could return, so a caller can tell "micro failed" from "the command
-/// failed".
+/// The exit code the helper uses when it could not run the command at all.
 pub const HELPER_FAILURE_EXIT_CODE: i32 = 125;
 
 /// What the helper is asked to enforce.
-///
-/// The rules are worked out by the parent, where the policy and the workspace are known,
-/// and handed over whole. The helper resolves nothing itself, so what it enforces is
-/// exactly what [`crate::Sandbox`] decided.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SandboxRules {
     pub writable_roots: Vec<WritableRoot>,
     pub allow_network: bool,
-    /// `None` keeps the command sandbox's normal read-anywhere behavior. `Some` is a
-    /// fail-closed allowlist used for extension processes.
+    /// `None` keeps the command sandbox's normal read-anywhere behavior.
     pub readable_roots: Option<Vec<PathBuf>>,
-    /// Empty means any executable. A non-empty list limits `process-exec` on macOS;
-    /// Landlock applies the same limit through execute access on Linux.
+    /// Empty means any executable.
     pub allowed_executables: Vec<PathBuf>,
 }
 
 /// Apply the sandbox to this process and become the command it was given.
-///
-/// `args` is everything after [`HELPER_ARG`], in the shape
-/// `--rules <json> -- <program> <argument>...`. This never returns: on success the
-/// process is replaced by the command, and on failure it exits with
-/// [`HELPER_FAILURE_EXIT_CODE`].
 pub fn run_linux_helper<I: IntoIterator<Item = String>>(args: I) -> ! {
     match parse(args) {
         Ok(invocation) => enforce_and_exec(invocation),

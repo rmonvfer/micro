@@ -1,39 +1,11 @@
 //! Turning a tool's [`ConstrainedSampling`] request into what a provider is actually sent.
-//!
-//! A tool asks for JSON-schema constrained sampling with `"prefer"` or `"require"`; a
-//! provider that can honor it does, and one that cannot either falls back to ordinary
-//! sampling (`"prefer"`) or refuses to offer the tool at all (`"require"`).
-//!
-//! Every provider decides for itself, per model, whether it can honor a strict request —
-//! there is no one flag this reads, because pi does not have one either: OpenAI's family
-//! defaults to yes, Anthropic's Messages API and Bedrock's Converse API both default to no
-//! but are gated by their own distinct `Compat` fields, and Gemini is not gated by a
-//! `Compat` field at all — it is read off the model id (Gemini 3 and later). Four
-//! providers, four mechanisms; collapsing any two of them into one flag because they
-//! happen to share a default today is exactly the kind of thing that goes silently wrong
-//! the day one of them changes.
-//!
-//! Two things this module resolves correctly but that never fire against real traffic
-//! today, both for the same reason: nothing in the bundled catalog ever turns them on, and
-//! neither does pi's own catalog generator.
-//! - **Grammar constrained sampling** — a distinct request from JSON-schema sampling, one
-//!   string argument held inside a provider-specific grammar rather than a JSON Schema —
-//!   is not resolved here at all: no provider in this crate speaks the OpenAI Responses API
-//!   grammar-tool protocol it needs, so [`resolve_json_schema_strict_sampling`] reads a
-//!   `Grammar` config the same way it reads none at all.
-//! - **Bedrock's strict tools** (`Compat::bedrock_supports_strict_tools`) — the consumer in
-//!   `bedrock.rs` is real and tested, but the flag defaults false and nothing infers it
-//!   true for any model, matching pi's own catalog generator having a rule for OpenAI and
-//!   Anthropic but none for Bedrock. It activates only behind a manual catalog override,
-//!   which nobody, including pi, ships yet.
 
 use micro_types::ConstrainedSampling;
 use micro_types::JsonSchemaStrictness;
 use micro_types::ToolDefinition;
 use serde_json::Value;
 
-/// JSON Schema keywords a strict schema cannot express, because they describe a shape a
-/// provider's strict decoder cannot hold to while it samples.
+/// JSON Schema keywords a strict schema cannot express.
 const UNSUPPORTED_STRICT_SCHEMA_KEYS: &[&str] = &[
     "$ref",
     "$defs",
@@ -98,11 +70,7 @@ fn schema_allows_null(schema: &Value) -> bool {
     false
 }
 
-/// Rewrite one schema node, in place, into the strict subset a provider's constrained
-/// decoder accepts: every property required (optional ones made nullable instead), no
-/// unlisted properties, and none of the keywords in [`UNSUPPORTED_STRICT_SCHEMA_KEYS`].
-///
-/// `Err` names the keyword or shape that could not be carried into that subset.
+
 fn make_node_strict(schema: &mut Value) -> Result<(), String> {
     let Some(object) = schema.as_object_mut() else {
         return Err("boolean schemas are unsupported".to_string());
@@ -196,8 +164,7 @@ fn make_node_strict(schema: &mut Value) -> Result<(), String> {
     Ok(())
 }
 
-/// Convert a tool's parameter schema to the strict subset a provider's constrained decoder
-/// accepts, without touching the schema a caller still holds.
+
 pub fn make_strict_json_schema(schema: &Value) -> Result<Value, String> {
     let mut cloned = schema.clone();
     if !cloned.is_object() {
@@ -210,16 +177,8 @@ pub fn make_strict_json_schema(schema: &Value) -> Result<Value, String> {
     Ok(cloned)
 }
 
-/// Whether a tool's call should be requested under strict JSON-schema sampling, and what to
-/// do when it cannot be.
-///
-/// `Ok(None)` covers everything that leaves ordinary sampling untouched: the tool asked for
-/// nothing, asked for grammar sampling instead, asked for `"prefer"` on a provider or a
-/// schema that cannot honor it, or the provider does not support strict sampling at all and
-/// the tool only asked to prefer it. `Ok(Some(true))` is the one case that changes the
-/// request: the provider supports strict sampling and the schema can be made strict. `Err`
-/// is reserved for `"require"` failing outright — the caller asked for a guarantee this
-/// tool cannot be offered without.
+/// Whether a tool's call should be requested under strict JSON-schema sampling, and what to do when
+/// it cannot be.
 pub fn resolve_json_schema_strict_sampling(
     tool: &ToolDefinition,
     supports_strict_mode: bool,
@@ -250,9 +209,7 @@ pub fn resolve_json_schema_strict_sampling(
     }
 }
 
-/// The parameter schema to send for a tool, given what [`resolve_json_schema_strict_sampling`]
-/// decided: the strict rewrite when it resolved to `true`, the schema exactly as the tool
-/// wrote it otherwise.
+
 pub fn json_schema_tool_parameters(
     tool: &ToolDefinition,
     strict: Option<bool>,
@@ -306,13 +263,12 @@ mod tests {
             std::collections::BTreeSet::from(["pattern", "limit"]),
             "every property becomes required, in whatever order the schema holds them"
         );
-        // The property that was not required is wrapped so it can be sent as `null`
-        // instead, since strict mode requires every property to appear.
+        
         assert_eq!(
             strict["properties"]["limit"],
             json!({ "anyOf": [{ "type": "number" }, { "type": "null" }] })
         );
-        // A property that was already required is left exactly as it was.
+        
         assert_eq!(strict["properties"]["pattern"], json!({ "type": "string" }));
     }
 
@@ -379,8 +335,8 @@ mod tests {
         assert_eq!(resolve_json_schema_strict_sampling(&plain, true), Ok(None));
     }
 
-    /// A grammar request is a different mechanism than JSON-schema strict sampling, and is
-    /// resolved by nothing in this crate — read the same as no request at all here.
+    /// A grammar request is a different mechanism than JSON-schema strict sampling, and is resolved
+    /// by nothing in this crate.
     #[test]
     fn a_grammar_config_leaves_json_schema_sampling_untouched() {
         let schema = json!({ "type": "object", "properties": {} });

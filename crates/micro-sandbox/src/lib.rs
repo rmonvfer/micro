@@ -1,49 +1,4 @@
 //! OS-level confinement for the commands micro runs on the model's behalf.
-//!
-//! One policy, two enforcers. A command that micro spawns is wrapped in the platform
-//! sandbox — a Seatbelt profile on macOS, Landlock and seccomp on Linux — so the kernel
-//! decides what it may touch. The file tools do not spawn anything, so they ask
-//! [`Sandbox::check_read`] and [`Sandbox::check_write`] about the same policy before they
-//! open a path. The two answers are meant to agree; the kernel is what makes the first
-//! one binding. They can differ in one place: Landlock can only rule on a path that
-//! exists, so a protected directory that has not been created yet — a workspace with no
-//! `.git` in it — is refused in process but not by the Linux kernel rules. Seatbelt takes
-//! the path as a string and has no such gap.
-//!
-//! Nothing here spawns a process. [`Sandbox::wrap`] describes a command — the program to
-//! run, the arguments to run it with, the environment to add — and the caller owns
-//! spawning it, pumping its output, and timing it out:
-//!
-//! ```no_run
-//! # use micro_sandbox::Sandbox;
-//! # use micro_sandbox::SandboxPolicy;
-//! # use std::path::Path;
-//! let sandbox = Sandbox::new(SandboxPolicy::workspace_write(), "/work");
-//! let wrapped = sandbox.wrap("/bin/bash", ["-c", "ls"], Path::new("/work"));
-//! let command = wrapped.to_std_command();
-//! ```
-//!
-//! `tokio::process::Command` converts from that, so an async caller adds its stdio and
-//! spawns.
-//!
-//! On a platform micro cannot confine, and under [`SandboxPolicy::Full`], `wrap` hands
-//! back the command as it was given and [`Sandbox::is_enforced`] is false. A caller that
-//! must not run unconfined checks that before spawning.
-//!
-//! # The Linux helper
-//!
-//! macOS can confine a command from the outside; Linux cannot. The restrictions have to
-//! be applied by a process that then becomes the command, so on Linux the wrapped program
-//! is micro's own executable, re-run with [`HELPER_ARG`] as its first argument:
-//!
-//! ```text
-//! /path/to/micro __micro-sandbox-helper --rules <json> -- /bin/bash -c ls
-//! ```
-//!
-//! The binary that hosts this crate is responsible for spotting that first argument at
-//! the top of `main`, before it parses anything else, and handing the rest to
-//! [`run_linux_helper`], which never returns. A binary that does not do this leaves the
-//! sandbox unenforced on Linux.
 
 mod denial;
 mod helper;
@@ -67,8 +22,7 @@ pub use policy::PROTECTED_NAMES;
 use std::path::Path;
 use std::path::PathBuf;
 
-/// The environment variable a confined command can read to learn it is confined, and by
-/// what.
+/// The environment variable a confined command can read to learn it is confined, and by what.
 pub const SANDBOX_ENV_VAR: &str = "MICRO_SANDBOX";
 
 /// The policy in force for a workspace, and the answers that follow from it.
@@ -82,8 +36,8 @@ pub struct Sandbox {
     allowed_executables: Vec<PathBuf>,
 }
 
-/// A command described so the caller can spawn it: what to run, where, and what to add to
-/// its environment.
+/// A command described so the caller can spawn it: what to run, where, and what to add to its
+/// environment.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WrappedCommand {
     pub program: PathBuf,
@@ -91,8 +45,7 @@ pub struct WrappedCommand {
     pub cwd: PathBuf,
     pub env: Vec<(String, String)>,
 
-    /// Whether this argument list actually confines the command. False when the policy
-    /// asks for nothing, and on a platform micro cannot confine.
+    /// Whether this argument list actually confines the command.
     pub enforced: bool,
 }
 
@@ -109,9 +62,7 @@ impl WrappedCommand {
         }
     }
 
-    /// The same command as a [`std::process::Command`], which
-    /// [`tokio::process::Command`](https://docs.rs/tokio/latest/tokio/process/struct.Command.html)
-    /// converts from. Stdio, timeouts and process groups stay the caller's business.
+    /// The same command as a [`std::process::Command`].
     pub fn to_std_command(&self) -> std::process::Command {
         let mut command = std::process::Command::new(&self.program);
         command.args(&self.args).current_dir(&self.cwd);
@@ -149,9 +100,6 @@ impl Decision {
 
 impl Sandbox {
     /// A sandbox enforcing `policy` around `workspace`.
-    ///
-    /// The workspace is resolved through symlinks once, here, so every later comparison
-    /// is against the path the kernel sees.
     pub fn new(policy: SandboxPolicy, workspace: impl Into<PathBuf>) -> Self {
         let workspace = workspace.into();
         let workspace = paths::canonicalize_deepest_existing(&workspace);
@@ -166,11 +114,6 @@ impl Sandbox {
     }
 
     /// A fail-closed process sandbox for an extension runtime.
-    ///
-    /// Unlike the command sandbox, this grants no ambient filesystem reads. The runtime
-    /// can read only its own executable, the supplied extension/host roots, and the small
-    /// set of operating-system files required to start. It cannot write or use the
-    /// network. Callers must still check [`Sandbox::is_enforced`] before spawning.
     pub fn extension_host<I, P>(runtime: impl Into<PathBuf>, readable_roots: I) -> Self
     where
         I: IntoIterator<Item = P>,
@@ -197,12 +140,7 @@ impl Sandbox {
         sandbox
     }
 
-    /// Protect one of micro's own directories, so a command confined to a workspace that
-    /// contains it cannot rewrite the configuration, credentials or session history that
-    /// decide what the next run is allowed to do.
-    ///
-    /// Called once per directory: micro keeps what the user wrote apart from what it
-    /// produced, and both are worth the same protection.
+    /// Protect one of micro's own directories.
     pub fn with_micro_home(mut self, micro_home: impl Into<PathBuf>) -> Self {
         let micro_home = paths::canonicalize_deepest_existing(&micro_home.into());
         if !self.micro_homes.contains(&micro_home) {
@@ -211,9 +149,7 @@ impl Sandbox {
         self
     }
 
-    /// Run the Linux helper from this executable rather than the current one. The current
-    /// executable is the right answer whenever micro spawns micro; a test harness or a
-    /// wrapper binary says so here.
+    
     pub fn with_helper_program(mut self, program: impl Into<PathBuf>) -> Self {
         self.helper_program = Some(program.into());
         self
@@ -228,9 +164,6 @@ impl Sandbox {
     }
 
     /// Whether commands wrapped by this sandbox are actually confined.
-    ///
-    /// False under [`SandboxPolicy::Full`], on a platform without an enforcement
-    /// mechanism micro speaks, and on Linux when the helper cannot be located.
     pub fn is_enforced(&self) -> bool {
         if self.policy.allows_all_writes() {
             return false;
@@ -241,11 +174,8 @@ impl Sandbox {
         cfg!(target_os = "linux") && self.helper_program.is_some()
     }
 
-    /// The directories this policy makes writable, each with the paths inside it that
-    /// stay read-only.
-    ///
-    /// Protected paths are listed whether or not they exist: creating a `.git` is as much
-    /// a way to change what the next run does as editing one.
+    /// The directories this policy makes writable, each with the paths inside it that stay read-
+    /// only.
     pub fn writable_roots(&self) -> Vec<WritableRoot> {
         match &self.policy {
             SandboxPolicy::Full => {
@@ -285,8 +215,7 @@ impl Sandbox {
             .collect()
     }
 
-    /// The rules the Linux helper is handed: the same decisions as everything else here,
-    /// in the form that survives the trip to another process.
+    
     pub fn rules(&self) -> SandboxRules {
         SandboxRules {
             writable_roots: self.writable_roots(),
@@ -296,11 +225,7 @@ impl Sandbox {
         }
     }
 
-    /// Describe `program` and `args` as a command confined by this policy, to be run in
-    /// `cwd`.
-    ///
-    /// `cwd` is where the command runs; it grants nothing. A command that runs somewhere
-    /// outside the workspace still writes only where the policy says it may.
+    /// Describe `program` and `args` as a command confined by this policy, to be run in `cwd`.
     pub fn wrap<I, S>(&self, program: &str, args: I, cwd: &Path) -> WrappedCommand
     where
         I: IntoIterator<Item = S>,
@@ -354,9 +279,6 @@ impl Sandbox {
     }
 
     /// Whether `path` may be read.
-    ///
-    /// Every policy grants full read access, so this always allows. It is the seam the
-    /// file tools ask, so that reads and writes are decided in one place rather than two.
     pub fn check_read(&self, path: &Path) -> Decision {
         let resolved = paths::resolve(&self.workspace, path);
         Decision::allow(format!(
@@ -367,9 +289,6 @@ impl Sandbox {
     }
 
     /// Whether `path` may be written to, created, or removed.
-    ///
-    /// The path is resolved through symlinks first, so a link inside the workspace
-    /// pointing somewhere else is judged by where it points.
     pub fn check_write(&self, path: &Path) -> Decision {
         let resolved = paths::resolve(&self.workspace, path);
         let shown = resolved.display();

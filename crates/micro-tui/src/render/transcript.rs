@@ -1,14 +1,4 @@
 //! The scrollback, laid out as display lines.
-//!
-//! Everything is wrapped to the region's width here rather than by a widget, so the number
-//! of lines produced is exactly the number the frame has to find room for. Alongside the
-//! lines it reports where each entry begins, which is what lets a whole entry be handed to
-//! the terminal's own scrollback without cutting one in half.
-//!
-//! One kind of message is separated from another by the color of the ground it sits on
-//! rather than by a glyph in front of it: a prompt and a tool result each get a band of
-//! background, and an answer gets none, which is what makes the answer the thing on the
-//! page. [`band`] is that shape, and both callers go through it.
 
 use crate::markdown;
 use crate::render::tool;
@@ -30,8 +20,7 @@ pub struct Display {
     pub show_thinking: bool,
     /// Entry index the reader has selected, if any.
     pub focus: Option<usize>,
-    /// First entry to draw. Everything before it has already gone to the terminal's own
-    /// scrollback and must not be drawn a second time.
+    /// First entry to draw.
     pub from: usize,
     /// Whether this terminal can make text clickable.
     pub hyperlinks: bool,
@@ -43,10 +32,7 @@ pub struct Display {
     pub mermaid: crate::commands::Mermaid,
     /// Whether an image wider than the room it has is shrunk to fit.
     pub resize_images: bool,
-    /// What a folded reasoning block collapses to. `setHiddenThinkingLabel` is the only
-    /// thing that ever makes this anything but the built-in `"Thinking..."`, which is why
-    /// it travels as a `Cow` rather than the `&'static str` every other built-in label on
-    /// screen gets away with.
+    /// What a folded reasoning block collapses to.
     pub hidden_thinking_label: Cow<'static, str>,
 }
 
@@ -54,15 +40,14 @@ pub struct Display {
 #[derive(Debug, Clone, Default)]
 pub struct Rendered {
     pub lines: Vec<Line<'static>>,
-    /// Every link the transcript drew, for the frame to make clickable once the lines have
-    /// been placed and their columns are settled.
+    /// Every link the transcript drew, for the frame to make clickable once the lines have been
+    /// placed and their columns are settled.
     pub links: crate::render::links::Links,
     /// Every image it reserved room for, drawn once the rows are placed.
     pub pictures: crate::render::pictures::Pictures,
 }
 
 /// Render the transcript into display lines, from [`Display::from`] onward.
-/// Draw a conversation from nothing, which is what a caller with no rows to keep wants.
 #[cfg(test)]
 pub fn lines(transcript: &Transcript, theme: &Theme, display: &Display) -> Rendered {
     let mut rendered = Rendered {
@@ -79,13 +64,6 @@ pub fn lines(transcript: &Transcript, theme: &Theme, display: &Display) -> Rende
 }
 
 /// Draw the entries from `display.from` onward, adding them to what is already there.
-///
-/// Rows for the entries before that are left exactly as they were, which is what makes a
-/// long conversation cost no more to keep on screen than a short one: a turn writes to its
-/// own entry, so only that entry is drawn again.
-///
-/// `starts` grows by one row offset per entry drawn, so the caller can find where an entry
-/// begins when it has to be drawn again.
 pub fn append(
     transcript: &Transcript,
     theme: &Theme,
@@ -102,9 +80,7 @@ pub fn append(
     for (index, entry) in entries.iter().enumerate().skip(from) {
         starts.push(out.len());
         let before = out.len();
-        // An entry keeps the blank row above it whether the entry before it is on screen or
-        // in the scrollback, so a block reads the same either way. A tool's band supplies
-        // that row itself when it immediately follows a thinking-only assistant entry.
+        
         let thinking_leads_into_tool = assistant_leads_into_tool(entries, index);
         let assistant_precedes_tool = assistant_precedes_tool(entries, index);
         if (!out.is_empty() || index > 0) && !thinking_leads_into_tool {
@@ -125,8 +101,7 @@ pub fn append(
                     display,
                     !assistant_precedes_tool,
                 );
-                // An answer arriving is marked by the spinner in the status rows, not by a
-                // block on the text. No cursor is drawn into the transcript.
+                
                 push_markdown(
                     &mut out,
                     &assistant.text,
@@ -155,8 +130,7 @@ pub fn append(
             Entry::Notice { text, level } => push_notice(&mut out, text, *level, theme, display),
         }
 
-        // A banded entry carries its own inset inside the tint; everything else is pushed in
-        // by the same column so text lines up whether or not it sits on coloured ground.
+        
         for line in out.iter_mut().skip(start) {
             let banded = line
                 .spans
@@ -167,15 +141,14 @@ pub fn append(
             }
         }
 
-        // An entry that drew nothing takes no room, and leaves no gap behind it either.
+        
         if out.len() == start {
             out.truncate(before);
         }
     }
 }
 
-/// A thinking-only assistant entry ends directly above the top row of the following tool's
-/// band. The band supplies its own top padding, so neither side adds another blank row.
+/// A thinking-only assistant entry ends directly above the top row of the following tool's band.
 fn assistant_precedes_tool(entries: &[Entry], index: usize) -> bool {
     matches!(entries.get(index + 1), Some(Entry::Tool(_)))
         && matches!(
@@ -189,12 +162,7 @@ fn assistant_leads_into_tool(entries: &[Entry], index: usize) -> bool {
     assistant_precedes_tool(entries, index.saturating_sub(1))
 }
 
-/// Wrap `rows` in the box drawn around a message: a blank row above and below, and every
-/// row tinted across the full width so the block reads as one card.
-///
-/// The transcript is already drawn a column in from each edge, and that column is the inset
-/// the box applies to its own contents, so the rows go in without further padding and land
-/// in the column they belong in.
+
 pub(super) fn band(
     rows: Vec<Line<'static>>,
     width: usize,
@@ -210,7 +178,7 @@ pub(super) fn band(
 /// Columns of ground either side of a message's text, inside its own band.
 pub(super) const PADDING: usize = 1;
 
-/// Push a row in from the left edge, so text sits inside the band rather than against it.
+
 fn indented(line: Line<'static>) -> Line<'static> {
     match line.spans.is_empty() {
         true => line,
@@ -222,8 +190,7 @@ fn indented(line: Line<'static>) -> Line<'static> {
     }
 }
 
-/// A prompt sits in a band of its own color, which is how it is marked: no glyph in front
-/// of it and no author beside it, just the ground it is written on.
+/// A prompt sits in a band of its own color.
 fn push_user(out: &mut Vec<Line<'static>>, text: &str, theme: &Theme, display: &Display) {
     if text.trim().is_empty() {
         return;
@@ -238,11 +205,6 @@ fn push_user(out: &mut Vec<Line<'static>>, text: &str, theme: &Theme, display: &
 }
 
 /// A command the user ran themselves, written the way they typed it.
-///
-/// A shared one is banded like anything else the user said, because that is what it is:
-/// the model is being told. One kept back is dim and unbanded, so that at a glance the
-/// conversation shows which of the two it was — the difference is invisible otherwise, and
-/// it decides what the model knows.
 fn push_bash(
     out: &mut Vec<Line<'static>>,
     command: &str,
@@ -273,7 +235,7 @@ fn push_bash(
     }
 }
 
-/// Reasoning is background information: folded behind a label unless asked for.
+
 fn push_thinking(
     out: &mut Vec<Line<'static>>,
     thinking: &str,
@@ -284,8 +246,7 @@ fn push_thinking(
     if thinking.trim().is_empty() {
         return;
     }
-    // Reasoning is italic body text in `thinkingText`, carrying no glyph of its own — it is
-    // marked out by being italic and dim.
+    
     let style = theme.thinking();
 
     if display.show_thinking {
@@ -299,8 +260,7 @@ fn push_thinking(
         return;
     }
 
-    // Hidden, a whole run collapses to one fixed label rather than the latest line. A live
-    // tail reads as content the model produced; a label reads as what it is, a fold.
+    
     out.push(Line::from(vec![Span::styled(
         display.hidden_thinking_label.clone().into_owned(),
         style,
@@ -311,10 +271,6 @@ fn push_thinking(
 }
 
 /// An image, given the rows it needs and drawn into them by the terminal.
-///
-/// The rows are held empty here; the escape that fills them goes on after layout, since it
-/// occupies no columns and cannot be measured as text. A terminal that cannot draw images
-/// gets a description instead, which is at least honest about what was attached.
 fn push_image(
     out: &mut Vec<Line<'static>>,
     data: &str,
@@ -337,10 +293,6 @@ fn push_image(
 }
 
 /// A stretch of conversation replaced by a summary, drawn as a labelled card.
-///
-/// Folded it says only what it stands for and how to open it; opened it shows the summary
-/// the model wrote. Either way it sits in its own tint, because it is neither a prompt nor
-/// an answer — it is the conversation reporting on itself.
 fn push_compaction(
     out: &mut Vec<Line<'static>>,
     summary: &str,
@@ -378,9 +330,6 @@ fn push_compaction(
 }
 
 /// Roughly how much the summarized stretch was worth, from what stands in for it.
-///
-/// The real figure belongs to the compactor and never reaches the interface, so this says
-/// what it can honestly say: the size of the summary itself.
 fn approximate_tokens(summary: &str) -> String {
     let tokens = summary.chars().count() / 4;
     match tokens {
@@ -397,14 +346,12 @@ fn push_markdown(
     links: &mut crate::render::links::Links,
     pictures: &mut crate::render::pictures::Pictures,
 ) {
-    // A response almost always ends with a newline, and the empty row that would produce
-    // reads as a gap the model asked for rather than punctuation.
+    
     let text = text.trim_end_matches('\n');
     if text.is_empty() {
         return;
     }
-    // An answer is written straight onto the terminal's own ground. A fenced block is
-    // marked by its fences and by the color of its text, not by a fill behind it.
+    
     for block in markdown::render_linked(text, theme, display.width, links, display.mermaid) {
         if let Some(image) = block.image {
             if let Some(rows) = pictures.reserve(&image, display.width) {
@@ -425,8 +372,7 @@ fn push_notice(
     theme: &Theme,
     display: &Display,
 ) {
-    // No glyph. A notice is coloured text at the same inset as everything else, and a
-    // severity worth naming names itself in words rather than in a symbol.
+    
     let (color, prefix) = match level {
         NoticeLevel::Info => (theme.dim, ""),
         NoticeLevel::Warning => (theme.warning, "Warning: "),
@@ -436,9 +382,7 @@ fn push_notice(
         true => text.to_string(),
         false => format!("{prefix}{text}"),
     };
-    // Wrapped line by line, because the text arrives with its own breaks in it: `/help`
-    // is a command per row, and wrapping the whole of it at once runs them all together
-    // into one paragraph.
+    
     for line in body.split('\n') {
         match line.is_empty() {
             true => out.push(Line::default()),
@@ -452,9 +396,6 @@ fn push_notice(
 }
 
 /// Something an extension drew, on the band a custom message sits in.
-///
-/// What it says is the extension's; the label, the tint and the inset are micro's, so one
-/// extension's output cannot be mistaken for the model's or for another extension's.
 fn push_custom(
     out: &mut Vec<Line<'static>>,
     label: &str,
@@ -513,8 +454,8 @@ mod tests {
                     .iter()
                     .map(|span| span.content.as_ref())
                     .collect::<String>()
-                    // The band's own padding column is not content; dropping exactly it
-                    // keeps every assertion about relative indentation honest.
+                    
+                    
                     .strip_prefix(' ')
                     .unwrap_or_default()
                     .trim_end()
@@ -610,7 +551,7 @@ mod tests {
                 arguments: json!({ "path": "." }),
             });
         }
-        // Each result is a three-row band, with one blank row between the two.
+        
         assert_eq!(rendered(&transcript, &display(40)).len(), 7);
     }
 
@@ -626,12 +567,11 @@ mod tests {
         });
 
         let out = lines(&transcript, &Theme::dark(), &display(40));
-        // Three rows to a band, one blank row between them.
+        
         assert_eq!(out.lines.len(), 11);
     }
 
-    /// Hidden reasoning collapses to a fixed label, not to whatever the model most recently
-    /// said. A live tail reads as content; a label reads as a fold.
+    /// Hidden reasoning collapses to a fixed label, not to whatever the model most recently said.
     #[test]
     fn a_compaction_is_labelled_and_folded_until_asked_for() {
         let mut transcript = Transcript::new();
@@ -650,9 +590,7 @@ mod tests {
         assert!(opened.iter().any(|line| line.contains("what came before")));
     }
 
-    /// A summary is recognised by its wrapper, so it is never drawn as a prompt the user
-    /// typed — which is what it would look like otherwise, since it arrives as a user
-    /// message.
+    /// A summary is recognised by its wrapper.
     #[test]
     fn a_summary_message_is_not_shown_as_a_prompt() {
         let transcript = Transcript::from_messages(&[micro_context::summary_message("gist")]);
@@ -761,7 +699,7 @@ mod tests {
         for width in 4..60 {
             for line in lines(&transcript, &Theme::dark(), &display(width)).lines {
                 let drawn: usize = line.spans.iter().map(|s| text_width(&s.content)).sum();
-                // A row is the content plus the column of ground either side of it.
+                
                 let frame = width + PADDING * 2;
                 assert!(drawn <= frame, "row of {drawn} exceeds {frame}");
             }
@@ -774,8 +712,8 @@ mod tests {
         assert!(out.lines.is_empty());
     }
 
-    /// What an extension drew is banded and labelled, so it cannot be mistaken for the
-    /// model's own words.
+    /// What an extension drew is banded and labelled, so it cannot be mistaken for the model's own
+    /// words.
     #[test]
     fn something_an_extension_drew_is_labelled_and_banded() {
         let mut transcript = Transcript::new();

@@ -1,9 +1,4 @@
 //! The pairing: what the machine and one phone share, and how the phone is told it.
-//!
-//! Pairing happens once. The secret is written to disk under the user's own directory
-//! and reused for every session afterwards, so a phone that has been paired stays
-//! paired across restarts — and a machine that has never been paired is the only one
-//! that ever shows a code.
 
 use base64::engine::general_purpose::STANDARD;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
@@ -27,7 +22,7 @@ pub struct Pairing {
     pub relay_url: String,
     #[serde(rename = "pairingId")]
     pub pairing_id: String,
-    /// The shared secret, base64. Every key either end uses is derived from it.
+    /// The shared secret, base64.
     #[serde(rename = "secretB64")]
     pub secret_b64: String,
     #[serde(rename = "machineName")]
@@ -41,9 +36,6 @@ impl Pairing {
     }
 
     /// The link that pairs a phone with this machine.
-    ///
-    /// The secret travels in the link, so the link is the secret: it is shown once, on
-    /// the machine's own screen, and is worth no less care than the session it opens.
     pub fn uri(&self) -> String {
         let relay = urlencode(&self.relay_url);
         let secret = self
@@ -58,20 +50,12 @@ impl Pairing {
 }
 
 /// Reads the pairing already made, if there is one.
-///
-/// A file that cannot be read or does not parse is treated as no pairing at all: the
-/// next attempt makes a new one, which is recoverable, where refusing to start is not.
 pub fn load(path: &Path) -> Option<Pairing> {
     let raw = std::fs::read_to_string(path).ok()?;
     serde_json::from_str(&raw).ok()
 }
 
 /// Makes a pairing and writes it down.
-///
-/// The file holds a secret, so it is written readable only by its owner. The mode is
-/// set again after writing because a mode given at creation does nothing when the file
-/// is already there, and a pairing rewritten into a world-readable file would be a
-/// secret published quietly.
 pub fn create(path: &Path, relay_url: &str) -> std::io::Result<Pairing> {
     let mut id = [0u8; 16];
     let mut secret = [0u8; 32];
@@ -95,9 +79,6 @@ pub fn create(path: &Path, relay_url: &str) -> std::io::Result<Pairing> {
 }
 
 /// Writes a pairing the two ends have already agreed on.
-///
-/// Separate from [`create`], which invents a secret: here the secret was arrived at by
-/// both ends independently, and this only records it.
 pub fn write(
     path: &Path,
     relay_url: &str,
@@ -137,10 +118,6 @@ fn restrict(_path: &Path) -> std::io::Result<()> {
 }
 
 /// What to call this machine on the phone's screen.
-///
-/// The name is a convenience rather than an identity — it is shown beside a session so
-/// someone with two machines paired can tell them apart — so a system that will not say
-/// gets a placeholder rather than an error.
 fn machine_name() -> String {
     std::process::Command::new("hostname")
         .output()
@@ -166,9 +143,6 @@ fn urlencode(value: &str) -> String {
 }
 
 /// The pairing link as a QR code, one string per row.
-///
-/// Two rows of the code are drawn per line of text using half-block characters, which
-/// is what keeps a code that a phone can actually focus on inside a terminal window.
 pub fn qr_lines(uri: &str) -> Vec<String> {
     let Ok(code) = qrcode::QrCode::new(uri.as_bytes()) else {
         return Vec::new();
@@ -176,9 +150,7 @@ pub fn qr_lines(uri: &str) -> Vec<String> {
     let width = code.width();
     let modules = code.to_colors();
 
-    // A quiet border is part of the code rather than decoration: a scanner needs it to
-    // find the edges at all. The grid is built with the border already in it, so the
-    // drawing below never has to reason about which cells are inside the code.
+    
     let quiet = 2;
     let side = width + quiet * 2;
     let mut grid = vec![false; side * side];
@@ -188,8 +160,7 @@ pub fn qr_lines(uri: &str) -> Vec<String> {
         }
     }
 
-    // Two rows of the code share one line of text, so a code stays roughly square in a
-    // terminal whose cells are twice as tall as they are wide.
+    
     (0..side)
         .step_by(2)
         .map(|y| {
@@ -197,8 +168,7 @@ pub fn qr_lines(uri: &str) -> Vec<String> {
                 .map(|x| {
                     let top = grid[y * side + x];
                     let bottom = y + 1 < side && grid[(y + 1) * side + x];
-                    // Drawn light-on-dark: a dark module is where the block is absent,
-                    // which is what makes the terminal's own background the quiet zone.
+                    
                     match (top, bottom) {
                         (true, true) => ' ',
                         (true, false) => '▄',
@@ -267,7 +237,7 @@ mod tests {
         assert_eq!(load(&path_in(&dir)), None);
     }
 
-    /// A file edited into nonsense is no pairing rather than a reason not to start.
+    
     #[test]
     fn an_unreadable_pairing_is_no_pairing() {
         let dir = scratch("garbage");
@@ -303,8 +273,7 @@ mod tests {
         assert!(uri.starts_with("parley://pair?"));
         assert!(uri.contains("u=http%3A%2F%2Flocalhost%3A8090"));
         assert!(uri.contains("p=abc123"));
-        // The secret travels url-safe and unpadded, which is the spelling the phone
-        // decodes; standard base64's `+`, `/` and `=` would not survive a query string.
+        
         assert!(uri.contains(&format!("s={}", URL_SAFE_NO_PAD.encode([1u8; 32]))));
     }
 
@@ -312,10 +281,10 @@ mod tests {
     fn a_code_is_drawn_with_a_quiet_border_around_it() {
         let lines = qr_lines("parley://pair?u=http%3A%2F%2Flocalhost%3A8090&p=abc&s=xyz");
         assert!(!lines.is_empty());
-        // Every row is the same width, or the code is not square on screen.
+        
         let width = lines[0].chars().count();
         assert!(lines.iter().all(|line| line.chars().count() == width));
-        // The first row is entirely quiet zone.
+        
         assert!(lines[0].chars().all(|character| character == '█'));
     }
 

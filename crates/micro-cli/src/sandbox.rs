@@ -1,11 +1,4 @@
 //! What the commands a session runs are allowed to touch.
-//!
-//! A policy can be said in three places, and they beat each other in the order a person
-//! would expect: what this run was told on the command line, then what the project asks
-//! for in its own settings — only once the project has been trusted — then what the user
-//! settled in theirs. With nothing said anywhere the workspace is writable and nothing
-//! else is, which is the default a coding agent can work under without being asked about
-//! every file it writes.
 
 use anyhow::anyhow;
 use anyhow::Result;
@@ -13,14 +6,7 @@ use micro_sandbox::Sandbox;
 use micro_sandbox::SandboxPolicy;
 use std::path::Path;
 
-/// A sandbox enforcing `policy` around `workspace`, with micro's own directories
-/// protected.
-///
-/// A workspace that contains one of them — someone working on their own configuration —
-/// would otherwise let a command rewrite the credentials and the settings that decide what
-/// the next run may do, or the session logs that say what this one did. Both are named
-/// because a fresh install keeps them apart, and either is inside a home directory
-/// somebody could be standing in.
+/// A sandbox enforcing `policy` around `workspace`, with micro's own directories protected.
 pub fn around(policy: SandboxPolicy, workspace: &Path) -> Sandbox {
     let mut sandbox = Sandbox::new(policy, workspace);
     for own in [micro_dirs::config_dir(), micro_dirs::data_dir()]
@@ -34,18 +20,13 @@ pub fn around(policy: SandboxPolicy, workspace: &Path) -> Sandbox {
 }
 
 /// The policy in force for this run, from whichever of the three places settled it.
-///
-/// A name nobody recognizes ends the run rather than falling back to the default: a policy
-/// is what the rest of the session is judged against, and quietly using a different one
-/// than was asked for is the one outcome nobody wants.
 pub fn policy(
     flag: Option<&str>,
     workspace: &Path,
     trusted: bool,
     settings: &micro_config::Settings,
 ) -> Result<SandboxPolicy> {
-    // Trust is what decides whether the project is read at all, and `ProjectConfig::load`
-    // is where that is decided rather than here.
+    
     let project = micro_config::ProjectConfig::load(workspace, trusted)
         .map_err(|error| anyhow!("{error}"))?
         .sandbox;
@@ -67,9 +48,7 @@ pub fn policy(
     serde_json::from_value(written).map_err(|error| anyhow!("{source}: {error}"))
 }
 
-/// A policy as it was typed on the command line: one of the three names, or a table
-/// spelling out what `workspace-write` grants beyond the default, which is the same thing
-/// the settings take and so is written the same way.
+
 fn written_as(flag: &str) -> Result<serde_json::Value, serde_json::Error> {
     match flag.trim_start().starts_with('{') {
         true => serde_json::from_str(flag),
@@ -78,14 +57,6 @@ fn written_as(flag: &str) -> Result<serde_json::Value, serde_json::Error> {
 }
 
 /// What a session would do with this command: `micro sandbox try -- <command>`.
-///
-/// Run against the policy this workspace would use, or the one named, and reported the way
-/// the tools read it — what was actually spawned, whether anything is enforcing it, and
-/// whether the outcome looks like a refusal rather than the command's own failure.
-///
-/// The report is what this command produces, so it succeeds whenever it managed to make
-/// one: the command's own exit status is a line of the report rather than this one's, and
-/// conflating the two would make a refused command indistinguishable from a broken micro.
 pub async fn try_command(
     workspace: &Path,
     named: Option<&str>,
@@ -96,9 +67,7 @@ pub async fn try_command(
         return Err(anyhow!("nothing to run: micro sandbox try -- <command>"));
     };
 
-    // Trusted outright: this is someone asking what a policy does, in a workspace they are
-    // standing in, and the answer would be misleading if the project's own setting were
-    // left out of it.
+    
     let policy = policy(named, workspace, true, settings)?;
     let sandbox = around(policy, workspace);
     let wrapped = sandbox.wrap(program, arguments.to_vec(), workspace);
@@ -116,9 +85,7 @@ pub async fn try_command(
     );
     println!("running: {}", shown(&wrapped));
 
-    // Collected rather than streamed: whether an outcome looks like a refusal is read out
-    // of what the command printed as much as out of how it exited, and this is a question
-    // asked about a command that has already finished.
+    
     let finished = tokio::process::Command::from(wrapped.to_std_command())
         .stdin(std::process::Stdio::null())
         .output()
@@ -162,11 +129,6 @@ fn why_not() -> String {
 }
 
 /// The command as it will be spawned, in one line a reader can take in.
-///
-/// One argument is not fit to print: the Seatbelt profile is a few hundred lines of policy
-/// handed over as a string, and printing it buries the thing the reader came for. It is
-/// summarized by its size, and the paths it is parameterized with are printed as they are —
-/// those are what a reader is actually checking.
 fn shown(wrapped: &micro_sandbox::WrappedCommand) -> String {
     let mut parts = vec![wrapped.program.display().to_string()];
     parts.extend(wrapped.args.iter().map(|argument| {
@@ -234,8 +196,7 @@ mod tests {
         );
     }
 
-    /// An untrusted project has no say. Widening what a session may do is exactly what
-    /// trust is asked about, so a checkout nobody vouched for cannot ask for it.
+    /// An untrusted project has no say.
     #[test]
     fn an_untrusted_project_does_not_get_to_choose_the_policy() {
         let workspace = scratch("untrusted");
@@ -251,8 +212,7 @@ mod tests {
         );
     }
 
-    /// The grants `workspace-write` does not make by default — another writable directory,
-    /// the network — are asked for by spelling the policy out, wherever it is written.
+    /// The grants `workspace-write` does not make by default.
     #[test]
     fn a_spelled_out_policy_keeps_what_it_grants() {
         let workspace = scratch("spelled-out");
@@ -282,7 +242,7 @@ mod tests {
         assert_eq!(
             policy(None, &workspace, true, &micro_config::Settings::default()).unwrap(),
             resolved,
-            "a project spells it out the same way"
+            "project policy should be explicit"
         );
     }
 

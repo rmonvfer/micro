@@ -1,23 +1,9 @@
-// pi-tui's ring buffer for Emacs-style kill/yank, vendored unchanged: it holds strings and
-// nothing else, so there is nothing about running under micro that changes its behaviour.
-/**
- * Ring buffer for Emacs-style kill/yank operations.
- *
- * Tracks killed (deleted) text entries. Consecutive kills can accumulate
- * into a single entry. Supports yank (paste most recent) and yank-pop
- * (cycle through older entries).
- */
+
+/** Ring buffer for Emacs-style kill/yank operations. */
 export class KillRing {
 	private ring: string[] = [];
 
-	/**
-	 * Add text to the kill ring.
-	 *
-	 * @param text - The killed text to add
-	 * @param opts - Push options
-	 * @param opts.prepend - If accumulating, prepend (backward deletion) or append (forward deletion)
-	 * @param opts.accumulate - Merge with the most recent entry instead of creating a new one
-	 */
+	/** Add text to the kill ring. */
 	push(text: string, opts: { prepend: boolean; accumulate?: boolean }): void {
 		if (!text) return;
 

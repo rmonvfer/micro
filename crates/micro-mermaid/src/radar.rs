@@ -1,28 +1,14 @@
-//! Radar charts, drawn as one row per axis rather than as a polygon.
-//!
-//! A radar chart is really a polygon plotted on spokes around a centre, and
-//! a terminal has no circle to put one on — the closest a grid of cells
-//! gets is an octagon built from a dozen special cases, which would be a
-//! worse lie than admitting the shape is gone. What a reader actually wants
-//! from a radar chart is which curve is ahead on which axis, and that
-//! survives the trip to a terminal perfectly well as a row per axis: the
-//! axis named on the left, a shared value scale drawn across it, and each
-//! curve's value marked on that scale with its own glyph, the way
-//! `journey.rs` marks a task's score against its own fixed scale. Comparing
-//! two curves is then reading along one row rather than around a shape.
+
 
 use crate::canvas::{draw_text, Canvas};
 use crate::labels::{ascii_lower, clean_label, strip_controls};
 use crate::types::Cls;
 use crate::width::string_width;
 
-/// Axes past this and the chart is refused: past a certain count the rows
-/// are a table, and a table is better read as the source it came from.
+
 const MAX_AXES: usize = 12;
 
-/// Curves past this and the chart is refused: this is also how many marker
-/// glyphs are defined, and reusing one for a seventh curve would make two
-/// different curves unreadable from each other.
+
 const MAX_CURVES: usize = MARKERS.len();
 
 /// One glyph per curve, assigned in declaration order.
@@ -99,8 +85,7 @@ fn parse_radar(src: &str) -> Option<Chart> {
     if axes.is_empty() || curves.is_empty() {
         return None;
     }
-    // Every curve has to name a value for every axis — a radar chart with a
-    // curve missing an axis has nothing sensible to plot there.
+    
     if curves.iter().any(|c| c.values.len() != axes.len()) {
         return None;
     }
@@ -212,8 +197,7 @@ fn draw(chart: &Chart) -> Canvas {
     canvas
 }
 
-/// Column a value lands on within `SCALE_WIDTH`, clamped to the track so an
-/// out-of-range value still shows at whichever end it overshot.
+
 fn scale_pos(value: f64, min: f64, max: f64) -> usize {
     let frac = ((value.clamp(min, max) - min) / (max - min)).clamp(0.0, 1.0);
     (frac * (SCALE_WIDTH - 1) as f64).round() as usize
@@ -243,8 +227,7 @@ fn draw_legend(canvas: &mut Canvas, curves: &[Curve], y: usize) {
     }
 }
 
-/// A value written the way it was meant: whole numbers without a decimal
-/// point.
+/// A value written the way it was meant: whole numbers without a decimal point.
 fn trim_number(value: f64) -> String {
     if value.fract() == 0.0 && value.abs() < 1e15 {
         format!("{}", value as i64)
@@ -264,8 +247,8 @@ mod tests {
             .plain
     }
 
-    /// Each axis gets its own row, and each curve's value is marked on that
-    /// row's shared scale with its own glyph.
+    /// Each axis gets its own row, and each curve's value is marked on that row's shared scale with
+    /// its own glyph.
     #[test]
     fn each_axis_is_a_row_with_every_curves_value_marked() {
         let rows = drawn(
@@ -279,8 +262,7 @@ mod tests {
         );
         assert_eq!(rows[0], "Skills");
         let comm_row = rows.iter().find(|r| r.contains("Communication")).unwrap();
-        // Alice is 0 on this axis (left end) and Bob is 5 (right end), so
-        // Alice's glyph comes first on the row.
+        
         assert!(
             comm_row.find('●').unwrap() < comm_row.find('○').unwrap(),
             "{comm_row:?}"
@@ -309,16 +291,14 @@ mod tests {
         assert!(legend.contains('○') && legend.contains("Bob"), "{legend:?}");
     }
 
-    /// With no `max` given, the scale stretches to the highest value any
-    /// curve actually reaches.
+    /// With no `max` given, the scale stretches to the highest value any curve actually reaches.
     #[test]
     fn the_scale_defaults_to_the_highest_value_present() {
         let rows = drawn("radar-beta\n  axis a[\"A\"]\n  curve x[\"X\"]{40}");
         assert!(rows.iter().any(|r| r.contains("scale 0–40")), "{rows:?}");
     }
 
-    /// Anything that is not a radar chart, or is one but malformed, is
-    /// refused rather than guessed at.
+    
     #[test]
     fn what_is_not_a_radar_chart_is_left_alone() {
         assert!(render_radar("graph TD\n A --> B").is_none());
@@ -333,8 +313,7 @@ mod tests {
         );
     }
 
-    /// A chart with more curves than there are marker glyphs is refused
-    /// rather than reusing a glyph for two different curves.
+    
     #[test]
     fn too_many_curves_are_refused() {
         let mut source = String::from("radar-beta\n  axis a[\"A\"]\n");

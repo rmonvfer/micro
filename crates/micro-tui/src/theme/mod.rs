@@ -1,12 +1,4 @@
 //! Colors for the whole interface.
-//!
-//! Every token the theme schema names is here, so a renderer asks for the token that paints
-//! a thing — `md_heading`, `tool_error_bg`, `syntax_string` — rather than picking a color.
-//! See [`palette`] for the value each built-in theme gives every token.
-//!
-//! Three fields stand outside the schema, which names no editor or status surface and no
-//! user label: [`Theme::surface`], [`Theme::status`], and [`Theme::user`]. Each is
-//! documented where it is declared with what it borrows and why.
 
 mod custom;
 mod detect;
@@ -23,8 +15,8 @@ use ratatui::style::Color;
 use ratatui::style::Modifier;
 use ratatui::style::Style;
 
-/// Declares the token set once, so the struct fields, the wire names, and the lookup can
-/// never drift apart.
+/// Declares the token set once, so the struct fields, the wire names, and the lookup can never
+/// drift apart.
 macro_rules! tokens {
     ($($(#[$note:meta])* $field:ident => $name:literal),* $(,)?) => {
         #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -33,17 +25,13 @@ macro_rules! tokens {
             pub name: &'static str,
             $($(#[$note])* pub $field: Color,)*
 
-            /// Fill behind the input editor. The schema names no editor surface, so this
-            /// takes `cardBg`, the fill for a raised panel.
+            /// Fill behind the input editor.
             pub surface: Color,
-            /// Fill behind the status bar. The schema names no status surface, so this
-            /// takes `pageBg`, the ground everything else sits on.
+            /// Fill behind the status bar.
             pub status: Color,
-            /// The user's own label. A user message is tinted whole with `user_message_bg`
-            /// rather than carrying a colored label, so this takes `border`, the blue.
+            /// The user's own label.
             pub user: Color,
-            /// Background for a highlighted note. No terminal region uses it yet; it is
-            /// carried so the set is complete.
+            /// Background for a highlighted note.
             pub info_bg: Color,
         }
 
@@ -51,7 +39,7 @@ macro_rules! tokens {
             /// Every token name, in schema order.
             pub const TOKEN_NAMES: &'static [&'static str] = &[$($name),*];
 
-            /// One token by its schema name, for a caller driven by data rather than by field.
+            
             pub fn token(&self, name: &str) -> Option<Color> {
                 match name {
                     $($name => Some(self.$field),)*
@@ -166,10 +154,6 @@ impl Theme {
     }
 
     /// The palette to open with.
-    ///
-    /// `MICRO_THEME` names it. A name with a single slash is the automatic form,
-    /// `light-theme/dark-theme`, which picks by what the terminal looks like. With nothing
-    /// set, the terminal decides on its own, falling back to dark.
     pub fn from_env() -> Self {
         Theme::resolve_setting(
             std::env::var("MICRO_THEME").ok().as_deref(),
@@ -177,8 +161,7 @@ impl Theme {
         )
     }
 
-    /// The palette a setting asks for, given what is known about the terminal. Separated
-    /// from the environment so it can be tested without touching one.
+    /// The palette a setting asks for, given what is known about the terminal.
     pub fn resolve_setting(setting: Option<&str>, detected: Detection) -> Self {
         let wanted = match setting.map(str::trim).filter(|value| !value.is_empty()) {
             Some(setting) => match auto_pair(setting) {
@@ -196,15 +179,11 @@ impl Theme {
 
         Theme::named(&wanted)
             .or_else(|| Theme::from_user_file(&wanted).ok())
-            // A theme that cannot be found or read is not worth failing to start over.
+            
             .unwrap_or_else(Theme::dark)
     }
 
     /// A theme the user wrote, read from the themes directory.
-    ///
-    /// The result borrows the built-in dark theme's identity for its name, since a `Theme`
-    /// holds a `&'static str`; a caller that needs the user's own name reads it from
-    /// [`Theme::user_theme_name`].
     pub fn from_user_file(name: &str) -> Result<Self, String> {
         let path = custom::path_for(name).ok_or_else(|| format!("invalid theme name: {name}"))?;
         let contents = std::fs::read_to_string(&path)
@@ -222,7 +201,7 @@ impl Theme {
                 .map(|(_, color)| *color)
                 .unwrap_or(Color::Reset)
         };
-        // A user theme carries no export block, so the surfaces keep the built-in ground.
+        
         let fallback = Theme::dark();
         Ok(Theme {
             surface: fallback.surface,
@@ -321,8 +300,7 @@ mod tests {
         custom::parse_hex(hex.trim_start_matches('#')).unwrap()
     }
 
-    /// Every token both themes must carry: the schema's `required` list plus `thinkingMax`,
-    /// which the schema leaves optional but both built-in themes define.
+    /// Every token both themes must carry: the schema's `required` list plus `thinkingMax`.
     const SCHEMA_TOKENS: &[&str] = palette::TOKENS;
 
     #[test]
@@ -389,8 +367,7 @@ mod tests {
         }
     }
 
-    /// The values, spelled out one by one. A typo in a hex digit is the failure this whole
-    /// exercise is exposed to, so every token is checked rather than sampled.
+    /// The values, spelled out one by one.
     #[test]
     fn every_dark_token_carries_its_value() {
         let theme = Theme::dark();
@@ -547,7 +524,7 @@ mod tests {
         };
         assert_eq!(Theme::resolve_setting(Some("light"), dark).name, "light");
         assert_eq!(Theme::resolve_setting(Some("dark"), dark).name, "dark");
-        // An unreadable name falls back rather than refusing to start.
+        
         assert_eq!(Theme::resolve_setting(Some("nocturne"), dark).name, "dark");
     }
 
@@ -584,7 +561,7 @@ mod tests {
             Theme::resolve_setting(Some("light/dark"), dark).name,
             "dark"
         );
-        // Spacing around the names is ignored.
+        
         assert_eq!(
             Theme::resolve_setting(Some(" light / dark "), dark).name,
             "dark"
@@ -617,7 +594,7 @@ mod tests {
             assert_eq!(theme.token(token), Some(rgb("#123456")), "{token}");
         }
         assert_eq!(Theme::user_theme_name(&json).unwrap(), "mine");
-        // A user theme carries no export block, so the surfaces keep the built-in ground.
+        
         assert_eq!(theme.surface, Theme::dark().surface);
     }
 

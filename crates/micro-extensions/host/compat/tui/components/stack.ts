@@ -1,5 +1,4 @@
-// pi-tui's own flex-style sizing logic shared by `HStack`/`VStack`, vendored unchanged —
-// arithmetic over a list of entries, nothing terminal-specific.
+
 import { LAYOUT_NODE, type LayoutViewport, type StackLayoutEntry, type StackLayoutNode } from "../layout-node.ts";
 import { type Component, Container } from "../tui.ts";
 

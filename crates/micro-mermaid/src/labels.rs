@@ -1,24 +1,20 @@
-//! Label and text handling: case folding, HTML/markdown cleanup, entity
-//! decoding, and wrapping label text to a box's width.
+//! Label and text handling: case folding, HTML/markdown cleanup, entity decoding, and wrapping
+//! label text to a box's width.
 
 use crate::width::{measured, string_width};
 
-/// Node labels wrap to at most this many display columns per line...
+
 pub const WRAP_WIDTH: usize = 24;
-/// ...and at most this many lines; overflow is truncated with an ellipsis.
+
 pub const MAX_LINES: usize = 4;
 /// Edge labels are truncated to this many columns.
 pub const MAX_LABEL: usize = 28;
 
-/// Identifier-boundary characters preferred as break points when a single word
-/// is too wide to fit, so it is not sliced mid-segment.
+/// Identifier-boundary characters preferred as break points when a single word is too wide to fit,
+/// so it is not sliced mid-segment.
 const LABEL_BREAK_CHARS: [char; 4] = ['_', '-', '.', '/'];
 
 /// ASCII-only case folding.
-///
-/// `char::to_lowercase` can change a string's length (`İ` becomes two code
-/// points), which would desync the byte offsets some parsers slice with, so
-/// only the plain ASCII letters are folded.
 pub fn ascii_lower(s: &str) -> String {
     s.chars()
         .map(|c| {
@@ -44,12 +40,6 @@ pub fn ascii_upper(s: &str) -> String {
 }
 
 /// C0 and C1 controls, less the `\t\n\r` the parsers and `src_lines` read.
-///
-/// They measure one column and paint none, so a box sized around one is drawn a
-/// column short of its own border; NUL also collides with the canvas `CONT`
-/// sentinel and is dropped after layout has already paid for its cell; ESC
-/// would inject ANSI into the caller's scrollback. `decode_entity_body` refuses
-/// to decode an entity into one — this closes the same hole for literals.
 fn is_control_to_strip(c: char) -> bool {
     matches!(c as u32, 0x00..=0x08 | 0x0b | 0x0c | 0x0e..=0x1f | 0x7f..=0x9f)
 }
@@ -59,10 +49,7 @@ pub fn strip_controls(src: &str) -> String {
     src.chars().filter(|&c| !is_control_to_strip(c)).collect()
 }
 
-/// Split source into lines the way `str::lines()` does: on `\n`, with a
-/// trailing `\r` stripped, and *without* a final empty line when the input ends
-/// in a newline. A plain split on `\n` yields that extra element, which would
-/// show up as a spurious blank row inside a source box.
+
 pub fn src_lines(src: &str) -> Vec<String> {
     let mut out: Vec<String> = src
         .split('\n')
@@ -113,20 +100,18 @@ fn decode_entity_body(body: &str) -> Option<String> {
         return None;
     }
     let code = u32::from_str_radix(digits, if hex { 16 } else { 10 }).ok()?;
-    // Surrogates and out-of-range values are not characters at all.
+    
     if code > 0x10ffff || (0xd800..=0xdfff).contains(&code) {
         return None;
     }
-    // Reject control chars: NUL collides with the CONT sentinel and ESC would
-    // inject ANSI into scrollback.
+    
     if code < 0x20 || (0x7f..=0x9f).contains(&code) {
         return None;
     }
     char::from_u32(code).map(|c| c.to_string())
 }
 
-/// Decode HTML entities in label text. Called once per label: via `clean_label`
-/// for bracketed labels, or explicitly at each direct-push sink.
+/// Decode HTML entities in label text.
 pub fn decode_html_entities(s: &str) -> String {
     if !s.contains('&') {
         return s.to_string();
@@ -140,8 +125,7 @@ pub fn decode_html_entities(s: &str) -> String {
             i += 1;
             continue;
         }
-        // Scan a bounded window including the terminating `;`, so a stray `&` or an
-        // over-long run stays literal.
+        
         let hi = (i + 1 + ENTITY_LOOKAHEAD).min(chars.len());
         let semi = chars[i + 1..hi]
             .iter()
@@ -157,8 +141,7 @@ pub fn decode_html_entities(s: &str) -> String {
                 i += 1;
             }
             Some(d) => {
-                // Resume past the `;`. The single pass never re-scans emitted text, so
-                // `&amp;lt;` decodes to the literal `&lt;` rather than to `<`.
+                
                 out.push_str(&d);
                 i = semi.unwrap() + 1;
             }
@@ -175,7 +158,7 @@ pub fn strip_markdown(s: &str) -> String {
     let mut out = String::new();
     for i in 0..chars.len() {
         let c = chars[i];
-        // Keep `*`/`_` only when they sit inside a word, so snake_case survives.
+        
         let in_word = i > 0
             && chars[i - 1].is_alphanumeric()
             && i + 1 < chars.len()
@@ -188,8 +171,7 @@ pub fn strip_markdown(s: &str) -> String {
     out.trim().to_string()
 }
 
-/// Inline formatting tags that carry no meaning in a terminal. Anything else
-/// that looks like a tag — `Vec<String>`, `<id>` — is left alone.
+/// Inline formatting tags that carry no meaning in a terminal.
 const HTML_FORMAT_TAGS: &[&str] = &[
     "b", "strong", "i", "em", "u", "s", "strike", "del", "ins", "mark", "small", "big", "sub",
     "sup", "code", "kbd", "samp", "var", "tt", "span", "font", "q", "abbr", "cite", "pre",
@@ -262,9 +244,6 @@ fn unwrap<'a>(s: &'a str, open: &str, close: &str) -> Option<&'a str> {
 }
 
 /// Normalise raw label text: strip markup, unquote, and decode entities.
-///
-/// Decoding happens after tag-stripping so `<b>` is removed as markup while
-/// `&lt;b&gt;` survives as the literal text `<b>`.
 pub fn clean_label(raw: &str) -> String {
     let trimmed = strip_html_tags(raw.trim());
     let trimmed = trimmed.trim();
@@ -285,11 +264,8 @@ fn last_break(s: &str) -> Option<usize> {
     LABEL_BREAK_CHARS.iter().filter_map(|&c| s.rfind(c)).max()
 }
 
-/// Wrap a label to `width` columns over at most `max_lines` lines, truncating
-/// the last line with an ellipsis if it overflows.
-///
-/// A word too wide to fit is broken after the last identifier boundary
-/// (`_-./`) that fits, falling back to a per-character break when it has none.
+/// Wrap a label to `width` columns over at most `max_lines` lines, truncating the last line with an
+/// ellipsis if it overflows.
 pub fn wrap_label(label: &str, width: usize, max_lines: usize) -> Vec<String> {
     let width = width.max(1);
     let mut lines: Vec<String> = Vec::new();

@@ -1,14 +1,4 @@
 //! Finding extensions on disk.
-//!
-//! Three places, in the order they win: the project's own `.micro/extensions/`, then the
-//! `extensions/` directory of micro's own, then whatever the configuration names. A path
-//! already found is not taken twice, so a project extension shadows a global one of the
-//! same file.
-//!
-//! Inside a directory the search stops after one level: a `.ts` or `.js` file is an
-//! extension; a subdirectory is one when it carries an `index.ts`/`index.js` or a
-//! `package.json` that names its entry points. Anything deeper has to say so in a manifest,
-//! which keeps a directory of helpers from being loaded as extensions.
 
 use serde::Deserialize;
 use std::path::Path;
@@ -18,8 +8,6 @@ use std::path::PathBuf;
 pub const PROJECT_DIR: &str = ".micro/extensions";
 
 /// What a `package.json` says about the extensions it carries.
-///
-/// Entries are declared under `micro` or `pi`.
 #[derive(Debug, Clone, Default, Deserialize)]
 struct Manifest {
     #[serde(default)]
@@ -47,9 +35,6 @@ struct ManifestSection {
 }
 
 /// Every extension to load, in the order they should be loaded.
-///
-/// The project's own are loaded only once the project has been trusted; the user's own
-/// and whatever the configuration names are theirs, and load either way.
 pub fn discover(
     workspace: &Path,
     home: &Path,
@@ -94,7 +79,7 @@ pub fn in_directory(directory: &Path) -> Vec<PathBuf> {
         return Vec::new();
     };
 
-    // Read in name order, so a directory listing does not change what loads first.
+    
     let mut names: Vec<PathBuf> = entries
         .filter_map(|entry| entry.ok())
         .map(|entry| entry.path())
@@ -125,11 +110,6 @@ fn is_extension_file(path: &Path) -> bool {
 }
 
 /// What a directory offers as its entry points, or nothing when it offers none.
-/// What the package in `directory` calls itself, when it is a package and says so.
-///
-/// Read from the root a package was installed to rather than guessed at from an entry
-/// file's path: `index.ts` is what most packages call their entry point, so the file says
-/// nothing about which package it belongs to, and the manifest beside it says everything.
 pub fn package_name(directory: &Path) -> Option<String> {
     let raw = std::fs::read_to_string(directory.join("package.json")).ok()?;
     let manifest: serde_json::Value = serde_json::from_str(&raw).ok()?;
@@ -141,7 +121,7 @@ pub fn package_name(directory: &Path) -> Option<String> {
 }
 
 pub fn entries_of(directory: &Path) -> Option<Vec<PathBuf>> {
-    // A manifest wins, because it is the only way to say what a complex package loads.
+    
     let manifest_path = directory.join("package.json");
     if let Ok(raw) = std::fs::read_to_string(&manifest_path) {
         if let Ok(manifest) = serde_json::from_str::<Manifest>(&raw) {
@@ -239,8 +219,7 @@ mod tests {
         assert_eq!(in_directory(&root).len(), 1);
     }
 
-    /// A manifest is the only way to load something other than an index, which is what
-    /// keeps a folder of helpers from being loaded as extensions.
+    /// A manifest is the only way to load something other than an index.
     #[test]
     fn a_manifest_says_what_a_package_loads() {
         let root = scratch("manifest");
@@ -276,8 +255,7 @@ mod tests {
         assert!(in_directory(&root).is_empty());
     }
 
-    /// The project's own extensions come before the user's, and a path found twice is
-    /// loaded once.
+    /// The project's own extensions come before the user's, and a path found twice is loaded once.
     #[test]
     fn the_project_comes_before_the_user_and_nothing_loads_twice() {
         let root = scratch("order");
@@ -297,7 +275,7 @@ mod tests {
         assert!(found[0].ends_with("local.ts"));
         assert!(found[1].ends_with("global.ts"));
 
-        // Naming one of them again does not load it a second time.
+        
         let configured = vec![found[0].display().to_string()];
         assert_eq!(discover(&workspace, &home, &configured, true).len(), 2);
     }

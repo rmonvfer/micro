@@ -1,11 +1,6 @@
 //! The kill ring: what the cut commands cut, and what yank puts back.
-//!
-//! A stack, most recent last. Consecutive kills merge into one entry so that cutting a
-//! word and then the word after it yanks back both, in the order they were read — which is
-//! why the direction of the kill decides whether the text joins the front or the back.
 
-/// What the editor did last, which is what decides whether a kill merges and whether a
-/// yank-pop is allowed.
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum LastAction {
     #[default]
@@ -40,11 +35,6 @@ impl KillRing {
     }
 
     /// Record killed text.
-    ///
-    /// `accumulate` is true when the previous action was also a kill, and the text then
-    /// joins the entry already there rather than starting a new one. A backward kill
-    /// prepends and a forward kill appends, so the merged entry reads the way the buffer
-    /// did.
     pub fn push(&mut self, text: &str, backward: bool, accumulate: bool) {
         if text.is_empty() {
             return;
@@ -58,8 +48,8 @@ impl KillRing {
         }
     }
 
-    /// Rotate for yank-pop: the most recent entry goes to the front, and what was before it
-    /// becomes what the next yank inserts.
+    /// Rotate for yank-pop: the most recent entry goes to the front, and what was before it becomes
+    /// what the next yank inserts.
     pub fn rotate(&mut self) -> Option<&str> {
         if self.entries.len() < 2 {
             return None;

@@ -1,7 +1,4 @@
 //! The macOS half of the enforcement: a Seatbelt profile handed to `sandbox-exec`.
-//!
-//! Derived from openai/codex codex-rs/core/src/seatbelt.rs at commit a8c7f5391c and
-//! codex-rs/sandboxing/src/seatbelt.rs at commit 486df09a00; modified.
 
 use crate::SandboxRules;
 use crate::WritableRoot;
@@ -10,17 +7,10 @@ use std::path::PathBuf;
 const BASE_POLICY: &str = include_str!("seatbelt_base_policy.sbpl");
 const NETWORK_POLICY: &str = include_str!("seatbelt_network_policy.sbpl");
 
-/// Only the copy in `/usr/bin` is ever run. Resolving `sandbox-exec` through PATH would
-/// let anything that can write to a PATH directory decide what "sandboxed" means; if the
-/// system copy itself has been replaced, the attacker already had root.
+/// Only the copy in `/usr/bin` is ever run.
 pub(crate) const SANDBOX_EXEC: &str = "/usr/bin/sandbox-exec";
 
-/// Build the argument list that runs `command` under a profile allowing writes to
-/// `roots` and nothing else.
-///
-/// Paths never reach the profile text. They travel as `-D` definitions and the profile
-/// refers to them by name, so a directory named `") (allow default) ;` is a directory
-/// name rather than a policy edit.
+
 pub(crate) fn seatbelt_args(rules: &SandboxRules, command: Vec<String>) -> Vec<String> {
     let (write_policy, mut definitions) = write_policy(&rules.writable_roots);
     let (read_policy, read_definitions) = read_policy(rules.readable_roots.as_deref());
@@ -100,11 +90,6 @@ fn process_policy(executables: &[PathBuf]) -> (String, Vec<(String, PathBuf)>) {
 }
 
 /// The `file-write*` rule for `roots`, plus the parameter definitions it refers to.
-///
-/// A root with protected subpaths becomes a `require-all` that subtracts them. Each
-/// subpath is subtracted twice, as a `literal` and as a `subpath`: the first stops the
-/// protected directory itself from being created or replaced, the second stops writes
-/// beneath it.
 fn write_policy(roots: &[WritableRoot]) -> (String, Vec<(String, PathBuf)>) {
     let mut rules: Vec<String> = Vec::new();
     let mut definitions: Vec<(String, PathBuf)> = Vec::new();
@@ -167,8 +152,7 @@ mod tests {
         let profile = &args[1];
         assert!(profile.contains("(deny default)"), "{profile}");
         assert!(profile.contains("(allow file-read*)"), "{profile}");
-        // The base policy grants a handful of device writes of its own; what a read-only
-        // policy must not add is a rule granting a root.
+        
         assert!(!profile.contains("WRITABLE_ROOT"), "{profile}");
         assert!(!args.iter().any(|arg| arg.starts_with("-D")), "{args:?}");
         assert_eq!(args.last().unwrap(), "/bin/echo");

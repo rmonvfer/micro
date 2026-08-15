@@ -1,9 +1,4 @@
 //! An extension's tool, as the model sees it.
-//!
-//! Nothing about it is special once it is registered: it goes through the same policy as
-//! every built-in tool, and it is described to the model the same way. The difference is
-//! only where it runs — in the host process, on the other end of a pipe — which is why
-//! every path here ends in [`Host::call_tool`] rather than in a computation of its own.
 
 use crate::host::Host;
 use micro_tools::Progress;
@@ -18,17 +13,13 @@ use std::sync::Arc;
 /// A tool an extension registered.
 pub struct ExtensionTool {
     definition: ToolDefinition,
-    /// How this tool's calls are scheduled against the rest of a turn's tool calls. Kept
-    /// alongside the definition rather than inside it: this is the agent loop's concern,
-    /// not something a provider is ever told.
+    /// How this tool's calls are scheduled against the rest of a turn's tool calls.
     execution_mode: Option<ToolExecutionMode>,
     host: Arc<Host>,
 }
 
 impl ExtensionTool {
-    /// `constrained_sampling` and `execution_mode` arrive as the host describes them on the
-    /// wire — a raw JSON value and a raw string, both `None`/absent when a tool said
-    /// nothing — and are read into their typed forms here.
+    /// `constrained_sampling` and `execution_mode` arrive as the host describes them on the wire.
     pub fn new(
         name: impl Into<String>,
         description: impl Into<String>,
@@ -46,9 +37,6 @@ impl ExtensionTool {
 }
 
 /// How a registration is described to the model.
-///
-/// A tool that describes no parameters still has to describe an object: a provider that
-/// meets anything else rejects the whole request rather than the one tool.
 fn definition_for(
     name: impl Into<String>,
     description: impl Into<String>,
@@ -76,10 +64,7 @@ impl Tool for ExtensionTool {
         self.execution_mode
     }
 
-    /// A caller with nowhere to send progress still needs a result, so this asks for one
-    /// with nothing wired to hear about it along the way — [`Progress::default`] drops
-    /// whatever the extension reports rather than holding a call open for a listener that
-    /// was never there.
+    /// A caller with nowhere to send progress still needs a result.
     async fn execute(&self, arguments: &Value) -> Result<String, String> {
         self.execute_reporting(arguments, &Progress::default()).await
     }
@@ -89,9 +74,7 @@ impl Tool for ExtensionTool {
         Ok(content.iter().map(ContentBlock::as_text).collect())
     }
 
-    /// Where the real work happens: an image an extension hands back arrives here as an
-    /// actual [`ContentBlock::Image`] rather than as text describing one, the same way a
-    /// built-in tool like `read` returns a screenshot.
+    
     async fn execute_content(&self, arguments: &Value, progress: &Progress) -> Result<Vec<ContentBlock>, String> {
         self.host
             .call_tool(&self.definition.name, arguments, progress)
@@ -123,8 +106,8 @@ mod tests {
         assert_eq!(definition.parameters, schema);
     }
 
-    /// `false` is documented as equivalent to leaving `constrainedSampling` undefined, so
-    /// both must produce the same definition.
+    /// `false` is documented as equivalent to leaving `constrainedSampling` undefined, so both must
+    /// produce the same definition.
     #[test]
     fn constrained_sampling_false_is_read_the_same_as_absent() {
         let omitted = definition_for("greet", "say hello", Value::Null, None);
@@ -145,10 +128,8 @@ mod tests {
         );
     }
 
-    /// `ExtensionTool::new` reads `execution_mode` through [`ToolExecutionMode::from_wire`]
-    /// with nothing in between, so what that conversion does is exercised directly rather
-    /// than through a live `Host` — starting one means an actual `bun` process, which a
-    /// unit test has no business depending on.
+    /// `ExtensionTool::new` reads `execution_mode` through [`ToolExecutionMode::from_wire`] with
+    /// nothing in between.
     #[test]
     fn execution_mode_is_read_through_the_same_conversion_the_wire_uses() {
         assert_eq!(ToolExecutionMode::from_wire(None), None);
@@ -156,8 +137,7 @@ mod tests {
             ToolExecutionMode::from_wire(Some("sequential")),
             Some(ToolExecutionMode::Sequential)
         );
-        // A name pi does not define is read the same as the field being absent, rather
-        // than failing registration over it.
+        
         assert_eq!(ToolExecutionMode::from_wire(Some("eventually")), None);
     }
 }

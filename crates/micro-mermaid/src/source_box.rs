@@ -1,9 +1,4 @@
 //! The raw source in a framed box.
-//!
-//! What to show when `render` returns `None`, or returns art too wide for the
-//! space at hand. Both are the caller's call, so this is theirs to invoke —
-//! and theirs to caption, since only they know whether some other view of the
-//! diagram exists to point the reader at.
 
 use crate::labels::{src_lines, strip_controls};
 use crate::types::{Art, Cls, Span};
@@ -14,10 +9,6 @@ fn sat(a: usize, b: usize) -> usize {
 }
 
 /// Frame `src` in a titled box, hard-wrapping its lines to `columns` columns.
-///
-/// The result can still exceed `columns`: the body wraps to
-/// `max(8, columns - 4)` and the ` mermaid: <kind> ` title is never
-/// truncated, so a long first token sets a floor. Check `width` if it matters.
 pub fn source_box(src: &str, columns: usize) -> Art {
     let src = strip_controls(src);
     let header = src.split_whitespace().next().unwrap_or("diagram");

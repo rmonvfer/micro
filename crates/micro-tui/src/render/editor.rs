@@ -1,9 +1,4 @@
 //! The input area: a rule above, a rule below, and the prompt between them.
-//!
-//! The input is framed with two horizontal rules rather than a box or a fill, and they are
-//! colored by the reasoning budget the next turn will run with — so the frame around what
-//! you are typing tells you how hard the model is about to think. A `!` line takes the bash
-//! colour instead, marking the mode before it is sent.
 
 use crate::editor::Editor;
 use crate::theme::Theme;
@@ -18,21 +13,15 @@ pub const RULES: u16 = 2;
 
 const PLACEHOLDER: &str = "Ask anything - enter to send, shift+enter for a new line";
 
-/// Draw the input and the rules around it. `focused` is false while something else owns the
-/// keyboard, and the cursor then stays away rather than blinking where the next keystroke
-/// will not land.
-/// How the input is drawn, beyond where it goes.
+/// Draw the input and the rules around it.
 #[derive(Debug, Clone, Copy)]
 pub struct Look {
-    /// Colour of the rules: the reasoning effort is marked here, so a raised level is
-    /// visible without reading the footer.
+    /// Colour of the rules: the reasoning effort is marked here, so a raised level is visible
+    /// without reading the footer.
     pub level: ratatui::style::Color,
-    /// Whether the input has the keyboard. An overlay takes it, and the cursor then stays
-    /// away rather than blinking where the next keystroke will not reach.
+    /// Whether the input has the keyboard.
     pub focused: bool,
-    /// Whether the terminal draws the cursor itself. Drawing one into the cells instead
-    /// keeps it visible on terminals that hide theirs, at the cost of the shape and blink
-    /// rate the user chose.
+    /// Whether the terminal draws the cursor itself.
     pub hardware_cursor: bool,
 }
 
@@ -53,8 +42,7 @@ pub fn draw(
         return;
     }
 
-    // The rules run edge to edge, past the margin the prompt itself keeps, and take the
-    // bash colour while a `!` line is being typed so the mode is visible before it is sent.
+    
     let rule = match editor.text().starts_with('!') {
         true => Style::new().fg(theme.bash_mode),
         false => Style::new().fg(level),
@@ -98,7 +86,7 @@ pub fn draw(
         let text = Style::new().fg(theme.text);
         for (offset, row) in layout.rows.iter().skip(first).take(height).enumerate() {
             let source = &editor.lines()[row.line][row.range.clone()];
-            // Tabs are one column wide in the wrap math, so they are drawn that way too.
+            
             let line = Line::from(vec![Span::styled(source.replace('\t', " "), text)]);
             frame
                 .buffer_mut()
@@ -124,9 +112,6 @@ pub fn draw(
 }
 
 /// Scroll the input just enough to keep the cursor on screen.
-///
-/// `pub(super)` rather than private: `render::overlay`'s extension editor is the same
-/// scrolling problem over lines instead of a frame, and this is the math either wants.
 pub(super) fn first_visible_row(cursor_row: usize, total: usize, height: usize) -> usize {
     if total <= height {
         return 0;
@@ -136,11 +121,7 @@ pub(super) fn first_visible_row(cursor_row: usize, total: usize, height: usize) 
         .min(total - height)
 }
 
-/// Draw a `setEditorComponent` component in the input's place: the same two rules, whatever
-/// lines the component last answered with between them.
-///
-/// No cursor is placed here — see the note beside `strip_cursor_marker` in `app.rs` for why
-/// a component's own hardware-cursor position is read out of its lines but not yet acted on.
+
 pub fn draw_component(
     frame: &mut Frame,
     area: Rect,

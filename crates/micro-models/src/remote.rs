@@ -15,7 +15,7 @@ const COPILOT_API_VERSION: &str = "2025-04-01";
 
 const LISTING_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// Fetch OpenRouter's model list. The endpoint is public — no key needed.
+/// Fetch OpenRouter's model list.
 pub async fn fetch_openrouter(client: &reqwest::Client) -> Result<Vec<ModelDef>> {
     let url = format!("{OPENROUTER_BASE_URL}/models");
     let body = get(client, &url, OPENROUTER_PROVIDER, &[]).await?;
@@ -23,9 +23,6 @@ pub async fn fetch_openrouter(client: &reqwest::Client) -> Result<Vec<ModelDef>>
 }
 
 /// Fetch the models the given Copilot token is entitled to.
-///
-/// `base_url` varies for Copilot Enterprise, so it is a parameter rather than a
-/// constant; pass [`COPILOT_BASE_URL`] for individual accounts.
 pub async fn fetch_copilot(
     client: &reqwest::Client,
     token: &str,
@@ -128,11 +125,8 @@ pub fn parse_openrouter(body: &str) -> Result<Vec<ModelDef>> {
     Ok(models)
 }
 
-/// Parse a GitHub Copilot `/models` response, keeping the chat models the
-/// account may actually select.
-///
-/// Copilot's listing carries capabilities and limits but no pricing; merging it
-/// into a catalog leaves the prices already known in place.
+/// Parse a GitHub Copilot `/models` response, keeping the chat models the account may actually
+/// select.
 pub fn parse_copilot(body: &str, base_url: &str) -> Result<Vec<ModelDef>> {
     let envelope: CopilotEnvelope =
         serde_json::from_str(body).map_err(|error| Error::ListingShape {
@@ -175,12 +169,8 @@ pub fn parse_copilot(body: &str, base_url: &str) -> Result<Vec<ModelDef>> {
 }
 
 impl Catalog {
-    /// Merge live provider listings over the catalog so models released since
-    /// this build appear without a release.
-    ///
-    /// Providers are independent: one that is unreachable, unauthorized, or
-    /// slow leaves its bundled models in place. Its error is returned so the
-    /// caller can report it; an empty result means every listing succeeded.
+    /// Merge live provider listings over the catalog so models released since this build appear
+    /// without a release.
     pub async fn merge_live_listings(
         &mut self,
         client: &reqwest::Client,
@@ -204,8 +194,8 @@ impl Catalog {
     }
 }
 
-/// What listing GitHub Copilot's models requires: a Copilot token and, for
-/// enterprise accounts, the endpoint that serves them.
+/// What listing GitHub Copilot's models requires: a Copilot token and, for enterprise accounts, the
+/// endpoint that serves them.
 #[derive(Debug, Clone, Copy)]
 pub struct CopilotCredentials<'a> {
     pub token: &'a str,
@@ -226,10 +216,7 @@ impl<'a> CopilotCredentials<'a> {
     }
 }
 
-/// Copilot serves each model over the wire shape its vendor uses: Claude models
-/// over the Anthropic Messages API and GPT models over the OpenAI Responses
-/// API. Claude Fable 5 is the exception — Copilot exposes it over chat
-/// completions.
+
 fn copilot_api(id: &str) -> WireApi {
     if id == "claude-fable-5" {
         WireApi::OpenaiCompletions
@@ -242,8 +229,8 @@ fn copilot_api(id: &str) -> WireApi {
     }
 }
 
-/// A Copilot model is usable when the account can pick it, its terms are not
-/// pending acceptance, and it can call tools.
+/// A Copilot model is usable when the account can pick it, its terms are not pending acceptance,
+/// and it can call tools.
 fn is_selectable(model: &CopilotModel) -> bool {
     let capabilities = model.capabilities.as_ref();
     let is_chat = capabilities
@@ -261,8 +248,8 @@ fn is_selectable(model: &CopilotModel) -> bool {
     model.model_picker_enabled && is_chat && tool_calls && enabled
 }
 
-/// OpenRouter quotes prices per token as decimal strings; the catalog stores
-/// dollars per million tokens.
+/// OpenRouter quotes prices per token as decimal strings; the catalog stores dollars per million
+/// tokens.
 fn per_million(price: Option<&str>) -> f64 {
     let Some(parsed) = price.and_then(|p| p.parse::<f64>().ok()) else {
         return 0.0;
@@ -270,15 +257,14 @@ fn per_million(price: Option<&str>) -> f64 {
     if !parsed.is_finite() {
         return 0.0;
     }
-    // Rounded to strip the noise that scaling a tiny per-token float leaves
-    // behind, which would otherwise show up in a displayed price.
+    
     (parsed * 1_000_000.0 * 1e6).round() / 1e6
 }
 
 fn modalities<'a>(names: impl Iterator<Item = &'a str>) -> Vec<Modality> {
     let mut input = Vec::new();
     for name in names {
-        // OpenRouter reports PDFs as "file".
+        
         let modality = match name {
             "text" => Modality::Text,
             "image" => Modality::Image,
@@ -451,7 +437,7 @@ mod tests {
         let models = parse_openrouter(OPENROUTER_SAMPLE).unwrap();
         let glm = models.iter().find(|m| m.id == "z-ai/glm-5.2").unwrap();
 
-        // The sample quotes no cache-write price for this model.
+        
         assert_close(glm.cost.cache_write, 0.0);
         assert_close(glm.cost.input, 0.76);
         assert_eq!(glm.input, vec![Modality::Text]);

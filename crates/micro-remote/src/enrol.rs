@@ -1,14 +1,4 @@
 //! Bonding a phone to a machine by a code short enough to read out.
-//!
-//! The pairing secret is what keeps the relay unable to read a session, so it must never
-//! cross the relay. That is why the pairing link is long: it carries the secret itself.
-//! It is also why the link is a bad thing to ask anyone to move by hand.
-//!
-//! So the two ends do not send the secret at all — they arrive at the same one. Each
-//! makes an X25519 key pair and publishes only its public half under a short code; each
-//! then derives the shared secret from its own private half and the other's public one.
-//! What the relay stores and hands over is public by construction, and the thing a person
-//! has to type is eight characters.
 
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
@@ -19,27 +9,16 @@ use sha2::Sha256;
 use x25519_dalek::PublicKey;
 use x25519_dalek::StaticSecret;
 
-/// How long a code is good for. Long enough to walk to the other room, short enough that
-/// a guessed one has almost no window to be guessed in.
+
 pub const CODE_LIFETIME_SECONDS: u64 = 300;
 
 /// How many characters a code carries.
 const CODE_LENGTH: usize = 8;
 
 /// The alphabet a code is written in.
-///
-/// Crockford's, less the characters that get misread when someone reads a code off one
-/// screen and types it into another: no `O` against `0`, no `I` or `L` against `1`, no
-/// `U` against `V`. Thirty characters over eight places is about a thousand billion
-/// codes, which against a five-minute window and a relay that counts attempts is a
-/// margin nobody is getting through.
 const ALPHABET: &[u8] = b"23456789ABCDEFGHJKMNPQRSTVWXYZ";
 
 /// A code as it is shown and as it is typed.
-///
-/// Shown in two halves because a run of eight characters is read wrong more often than
-/// two runs of four; the halves are cosmetic and are stripped before anything compares
-/// them.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Code(String);
 
@@ -54,11 +33,6 @@ impl Code {
     }
 
     /// What a code means once someone has typed it.
-    ///
-    /// Case and dashes are how it was written down rather than what it is, so both are
-    /// taken off before it is compared. Anything left that the alphabet does not contain
-    /// means it was mistyped, and a code that cannot be right is refused here rather than
-    /// spent against the relay.
     pub fn parse(typed: &str) -> Option<Code> {
         let cleaned: String = typed
             .chars()
@@ -111,12 +85,7 @@ impl Half {
         STANDARD.encode(PublicKey::from(&self.secret).as_bytes())
     }
 
-    /// The secret both ends arrive at, from this end's private half and the other end's
-    /// public one.
-    ///
-    /// The pairing id is mixed in so the same pair of keys used for two pairings yields
-    /// two different secrets, and the raw Diffie-Hellman output is never used directly:
-    /// it is not uniform, and every key derived from it afterwards assumes it is.
+    /// The secret both ends arrive at, from this end's private half and the other end's public one.
     pub fn shared_secret(&self, their_public: &str, pairing_id: &str) -> Option<Vec<u8>> {
         let decoded = STANDARD.decode(their_public).ok()?;
         let bytes: [u8; 32] = decoded.try_into().ok()?;
@@ -133,8 +102,8 @@ impl Half {
     }
 }
 
-/// A pairing being set up: the code to read out, and everything needed to finish once
-/// somebody has typed it.
+/// A pairing being set up: the code to read out, and everything needed to finish once somebody has
+/// typed it.
 pub struct Enrolment {
     pub code: Code,
     pairing_id: String,
@@ -144,9 +113,6 @@ pub struct Enrolment {
 }
 
 /// Publishes this machine's public half under a fresh code.
-///
-/// Returns as soon as the code exists, because the code is what a person needs; finishing
-/// waits on them, and nothing should hold a terminal open while it does.
 pub async fn begin(relay_url: &str) -> Result<Enrolment, String> {
     let half = Half::generate();
     let code = Code::generate();
@@ -166,9 +132,7 @@ pub async fn begin(relay_url: &str) -> Result<Enrolment, String> {
         .send()
         .await
         .map_err(|error| format!("could not reach the relay: {error}"))?;
-    // A relay that has never heard of this route is one from before pairing by code.
-    // Saying so is the difference between someone knowing to update it and someone
-    // reading a status code.
+    
     if response.status() == reqwest::StatusCode::NOT_FOUND {
         return Err(format!(
             "the relay at {relay_url} does not know how to pair by code — it is running \
@@ -190,10 +154,6 @@ pub async fn begin(relay_url: &str) -> Result<Enrolment, String> {
 
 impl Enrolment {
     /// Waits for the code to be spent, then works out the secret both ends now share.
-    ///
-    /// Polled rather than pushed: this is a one-off that finishes in the time it takes
-    /// somebody to pick up a phone, and a socket held open for it would be a socket to
-    /// keep alive, reconnect and tear down for one message.
     pub async fn complete(&self) -> Result<Vec<u8>, String> {
         let deadline = std::time::Instant::now()
             + std::time::Duration::from_secs(CODE_LIFETIME_SECONDS);
@@ -251,8 +211,7 @@ mod tests {
         assert_eq!(on_the_machine.len(), 32);
     }
 
-    /// The same two keys used for another pairing give another secret, so a public half
-    /// seen once is worth nothing against a later pairing.
+    /// The same two keys used for another pairing give another secret.
     #[test]
     fn the_same_keys_give_a_different_secret_for_a_different_pairing() {
         let machine = Half::generate();
@@ -277,26 +236,23 @@ mod tests {
         assert_eq!(code.as_str().len(), CODE_LENGTH);
         assert_eq!(code.written().len(), CODE_LENGTH + 1);
 
-        // However it comes back — as shown, in lower case, with spaces — it is the same
-        // code, because none of that is part of it.
+        
         assert_eq!(Code::parse(&code.written()), Some(code.clone()));
         assert_eq!(Code::parse(&code.written().to_lowercase()), Some(code.clone()));
         assert_eq!(Code::parse(&format!(" {} ", code.as_str())), Some(code));
     }
 
-    /// A code that cannot be right is refused here rather than spent against the relay,
-    /// which is what keeps a typo from counting as an attempt.
+    
     #[test]
     fn a_code_that_could_not_have_been_issued_is_refused() {
         assert_eq!(Code::parse("SHORT"), None);
         assert_eq!(Code::parse("TOOLONGCODE"), None);
-        // The characters the alphabet leaves out precisely because they are misread.
+        
         assert_eq!(Code::parse("O0IL1UAB"), None);
         assert_eq!(Code::parse(""), None);
     }
 
-    /// The alphabet has to hold nothing that is read as something else, or a code read
-    /// off one screen is not the code typed into the other.
+    
     #[test]
     fn the_alphabet_holds_nothing_that_gets_misread() {
         for confusable in [b'O', b'0', b'I', b'L', b'1', b'U'] {
@@ -308,8 +264,8 @@ mod tests {
         }
     }
 
-    /// Codes have to be unpredictable; a run of them that repeats is a run anyone can sit
-    /// and guess.
+    /// Codes have to be unpredictable; a run of them that repeats is a run anyone can sit and
+    /// guess.
     #[test]
     fn codes_do_not_repeat_themselves() {
         let codes: std::collections::HashSet<String> =

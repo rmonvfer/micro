@@ -8,7 +8,7 @@ use crate::PickerLayout;
 use micro_models::ModelDef;
 use micro_models::Resolution;
 
-/// Whether a query is a step through the catalog rather than a model to look up.
+
 fn step_direction(query: &str) -> Option<bool> {
     match query.trim().to_ascii_lowercase().as_str() {
         "next" => Some(true),
@@ -18,14 +18,6 @@ fn step_direction(query: &str) -> Option<bool> {
 }
 
 /// The model one place along from the one in use, wrapping at either end.
-///
-/// With nothing in use yet the first model is what a step lands on, so the keys do
-/// something sensible before a model has been chosen.
-/// The models on offer: those served by something the user is signed in to.
-///
-/// A catalog lists every service micro can speak to, which is far more than any one person
-/// has an account with. Offering all of them would bury the handful that can actually
-/// answer, so the rest are left out until there is a credential for them.
 fn offered(context: &CommandContext<'_>) -> Vec<ModelDef> {
     context
         .catalog
@@ -70,8 +62,8 @@ pub(crate) fn model(argument: Option<&str>, context: &CommandContext<'_>) -> Com
             .iter()
             .map(|model| item(model, context.model))
             .collect();
-        // A workspace's shortlist is what the list opens on; the whole catalog is a key
-        // away. A shortlist matching nothing is one nobody could use, so it is ignored.
+        
+        
         let shortlist: Vec<_> = ordered(
             &on_shortlist(&offered, context.scoped_models),
             context.model,
@@ -90,8 +82,7 @@ pub(crate) fn model(argument: Option<&str>, context: &CommandContext<'_>) -> Com
         );
     };
 
-    // `next` and `previous` step through the catalog from wherever it currently is, which
-    // is what the cycle keys send rather than a model name.
+    
     if let Some(forward) = step_direction(query) {
         return match neighbour(context, forward) {
             Some(model) => CommandOutcome::SetModel {
@@ -105,8 +96,7 @@ pub(crate) fn model(argument: Option<&str>, context: &CommandContext<'_>) -> Com
         Resolution::Match(model) => CommandOutcome::SetModel {
             model: Box::new(model.clone()),
         },
-        // Several models match equally well, so the choice is handed back rather than
-        // guessed at.
+        
         Resolution::Ambiguous(candidates) => CommandOutcome::Choose(
             Picker::new(
                 format!("{} models match \"{query}\"", candidates.len()),
@@ -161,17 +151,15 @@ fn item(model: &ModelDef, current: Option<&ModelDef>) -> PickerItem {
     let qualified = model.qualified_id();
     let is_current = current.is_some_and(|model| model.qualified_id() == qualified);
 
-    // The id is what a reader is looking for, so it is the row; who serves it is a badge
-    // beside it, because the same model is often offered by several providers.
+    
     let item = PickerItem::new(
         &model.id,
         format!("[{}]", model.provider),
         format!("/model {qualified}"),
     )
     .current(is_current)
-    // A model is looked up by whichever of its names comes to mind, and its maker's name
-    // for it is on none of them. The provider leads so that a query naming one ranks its
-    // own models above a proxy that resells them under a longer id.
+    
+    
     .found_by(search_text(model));
 
     match model.name.is_empty() {
@@ -181,9 +169,6 @@ fn item(model: &ModelDef, current: Option<&ModelDef>) -> PickerItem {
 }
 
 /// What a query for a model is matched against.
-///
-/// More than the row shows: the provider, the qualified id, the bare id, and the name its
-/// maker gave it, so any of them finds it.
 fn search_text(model: &ModelDef) -> String {
     let provider = &model.provider;
     let id = &model.id;
@@ -194,8 +179,8 @@ fn search_text(model: &ModelDef) -> String {
     format!("{provider} {provider}/{id} {provider} {id}{name}")
 }
 
-/// The models a workspace named, matched by prefix so a pattern can name a provider, a
-/// family, or one exact model.
+/// The models a workspace named, matched by prefix so a pattern can name a provider, a family, or
+/// one exact model.
 fn on_shortlist(models: &[ModelDef], patterns: &[String]) -> Vec<ModelDef> {
     if patterns.is_empty() {
         return Vec::new();
@@ -212,8 +197,8 @@ fn on_shortlist(models: &[ModelDef], patterns: &[String]) -> Vec<ModelDef> {
         .collect()
 }
 
-/// The models a picker offers, in the order they should be read: whatever is running
-/// first, then grouped by who serves it.
+/// The models a picker offers, in the order they should be read: whatever is running first, then
+/// grouped by who serves it.
 fn ordered(models: &[ModelDef], current: Option<&ModelDef>) -> Vec<ModelDef> {
     let mut ordered = models.to_vec();
     let current = current.map(ModelDef::qualified_id);
@@ -244,8 +229,7 @@ mod tests {
     use crate::dispatch;
     use crate::testing::*;
 
-    /// The list offers what can answer, not everything micro can speak to. Which
-    /// providers those are depends on the environment, so the property is asserted.
+    /// The list offers what can answer, not everything micro can speak to.
     #[tokio::test]
     async fn model_with_no_argument_offers_what_is_signed_in() {
         let harness = Harness::new("model-picker");
@@ -413,8 +397,7 @@ mod tests {
         assert!(text(&outcome).contains("openrouter"), "{outcome:?}");
     }
 
-    /// A row reads the way pi's does: the id, with who serves it beside it, because the
-    /// same model is often offered by several providers.
+    /// A model row includes its provider.
     #[test]
     fn a_model_row_names_the_model_and_who_serves_it() {
         let model = ModelDef {

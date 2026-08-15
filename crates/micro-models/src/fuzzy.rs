@@ -1,8 +1,4 @@
 //! Fuzzy matching for the menus that filter as you type.
-//!
-//! A query matches when its characters appear in order, not necessarily together. The score
-//! is a penalty — lower is better — and the weights reward what a deliberate query looks
-//! like: word starts, runs of adjacent characters, and an exact match most of all.
 
 /// Characters that make the position after them the start of a word.
 const WORD_SEPARATORS: [char; 6] = ['-', '_', '.', '/', ':', ' '];
@@ -21,9 +17,7 @@ pub fn match_score(query: &str, text: &str) -> Option<Match> {
         return Some(found);
     }
 
-    // A query that pairs letters with digits is often typed in the other order — `5opus`
-    // for `opus5`. Trying the swap costs nothing and is scored slightly worse so an
-    // as-typed match always wins.
+    
     let swapped = swap_letters_and_digits(&query)?;
     score_in_order(&swapped, &text).map(|found| Match {
         score: found.score + 5.0,
@@ -57,8 +51,7 @@ fn score_in_order(query: &[char], text: &[char]) -> Option<Match> {
             });
 
         match last_match {
-            // A run of adjacent characters is what a deliberate prefix looks like, and each
-            // step of the run is worth more than the last.
+            
             Some(previous) if previous + 1 == position => {
                 consecutive += 1;
                 score -= consecutive as f64 * 5.0;
@@ -115,9 +108,6 @@ fn swap_letters_and_digits(query: &[char]) -> Option<Vec<char>> {
 }
 
 /// Keep the items whose text matches every token of `query`, best first.
-///
-/// Whitespace and slashes separate tokens, so `anthropic/opus` narrows on both halves.
-/// An empty query keeps everything in its original order.
 pub fn filter<T, F>(items: Vec<T>, query: &str, text_of: F) -> Vec<T>
 where
     F: Fn(&T) -> String,
@@ -150,8 +140,7 @@ where
         }
     }
 
-    // A stable sort keeps candidates that score the same in the order they were listed,
-    // which is the order the command table declares them in.
+    
     scored.sort_by(|left, right| left.0.total_cmp(&right.0));
     scored.into_iter().map(|(_, item)| item).collect()
 }
@@ -203,7 +192,7 @@ mod tests {
     fn a_word_boundary_beats_a_match_inside_a_word() {
         let boundary = match_score("s", "micro-session").unwrap().score;
         let inside = match_score("s", "sessions").unwrap().score;
-        // Both start a word; the earlier position wins on the position penalty alone.
+        
         assert!(inside < boundary);
 
         let start = match_score("m", "model").unwrap().score;
@@ -229,7 +218,7 @@ mod tests {
             names(models.clone(), "anthropic opus"),
             vec!["anthropic/claude-opus-5"]
         );
-        // A slash separates tokens just as a space does.
+        
         assert_eq!(
             names(models.clone(), "anthropic/opus"),
             vec!["anthropic/claude-opus-5"]
@@ -242,7 +231,7 @@ mod tests {
         assert!(match_score("5opus", "claude-opus-5").is_some());
         assert!(match_score("opus5", "claude-5-opus").is_some());
 
-        // The swap is a fallback, so an as-typed match scores better.
+        
         let typed = match_score("opus5", "opus5").unwrap().score;
         let swapped = match_score("5opus", "opus5").unwrap().score;
         assert!(typed < swapped);

@@ -1,9 +1,4 @@
 //! The slash-command menu shown while a command is being typed.
-//!
-//! The menu belongs to the text before the cursor and is rebuilt on every keystroke, so the
-//! selection returns to the top whenever the filter changes. Moving through it wraps at both
-//! ends, and committing replaces what was typed with the command and a trailing space, ready
-//! for its argument.
 
 use micro_commands::Command;
 use micro_models::fuzzy;
@@ -13,31 +8,21 @@ use std::ops::Range;
 /// Rows the menu shows at once before it scrolls.
 pub const MAX_VISIBLE: usize = 5;
 
-/// How many files a menu offers at once. Past this the list stops being a list.
+/// How many files a menu offers at once.
 const MAX_FILE_SUGGESTIONS: usize = 50;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct MenuItem {
-    /// The command name, which is also what gets inserted. For an [`Offering::Extension`]
-    /// item this is the label an extension's `AutocompleteItem` gave to show, not what
-    /// committing writes — that is between the extension's `applyCompletion` and `raw`.
+    /// The command name, which is also what gets inserted.
     pub value: String,
     /// The argument hint and description, shown in a second column.
     pub description: String,
-    /// The `AutocompleteItem` exactly as the extension answered with it, kept whole so
-    /// `App::apply_extension_completion` can hand it back unchanged to `applyCompletion` —
-    /// carrying it apart rather than decomposed is what lets a field neither `value` nor
-    /// `description` reads still survive the round trip. `None` for a built-in item, which
-    /// has no `applyCompletion` to call and commits through [`Menu::commit`] instead.
+    
     pub raw: Option<Value>,
 }
 
 impl MenuItem {
-    /// A row for one of an extension's own `AutocompleteItem`s — `{value, label,
-    /// description?}` off the wire — shown by its `label` rather than its `value`, since
-    /// those are free to differ and `label` is the one meant for reading. `None` for
-    /// anything not shaped that way, which is answered with as though it were not there
-    /// rather than shown broken.
+    /// A row for one of an extension's own `AutocompleteItem`s.
     pub fn from_extension_item(raw: Value) -> Option<MenuItem> {
         let label = raw.get("label").and_then(Value::as_str)?.to_string();
         let description = raw
@@ -56,16 +41,11 @@ impl MenuItem {
 /// What the menu is offering, which decides what committing writes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Offering {
-    /// Slash commands. Committing writes `/name ` with a trailing space.
+    /// Slash commands.
     Commands,
-    /// Workspace files, reached with `@`. Committing writes `@path ` so the path stays
-    /// attached to the marker that introduced it.
+    /// Workspace files, reached with `@`.
     Files,
-    /// Whatever an extension's own `addAutocompleteProvider` chain offered, for a word
-    /// beginning with a character it registered as a trigger. Empty the moment it opens —
-    /// nothing here knows what to offer until the extension answers — and committing is the
-    /// extension's own `applyCompletion` to carry out, not a fixed splice, so [`Menu::commit`]
-    /// answers `None` for this offering; see `App::apply_extension_completion`.
+    
     Extension,
 }
 
@@ -79,20 +59,15 @@ pub struct Menu {
 }
 
 impl Menu {
-    /// The menu belonging to `line` with the cursor at byte offset `cursor`, or nothing when
-    /// no menu belongs there.
-    ///
-    /// A menu opens on a line that begins with a slash and has no space yet: once the
-    /// command word is finished, what follows is its argument, not a command to pick.
+    /// The menu belonging to `line` with the cursor at byte offset `cursor`, or nothing when no
+    /// menu belongs there.
     pub fn open_for(line: &str, cursor: usize, registered: &[MenuItem]) -> Option<Menu> {
         let typed = line.get(..cursor)?;
         if !typed.starts_with('/') || typed.contains(char::is_whitespace) {
             return None;
         }
 
-        // An extension's commands are offered beside the built-in ones: they are typed the
-        // same way and run the same way, so a menu that left them out would be describing
-        // something other than what the session answers to.
+        
         let mut offered: Vec<MenuItem> = micro_commands::commands()
             .iter()
             .copied()
@@ -114,10 +89,6 @@ impl Menu {
     }
 
     /// The file menu belonging to `line` with the cursor at `cursor`, or nothing.
-    ///
-    /// A file menu opens on the word under the cursor when it begins with `@`. Unlike a
-    /// command it may appear anywhere in the line, because naming a file is something a
-    /// sentence does in passing rather than a thing the whole line is.
     pub fn files_for(line: &str, cursor: usize, paths: &[String]) -> Option<Menu> {
         let typed = line.get(..cursor)?;
         let start = typed
@@ -148,10 +119,7 @@ impl Menu {
         })
     }
 
-    /// The menu belonging to a word that begins with one of an extension's own trigger
-    /// characters — `#`, say, if that is what `addAutocompleteProvider` registered. Opens
-    /// empty: nothing here knows what to suggest until the extension answers, the same way a
-    /// registered component draws from nothing until its first render lands.
+    /// The menu belonging to a word that begins with one of an extension's own trigger characters.
     pub fn extension_for(line: &str, cursor: usize, triggers: &[char]) -> Option<Menu> {
         if triggers.is_empty() {
             return None;
@@ -175,10 +143,7 @@ impl Menu {
         })
     }
 
-    /// Fill an [`Offering::Extension`] menu with what the extension answered, when it still
-    /// belongs to the word it was opened for. A slow answer for a prefix the reader has since
-    /// typed past, or a menu that has since closed or turned into something else, changes
-    /// nothing — the same staleness the rest of a live component guards against.
+    
     pub fn set_extension_items(&mut self, prefix: &str, items: Vec<MenuItem>) -> bool {
         if self.offering != Offering::Extension || self.prefix != prefix {
             return false;
@@ -223,12 +188,7 @@ impl Menu {
         };
     }
 
-    /// The text the prefix becomes when the selection is committed. The trailing space puts
-    /// the cursor where an argument would go, and closes the menu.
-    ///
-    /// `None` for [`Offering::Extension`]: what committing one of those writes is the
-    /// extension's own `applyCompletion` to decide, which needs a round trip this method
-    /// cannot make — see `App::apply_extension_completion`.
+    /// The text the prefix becomes when the selection is committed.
     pub fn commit(&self) -> Option<String> {
         let item = self.selected_item()?;
         match self.offering {
@@ -254,7 +214,7 @@ impl Menu {
 
 impl From<Command> for MenuItem {
     fn from(command: Command) -> Self {
-        // The hint and the description read as one phrase, joined by a dash.
+        
         let description = match command.argument {
             Some(argument) => format!("{argument} — {}", command.description),
             None => command.description.to_string(),
@@ -300,7 +260,7 @@ mod tests {
 
     #[test]
     fn the_menu_belongs_to_the_text_before_the_cursor() {
-        // Cursor left of the slash: nothing has been typed toward a command yet.
+        
         assert!(Menu::open_for("/model", 0, &[]).is_none());
         let menu = Menu::open_for("/model", 2, &[]).expect("a menu");
         assert_eq!(menu.prefix(), "/m");
@@ -384,7 +344,7 @@ mod tests {
         assert!(window.contains(&menu.selected()));
         assert_eq!(window.len(), MAX_VISIBLE);
 
-        // At the end the window stops rather than running past the last item.
+        
         menu.select_previous();
         for _ in 0..total {
             menu.select_next();
@@ -450,7 +410,7 @@ mod files {
         assert!(Menu::files_for("", 0, &paths()).is_none());
     }
 
-    /// A name matching nothing offers nothing rather than the whole workspace.
+    
     #[test]
     fn a_name_matching_nothing_offers_nothing() {
         assert!(Menu::files_for("@zzzzz", 6, &paths()).is_none());
@@ -471,15 +431,15 @@ mod extension_provider {
     use super::*;
     use serde_json::json;
 
-    /// Nothing registered no trigger characters, so nothing here ever mistakes a word for
-    /// one meant for an extension.
+    /// Nothing registered no trigger characters, so nothing here ever mistakes a word for one meant
+    /// for an extension.
     #[test]
     fn no_triggers_registered_opens_nothing() {
         assert!(Menu::extension_for("#tag", 4, &[]).is_none());
     }
 
-    /// A word starting with a registered trigger opens the menu empty, waiting on the
-    /// extension's own answer.
+    /// A word starting with a registered trigger opens the menu empty, waiting on the extension's
+    /// own answer.
     #[test]
     fn a_registered_trigger_opens_an_empty_menu() {
         let menu = Menu::extension_for("#tag", 4, &['#']).expect("it opens");
@@ -501,8 +461,7 @@ mod extension_provider {
         assert_eq!(menu.prefix(), "#ram");
     }
 
-    /// The extension's answer lands only while it still belongs to the word it was asked
-    /// about — a stale answer for a prefix the reader has since typed past changes nothing.
+    /// The extension's answer lands only while it still belongs to the word it was asked about.
     #[test]
     fn a_stale_answer_is_ignored() {
         let mut menu = Menu::extension_for("#tag", 4, &['#']).unwrap();
@@ -515,8 +474,7 @@ mod extension_provider {
         assert_eq!(menu.items().len(), 1);
     }
 
-    /// `commit` is not this offering's to answer — an extension's `applyCompletion` decides
-    /// what committing writes, and that needs a round trip only `App` can make.
+    /// `commit` is not this offering's to answer.
     #[test]
     fn committing_is_left_to_the_extension() {
         let mut menu = Menu::extension_for("#tag", 4, &['#']).unwrap();
@@ -525,8 +483,7 @@ mod extension_provider {
         assert_eq!(menu.commit(), None);
     }
 
-    /// An item is shown by its label, not its value, since the two are free to differ — and
-    /// the raw object is kept whole for the round trip back to `applyCompletion`.
+    /// An item is shown by its label, not its value, since the two are free to differ.
     #[test]
     fn an_item_is_shown_by_its_label_and_keeps_its_raw_shape() {
         let raw = json!({ "value": "u1", "label": "@user (Jordan)", "description": "teammate" });

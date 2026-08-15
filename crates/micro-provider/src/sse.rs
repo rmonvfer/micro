@@ -2,7 +2,7 @@
 
 use futures::StreamExt;
 
-/// One dispatched SSE event. Comment lines and unknown fields are discarded.
+/// One dispatched SSE event.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct SseEvent {
     pub event: Option<String>,
@@ -10,9 +10,6 @@ pub struct SseEvent {
 }
 
 /// Read an SSE body to completion, invoking `on_event` for each dispatched event.
-///
-/// Events are separated by a blank line; consecutive `data:` lines within one event are
-/// joined with newlines, per the SSE spec.
 pub async fn read_sse<F>(response: reqwest::Response, mut on_event: F) -> Result<(), reqwest::Error>
 where
     F: FnMut(SseEvent),

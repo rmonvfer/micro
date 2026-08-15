@@ -1,13 +1,4 @@
 //! What a session records beyond the conversation.
-//!
-//! A message says what was said. A ledger event says what was done: the exact request a
-//! turn issued, what it was told it cost, where every span of the prompt came from, what
-//! was refused and by whom. Each one is a fact about the run, written once, in the order
-//! it happened, so a session can be read back and accounted for rather than only replayed.
-//!
-//! The shape is versioned from the first line ever written ([`SCHEMA_VERSION`]) and the
-//! reader tolerates a kind it has never heard of, so a log written by a later build still
-//! opens here.
 
 use crate::StopReason;
 use crate::Usage;
@@ -19,16 +10,9 @@ use serde::Serializer;
 use serde_json::Value;
 
 /// The version every ledger line and every session sidecar carries.
-///
-/// A reader checks it before trusting the fields around it, which is what lets the shape
-/// change later without a log written today becoming unreadable or, worse, misread.
 pub const SCHEMA_VERSION: u32 = 1;
 
 /// The name a piece of content is filed under: the hex sha-256 of its bytes.
-///
-/// Content-addressed rather than numbered, so a system prompt that did not change between
-/// two turns is stored once and named identically by both of them, and so the name of a
-/// thing is proof of what it holds.
 pub fn content_hash(bytes: &[u8]) -> String {
     use sha2::Digest as _;
     let mut hasher = sha2::Sha256::new();
@@ -37,48 +21,33 @@ pub fn content_hash(bytes: &[u8]) -> String {
 }
 
 /// Something that happened in a session which is not part of the conversation.
-///
-/// Tagged on `type` rather than discriminated by shape: these are appended to the same log
-/// the conversation is written to, and a fact about a run has no business being told apart
-/// from a message by guessing at its fields.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum LedgerEvent {
     /// One request to a provider, described completely enough to rebuild it.
-    ///
-    /// The bodies themselves are stored content-addressed and named by hash. The system
-    /// prompt, tool definitions and model are kept separately for inspection, and the
-    /// conversation is named by the entries it was read from. What is here is what makes
-    /// the request identifiable — the hash of the assembled body — and what makes it
-    /// explicable — where each span of the prompt came from.
     TurnRequest {
         turn: u64,
         provider: String,
         model: String,
-        /// The hash of the system prompt and the tool definitions together, which is the
-        /// part of a request a provider can cache. Two turns that share it asked the
-        /// provider to reuse the same prefix.
+        /// The hash of the system prompt and the tool definitions together, which is the part of a
+        /// request a provider can cache.
         prefix_hash: String,
-        /// The hash of the serialized request body, which is what identifies this request
-        /// among every other one.
+        
         request_hash: String,
-        /// The exact serialized provider request body. Older ledgers may not have one and
-        /// must reconstruct the body before they can verify it against `request_hash`.
+        /// The exact serialized provider request body.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         request_body_blob: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         system_prompt_blob: Option<String>,
         tools_blob: String,
-        /// The model as it was configured for this request — the endpoint, the token
-        /// ceiling, the thinking level — without which the body cannot be rebuilt.
+        /// The model as it was configured for this request.
         model_blob: String,
         #[serde(default)]
         prefix_spans: Vec<PrefixSpan>,
         /// The entries the conversation stood at, in the order the model was shown them.
         #[serde(default)]
         message_entry_ids: Vec<String>,
-        /// Which try this was. A request re-issued after a transient failure is recorded
-        /// again rather than folded into the first one.
+        /// Which try this was.
         attempt: u32,
     },
     /// What a turn was billed for, as the provider reported it.
@@ -89,8 +58,7 @@ pub enum LedgerEvent {
         provider: String,
         model: String,
     },
-    /// A provider attempt ended without usage. It may or may not have been billed; the
-    /// ledger keeps that uncertainty instead of treating it as a known zero.
+    /// A provider attempt ended without usage.
     RequestAttemptFailed {
         turn: u64,
         attempt: u32,
@@ -99,11 +67,6 @@ pub enum LedgerEvent {
         usage_unknown: bool,
     },
     /// A stretch of the conversation replaced by a summary of it.
-    ///
-    /// Summarizing is itself a request to a model, so it has a price, and it is the one
-    /// request a session makes that nobody asked for. It is recorded here rather than as a
-    /// turn of its own: a turn is what the conversation moved forward by, and this moved it
-    /// backwards to make room.
     Compaction {
         summary_blob: String,
         kept: usize,
@@ -115,8 +78,7 @@ pub enum LedgerEvent {
     },
     /// The conversation now continues from a different entry.
     HeadMoved { entry_id: String },
-    /// A tool call something watching the run would not let happen. The model was told,
-    /// in the shape a failed call takes; this is the record that it was a refusal.
+    /// A tool call something watching the run would not let happen.
     ToolDenied {
         tool: String,
         reason: String,
@@ -154,20 +116,11 @@ pub enum LedgerEvent {
         data: Value,
     },
     /// A kind this build has never heard of, read from a log a later one wrote.
-    ///
-    /// Kept rather than refused so a session written by a newer micro still opens: what
-    /// this build cannot interpret it declines to interpret, instead of declaring the line
-    /// corrupt and dropping everything on it.
     #[serde(other)]
     Unknown,
 }
 
 /// What writing a summary cost, as the provider that wrote it reported.
-///
-/// Zero for a summary that took no request to produce, which is what a caller supplying its
-/// own summarizer does. Carried apart from the usage of the turns around it so a bill can
-/// show compaction as its own line: it is spending the user did not ask for, and hiding it
-/// inside the turn that triggered it would make it unaccountable.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct CompactionCost {
     #[serde(default)]
@@ -178,12 +131,7 @@ pub struct CompactionCost {
     pub model: String,
 }
 
-/// One stretch of the system prompt, and where it came from.
-///
-/// The prompt reaches the model as one string, but it was assembled from parts with
-/// different owners — a project's instructions, a skill's description, what an extension
-/// asked to say. Recording the parts is what makes a prompt attributable after the fact:
-/// which of them changed, and which of them a turn was billed for.
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PrefixSpan {
     pub source: EventSource,
@@ -191,12 +139,7 @@ pub struct PrefixSpan {
     pub hash: String,
 }
 
-/// Who or what a span, a decision or a message came from.
-///
-/// Written as a string so a log reads without a schema in hand: a kind on its own
-/// (`system_prompt`), or a kind and a name (`skill:review`, `extension:deploy`). A kind
-/// with no name is the whole of that kind rather than one member of it — `skill` is the
-/// section describing every skill, `skill:review` is one of them.
+
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub enum EventSource {
     User,
@@ -245,8 +188,7 @@ impl EventSource {
 }
 
 impl std::fmt::Display for EventSource {
-    /// Written through `pad` rather than straight out, so a source printed in a column
-    /// obeys the width it was given like any other value would.
+    
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter.pad(&self.as_str())
     }
@@ -311,8 +253,7 @@ mod tests {
         }
     }
 
-    /// A section that stands for every member of its kind rather than for one of them is
-    /// written as the bare kind, and reads back as one with no name.
+    
     #[test]
     fn a_source_with_no_name_is_written_as_its_kind_alone() {
         let source = EventSource::Skill(String::new());
@@ -430,8 +371,7 @@ mod tests {
         }
     }
 
-    /// A compaction recorded before anyone priced one says nothing about what it cost,
-    /// which reads back as having cost nothing rather than as an unreadable line.
+    /// A compaction recorded before anyone priced one says nothing about what it cost.
     #[test]
     fn a_compaction_recorded_without_a_price_still_reads() {
         let line = r#"{"type":"compaction","summary_blob":"aa","kept":4}"#;
@@ -446,9 +386,7 @@ mod tests {
         );
     }
 
-    /// A log written by a later build carries kinds this one has never seen. Reading one
-    /// has to leave the rest of the session intact: the line is kept as something that
-    /// happened, and only its contents are given up on.
+    /// A log written by a later build carries kinds this one has never seen.
     #[test]
     fn an_event_kind_from_a_later_build_still_reads() {
         let line = r#"{"type":"quantum_entanglement","spooky":true}"#;

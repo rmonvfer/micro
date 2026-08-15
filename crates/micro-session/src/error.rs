@@ -10,8 +10,7 @@ pub enum SessionError {
     #[error("no session with id {0}")]
     NotFound(String),
 
-    /// Ids come from user input and become file names, so anything that could reach
-    /// outside the store is refused rather than resolved.
+    
     #[error("invalid session id: {0}")]
     InvalidId(String),
 

@@ -1,18 +1,4 @@
 //! OSC 8 hyperlinks, applied after the frame is laid out.
-//!
-//! A terminal makes text clickable when it is wrapped in `ESC]8;;url BEL … ESC]8;; BEL`.
-//! Those sequences occupy no columns, which is exactly why they cannot be put in a span:
-//! everything upstream measures a span by its characters, so a URL inside one would push
-//! the rest of the line sideways and break every wrap calculation on it.
-//!
-//! They can go in afterwards. Ratatui writes each cell's symbol to the terminal verbatim,
-//! and a cell owns one column no matter how many bytes its symbol holds — so once layout is
-//! settled, the opener can be prepended to the first cell of a link and the terminator
-//! appended to its last, with no effect on width at all.
-//!
-//! Which cells those are is carried through layout by the span's underline colour, set to
-//! an index into a table of URLs. Nothing else in the interface sets that field, and it is
-//! cleared here before the frame is written, so it never reaches the terminal.
 
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
@@ -20,10 +6,6 @@ use ratatui::style::Color;
 use ratatui::style::Style;
 
 /// URLs for one frame, in the order the renderer met them.
-///
-/// A collector that has been told the terminal cannot do hyperlinks records nothing and
-/// marks nothing, so the text falls back to the plain `text (url)` form rather than having
-/// its URL swallowed by a terminal that does not understand the escape.
 #[derive(Debug, Clone)]
 pub struct Links {
     urls: Vec<String>,
@@ -44,8 +26,7 @@ impl Links {
         Links::default()
     }
 
-    /// Whether the text itself can be made clickable. When it cannot, a caller prints the
-    /// target alongside the text instead, since otherwise it would be lost.
+    /// Whether the text itself can be made clickable.
     pub fn is_enabled(&self) -> bool {
         self.enabled
     }
@@ -63,10 +44,6 @@ impl Links {
     }
 
     /// Record a URL and hand back the style that marks the text pointing at it.
-    ///
-    /// The marker rides in `underline_color`, which survives being split across wrapped
-    /// rows and copied between buffers — so a link broken over two lines is still a link on
-    /// both of them.
     pub fn mark(&mut self, style: Style, url: impl Into<String>) -> Style {
         if !self.enabled {
             return style;
@@ -82,10 +59,6 @@ impl Links {
     }
 
     /// Forget every link recorded after `kept`.
-    ///
-    /// A link's number is written into the rows that point at it, so throwing rows away
-    /// means throwing away the links they carried — and keeping the ones before them, whose
-    /// numbers are still written into rows that are staying.
     pub fn truncate(&mut self, kept: usize) {
         self.urls.truncate(kept);
     }
@@ -95,10 +68,6 @@ impl Links {
     }
 
     /// Wrap every marked run in the buffer with its escape sequences.
-    ///
-    /// Runs are found per row, so a link split across two rows becomes two hyperlinks
-    /// pointing at the same place — which is what a terminal expects, and what makes both
-    /// halves clickable.
     pub fn apply(&self, buffer: &mut Buffer, area: Rect) {
         if self.is_empty() {
             return;
@@ -118,7 +87,7 @@ impl Links {
                     open(buffer, x, y, url);
                     close(buffer, end, y);
                 }
-                // The marker has done its work and must not reach the terminal.
+                
                 for column in x..=end {
                     clear(buffer, column, y);
                 }
@@ -128,8 +97,7 @@ impl Links {
     }
 }
 
-/// Links are numbered from a base far above any palette index a theme would use, so a
-/// marked cell cannot be confused with one a user genuinely underlined in colour.
+/// Links are numbered from a base far above any palette index a theme would use.
 const BASE: u8 = 16;
 
 fn sentinel(index: usize) -> Color {
@@ -216,8 +184,7 @@ mod tests {
         }
     }
 
-    /// On a terminal that cannot do hyperlinks nothing is marked, so nothing is wrapped and
-    /// the URL stays visible as text rather than vanishing into a swallowed escape.
+    /// On a terminal that cannot do hyperlinks nothing is marked.
     #[test]
     fn a_terminal_without_hyperlinks_gets_none() {
         let mut links = Links::disabled();
@@ -284,12 +251,11 @@ mod tests {
             .collect();
         assert!(row.contains("\x1b]8;;https://example.com\x07"), "{row:?}");
         assert!(row.contains("\x1b]8;;\x07"), "and it is closed again");
-        // The visible text is untouched: the escapes ride on cells, not in the text.
+        
         let visible: String = row
             .replace("\x1b]8;;https://example.com\x07", "")
             .replace("\x1b]8;;\x07", "");
-        // With the terminal able to click the text, the target rides in the escape rather
-        // than being printed after it.
+        
         assert!(visible.starts_with("see the docs now"), "{visible:?}");
     }
 

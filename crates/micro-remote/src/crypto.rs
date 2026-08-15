@@ -1,13 +1,4 @@
 //! The sealed frame, and the keys it is sealed with.
-//!
-//! The relay routes frames without being able to read them: everything that crosses it
-//! is AES-256-GCM ciphertext under a key derived from a secret only the machine and the
-//! phone hold. Each direction gets its own key, so a frame captured on one leg cannot be
-//! replayed onto the other.
-//!
-//! The shapes here are not micro's to choose — a phone already speaks this protocol —
-//! so the tests check against the vectors shipped beside it rather than against
-//! themselves.
 
 use aes_gcm::aead::Aead;
 use aes_gcm::aead::KeyInit;
@@ -25,11 +16,7 @@ use sha2::Sha256;
 /// How long a GCM nonce is, in bytes.
 const NONCE_LEN: usize = 12;
 
-/// Which leg of the pairing a key is for.
-///
-/// The push key is a third direction rather than a reuse of the machine's: a push
-/// payload is handed to Apple, and a key that also opens session frames would put the
-/// conversation behind whatever holds the notification.
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Direction {
     /// Machine to phone.
@@ -67,10 +54,6 @@ pub enum CryptoError {
 }
 
 /// The key for one direction of one pairing.
-///
-/// The pairing id is mixed into the info string rather than the salt, which is empty:
-/// that is what the phone does, and a key derived any other way simply never opens
-/// anything it sends.
 pub fn derive_key(secret: &[u8], pairing_id: &str, direction: Direction) -> [u8; 32] {
     let info = format!("parley-remote/v1/{pairing_id}/{}", direction.label());
     let hkdf = Hkdf::<Sha256>::new(None, secret);
@@ -87,8 +70,7 @@ pub fn seal(key: &[u8; 32], plaintext: &str) -> WireFrame {
     seal_with_nonce(key, plaintext, &nonce)
 }
 
-/// Seals a payload under a nonce given, which is what makes the sealing testable
-/// against a fixed vector.
+
 pub fn seal_with_nonce(key: &[u8; 32], plaintext: &str, nonce: &[u8; NONCE_LEN]) -> WireFrame {
     let cipher = Aes256Gcm::new(key.into());
     let ciphertext = cipher
@@ -108,11 +90,6 @@ pub fn seal_with_nonce(key: &[u8; 32], plaintext: &str, nonce: &[u8; NONCE_LEN])
 }
 
 /// Opens a frame, or says it could not be opened.
-///
-/// Every way a frame can be wrong — a nonce that is not base64, a truncated
-/// ciphertext, a tag that does not check, plaintext that is not UTF-8 — comes back as
-/// the same failure. A caller cannot act differently on any of them, and saying which
-/// one it was tells whoever sent it something about the key.
 pub fn open(key: &[u8; 32], frame: &WireFrame) -> Result<String, CryptoError> {
     let nonce = STANDARD
         .decode(&frame.n)
@@ -225,9 +202,8 @@ mod tests {
             Direction::Push,
         );
         let push = vectors["push"].clone();
-        // Built through the real type rather than from the vector's own object: the
-        // phone authenticates over the bytes of a payload written in declaration
-        // order, and a `Value` would be written in sorted order instead.
+        
+        
         let payload = crate::protocol::PushPayload {
             kind: crate::protocol::PushKind::Offer,
             session_id: push["payload"]["sessionId"].as_str().unwrap().into(),
@@ -258,8 +234,7 @@ mod tests {
         assert_eq!(open(&inbound, &frame), Err(CryptoError::Authentication));
     }
 
-    /// Every way a frame can be wrong comes back the same way, so nothing about the
-    /// key leaks back to whoever sent it.
+    
     #[test]
     fn a_damaged_frame_fails_the_way_every_other_damaged_frame_does() {
         let key = derive_key(b"a secret", "pairing", Direction::MachineToPhone);

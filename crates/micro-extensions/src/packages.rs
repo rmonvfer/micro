@@ -1,39 +1,25 @@
 //! Installing extensions that live somewhere else.
-//!
-//! A source names where a package comes from, in the forms pi accepts:
-//!
-//! ```text
-//! npm:@scope/name          npm:name@1.2.3
-//! git:github.com/user/repo git:git@github.com:user/repo
-//! https://github.com/user/repo   ssh://git@github.com/user/repo
-//! ./local/path
-//! ```
-//!
-//! What is fetched lands under micro's own directory — `npm/node_modules/<name>` or
-//! `git/<host>/<owner>/<repo>` — and the source is written into the settings, so the next
-//! run finds it without being told again. Nothing is installed into the workspace, and
-//! nothing is installed globally.
 
 use serde::Deserialize;
 use serde::Serialize;
 use std::path::Path;
 use std::path::PathBuf;
 
-/// Where a package comes from.
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Source {
     /// A package on the npm registry.
     Npm {
-        /// The whole spec as written, which is what the installer is given.
+        
         spec: String,
         /// The package name, without a version.
         name: String,
-        /// The version or range, when one was asked for.
+        
         version: Option<String>,
     },
     /// A repository to clone.
     Git {
-        /// The URL to clone from.
+        
         url: String,
         /// Where it goes, as `host/owner/repo`.
         slug: String,
@@ -63,8 +49,7 @@ impl Source {
         if let Some(parsed) = git(source) {
             return Ok(parsed);
         }
-        // Anything left is taken as a path: a bare name is more likely a directory than a
-        // URL somebody forgot the scheme for.
+        
         Ok(Source::Local {
             path: source.to_string(),
         })
@@ -85,8 +70,8 @@ impl Source {
         }
     }
 
-    /// Where this source is installed, under `home` for a user install or under the
-    /// workspace for a project one.
+    /// Where this source is installed, under `home` for a user install or under the workspace for a
+    /// project one.
     pub fn install_path(&self, home: &Path, workspace: &Path, local: bool) -> PathBuf {
         let base = match local {
             true => workspace.join(".micro"),
@@ -109,7 +94,7 @@ fn npm(spec: &str) -> Result<Source, String> {
         return Err("say which npm package to install".to_string());
     }
 
-    // A scope starts with `@`, and its own slash is not a version separator.
+    
     let after_scope = match spec.starts_with('@') {
         true => spec.find('/').map(|slash| slash + 1).unwrap_or(0),
         false => 0,
@@ -147,12 +132,12 @@ fn git(source: &str) -> Option<Source> {
     } else if let Some(rest) = stripped.strip_prefix("ssh://") {
         (format!("ssh://{rest}"), slug_of(strip_user(rest)))
     } else if stripped.contains('@') && stripped.contains(':') {
-        // `git@github.com:user/repo`
+        
         let after_user = stripped.split_once('@').map(|(_, rest)| rest)?;
         let (host, path) = after_user.split_once(':')?;
         (stripped.to_string(), slug_of(&format!("{host}/{path}")))
     } else if stripped.contains('/') && stripped.contains('.') {
-        // `github.com/user/repo`
+        
         (format!("https://{stripped}"), slug_of(stripped))
     } else {
         return None;
@@ -165,7 +150,7 @@ fn git(source: &str) -> Option<Source> {
     })
 }
 
-/// `github.com/user/repo.git` as the directory it is cloned into.
+
 fn slug_of(path: &str) -> String {
     path.trim_end_matches('/')
         .trim_end_matches(".git")
@@ -180,7 +165,7 @@ fn strip_user(rest: &str) -> &str {
     rest.split_once('@').map(|(_, rest)| rest).unwrap_or(rest)
 }
 
-/// Whether a source names a place on this machine rather than one to fetch from.
+
 fn is_local(source: &str) -> bool {
     source.starts_with("./")
         || source.starts_with("../")
@@ -199,9 +184,6 @@ pub struct Installed {
 }
 
 /// Fetch a source and put it where micro will find it.
-///
-/// npm packages are installed with Bun, which is already required to run an extension.
-/// A repository is cloned, or brought up to date when it is already there.
 pub async fn install(
     source: &Source,
     home: &Path,
@@ -212,11 +194,7 @@ pub async fn install(
 
     match source {
         Source::Npm { spec, .. } => {
-            // Walking up from the install path would answer differently for a scoped name
-            // than an unscoped one, since `@scope/package` is two directories rather than
-            // one — and landing inside `node_modules` is what makes Bun install into a
-            // second `node_modules` beneath it. The root is where `install_path` put the
-            // `node_modules` directory, so it is taken from there rather than counted back.
+            
             let root = path
                 .ancestors()
                 .find(|ancestor| ancestor.file_name().is_some_and(|name| name == "node_modules"))
@@ -225,8 +203,7 @@ pub async fn install(
                 .to_path_buf();
             std::fs::create_dir_all(&root)
                 .map_err(|error| format!("cannot use {}: {error}", root.display()))?;
-            // A package.json has to exist or Bun installs into the nearest parent that
-            // has one, which would put someone else's dependency in micro's home.
+            
             let manifest = root.join("package.json");
             if !manifest.exists() {
                 std::fs::write(&manifest, "{\n  \"name\": \"micro-extensions\"\n}\n")
@@ -261,11 +238,7 @@ pub async fn install(
                     run(Path::new("git"), &["fetch", "origin", reference], &path).await?;
                     run(Path::new("git"), &["checkout", reference], &path).await?;
                 }
-                // A cloned package's own dependencies are its to declare and micro's to
-                // fetch, the same posture an npm-sourced install already takes for its own
-                // `--omit=peer`. Only a fresh clone reaches this: an update that was
-                // already installed keeps whatever is already in its node_modules rather
-                // than reinstalling on every pull.
+                
                 ensure_declared_dependencies_installed(&path).await?;
             }
         }
@@ -273,13 +246,7 @@ pub async fn install(
             if !path.exists() {
                 return Err(format!("{} is not there", path.display()));
             }
-            // pi's own installer (`installParsedSource` in `package-manager.ts`) branches
-            // only on its npm and git source types; nothing installs a local package's
-            // dependencies there. This is a deliberate difference rather than an
-            // oversight: "install an extension and it works" is the rule for every
-            // source, and a local directory is a real package the same way a cloned one
-            // is. Do not narrow this back toward pi to chase parity — the gap being
-            // matched here is one pi never filled, not one micro is inventing.
+            
             if path.is_dir() {
                 ensure_declared_dependencies_installed(&path).await?;
             }
@@ -299,16 +266,7 @@ pub async fn install(
     })
 }
 
-/// Fetch a package's own declared dependencies into it, the way pi's installer runs a
-/// plain `install --omit=dev` inside a package it just fetched — a no-specs install read
-/// from the `package.json` already sitting there, not the specs-based `add` an npm-sourced
-/// install uses to fetch the package itself. `--omit=dev` rather than micro's own
-/// `--omit=peer`: a fetched package's dev tooling is not needed to run it, the way an
-/// npm-sourced install's `--omit=peer` exists to keep host-provided `@earendil-works/pi-*`
-/// peers from being solved and reinstalled, a different concern this is not the place for.
-///
-/// A directory with nothing to install — no `package.json` at all — costs nothing: this
-/// returns immediately rather than running bun over an empty question.
+
 async fn ensure_declared_dependencies_installed(directory: &Path) -> Result<(), String> {
     if !directory.join("package.json").exists() {
         return Ok(());
@@ -319,11 +277,11 @@ async fn ensure_declared_dependencies_installed(directory: &Path) -> Result<(), 
     Ok(())
 }
 
-/// Take an installed package away. Its source is the caller's to forget.
+/// Take an installed package away.
 pub fn remove(source: &Source, home: &Path, workspace: &Path, local: bool) -> Result<(), String> {
     let path = source.install_path(home, workspace, local);
     match source {
-        // A local source was never copied anywhere, so there is nothing to delete.
+        
         Source::Local { .. } => Ok(()),
         _ => match path.exists() {
             false => Ok(()),
@@ -334,16 +292,6 @@ pub fn remove(source: &Source, home: &Path, workspace: &Path, local: bool) -> Re
 }
 
 /// Run a program with its arguments, and say what it printed when it fails.
-///
-/// No shell is involved: the arguments go to the program as they are written, so a package
-/// name carrying shell punctuation is a package name and nothing else.
-/// Install what a package expects its host to provide.
-///
-/// An extension written for pi declares pi's own packages as optional peers: inside pi they
-/// resolve to what is already running, so nothing installs them. micro is a different host,
-/// and the imports still have to resolve, so they are fetched here. Optional is what lets a
-/// package be installed at all without them; it is not a claim that it runs without them,
-/// and one that imports them at the top of a file does not.
 async fn install_peers(runtime: &Path, root: &Path, package: &Path) -> Result<(), String> {
     let Ok(raw) = std::fs::read_to_string(package.join("package.json")) else {
         return Ok(());
@@ -491,8 +439,8 @@ mod tests {
         assert!(Source::parse("npm:").is_err());
     }
 
-    /// What is fetched goes under micro's own directory, or under the project when the
-    /// install is a project one. Never into the workspace root, never global.
+    /// What is fetched goes under micro's own directory, or under the project when the install is a
+    /// project one.
     #[test]
     fn an_install_lands_where_it_is_looked_for() {
         let home = Path::new("/home/.micro");
@@ -536,9 +484,7 @@ mod tests {
         }
     }
 
-    /// A throwaway directory carrying a `package.json` that declares one real dependency —
-    /// small and stable, so installing it is fast and does not depend on anything about the
-    /// package beyond it existing on the registry.
+    /// A throwaway directory carrying a `package.json` that declares one real dependency.
     fn directory_with_a_dependency(label: &str) -> PathBuf {
         let root = std::env::temp_dir().join(format!(
             "micro-packages-{label}-{}-{}",
@@ -565,8 +511,7 @@ mod tests {
             let status = std::process::Command::new("git")
                 .args(args)
                 .current_dir(&root)
-                // No dependence on whatever global git identity the machine running this
-                // test happens to have configured.
+                
                 .env("GIT_AUTHOR_NAME", "test")
                 .env("GIT_AUTHOR_EMAIL", "test@example.invalid")
                 .env("GIT_COMMITTER_NAME", "test")
@@ -582,10 +527,7 @@ mod tests {
         root
     }
 
-    /// Installing a git source fetches the package's own dependencies the same way an
-    /// npm-sourced install already does — this is the fix for the bug where a cloned
-    /// package's `import "ms"` failed even though the clone itself succeeded, because
-    /// nothing had ever run a package manager inside it.
+    
     #[tokio::test]
     async fn a_git_source_gets_its_own_dependencies_installed() {
         if crate::host::which_bun().is_none() {
@@ -618,9 +560,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&scratch);
     }
 
-    /// Installing a local source fetches its own declared dependencies too — a local
-    /// directory is a real package the same way a cloned one is, and the same rule applies:
-    /// install it and it works, rather than install it and watch its first import fail.
+    /// Installing a local source fetches its own declared dependencies too.
     #[tokio::test]
     async fn a_local_source_gets_its_own_dependencies_installed() {
         if crate::host::which_bun().is_none() {
@@ -651,8 +591,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&scratch);
     }
 
-    /// A local directory with no `package.json` at all is unaffected: nothing runs bun
-    /// over a directory that never asked for anything to be installed.
+    
     #[tokio::test]
     async fn a_local_source_with_nothing_to_install_is_unaffected() {
         let root = std::env::temp_dir().join(format!(

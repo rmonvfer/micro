@@ -1,15 +1,4 @@
 //! Tools a separate program provides, over the Model Context Protocol.
-//!
-//! An MCP server is an ordinary process that speaks JSON-RPC 2.0 over its stdin and
-//! stdout, one message per line. It is asked what tools it has, and each of them becomes a
-//! [`micro_tools::Tool`] like any other: the model cannot tell which of its tools are
-//! micro's own and which came from somewhere else, and nothing in the agent loop needs to.
-//!
-//! The protocol is small enough to speak directly. Doing so keeps the dependency list
-//! where it was, and the whole of it is the handshake, `tools/list`, and `tools/call`.
-//!
-//! A server that fails to start is reported and skipped rather than ending the run: a
-//! broken entry in a config file should cost its own tools and nothing else.
 
 use async_trait::async_trait;
 use micro_types::ContentBlock;
@@ -34,16 +23,9 @@ const PROTOCOL_VERSION: &str = "2024-11-05";
 const DEFAULT_STARTUP_TIMEOUT: Duration = Duration::from_secs(20);
 
 /// How long a single tool call may take.
-///
-/// Unlike a shell command, nobody is watching an MCP call arrive: there is no output to
-/// read while it runs and no way to tell a wedged server from a slow one. A bound means a
-/// server that never answers costs one tool call rather than the rest of the session.
 const DEFAULT_CALL_TIMEOUT: Duration = Duration::from_secs(120);
 
 /// What separates a server's name from a tool's in the name the model sees.
-///
-/// Two servers are free to offer a tool of the same name, and the model needs to be able
-/// to ask for one of them in particular.
 const NAME_SEPARATOR: &str = "__";
 
 #[derive(Debug, thiserror::Error)]
@@ -74,15 +56,14 @@ pub struct ServerConfig {
     pub command: String,
     #[serde(default)]
     pub args: Vec<String>,
-    /// Added to the environment the server inherits, rather than replacing it: a server
-    /// that needs a token still needs a `PATH` and a `HOME` to find its own runtime.
+    
     #[serde(default)]
     pub env: HashMap<String, String>,
-    /// Where the server runs. Its own directory when nothing is said.
+    /// Where the server runs.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cwd: Option<String>,
-    /// A server listed but turned off stays in the file, so it can be turned back on
-    /// without being written out again.
+    /// A server listed but turned off stays in the file, so it can be turned back on without being
+    /// written out again.
     #[serde(default = "enabled_by_default")]
     pub enabled: bool,
     /// Seconds the handshake may take.
@@ -97,9 +78,7 @@ fn enabled_by_default() -> bool {
     true
 }
 
-/// Written out rather than derived, because a derived `Default` would make `enabled`
-/// false and disagree with the default a missing key gets. A server built in code and one
-/// read from a file with the same keys must be the same server.
+
 impl Default for ServerConfig {
     fn default() -> Self {
         ServerConfig {
@@ -122,7 +101,7 @@ pub struct Client {
     pending: Arc<Mutex<HashMap<u64, oneshot::Sender<Result<Value>>>>>,
     next_id: AtomicU64,
     call_timeout: Duration,
-    /// Held so the process is killed when the client is dropped rather than outliving it.
+    
     _child: Arc<tokio::process::Child>,
 }
 
@@ -135,7 +114,7 @@ impl Client {
             .envs(&config.env)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            // A server's own logs go to stderr and are not ours to read or to show.
+            
             .stderr(Stdio::null())
             .kill_on_drop(true);
         if let Some(cwd) = &config.cwd {
@@ -152,7 +131,7 @@ impl Client {
         let stdout = child.stdout.take().expect("stdout was piped");
         let pending: Arc<Mutex<HashMap<u64, oneshot::Sender<Result<Value>>>>> = Arc::default();
 
-        // One task writes, so two callers cannot interleave halves of a line.
+        
         let (outbound, mut queued) = tokio::sync::mpsc::unbounded_channel::<String>();
         tokio::spawn(async move {
             use tokio::io::AsyncWriteExt as _;
@@ -164,7 +143,7 @@ impl Client {
             }
         });
 
-        // One task reads, handing each answer to whoever is waiting on its id.
+        
         let reader_pending = Arc::clone(&pending);
         let reader_name = name.to_string();
         tokio::spawn(async move {
@@ -172,12 +151,10 @@ impl Client {
             let mut lines = tokio::io::BufReader::new(stdout).lines();
             while let Ok(Some(line)) = lines.next_line().await {
                 let Ok(message) = serde_json::from_str::<Value>(&line) else {
-                    // A line that is not JSON is a server printing something it should
-                    // have sent to stderr. Ignoring it keeps one stray line from ending
-                    // the connection.
+                    
                     continue;
                 };
-                // A message without an id is a notification, which nothing is waiting for.
+                
                 let Some(id) = message.get("id").and_then(Value::as_u64) else {
                     continue;
                 };
@@ -187,8 +164,7 @@ impl Client {
                 let _ = waiting.send(answer(&reader_name, &message));
             }
 
-            // The server has gone. Everything still waiting is told, rather than being
-            // left to wait for an answer that cannot come.
+            
             let mut held = reader_pending.lock().await;
             for (_, waiting) in held.drain() {
                 let _ = waiting.send(Err(McpError::Closed {
@@ -254,14 +230,12 @@ impl Client {
                             .and_then(Value::as_str)
                             .unwrap_or_default()
                             .to_string(),
-                        // A server that declares no schema still takes an object, which is
-                        // what the protocol says a call carries.
+                        
                         parameters: tool
                             .get("inputSchema")
                             .cloned()
                             .unwrap_or_else(|| json!({ "type": "object", "properties": {} })),
-                        // An MCP server's tool listing has no equivalent of pi's
-                        // `constrainedSampling` — nothing here to read one from.
+                        
                         constrained_sampling: None,
                     },
                     remote,
@@ -289,12 +263,12 @@ impl Client {
 
         match tokio::time::timeout(within, answer).await {
             Ok(Ok(result)) => result,
-            // The reader task is gone, which is the same as the server being gone.
+            
             Ok(Err(_)) => Err(McpError::Closed {
                 server: self.name.clone(),
             }),
             Err(_) => {
-                // Nothing will read this answer now, so it is not left to accumulate.
+                
                 self.pending.lock().await.remove(&id);
                 Err(McpError::TimedOut {
                     server: self.name.clone(),
@@ -371,9 +345,7 @@ impl micro_tools::Tool for RemoteTool {
 
         let blocks = content_blocks(&result);
 
-        // A server reports a tool's own failure in the result rather than as a protocol
-        // error, because it is the tool that failed and not the server. The model is told
-        // the same way it is told about any other tool failing.
+        
         match result.get("isError").and_then(Value::as_bool) {
             Some(true) => Err(blocks.iter().map(ContentBlock::as_text).collect()),
             _ => Ok(blocks),
@@ -389,8 +361,7 @@ fn content_blocks(result: &Value) -> Vec<ContentBlock> {
         .map(|content| content.iter().filter_map(content_block).collect())
         .unwrap_or_default();
 
-    // A tool that answered with nothing said so; an empty result would read as the call
-    // never having happened.
+    
     match blocks.is_empty() {
         true => vec![ContentBlock::text("(no output)")],
         false => blocks,
@@ -413,23 +384,17 @@ fn content_block(block: &Value) -> Option<ContentBlock> {
                 .unwrap_or("image/png")
                 .to_string(),
         }),
-        // Anything else is something this version has no way to show. Naming it is more
-        // use than dropping it silently.
+        
         Some(other) => Some(ContentBlock::text(format!("({other} content)"))),
         None => None,
     }
 }
 
 /// Start every server that is turned on, and collect the tools they offer.
-///
-/// Returns the tools and whatever went wrong, rather than either alone: a server that
-/// failed should be reported to the user, and the ones that started should still work.
 pub async fn connect(
     servers: &HashMap<String, ServerConfig>,
 ) -> (Vec<Arc<dyn micro_tools::Tool>>, Vec<McpError>) {
-    // Started one after another rather than all at once: a server is a process that may
-    // want the terminal to ask for a credential, and interleaving those is not worth the
-    // startup it saves.
+    
     let mut names: Vec<&String> = servers.keys().collect();
     names.sort();
 
@@ -456,9 +421,6 @@ mod tests {
     use super::*;
 
     /// A server that answers the handshake, offers one tool, and echoes what it is given.
-    ///
-    /// Written as a shell script so the test exercises a real process over real pipes
-    /// rather than a stand-in for one.
     fn echo_server() -> ServerConfig {
         ServerConfig {
             command: "bash".to_string(),
@@ -513,7 +475,7 @@ mod tests {
         assert_eq!(said, "heard hello");
     }
 
-    /// A server that cannot be started costs its own tools and nothing else.
+    
     #[tokio::test]
     async fn a_server_that_will_not_start_is_reported_and_skipped() {
         let mut servers = HashMap::new();
@@ -550,7 +512,7 @@ mod tests {
         assert!(problems.is_empty());
     }
 
-    /// A server that never answers costs one call rather than the session.
+    
     #[tokio::test]
     async fn a_server_that_never_answers_times_out() {
         let silent = ServerConfig {

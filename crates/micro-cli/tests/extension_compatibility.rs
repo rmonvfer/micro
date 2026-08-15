@@ -1,44 +1,4 @@
 //! Empirical parity check, not a fix: do pi's own example extensions load in micro?
-//!
-//! Every extension exercised here is vendored, verbatim, from pi's example extensions —
-//! real code written against pi's API, not a fixture written to pass — into
-//! `examples/extensions/` at the repo root, which this harness treats as its own. What
-//! moved: only the files this repo controls. What did not move: the module specifiers
-//! inside them (`@earendil-works/pi-ai`, `@earendil-works/pi-coding-agent`, and the rest)
-//! are the compatibility contract third-party extension source actually imports, and stay
-//! exactly as pi wrote them.
-//!
-//! The one thing checked for every extension, headlessly, is whether it loads: whether the
-//! extension host runs its top-level registration without reporting the file as failed.
-//! That is `runtime.rs`'s own signal — `note: {path} was not loaded: {error}` on stderr —
-//! so this harness reads exactly what a person running micro would see, not something
-//! reconstructed from internals.
-//!
-//! An extension whose whole point is a live terminal — a game, a custom editor, an overlay
-//! — still gets the load check, because loading needs no terminal. Its *interactive*
-//! behavior is a different question this harness cannot answer without one, and is called
-//! out per-extension in the report rather than silently assumed to work.
-//!
-//! Neither micro nor this harness ever runs a package manager directly. micro deliberately
-//! never auto-installs a dropped-in extension's dependencies at load time — that would
-//! reopen the hole `--no-install` closed, where a file appearing in an extensions folder
-//! makes micro fetch and run arbitrary code unprompted. Installing is its own explicit step,
-//! the same as pi's own docs ask for, and micro's supported form of it is
-//! `micro_extensions::install` — what `micro extension install` runs, and what an extension
-//! declaring its own `package.json` goes through here instead of being copied straight into
-//! `.micro/extensions/`. The report says which path each extension took.
-//!
-//! A git-sourced install fetches the package's own dependencies after cloning it — see
-//! `micro-extensions/src/packages.rs`. A local-path install does not, and neither does pi's:
-//! `installParsedSource` in pi's own `package-manager.ts` only installs for its `"npm"` and
-//! `"git"` source types, nothing runs for `"local"`. The four vendored examples that declare
-//! a real dependency are local directories, so they are expected to still report a missing
-//! module even once installed through `micro_extensions::install` — that is not a gap next
-//! to pi, it is the same manual-setup posture pi itself takes for a bare local folder.
-//!
-//! This file and its fixtures are the only things owned here. It does not, and must not,
-//! edit `crates/micro-extensions/host/**`, `crates/micro-extensions/src/host.rs`, or
-//! `host/sdk/*.ts` — those belong to the agents building the SDK surface this measures.
 
 mod support;
 
@@ -52,13 +12,10 @@ use support::FakeApi;
 use support::Fixture;
 use support::Reply;
 
-/// How long one extension gets to load, run a turn, and exit before it is judged hung
-/// rather than merely slow. Generous: a real Bun process starts and imports real code.
+
 const TIMEOUT: Duration = Duration::from_secs(30);
 
-/// Where this repo keeps its own copy of pi's example extensions. Resolved from the crate
-/// manifest directory so the check does not depend on the working directory a test runner
-/// happens to use.
+/// Where this repo keeps its own copy of pi's example extensions.
 fn vendored_extensions_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/extensions")
 }
@@ -67,13 +24,10 @@ fn vendored_extensions_dir() -> PathBuf {
 struct Example {
     name: &'static str,
     directory: bool,
-    /// A caveat worth printing alongside the result — most often that the extension's own
-    /// point is interactive and a load pass says nothing about whether it actually works.
+    /// A caveat worth printing alongside the result.
     note: Option<&'static str>,
-    /// Set for the few vendored examples that declare a real third-party npm dependency in
-    /// their own `package.json`. These are installed through `micro_extensions::install`
-    /// and named with `--extension` instead of being copied into `.micro/extensions/` —
-    /// see `attempt` — and the report says which path each extension took.
+    /// Set for the few vendored examples that declare a real third-party npm dependency in their
+    /// own `package.json`.
     needs_own_deps: bool,
 }
 
@@ -113,9 +67,7 @@ const fn dir_with_note(name: &'static str, note: &'static str) -> Example {
     }
 }
 
-/// A directory-based example that declares a real third-party npm dependency: `note`
-/// documents which one, and `needs_own_deps` routes it through micro's own install path
-/// rather than a plain copy.
+
 const fn dir_needs_deps(name: &'static str, note: &'static str) -> Example {
     Example {
         name,
@@ -125,12 +77,9 @@ const fn dir_needs_deps(name: &'static str, note: &'static str) -> Example {
     }
 }
 
-/// Every example under `examples/extensions`, README-ordered. `note` marks the ones this
-/// harness can load-check but not exercise for real: a live terminal, a real git repo, a
-/// network call to a real service, or another process this scratch fixture does not
-/// provide.
+/// Every example under `examples/extensions`, README-ordered.
 const EXAMPLES: &[Example] = &[
-    // Lifecycle & Safety
+    
     file("permission-gate"),
     file("project-trust"),
     file("protected-paths"),
@@ -144,7 +93,7 @@ const EXAMPLES: &[Example] = &[
         "gondolin",
         "declares a real npm dependency (@earendil-works/gondolin)",
     ),
-    // Custom Tools
+    
     file("todo"),
     file("hello"),
     file_with_note("question", "exercises ctx.ui.select(), a live terminal"),
@@ -158,7 +107,7 @@ const EXAMPLES: &[Example] = &[
     file("truncated-tool"),
     file("ssh"),
     dir("subagent"),
-    // Commands & UI
+    
     file("preset"),
     dir("plan-mode"),
     file("tools"),
@@ -194,7 +143,7 @@ const EXAMPLES: &[Example] = &[
     file_with_note("interactive-shell", "runs vim/htop with a full terminal via user_bash"),
     file("inline-bash"),
     file("input-transform-streaming"),
-    // Present on disk, not listed in the README's table
+    
     file("input-transform"),
     file("bash-spawn-hook"),
     file("border-status-editor"),
@@ -208,20 +157,20 @@ const EXAMPLES: &[Example] = &[
     file("system-prompt-header"),
     file("working-message-test"),
     file("mac-system-theme"),
-    // Git Integration
+    
     file("git-checkpoint"),
     file("auto-commit-on-exit"),
-    // System Prompt & Compaction
+    
     file("pirate"),
     file("claude-rules"),
     file("custom-compaction"),
     file("trigger-compact"),
-    // Resources
+    
     dir("dynamic-resources"),
-    // Session Metadata
+    
     file("session-name"),
     file("bookmark"),
-    // Custom Providers
+    
     dir_needs_deps(
         "custom-provider-anthropic",
         "declares a real npm dependency (@anthropic-ai/sdk)",
@@ -230,13 +179,12 @@ const EXAMPLES: &[Example] = &[
         "custom-provider-gitlab-duo",
         "registers a real provider; not exercised end to end here, only loaded",
     ),
-    // External Dependencies
+    
     dir_needs_deps("with-deps", "declares a real npm dependency (ms)"),
     file_with_note("file-trigger", "watches a file for changes across the run"),
 ];
 
-/// Recursively copy a directory-based extension exactly as vendored — nested modules,
-/// `package.json`, everything — so discovery sees the same tree the example itself is.
+/// Recursively copy a directory-based extension exactly as vendored.
 fn copy_dir_all(src: &Path, dst: &Path) {
     std::fs::create_dir_all(dst).unwrap_or_else(|error| panic!("create {}: {error}", dst.display()));
     let entries = std::fs::read_dir(src).unwrap_or_else(|error| panic!("read {}: {error}", src.display()));
@@ -262,10 +210,7 @@ struct Attempt {
     stderr: String,
 }
 
-/// Run `command` to completion or [`TIMEOUT`], whichever comes first, killing it rather
-/// than leaving a hung child behind. Both pipes are drained on their own threads: a real
-/// process's output can exceed the OS pipe buffer, and nothing would be reading it while
-/// this thread only polls for exit.
+
 fn run_with_timeout(mut command: std::process::Command) -> Attempt {
     command.stdin(Stdio::null());
     command.stdout(Stdio::piped());
@@ -299,8 +244,7 @@ fn run_with_timeout(mut command: std::process::Command) -> Attempt {
         }
     };
 
-    // Reading blocks until the pipe's write end closes, which killing the child ensures
-    // even on the timeout path.
+    
     let _stdout = stdout_reader.join().unwrap_or_default();
     let stderr = stderr_reader.join().unwrap_or_default();
 
@@ -315,15 +259,7 @@ fn run_with_timeout(mut command: std::process::Command) -> Attempt {
     }
 }
 
-/// Install one example into a fresh fixture and run one plain-text turn through it — enough
-/// to exercise registration, `session_start`, and whatever a normal turn's lifecycle events
-/// touch, without depending on any tool the extension happens to declare.
-///
-/// A plain file or directory is copied straight into `.micro/extensions/`, the same as a
-/// person dropping one in. An example that declares its own `package.json` instead goes
-/// through micro's own supported install path (`micro_extensions::install`) and is then
-/// named with `--extension`, the way a real package is added — neither micro nor this
-/// harness ever runs a package manager directly.
+/// Install one example into a fresh fixture and run one plain-text turn through it.
 fn attempt(example: &Example) -> Attempt {
     let api = FakeApi::start([Reply::text("ok")]);
     let fixture = Fixture::new(&api);
@@ -373,13 +309,7 @@ fn attempt(example: &Example) -> Attempt {
     run_with_timeout(command)
 }
 
-/// Loads every vendored example extension and reports, per extension, whether it loaded —
-/// the empirical answer to "does this extension work in micro unmodified," measured rather
-/// than assumed.
-///
-/// Always passes: an extension not loading yet is the finding this harness exists to
-/// surface, not a defect in the harness. Run with `--nocapture` (or `--test-threads=1
-/// --nocapture` for a stable read while other tests are also printing) to see the table.
+/// Loads every vendored example extension and reports, per extension, whether it loaded.
 #[test]
 fn example_extensions_load_report() {
     if micro_extensions::which_bun().is_none() {

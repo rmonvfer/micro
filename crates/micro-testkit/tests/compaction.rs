@@ -70,8 +70,8 @@ fn tool_calls(ids: &[&str]) -> Message {
     })
 }
 
-/// One exchange: a prompt, a tool call, its result, and a reply, each padded so the
-/// conversation reaches a predictable size.
+/// One exchange: a prompt, a tool call, its result, and a reply, each padded so the conversation
+/// reaches a predictable size.
 fn turn(index: usize, padding: usize) -> Vec<Message> {
     let id = format!("call_{index}");
     vec![
@@ -86,8 +86,8 @@ fn conversation(turns: usize, padding: usize) -> Vec<Message> {
     (0..turns).flat_map(|index| turn(index, padding)).collect()
 }
 
-/// An exchange whose tool calls all go out at once, which is the shape a cut is most
-/// likely to split.
+/// An exchange whose tool calls all go out at once, which is the shape a cut is most likely to
+/// split.
 fn parallel_turn(index: usize, width: usize, padding: usize) -> Vec<Message> {
     let ids: Vec<String> = (0..width).map(|n| format!("call_{index}_{n}")).collect();
     let borrowed: Vec<&str> = ids.iter().map(String::as_str).collect();
@@ -177,13 +177,13 @@ async fn the_most_recent_messages_survive_verbatim() {
     run_agent(&mut agent, prompt.clone()).await;
 
     let sent = provider.call(0).context.messages;
-    // Everything after the summary is the tail of the original conversation, untouched.
+    
     let kept = &sent[1..];
     let mut original = history;
     original.push(prompt);
     assert_eq!(kept, &original[original.len() - kept.len()..]);
 
-    // What the summarizer was given and what survived meet exactly, with no overlap.
+    
     let summarized = summarizer.call(0);
     assert_eq!(summarized.len() + kept.len(), original.len());
     assert_eq!(summarized, original[..summarized.len()]);
@@ -191,8 +191,7 @@ async fn the_most_recent_messages_survive_verbatim() {
 
 #[tokio::test]
 async fn a_tool_call_and_its_result_are_never_split_by_the_cut() {
-    // The pairing invariant is what a provider rejects with a 400, so it is checked across
-    // a range of windows and conversation shapes rather than at one size.
+    
     for width in [1, 3, 5] {
         let history: Vec<Message> = (0..8)
             .flat_map(|index| parallel_turn(index, width, 300))
@@ -218,8 +217,7 @@ async fn a_tool_call_and_its_result_are_never_split_by_the_cut() {
             );
 
             match summarizer.calls().first() {
-                // The summarized half has to stand on its own too, or the summary
-                // describes a result whose call it never saw.
+                
                 Some(summarized) => {
                     assert!(
                         is_self_contained(summarized),
@@ -231,8 +229,7 @@ async fn a_tool_call_and_its_result_are_never_split_by_the_cut() {
             }
         }
 
-        // The window range has to straddle the trigger, or the invariant above is never
-        // put under any pressure.
+        
         assert!(compacted > 0, "width {width}: nothing was ever compacted");
         assert!(untouched > 0, "width {width}: everything was compacted");
     }
@@ -240,8 +237,7 @@ async fn a_tool_call_and_its_result_are_never_split_by_the_cut() {
 
 #[tokio::test]
 async fn a_tool_result_produced_this_run_is_never_split_from_its_call() {
-    // Compaction runs again before the request that follows a tool result, so the cut has
-    // to respect a pair the loop itself just created.
+    
     let provider = FakeProvider::builder()
         .turn(Turn::new().with_tool_call("call_live", "read", json!({ "path": "a.txt" })))
         .turn(Turn::text("done"))
@@ -275,8 +271,7 @@ async fn a_tool_result_produced_this_run_is_never_split_from_its_call() {
     );
 }
 
-/// Summarizing is a request like any other: it is made on behalf of this conversation, so
-/// it carries the conversation's name, and it costs something, so the session records what.
+/// Summarizing is a request like any other: it is made on behalf of this conversation.
 #[tokio::test]
 async fn what_summarizing_cost_is_recorded_with_the_compaction_it_paid_for() {
     let provider = FakeProvider::builder()
@@ -334,7 +329,7 @@ async fn the_summary_is_reported_so_a_renderer_can_show_it() {
     assert_eq!(announced.len(), 1);
     assert_eq!(summary_text(announced[0]), Some("what happened earlier"));
 
-    // It is announced during the turn it prepares, before the response streams.
+    
     let summary_at = events
         .events()
         .iter()
@@ -348,9 +343,7 @@ async fn the_summary_is_reported_so_a_renderer_can_show_it() {
 
 #[tokio::test]
 async fn compaction_is_recorded_rather_than_only_applied() {
-    // Nothing is deleted: every message still reaches the log. What is added is where the
-    // conversation is read from, so a session reopened later reads the summary instead of
-    // paying to write the same one again.
+    
     let history = conversation(10, 400);
     let provider = FakeProvider::once(Turn::text("carrying on"));
     let summarizer = FakeSummarizer::new("earlier work");
@@ -364,7 +357,7 @@ async fn compaction_is_recorded_rather_than_only_applied() {
 
     let (messages, events) = run_agent(&mut agent, Message::user("continue")).await;
 
-    // One user prompt and one assistant reply, with no summary spliced in.
+    
     assert_eq!(messages.len(), 2);
     assert!(!messages.iter().any(is_summary));
     assert_eq!(events.final_messages(), Some(messages.as_slice()));
@@ -409,7 +402,7 @@ async fn a_failing_summarizer_leaves_the_conversation_intact() {
     let (messages, events) = run_agent(&mut agent, Message::user("continue")).await;
 
     assert_eq!(summarizer.call_count(), 1);
-    // The request still goes out, uncompacted, rather than the run failing.
+    
     assert_eq!(provider.call_count(), 1);
     assert_eq!(provider.call(0).context.messages.len(), history.len() + 1);
     assert!(!provider.call(0).context.messages.iter().any(is_summary));
@@ -422,8 +415,7 @@ async fn the_trigger_fraction_is_honoured() {
     let history = conversation(10, 400);
     let tokens = estimate_context_tokens(&history);
 
-    // A window the conversation sits comfortably inside, so only the configured fraction
-    // decides whether compaction fires.
+    
     let window = tokens * 4;
     for (config, expected) in [
         (CompactionConfig::new(0.1, 0.05).unwrap(), 1),
@@ -456,8 +448,7 @@ async fn the_provider_summarizer_asks_the_model_for_a_summary() {
 
     assert_eq!(summary.text, "## Goal\nship the thing");
 
-    // One self-contained request: no tools to call, and the transcript plus the shared
-    // instruction in a single user message.
+    
     let request = provider.call(0);
     assert!(request.tool_names().is_empty());
     assert_eq!(request.message_roles(), vec!["user"]);
@@ -500,7 +491,7 @@ async fn a_provider_failure_fails_summarization() {
 
 #[tokio::test]
 async fn an_empty_summary_is_rejected() {
-    // Accepting it would replace the history with nothing at all.
+    
     let provider = FakeProvider::once(Turn::text("   "));
     let summarizer = ProviderSummarizer::new(Arc::new(provider), model(), "test-key");
 
@@ -509,8 +500,7 @@ async fn an_empty_summary_is_rejected() {
 
 #[tokio::test]
 async fn the_agent_summarizes_with_its_own_provider_by_default() {
-    // Without an explicit summarizer the agent asks the model it is running, which spends
-    // one request on the summary and the next on the turn.
+    
     let provider = FakeProvider::builder()
         .turn(Turn::text("## Goal\nkeep going"))
         .turn(Turn::text("carrying on"))

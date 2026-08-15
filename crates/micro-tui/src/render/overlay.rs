@@ -1,10 +1,4 @@
-//! The overlays a command or an extension can open: a list to choose from, a prompt for a
-//! key or a line of words, and a multi-line editor.
-//!
-//! The list and the single-line prompt share one shape — a title, a filter you type into, an
-//! arrow on the highlighted row, a marker on what is already in use, and a count when the
-//! list scrolls. The editor is shaped differently: a title, the text, and a hint naming what
-//! closes it.
+
 
 use crate::app::KeyPrompt;
 use crate::editor::Editor;
@@ -26,7 +20,7 @@ use ratatui::text::Line;
 use ratatui::text::Span;
 use unicode_segmentation::UnicodeSegmentation;
 
-/// Columns the selection arrow occupies. It is three bytes wide but two columns.
+/// Columns the selection arrow occupies.
 const MARKER_WIDTH: usize = 2;
 /// Gap between an item's label and its detail.
 const COLUMN_GAP: usize = 2;
@@ -160,20 +154,13 @@ pub fn picker_lines(
     width: usize,
     max_rows: usize,
 ) -> Vec<Line<'static>> {
-    // A selector is framed between two rules and stands where the prompt stands, so the
-    // rule below it is the one that was already there and the list grows upward.
-    //
-    // Two shapes. A settled handful of choices — a palette, a reasoning level — is the
-    // list and nothing else: it is read at a glance and anything around it is in the way.
-    // A list that is searched, or that was put to the reader rather than opened by them,
-    // says what it is first and gives its query line room to be seen.
+    
     let mut head = vec![rule(theme, width)];
     let plain = !picker.searchable() && !picker.titled();
 
     if !plain {
         head.push(Line::default());
-        // What the list is: a warning about what it leaves out where there is one, and
-        // otherwise its name.
+        
         match picker.hint() {
             Some(saying) => head.push(Line::from(vec![
                 Span::raw("  "),
@@ -181,7 +168,7 @@ pub fn picker_lines(
             ])),
             None => head.push(title(picker, theme)),
         }
-        // Which of the two views is showing, and the key that swaps them.
+        
         if picker.has_scopes() {
             head.push(scopes(picker, theme));
         }
@@ -199,7 +186,7 @@ pub fn picker_lines(
     if picker.titled() {
         tail.insert(1, hint("↑↓ navigate · enter select · esc cancel", theme));
     }
-    // What is happening behind the list, said under it where a note would go.
+    
     if let Some((text, ok)) = picker.status() {
         let style = match ok {
             true => Style::new().fg(theme.success),
@@ -212,7 +199,7 @@ pub fn picker_lines(
         );
     }
 
-    // The chosen row's note, for what the row itself has no room for.
+    
     if let Some(note) = picker.selected_item().and_then(|item| item.note.clone()) {
         tail.insert(0, Line::default());
         tail.insert(
@@ -292,9 +279,6 @@ fn scopes(picker: &Picker, theme: &Theme) -> Line<'static> {
 }
 
 /// The query, prompted with `> ` and carrying a cursor.
-///
-/// The cursor is marked by reversing the character under it rather than by drawing a block
-/// beside it, so at the end of the line the reversed cell is a space.
 fn filter(picker: &Picker, theme: &Theme) -> Line<'static> {
     Line::from(vec![
         Span::styled("  > ", Style::new().fg(theme.accent)),
@@ -306,7 +290,7 @@ fn filter(picker: &Picker, theme: &Theme) -> Line<'static> {
     ])
 }
 
-/// A rule the width of the interface, which is what an overlay is framed by.
+
 fn rule(theme: &Theme, width: usize) -> Line<'static> {
     Line::from(vec![Span::styled(
         "─".repeat(width.max(1)),
@@ -336,17 +320,14 @@ fn row(
         false => Style::new().fg(theme.text),
     };
 
-    // The tick marking what is in use keeps its two columns whether or not it is drawn, so
-    // the rows below it do not shift as the selection moves.
+    
     let available = width.saturating_sub(MARKER_WIDTH + 2);
-    // A narrow terminal has no room for two columns, so the detail is dropped rather than
-    // squeezed into a few characters that say nothing.
+    
     let column = match width > NARROW {
         true => column,
         false => 0,
     };
-    // No column asked for is a row of badges: the label is as long as it is, and the detail
-    // follows one space after it rather than lining up with the row above.
+    
     let column = match column {
         0 => 0,
         asked => asked.min(available.saturating_sub(1).max(1)),
@@ -364,8 +345,7 @@ fn row(
     };
     let used = MARKER_WIDTH + text_width(&shown) + padding;
     let remaining = width.saturating_sub(used + 2);
-    // Room for a few characters is not room for a detail: below this the label has the row
-    // to itself.
+    
     let room = match column {
         0 => remaining > 0,
         _ => remaining > MIN_DETAIL,
@@ -380,7 +360,7 @@ fn row(
     Line::from(spans)
 }
 
-/// The prompt for a credential. What is typed is never drawn back.
+/// The prompt for a credential.
 pub fn key_prompt_lines(prompt: &KeyPrompt, theme: &Theme, width: usize) -> Vec<Line<'static>> {
     let title = match prompt.masked {
         true => format!("sign in to {}", prompt.provider),
@@ -414,7 +394,7 @@ pub fn key_prompt_lines(prompt: &KeyPrompt, theme: &Theme, width: usize) -> Vec<
         Span::styled("  > ", Style::new().fg(theme.accent)),
         Span::styled(
             match prompt.masked {
-                // A credential is never drawn back, however much of it has been typed.
+                
                 true => "•".repeat(prompt.len().min(width.saturating_sub(6))),
                 false => crate::wrap::truncate(prompt.text(), width.saturating_sub(6)).to_string(),
             },
@@ -432,10 +412,7 @@ pub fn key_prompt_lines(prompt: &KeyPrompt, theme: &Theme, width: usize) -> Vec<
         .collect()
 }
 
-/// `text` cut at display column `column`, the same measure `Editor::layout` places
-/// `cursor_column` in: what comes before the cursor, the one grapheme it sits on — `None`
-/// once the column runs past the end of the text, which is where a cursor on an empty tail
-/// belongs — and what comes after.
+
 fn split_at_cursor(text: &str, column: usize) -> (String, Option<String>, String) {
     let mut seen = 0;
     for (index, grapheme) in text.grapheme_indices(true) {
@@ -452,10 +429,7 @@ fn split_at_cursor(text: &str, column: usize) -> (String, Option<String>, String
     (text.to_string(), None, String::new())
 }
 
-/// A multi-line editor an extension asked for with `ctx.ui.editor()`, wrapped and scrolled by
-/// the same [`Editor::layout`] the built-in prompt draws from — see [`crate::render::editor`],
-/// which this mirrors in plain lines rather than a live frame, the way [`key_prompt_lines`]
-/// mirrors a single-line one.
+
 pub fn extension_editor_lines(
     title: &str,
     editor: &Editor,
@@ -475,8 +449,7 @@ pub fn extension_editor_lines(
         Line::default(),
     ];
 
-    // What is left of the budget once the title, the blank line above the body, the blank
-    // line below it, and the hint have each taken their row.
+    
     let body_height = budget.saturating_sub(4).max(1);
     let body_width = width.saturating_sub(indent).max(1);
     let layout = editor.layout(body_width);
@@ -546,8 +519,8 @@ mod tests {
             .collect()
     }
 
-    /// A list that is searched says what it is and gives its query line room; the rule
-    /// below it is the prompt's own, so the list grows upward off it.
+    /// A list that is searched says what it is and gives its query line room; the rule below it is
+    /// the prompt's own.
     #[test]
     fn a_searched_list_names_itself_above_its_query() {
         let out = rendered(&picker_lines(&picker(), &Theme::dark(), 70, 20));
@@ -565,8 +538,7 @@ mod tests {
         assert!(current.starts_with("→ "), "it opens on what is in use");
     }
 
-    /// A settled handful of choices is the list and nothing else: it is read at a glance,
-    /// and a name and a query line above it would only be in the way.
+    
     #[test]
     fn a_short_settled_list_is_only_the_list() {
         let levels = Picker::new(Choices::new(
@@ -583,8 +555,7 @@ mod tests {
         assert!(out[3].starts_with('─'));
     }
 
-    /// A workspace's shortlist is what the list opens on, with the whole catalog a key
-    /// away, and what is happening behind it is said under it.
+    
     #[test]
     fn a_shortlist_is_what_the_list_opens_on() {
         let all = vec![
@@ -623,8 +594,8 @@ mod tests {
             .any(|line| line.contains("Model catalogs refreshed.")));
     }
 
-    /// A refresh finishing must not move the selection out from under a hand already on
-    /// its way to pressing enter.
+    /// A refresh finishing must not move the selection out from under a hand already on its way to
+    /// pressing enter.
     #[test]
     fn a_refresh_keeps_the_reader_where_they_were() {
         let items = |extra: bool| {
@@ -649,8 +620,8 @@ mod tests {
         );
     }
 
-    /// A question put by an extension is not one the reader opened, so it says what it is
-    /// and which keys answer it.
+    /// A question put by an extension is not one the reader opened, so it says what it is and which
+    /// keys answer it.
     #[test]
     fn a_question_names_itself_and_says_which_keys_answer_it() {
         let asked = Picker::new(
@@ -674,8 +645,7 @@ mod tests {
         picker.push("gem");
         let out = rendered(&picker_lines(&picker, &Theme::dark(), 70, 20));
         assert!(out.iter().any(|line| line == "  > gem"), "{out:?}");
-        // The cursor is a reversed cell rather than a glyph, so at the end of the line it is
-        // a reversed space — invisible in the text, which is why the style is what is checked.
+        
         let line = filter(&picker, &Theme::dark());
         let cursor = line.spans.last().expect("a cursor cell");
         assert_eq!(cursor.content, " ");
@@ -768,8 +738,7 @@ mod tests {
         assert!(out.iter().any(|line| line.contains("cancel")));
     }
 
-    /// The cursor lands where `Editor::layout` says it does, mid-line included — not only at
-    /// the end, which is all a flat `KeyPrompt` ever needs.
+    /// The cursor lands where `Editor::layout` says it does, mid-line included.
     #[test]
     fn the_cursor_marks_wherever_it_sits_in_the_text() {
         let mut editor = Editor::new();

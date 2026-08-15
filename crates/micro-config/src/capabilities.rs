@@ -1,14 +1,4 @@
 //! What each extension has been allowed to do.
-//!
-//! An extension that declares its own capabilities needs nothing here: what it may do is in
-//! its manifest, and micro holds it to that. One that declares nothing is asked about once,
-//! and the answer is kept here so the next run does not ask again — the same shape a
-//! project's trust decision takes, and beside the same file, because it is the same kind of
-//! decision about a different thing.
-//!
-//! The capabilities are held as the names they were written as rather than as a type of
-//! their own: this crate settles where configuration lives, not what an extension may do,
-//! and a name it does not recognize is a name for whoever reads it to make sense of.
 
 use crate::config_dir;
 use crate::ConfigError;
@@ -24,15 +14,14 @@ pub const CAPABILITIES_FILE_NAME: &str = "capabilities.json";
 /// What one extension was allowed to do, and when that was decided.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CapabilityDecision {
-    /// The capability names granted. Empty means it was asked about and refused, which is
-    /// a decision — and not the same as never having been asked.
+    /// The capability names granted.
     #[serde(default)]
     pub capabilities: Vec<String>,
     /// Milliseconds since the epoch, so a listing can say how old a decision is.
     pub decided_at: i64,
 }
 
-/// Every extension decision, keyed by the canonical path it was loaded from.
+
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CapabilityStore {
     #[serde(default)]
@@ -40,8 +29,7 @@ pub struct CapabilityStore {
 }
 
 impl CapabilityStore {
-    /// Reads `capabilities.json` from the configuration directory. A missing file means
-    /// nothing has been decided yet, which is not an error.
+    /// Reads `capabilities.json` from the configuration directory.
     pub async fn load() -> Result<Self, ConfigError> {
         CapabilityStore::load_from(config_dir()?).await
     }
@@ -103,8 +91,8 @@ impl CapabilityStore {
     }
 }
 
-/// The key an extension is filed under: its canonical path when it can be resolved, and
-/// what was asked for when it cannot, so one that has since moved is still findable.
+/// The key an extension is filed under: its canonical path when it can be resolved, and what was
+/// asked for when it cannot.
 fn key(extension: &Path) -> String {
     let resolved: PathBuf = extension
         .canonicalize()
@@ -153,8 +141,7 @@ mod tests {
         assert_eq!(store.decision("/somewhere/thing.ts"), None);
     }
 
-    /// Refusing everything is a decision, and asking again would ignore it — the same
-    /// distinction a declined project keeps.
+    
     #[test]
     fn granting_nothing_is_not_the_same_as_never_having_been_asked() {
         let mut store = CapabilityStore::default();

@@ -1,18 +1,4 @@
 //! The machine against a relay that is actually running.
-//!
-//! Everything else about this crate is checked in isolation: the crypto against the
-//! vectors the phone is checked against, the protocol against itself, the bridge against a
-//! fake session. What none of that proves is that the two ends meet — that the relay
-//! accepts the token, routes the channel, and hands the phone what the machine sealed.
-//!
-//! Start one to run this:
-//!
-//! ```text
-//! cd locally && DB_PATH=:memory: PORT=8090 bun run relay/src/main.ts
-//! ```
-//!
-//! With nothing listening these skip rather than fail. A relay is another project's
-//! process, and a suite that cannot pass without it is a suite nobody runs.
 
 use futures::SinkExt;
 use futures::StreamExt;
@@ -31,9 +17,6 @@ use std::time::Duration;
 const RELAY: &str = "http://localhost:8090";
 
 /// Whether there is a relay to talk to.
-///
-/// A refused connection answers as quickly as an accepted one, so what is checked is
-/// whether the request reached anything — not whether it timed out.
 async fn relay_is_up() -> bool {
     matches!(
         tokio::time::timeout(
@@ -54,8 +37,8 @@ fn config(pairing_id: &str) -> RelayConfig {
     }
 }
 
-/// A phone, as far as the relay is concerned: the other leg of the channel, speaking the
-/// same protocol from the other side.
+/// A phone, as far as the relay is concerned: the other leg of the channel, speaking the same
+/// protocol from the other side.
 struct Phone {
     socket: tokio_tungstenite::WebSocketStream<
         tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
@@ -76,7 +59,7 @@ impl Phone {
             .expect("the relay accepts the phone's leg");
         Phone {
             socket,
-            // The phone seals what the machine opens, and opens what the machine seals.
+            
             encoder: FrameEncoder::new(micro_remote::derive_key(
                 &config.secret,
                 &config.pairing_id,
@@ -131,8 +114,7 @@ fn urlencoding(value: &str) -> String {
         .collect()
 }
 
-/// The whole path, in the order it happens: register, both legs join, the machine offers
-/// the session, the phone asks something and is answered.
+
 #[tokio::test]
 async fn a_session_reaches_a_phone_through_a_running_relay() {
     if !relay_is_up().await {
@@ -141,15 +123,14 @@ async fn a_session_reaches_a_phone_through_a_running_relay() {
     }
 
     let config = config("micro-test-offer");
-    // Registered before connecting: a channel cannot be joined until the relay knows the
-    // pairing, and connecting first means waiting out a backoff before anything works.
+    
     micro_remote::register(&config)
         .await
         .expect("the relay accepts a new pairing");
     let (events, mut incoming) = tokio::sync::mpsc::unbounded_channel();
     let client = RelayClient::start(config.clone(), events);
 
-    // The machine's own leg comes up first.
+    
     let connected = tokio::time::timeout(Duration::from_secs(5), async {
         while let Some(event) = incoming.recv().await {
             if matches!(
@@ -167,7 +148,7 @@ async fn a_session_reaches_a_phone_through_a_running_relay() {
 
     let mut phone = Phone::join(&config).await;
 
-    // The relay tells the machine its peer arrived, which is when the offer goes out.
+    
     let peered = tokio::time::timeout(Duration::from_secs(5), async {
         while let Some(event) = incoming.recv().await {
             if event == (RelayEvent::Peer { connected: true }) {
@@ -199,7 +180,7 @@ async fn a_session_reaches_a_phone_through_a_running_relay() {
         other => panic!("expected the offer, got {other:?}"),
     }
 
-    // And the other direction: what the phone seals, the machine opens.
+    
     phone
         .send(&PhonePayload::Command {
             session_id: "s1".into(),
@@ -247,8 +228,7 @@ async fn a_leg_without_a_registered_pairing_is_refused() {
         urlencoding(&config.auth_token(Role::Machine))
     );
 
-    // Either the handshake is refused outright or the channel is closed straight after;
-    // both are the relay declining, and which one it does is its business.
+    
     match tokio_tungstenite::connect_async(url).await {
         Err(_) => {}
         Ok((mut socket, _)) => {

@@ -1,13 +1,4 @@
-//! Requirement diagrams: a box per requirement or element, carrying the
-//! fields declared inside its braces, connected by relations drawn as
-//! labelled arrows.
-//!
-//! A requirement box and a class box are the same shape — a title
-//! compartment over a compartment of rows — so this reuses the `Graph` and
-//! `ClassInfo` model the class and ER diagrams already draw through. The
-//! only diagram-specific work here is reading the `requirement { ... }` /
-//! `element { ... }` block syntax and the `a - verb -> b` relation syntax
-//! into that shared shape.
+
 
 use crate::canvas::Canvas;
 use crate::graph::{ClassInfo, Edge, Graph, Head, LineKind, Shape, MAX_MEMBERS};
@@ -15,10 +6,7 @@ use crate::labels::{ascii_lower, clean_label, strip_controls};
 use crate::layout::layout_class;
 use crate::parse::statements_of;
 
-/// Block keywords the grammar allows before an identifier and `{`. `element`
-/// stands for a system element being related to requirements; the rest are
-/// the requirement type Mermaid recognises, kept as written so the box shows
-/// exactly which one was declared.
+/// Block keywords the grammar allows before an identifier and `{`.
 const BLOCK_KEYWORDS: &[&str] = &[
     "requirement",
     "functionalrequirement",
@@ -45,8 +33,7 @@ fn parse_requirement(src: &str) -> Option<(Graph, Vec<ClassInfo>)> {
 
     let mut graph = Graph::default();
     let mut infos: Vec<ClassInfo> = Vec::new();
-    // The block currently open, if any statement so far opened a
-    // `requirement`/`element` and has not yet closed it with `}`.
+    
     let mut cur_block: Option<usize> = None;
 
     for st in &statements[1..] {
@@ -75,9 +62,7 @@ fn parse_requirement(src: &str) -> Option<(Graph, Vec<ClassInfo>)> {
                 return None;
             }
             let idx = declare(&mut graph, &mut infos, name)?;
-            // The keyword itself is the stereotype shown on the box, so
-            // `functionalRequirement` reads as such rather than as a plain
-            // `requirement`.
+            
             infos[idx].annotation = Some(word.to_string());
             cur_block = Some(idx);
             continue;
@@ -99,17 +84,14 @@ fn parse_requirement(src: &str) -> Option<(Graph, Vec<ClassInfo>)> {
         }
     }
 
-    // A block that never saw its closing brace is unreadable, same as any
-    // other malformed statement — better to say nothing than to draw a box
-    // missing whatever came after.
+    
     if cur_block.is_some() || graph.nodes.is_empty() {
         return None;
     }
     Some((graph, infos))
 }
 
-/// Get or create a node by id, keeping `infos` the same length as
-/// `graph.nodes` the way every other block-bodied diagram in this crate does.
+
 fn declare(graph: &mut Graph, infos: &mut Vec<ClassInfo>, name: &str) -> Option<usize> {
     let idx = graph.node_index(name, Some(name), Shape::Rect)?;
     while infos.len() <= idx {
@@ -118,8 +100,7 @@ fn declare(graph: &mut Graph, infos: &mut Vec<ClassInfo>, name: &str) -> Option<
     Some(idx)
 }
 
-/// Add one `key: value` row to a box's field compartment, eliding past the
-/// cap the same way a class diagram elides a long member list.
+
 fn push_field(info: &mut ClassInfo, key: &str, value: &str) {
     if info.attrs.len() < MAX_MEMBERS {
         info.attrs.push(format!("{key}: {value}"));
@@ -128,9 +109,7 @@ fn push_field(info: &mut ClassInfo, key: &str, value: &str) {
     }
 }
 
-/// Read `<id> - <verb> -> <id>`. The dash before the verb is unambiguous
-/// because ids and verbs are identifier words with no dash of their own, so
-/// the rightmost `-` before the arrow is always the one that opened the verb.
+/// Read `<id> - <verb> -> <id>`.
 fn parse_relation(st: &str) -> Option<(String, String, String)> {
     let (left, to) = st.split_once("->")?;
     let to = to.trim();
@@ -186,8 +165,7 @@ mod tests {
         );
     }
 
-    /// A specialised requirement type keeps its own name as the stereotype,
-    /// rather than being folded into the generic `requirement` label.
+    
     #[test]
     fn a_typed_requirement_keeps_its_type_as_the_stereotype() {
         let rows = drawn(
@@ -203,9 +181,7 @@ mod tests {
         );
     }
 
-    /// A box with a single field is small enough to check exactly, corner to
-    /// corner: the stereotype and name centred in their own compartment,
-    /// the field left-aligned in its own below a divider.
+    
     #[test]
     fn a_minimal_requirement_draws_a_bordered_box() {
         let rows = drawn("requirementDiagram\nrequirement test_req {\nid: 1\n}");
@@ -222,7 +198,7 @@ mod tests {
         );
     }
 
-    /// An element block draws the same way, with its own field set.
+    
     #[test]
     fn an_element_is_drawn_with_its_type_field() {
         let rows = drawn(
@@ -244,8 +220,7 @@ mod tests {
         );
     }
 
-    /// A relation is drawn as an arrow labelled with its verb in guillemets,
-    /// matching the stereotype convention already used on the boxes.
+    
     #[test]
     fn a_relation_is_drawn_between_two_boxes_with_its_verb_labelled() {
         let rows = drawn(
@@ -262,17 +237,14 @@ mod tests {
              test_entity - satisfies -> test_req",
         );
         assert!(rows.iter().any(|r| r.contains("«satisfies»")), "{rows:?}");
-        // The two boxes are connected by a routed line, not just floating
-        // side by side with a label between them.
+        
         assert!(
             rows.iter().any(|r| r.contains('│') || r.contains('─')),
             "{rows:?}"
         );
     }
 
-    /// An id used only in a relation, never declared as its own block, still
-    /// gets a box — empty of fields, but present, so the relation has
-    /// somewhere to point.
+    /// An id used only in a relation, never declared as its own block, still gets a box.
     #[test]
     fn an_undeclared_id_in_a_relation_still_gets_a_box() {
         let rows = drawn("requirementDiagram\n  a - traces -> b");
@@ -280,8 +252,7 @@ mod tests {
         assert!(rows.iter().any(|r| r.contains('b')), "{rows:?}");
     }
 
-    /// Anything that is not a requirement diagram, or is one but malformed,
-    /// is refused rather than guessed at.
+    
     #[test]
     fn what_is_not_a_requirement_diagram_is_left_alone() {
         assert!(render_requirement("graph TD\n A --> B").is_none());
@@ -303,8 +274,7 @@ mod tests {
         );
     }
 
-    /// A diagram of hundreds of requirements says nothing useful in a
-    /// terminal, so laying it out is refused rather than attempted.
+    
     #[test]
     fn too_many_requirements_are_refused() {
         let mut source = String::from("requirementDiagram\n");

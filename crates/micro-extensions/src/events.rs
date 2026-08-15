@@ -1,19 +1,4 @@
-//! Turning what the agent reports into what an extension listens for.
-//!
-//! pi names its events from the session's point of view — a turn starts, a message ends,
-//! a tool finished — and an extension subscribes by that name. micro's agent reports the
-//! same moments under its own names, and in its own shapes, so both are translated here, in
-//! one place, rather than at every point that emits one.
-//!
-//! micro's own `Message`/`ContentBlock`/`Usage` are Rust-shaped: `snake_case` fields, and a
-//! tool result's role written as `tool_result`. pi's extensions are written against
-//! TypeScript's shapes: `camelCase` fields, and a tool result's role written as
-//! `toolResult`. An extension checking `message.role === "toolResult"` is not being
-//! unreasonable — that is what pi hands it — so the conversion here is not cosmetic: a
-//! payload that keeps micro's own field names is one an extension silently fails to read.
-//!
-//! An event micro has no counterpart for is not invented: it simply never fires, and an
-//! extension listening for it waits forever rather than being lied to.
+
 
 use micro_types::AgentEvent;
 use micro_types::ContentBlock;
@@ -40,38 +25,24 @@ pub fn name_of(event: &AgentEvent) -> Option<&'static str> {
         AgentEvent::ToolStart { .. } => Some("tool_execution_start"),
         AgentEvent::ToolUpdate { .. } => Some("tool_execution_update"),
         AgentEvent::ToolEnd { .. } => Some("tool_execution_end"),
-        // A retry is micro's own business: the request is repeated, and nothing about the
-        // conversation changed.
+        
+        
         AgentEvent::Retry { .. } => None,
     }
 }
 
-/// Turns the flat stream of `AgentEvent`s micro's agent loop reports into the payload
-/// shapes pi's handlers are written against.
-///
-/// A free function was enough while every event could be translated from itself alone.
-/// Two of pi's events cannot be: `turn_end` wants only the messages produced during that
-/// turn, split into the turn's own assistant message and its tool results, while
-/// `AgentEvent::TurnEnd` carries every message the whole run has produced so far; and
-/// `message_update` wants the assistant message accumulated so far even though micro's
-/// stream reports only the newest delta, not a rebuilt whole. Both need to remember
-/// something about the events that already went by, which is what this keeps: one
-/// `Translator` per run, fed every event in order.
+/// Turns the flat stream of `AgentEvent`s micro's agent loop reports into the payload shapes pi's
+/// handlers are written against.
 #[derive(Debug, Default)]
 pub struct Translator {
-    /// How many turns have ended so far in this run — pi calls this `turnIndex`. Reset to
-    /// zero on `agent_start` and advanced once each `turn_end` is built.
+    
     turn_index: u32,
-    /// How many of `AgentEvent::TurnEnd`'s cumulative messages had already been reported
-    /// as of the last turn, so this turn's own messages can be sliced out of the rest.
+    /// How many of `AgentEvent::TurnEnd`'s cumulative messages had already been reported as of the
+    /// last turn.
     reported: usize,
     /// The arguments a tool call was started with, kept by call id until the call ends.
-    /// `AgentEvent::ToolUpdate` does not carry them itself, and pi's
-    /// `tool_execution_update` wants them anyway, so they are remembered from the call's
-    /// `tool_execution_start`.
     tool_arguments: HashMap<String, Value>,
-    /// The assistant message being assembled from stream deltas. Reset at the stream's
-    /// `start` event and cleared once it reaches `done` or `error`.
+    /// The assistant message being assembled from stream deltas.
     partial: Option<PartialAssistant>,
 }
 
@@ -134,15 +105,11 @@ impl Translator {
         }
     }
 
-    /// `turn_end`'s messages are only the ones this turn added: the assistant's reply, and
-    /// whatever tool results followed it. `AgentEvent::TurnEnd` reports the run's entire
-    /// output so far, so this turn's share is the part beyond what the last one already
-    /// covered.
+    /// `turn_end`'s messages are only the ones this turn added: the assistant's reply, and whatever
+    /// tool results followed it.
     fn turn_end(&mut self, messages: &[Message]) -> Value {
         let this_turn = messages.get(self.reported..).unwrap_or(&[]);
-        // Exactly one assistant message is produced before this fires, every turn — the
-        // fallback below only guards against that invariant ever slipping rather than
-        // expecting to be used.
+        
         let message = this_turn
             .iter()
             .find(|message| matches!(message, Message::Assistant(_)))
@@ -164,9 +131,8 @@ impl Translator {
         payload
     }
 
-    /// `message_update` carries both the raw stream event, translated to pi's shape, and
-    /// the message being assembled so far — which for pi is the same accumulated state
-    /// the translated event's own `partial` (or, at the end, `message`/`error`) carries.
+    /// `message_update` carries both the raw stream event, translated to pi's shape, and the
+    /// message being assembled so far.
     fn message_update(&mut self, event: &StreamEvent) -> Value {
         let assistant_message_event = self.stream_event_json(event);
         let message = assistant_message_event
@@ -178,9 +144,7 @@ impl Translator {
         json!({ "message": message, "assistantMessageEvent": assistant_message_event })
     }
 
-    /// `AssistantMessageEvent`, as pi names it: `contentIndex` rather than `index`, and a
-    /// `partial` — the assistant message assembled so far — on every event but the two
-    /// terminal ones, which carry the finished message instead.
+    
     fn stream_event_json(&mut self, event: &StreamEvent) -> Value {
         match event {
             StreamEvent::Start => {
@@ -244,9 +208,7 @@ impl Translator {
                 json!({ "type": "toolcall_start", "contentIndex": index, "partial": self.partial_message() })
             }
             StreamEvent::ToolCallDelta { index, delta } => {
-                // The arguments stream as raw, not-yet-parseable JSON text. The partial
-                // keeps the last complete shape — empty, until `ToolCallEnd` fills it in —
-                // rather than a value that would not parse.
+                
                 self.block(*index, || json!({ "type": "toolCall", "id": "", "name": "", "arguments": {} }));
                 json!({
                     "type": "toolcall_delta",
@@ -279,9 +241,7 @@ impl Translator {
                 })
             }
             StreamEvent::Error { message } => {
-                // Whatever streamed in before the failure is real, so it is kept; nothing
-                // else about a completed assistant message is known, so the rest is left
-                // empty rather than invented.
+                
                 let content = self
                     .partial
                     .take()
@@ -305,9 +265,7 @@ impl Translator {
         }
     }
 
-    /// The content block at this index of the message being streamed, creating it (and the
-    /// message, if this is the first block reported) if this is the first event to mention
-    /// it.
+    
     fn block(&mut self, index: usize, default: impl FnOnce() -> Value) -> &mut Value {
         self.partial
             .get_or_insert_with(PartialAssistant::default)
@@ -325,10 +283,8 @@ impl Translator {
     }
 }
 
-/// The content blocks of an assistant message being streamed in, keyed by the index the
-/// provider assigned them. A map rather than a vector: a block's index is announced once,
-/// at its `_start` event, and every later event about it names the same index rather than
-/// its position — a `BTreeMap` reads them back out in the order they were assigned.
+/// The content blocks of an assistant message being streamed in, keyed by the index the provider
+/// assigned them.
 #[derive(Debug, Default)]
 struct PartialAssistant {
     blocks: BTreeMap<usize, Value>,
@@ -341,12 +297,6 @@ impl PartialAssistant {
 }
 
 /// What a tool produced, in the shape pi's tool-execution events carry it.
-///
-/// pi hands a handler the tool's whole result object rather than its text, so a handler
-/// reads the output at `result.content[0].text` and reaches for `details` when a tool
-/// offers one. micro's tools return text alone, so the block list has one entry and there
-/// are no details to report — but the envelope is what an extension destructures, and one
-/// that arrives as a bare string is one every pi-shaped handler misreads.
 fn tool_result_json(output: &str) -> Value {
     json!({
         "content": [{ "type": "text", "text": output }],
@@ -354,8 +304,7 @@ fn tool_result_json(output: &str) -> Value {
     })
 }
 
-/// A message in the shape pi's handlers are written against: `camelCase` fields, and a
-/// tool result's role spelled `toolResult` rather than micro's own `tool_result`.
+
 pub fn message_json(message: &Message) -> Value {
     match message {
         Message::User { content, timestamp } => json!({
@@ -391,10 +340,6 @@ pub fn message_json(message: &Message) -> Value {
 }
 
 /// A content block in the shape pi's handlers are written against.
-///
-/// micro keeps redacted thinking as its own variant, carrying only the opaque token a
-/// provider must see again; pi folds it into `ThinkingContent` with a `redacted` flag
-/// instead, so that is the shape it is written as here.
 pub fn content_json(block: &ContentBlock) -> Value {
     match block {
         ContentBlock::Text { text } => json!({ "type": "text", "text": text }),
@@ -430,10 +375,7 @@ pub fn content_json(block: &ContentBlock) -> Value {
     }
 }
 
-/// A message as an extension handed it back — for `context`, which may return a rewritten
-/// `messages` array, and for `tool_result`, whose `content` extensions write in this same
-/// shape. `None` for anything that does not parse as one of pi's three message roles,
-/// which a malformed or half-written answer is left as rather than guessed at.
+/// A message as an extension handed it back.
 pub fn message_from_json(value: &Value) -> Option<Message> {
     let timestamp = || value.get("timestamp").and_then(Value::as_i64).unwrap_or_else(micro_types::now_ms);
     let content = || -> Vec<ContentBlock> {
@@ -469,10 +411,7 @@ pub fn message_from_json(value: &Value) -> Option<Message> {
     }
 }
 
-/// A content block as an extension handed it back. The inverse of [`content_json`], and
-/// deliberately more forgiving than it: a field an extension left off is defaulted rather
-/// than failing the whole block, since a handler rewriting a message is rarely rebuilding
-/// every field of every block from scratch.
+/// A content block as an extension handed it back.
 pub fn content_from_json(value: &Value) -> Option<ContentBlock> {
     match value.get("type").and_then(Value::as_str)? {
         "text" => Some(ContentBlock::Text { text: text(value, "text") }),
@@ -524,18 +463,12 @@ fn stop_reason_from_json(value: Option<&str>) -> StopReason {
         Some("toolUse") => StopReason::ToolUse,
         Some("error") => StopReason::Error,
         Some("aborted") => StopReason::Aborted,
-        // "stop" and anything unrecognized both mean the ordinary case: nothing else
-        // about finishing early was said.
+        
         _ => StopReason::Stop,
     }
 }
 
 /// Usage in pi's shape.
-///
-/// pi's `Usage` also carries `cost`, priced from the model's per-token rates. Nothing at
-/// this layer knows which model produced a given message — that lives in the catalog, well
-/// above where an `AgentEvent` is translated — so `cost` is left off rather than reported
-/// as zero, which would read as "this was free" instead of "this was not priced here".
 fn usage_json(usage: &Usage) -> Value {
     json!({
         "input": usage.input,
@@ -623,8 +556,7 @@ mod tests {
         assert_eq!(ended["isError"], false);
     }
 
-    /// A handler reads a tool's output off the result object pi hands it, so the output
-    /// travels inside a block list rather than as the field itself.
+    /// A handler reads a tool's output off the result object pi hands it.
     #[test]
     fn a_tool_result_is_shaped_the_way_a_handler_destructures_it() {
         let mut translator = Translator::new();
@@ -639,8 +571,7 @@ mod tests {
         assert!(!ended["result"].is_string());
     }
 
-    /// `tool_execution_update` cannot see the call's own arguments — `AgentEvent::ToolUpdate`
-    /// does not carry them — so they have to be remembered from the call's start.
+    /// `tool_execution_update` cannot see the call's own arguments.
     #[test]
     fn a_tool_update_carries_the_arguments_it_was_started_with() {
         let mut translator = Translator::new();
@@ -667,8 +598,8 @@ mod tests {
         assert_eq!(payload["message"]["role"], "user");
     }
 
-    /// pi reads a tool result's role as `toolResult`; micro's own serialization would
-    /// write it `tool_result`, which is silently a different string to a `===` check.
+    /// pi reads a tool result's role as `toolResult`; micro's own serialization would write it
+    /// `tool_result`.
     #[test]
     fn a_tool_results_role_is_spelled_the_way_pi_spells_it() {
         let message = Message::ToolResult {
@@ -684,8 +615,7 @@ mod tests {
         assert_eq!(json["toolName"], "read");
     }
 
-    /// An assistant message's fields are written the way pi's `AssistantMessage` names
-    /// them, not the way micro's own `AssistantMessage` does.
+    
     #[test]
     fn an_assistant_messages_fields_are_camel_cased() {
         let assistant = micro_types::AssistantMessage {
@@ -709,9 +639,8 @@ mod tests {
         assert_eq!(json["usage"]["totalTokens"], 18);
     }
 
-    /// `turn_end` reports only the messages this turn added, split into the assistant's
-    /// reply and the tool results that followed it — not the whole run's output so far,
-    /// which is what `AgentEvent::TurnEnd` itself carries.
+    /// `turn_end` reports only the messages this turn added, split into the assistant's reply and
+    /// the tool results that followed it.
     #[test]
     fn turn_end_reports_only_this_turns_messages_split_by_kind() {
         let mut translator = Translator::new();
@@ -764,8 +693,7 @@ mod tests {
         );
     }
 
-    /// A streamed message is assembled from its deltas, so `message_update` can hand back
-    /// the whole thing so far even though each `StreamEvent` only carries the newest piece.
+    /// A streamed message is assembled from its deltas.
     #[test]
     fn a_streamed_message_is_assembled_from_its_deltas() {
         let mut translator = Translator::new();
@@ -821,8 +749,7 @@ mod tests {
         assert_eq!(done["message"]["stopReason"], "stop");
     }
 
-    /// A stream that fails partway keeps what it had already produced, rather than losing
-    /// it or inventing what the rest would have said.
+    
     #[test]
     fn a_failed_stream_keeps_what_it_had_produced() {
         let mut translator = Translator::new();
@@ -854,9 +781,7 @@ mod tests {
         );
     }
 
-    /// A message survives being written out for an extension and read back from what it
-    /// answers — round-tripping through the same shape pi itself would produce, not
-    /// micro's own.
+    /// A message survives being written out for an extension and read back from what it answers.
     #[test]
     fn a_message_round_trips_through_pis_shape() {
         let messages = vec![
@@ -902,8 +827,7 @@ mod tests {
         }
     }
 
-    /// Redacted thinking is folded into pi's `ThinkingContent` shape on the way out, and
-    /// unfolded back into micro's own variant on the way back in.
+    
     #[test]
     fn redacted_thinking_round_trips_through_pis_shape() {
         let block = ContentBlock::RedactedThinking {
@@ -914,8 +838,7 @@ mod tests {
         assert_eq!(content_from_json(&json), Some(block));
     }
 
-    /// An answer missing the fields a message needs is not a message at all, rather than
-    /// one guessed at from what little is there.
+    
     #[test]
     fn an_unrecognized_role_does_not_parse() {
         assert_eq!(message_from_json(&json!({ "role": "system" })), None);

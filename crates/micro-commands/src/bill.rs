@@ -1,15 +1,4 @@
 //! What a session cost, and what the money went on.
-//!
-//! The provider prices a request whole: so many fresh input tokens, so many read back out
-//! of its cache, so many written. What it does not say is which part of the prompt those
-//! tokens were — the project's instructions, a skill's description, the output of a tool.
-//! The ledger recorded that: every turn's request names the spans its prompt was assembled
-//! from and the entries the conversation stood at, each with a byte count.
-//!
-//! So a bill has two halves, and only one of them is exact. What a turn cost is what the
-//! provider billed, priced against the catalog. How that is shared out between the sources
-//! is an estimate worked out from the bytes each contributed. The estimate is held to one
-//! rule, which is what makes it worth printing: the shares always add up to the turn.
 
 use crate::session::thousands;
 use crate::CommandContext;
@@ -28,7 +17,7 @@ use micro_types::ToolDefinition;
 use micro_types::Usage;
 use std::collections::HashMap;
 
-/// Everything one session was billed for.
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct Bill {
     pub session_id: String,
@@ -37,12 +26,8 @@ pub struct Bill {
     /// What summarizing the conversation cost, each time it was summarized.
     pub compactions: Vec<CompactionBill>,
     /// Models the catalog carries no price for, so their turns are billed at nothing.
-    /// Named rather than silently zeroed: a bill of zero and a bill nobody could work out
-    /// are different answers.
     pub unpriced: Vec<String>,
-    /// Models the catalog prices at nothing, which is what a subscription-backed service
-    /// reports. Their turns cost the plan rather than the request, and a bill of zeroes
-    /// with nothing saying why would read as a bill that failed.
+    
     pub unmetered: Vec<String>,
     /// Every turn and every compaction, added up.
     pub total: f64,
@@ -50,8 +35,7 @@ pub struct Bill {
     pub current_branch_total: f64,
     /// Attempts that returned no usage and therefore have unknown cost.
     pub unknown_attempts: Vec<UnknownAttempt>,
-    /// Whether this was read from the ledger. A session recorded before the ledger existed
-    /// is billed from the answers it kept: turn by turn, and no finer.
+    /// Whether this was read from the ledger.
     pub from_ledger: bool,
 }
 
@@ -62,13 +46,11 @@ pub struct TurnBill {
     pub provider: String,
     pub model: String,
     pub usage: Usage,
-    /// What the provider billed, priced against the model's rates. Exact.
+    /// What the provider billed, priced against the model's rates.
     pub cost: RequestCost,
     /// Whether this turn is on the branch at the session's current head.
     pub on_current_branch: bool,
-    /// What each source contributed to that, adding up to [`RequestCost::total`]. Empty
-    /// for a turn nothing was recorded about, which is every turn of a session written
-    /// before the ledger existed.
+    /// What each source contributed to that, adding up to [`RequestCost::total`].
     pub lines: Vec<BillLine>,
 }
 
@@ -96,8 +78,7 @@ impl TurnBill {
 pub struct BillLine {
     pub source: EventSource,
     pub side: Side,
-    /// The bytes this share was worked out from. Zero on the answer, which is priced
-    /// outright rather than shared out.
+    
     pub bytes: u64,
     pub amount: f64,
 }
@@ -112,10 +93,6 @@ pub enum Side {
 }
 
 /// What one summary cost.
-///
-/// Kept apart from the turns rather than folded into the one that triggered it: summarizing
-/// is a request nobody asked for, and a bill that hid it inside a turn would make the one
-/// piece of spending a session decides on by itself the one piece nobody can see.
 #[derive(Debug, Clone, PartialEq)]
 pub struct CompactionBill {
     /// The turn the conversation had reached when it was summarized.
@@ -128,9 +105,6 @@ pub struct CompactionBill {
 }
 
 /// What a session cost, read out of its ledger and priced against the catalog.
-///
-/// The catalog is asked per turn rather than once, because the model can change mid-session
-/// and each turn was billed at the rates of whatever answered it.
 pub async fn bill(
     store: &SessionStore,
     catalog: &Catalog,
@@ -143,8 +117,7 @@ pub async fn bill(
     let session = &loaded.session;
     let current_path = session.tree().path_entry_ids();
 
-    // Named rather than positional, because a turn records the entries it was shown by the
-    // names the tree gave them.
+    
     let entries: HashMap<&str, &Message> = session
         .tree()
         .entries()
@@ -167,8 +140,7 @@ pub async fn bill(
                 ..
             } => {
                 reached = reached.max(*turn);
-                // A turn re-issued after a transient failure was recorded once per
-                // attempt. The last attempt is the request the answer came back from.
+                
                 let described = Requested {
                     tools_blob: tools_blob.clone(),
                     prefix_spans: prefix_spans
@@ -262,9 +234,7 @@ pub async fn bill(
         });
     }
 
-    // A session written before the ledger existed says what each answer cost and nothing
-    // else. It is still a bill, so it is still read — turn by turn, out of the answers
-    // themselves, including the ones a summary has since replaced.
+    
     if !from_ledger && turns.is_empty() {
         for (index, entry) in session.tree().entries().iter().enumerate() {
             let Message::Assistant(assistant) = &entry.message else {
@@ -328,10 +298,6 @@ struct Requested {
 }
 
 /// The models a bill has something to say about beyond what they charged.
-///
-/// Both lists come to zero on the bill and mean opposite things: one is a session that cost
-/// nothing because the plan was billed instead, the other is a session nobody could work
-/// out the cost of. A bill that printed the same zero for both would be worse than useless.
 #[derive(Default)]
 struct Noted {
     unpriced: Vec<String>,
@@ -383,15 +349,8 @@ fn counted(usage: Usage) -> TokenUsage {
         .with_cache(usage.cache_read as u64, usage.cache_write as u64)
 }
 
-/// What each tool's definition contributed to a prompt, read out of the blob the turn
-/// named them by.
-///
-/// A definition is part of every request until the tools change, and on a session with
-/// many tools it is a large part. Attributed to the tool it describes, so the same line
-/// that carries what a tool's results cost carries what merely offering it cost.
-///
-/// A blob that cannot be read leaves the tools out of the sharing rather than failing the
-/// bill: the turn's own price is unaffected, and the rest of the prompt absorbs the share.
+/// What each tool's definition contributed to a prompt, read out of the blob the turn named them
+/// by.
 async fn tool_weights(
     store: &SessionStore,
     session_id: &str,
@@ -413,12 +372,6 @@ async fn tool_weights(
 }
 
 /// Share one turn's price out between everything that put bytes into it.
-///
-/// The answer is priced outright — output tokens are the model's and nothing else's. The
-/// prompt is shared: fresh input, tokens read back out of the provider's cache, and tokens
-/// written into it are added together and split by how many bytes each source contributed.
-/// Whatever the division leaves over lands on the largest line, so the shares add up to
-/// what the provider billed rather than to almost it.
 fn itemize(
     cost: &RequestCost,
     requested: &Requested,
@@ -462,8 +415,7 @@ fn itemize(
         })
         .collect();
 
-    // The largest line is the one a rounding remainder disappears into without changing
-    // what anybody reads, which is exactly why it is the one that carries it.
+    
     let shared: f64 = lines.iter().map(|line| line.amount).sum();
     if let Some(largest) = lines
         .iter_mut()
@@ -481,7 +433,7 @@ fn itemize(
     lines
 }
 
-/// Who a message in the conversation came from.
+
 fn spoken_by(message: &Message) -> EventSource {
     match message {
         Message::User { .. } => EventSource::User,
@@ -491,10 +443,6 @@ fn spoken_by(message: &Message) -> EventSource {
 }
 
 /// How many bytes of a message the model actually read.
-///
-/// The text it carries, not the record it is kept in: an entry's id and its timestamp are
-/// how the session finds it again and never reach a provider, so counting them would
-/// weight every short message as if it were longer than it is.
 fn message_bytes(message: &Message) -> u64 {
     let content = match message {
         Message::User { content, .. } => content,
@@ -526,7 +474,7 @@ fn message_bytes(message: &Message) -> u64 {
 }
 
 impl Bill {
-    /// The fixed part of the interactive bill. Turns are separate selectable rows.
+    /// The fixed part of the interactive bill.
     pub fn summary(&self) -> String {
         let mut cost = RequestCost::default();
         for part in self
@@ -599,10 +547,7 @@ impl Bill {
             return out;
         }
 
-        // Each summary sits where it happened: after the turn the conversation had reached
-        // when it was written. One that ran before any turn of this session — a
-        // conversation summarized the moment it reopened — comes first, and any left at the
-        // end go there, so nothing is billed into the total without appearing above it.
+        
         let mut summaries = self.compactions.iter().peekable();
         for turn in &self.turns {
             while let Some(summarized) =
@@ -638,18 +583,16 @@ impl Bill {
         }
         out.push_str(&format!("\n{}\n", self.tokens()));
 
-        // Two ways a bill comes to nothing, and they are not the same answer, so a zero on
-        // this page never stands unexplained.
+        
         if !self.unmetered.is_empty() {
             out.push_str(&format!(
-                "\n{} charges nothing per token, which is what a subscription reports:\nthe \
-                 plan was billed rather than these requests.\n",
+                "\n{} uses subscription billing; this report excludes the plan charge.\n",
                 self.unmetered.join(", ")
             ));
         }
         if !self.unpriced.is_empty() {
             out.push_str(&format!(
-                "\nBilled at nothing: the catalog carries no price for {}.\n",
+                "\nNo catalog price for {}.\n",
                 self.unpriced.join(", ")
             ));
         }
@@ -677,9 +620,7 @@ impl Bill {
                 .map(|summarized| summarized.cost.total())
                 .sum::<f64>();
 
-        // Headed by what the turn added rather than by the turn again: the question this
-        // answers is what one turn did to the bill, and the shares under it are that
-        // number broken up.
+        
         let mut out = format!(
             "Turn {turn} of session {}  {}/{}\n\n{:<44}{}\n",
             self.session_id,
@@ -801,12 +742,7 @@ impl Bill {
         )
     }
 
-    /// What the numbers above may and may not be trusted for.
-    ///
-    /// Broken into lines here rather than left to whatever is showing it, because the two
-    /// places this is read — a terminal running `micro bill`, and a session showing
-    /// `/bill` — wrap differently, and a paragraph under a table of figures should not be
-    /// one of them wide.
+    
     fn caveat(&self) -> &'static str {
         match self.from_ledger {
             true => {
@@ -860,10 +796,6 @@ fn summary_row(summarized: &CompactionBill) -> String {
 }
 
 /// One share of one turn, as a row.
-///
-/// The model is on two rows of a turn that had a conversation behind it — what it said
-/// before, which the turn paid to send again, and what it said this time — so the answer
-/// says which one it is rather than leaving two rows under the same name.
 fn item(line: &BillLine) -> String {
     let (named, measured) = match line.side {
         Side::Prompt => (line.source.as_str(), format!("{} B", thousands(line.bytes))),
@@ -873,9 +805,6 @@ fn item(line: &BillLine) -> String {
 }
 
 /// An amount of money, in the unit token prices are actually quoted in.
-///
-/// Six places rather than the two a currency is written in: a turn can cost a hundredth of
-/// a cent, and a column of `$0.00` would be a column of nothing.
 fn money(amount: f64) -> String {
     format!("${amount:.6}")
 }
@@ -925,8 +854,7 @@ mod tests {
     use micro_types::PrefixSpan;
     use micro_types::StopReason;
 
-    /// The rates the test model charges, in dollars per million tokens. Chosen so every
-    /// figure below divides exactly.
+    /// The rates the test model charges, in dollars per million tokens.
     const INPUT: f64 = 3.0;
     const OUTPUT: f64 = 15.0;
     const CACHE_READ: f64 = 0.3;
@@ -1000,8 +928,7 @@ mod tests {
                         hash: "ee".into(),
                     },
                 ],
-                // Left for the session to fill in from the entries the tree holds, which
-                // is how the agent records one.
+                
                 message_entry_ids: Vec::new(),
                 attempt: 1,
             })
@@ -1032,9 +959,7 @@ mod tests {
         })
     }
 
-    /// The whole of what a bill claims, against a session on disk: every share adds up to
-    /// its turn, every turn adds up to the total, and the total is the provider's own
-    /// numbers priced against the catalog.
+    
     #[tokio::test]
     async fn a_bill_of_a_recorded_session_adds_up_to_what_was_reported() {
         let harness = Harness::new("bill-adds-up");
@@ -1093,8 +1018,8 @@ mod tests {
         assert!(!billed.turns[1].on_current_branch);
     }
 
-    /// Every source that put bytes into a turn earns a line of its own, including the tool
-    /// the turn was merely offered.
+    /// Every source that put bytes into a turn earns a line of its own, including the tool the turn
+    /// was merely offered.
     #[tokio::test]
     async fn a_bill_names_every_source_that_contributed() {
         let harness = Harness::new("bill-sources");
@@ -1130,8 +1055,7 @@ mod tests {
         assert!(report.contains("always add up to the turn"), "{report}");
     }
 
-    /// Summarizing is spending nobody asked for, so it is billed where it can be seen
-    /// rather than folded into the turn that triggered it.
+    
     #[tokio::test]
     async fn a_summary_is_billed_on_a_line_of_its_own() {
         let harness = Harness::new("bill-compaction");
@@ -1171,9 +1095,8 @@ mod tests {
         );
     }
 
-    /// A session written before the ledger existed still has a bill, read out of the
-    /// answers themselves. What it cannot have is a split, and it says so rather than
-    /// inventing one.
+    /// A session written before the ledger existed still has a bill, read out of the answers
+    /// themselves.
     #[tokio::test]
     async fn a_session_recorded_before_the_ledger_is_billed_turn_by_turn() {
         let harness = Harness::new("bill-legacy");
@@ -1206,8 +1129,7 @@ mod tests {
         assert!(report.contains("there is nothing to split"), "{report}");
     }
 
-    /// The diff answers what one turn added rather than what the session cost, so it has
-    /// to carry the running total on either side of it and a reason it moved.
+    
     #[tokio::test]
     async fn the_diff_of_a_turn_reports_what_it_added() {
         let harness = Harness::new("bill-diff");
@@ -1230,8 +1152,7 @@ mod tests {
             report.starts_with(&format!("Turn 2 of session {id}")),
             "{report}"
         );
-        // What it added is the heading, not the turn over again: the turn is named once,
-        // at the top, and the figure under it is the answer to the question asked.
+        
         assert!(report.contains("What it added"), "{report}");
         assert_eq!(
             report.matches("turn 2").count(),
@@ -1255,9 +1176,7 @@ mod tests {
         assert!(billed.added_by(9).is_err(), "a turn nobody billed");
     }
 
-    /// A session on a plan costs nothing per request, and the bill says so. A page of
-    /// zeroes with nothing explaining them reads as a bill that failed to work anything
-    /// out, which is the opposite of what happened.
+    /// A session on a plan costs nothing per request, and the bill says so.
     #[tokio::test]
     async fn a_session_billed_against_a_plan_says_so() {
         let harness = Harness::new("bill-plan");
@@ -1270,7 +1189,7 @@ mod tests {
         let id = session.id().to_string();
         drop(session);
 
-        // The same model, priced the way a subscription-backed service reports itself.
+        
         let free: ModelDef = serde_json::from_value(serde_json::json!({
             "id": "test-model",
             "name": "Test Model",
@@ -1298,8 +1217,7 @@ mod tests {
         );
     }
 
-    /// A model the catalog cannot price bills at nothing, and the bill says which model
-    /// rather than leaving a zero to be read as a free session.
+    
     #[tokio::test]
     async fn a_model_the_catalog_cannot_price_is_named() {
         let harness = Harness::new("bill-unpriced");
@@ -1333,8 +1251,8 @@ mod tests {
         }
     }
 
-    /// The one rule the estimate is held to: however the shares fall out, they add up to
-    /// what the provider billed.
+    /// The one rule the estimate is held to: however the shares fall out, they add up to what the
+    /// provider billed.
     #[test]
     fn the_shares_of_a_turn_add_up_to_what_it_cost() {
         let cost = RequestCost {
@@ -1359,8 +1277,7 @@ mod tests {
         );
     }
 
-    /// A prompt whose share divides into thirds cannot be written exactly, and the
-    /// remainder has to land somewhere rather than evaporate.
+    
     #[test]
     fn a_remainder_that_will_not_divide_lands_on_the_largest_line() {
         let cost = RequestCost {
@@ -1381,8 +1298,7 @@ mod tests {
         assert!((summed - 1.0).abs() < 1e-12, "{summed} is not 1.0");
     }
 
-    /// The output is the model's and only the model's: nothing else wrote the answer, so
-    /// nothing else is charged for it.
+    
     #[test]
     fn the_answer_is_billed_to_the_model_alone() {
         let cost = RequestCost {
@@ -1404,8 +1320,8 @@ mod tests {
         assert_eq!(answer[0].amount, 0.25);
     }
 
-    /// A source that supplied twice the bytes carries twice the share, which is the whole
-    /// of what the estimate claims.
+    /// A source that supplied twice the bytes carries twice the share, which is the whole of what
+    /// the estimate claims.
     #[test]
     fn a_source_is_charged_in_proportion_to_what_it_supplied() {
         let cost = RequestCost {
@@ -1432,7 +1348,7 @@ mod tests {
         assert!((share(EventSource::ProjectInstructions) - 0.1).abs() < 1e-12);
     }
 
-    /// A turn nothing was recorded about is not itemized rather than itemized wrongly.
+    
     #[test]
     fn a_turn_with_nothing_recorded_about_it_has_no_lines() {
         let cost = RequestCost {
@@ -1444,8 +1360,7 @@ mod tests {
         assert!(itemize(&cost, &spans(&[]), &[], &HashMap::new()).is_empty());
     }
 
-    /// The bytes counted are the ones a provider is handed, not the ones the log keeps: a
-    /// message's id and timestamp never leave the machine.
+    
     #[test]
     fn a_message_is_measured_by_what_the_model_reads_of_it() {
         let said = Message::user("hello");
@@ -1466,8 +1381,7 @@ mod tests {
         assert_eq!(message_bytes(&result), "read".len() as u64 + 3);
     }
 
-    /// The two halves of the conversation are told apart by who produced them, which is
-    /// what puts a tool's results on the tool's own line.
+    /// The two halves of the conversation are told apart by who produced them.
     #[test]
     fn a_tool_result_is_billed_to_the_tool_that_produced_it() {
         let result = Message::tool_result("call_1", "bash", "output", false);

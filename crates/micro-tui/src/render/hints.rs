@@ -1,17 +1,10 @@
 //! Keybinding hints: the key in `dim`, what it does in `muted`.
-//!
-//! One shape for every hint, so the startup screen, an overlay's footer and the activity
-//! line all describe a key the same way. On macOS `alt` is written `option`, because that
-//! is what is printed on the key.
 
 use crate::theme::Theme;
 use ratatui::style::Style;
 use ratatui::text::Span;
 
 /// How keys are written where a user reads them.
-///
-/// A chord keeps its `+`, alternatives keep their `/`, and each part is renamed on its own
-/// so `alt+up` becomes `option+up` without touching the `up`.
 pub fn key_text(keys: &str) -> String {
     keys.split('/')
         .map(|alternative| {
@@ -78,7 +71,7 @@ mod tests {
 
     #[test]
     fn only_the_modifier_is_renamed() {
-        // `alt` inside a word is a word, not a modifier.
+        
         assert_eq!(key_text("salt"), "salt");
     }
 

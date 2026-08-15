@@ -1,9 +1,4 @@
-//! The Linux half of the enforcement: Landlock for the filesystem, seccomp for the
-//! network, applied to the thread that is about to become the command.
-//!
-//! Derived from openai/codex codex-rs/linux-sandbox/src/landlock.rs and
-//! codex-rs/linux-sandbox/src/linux_run_main.rs at commit a8c7f5391c, and
-//! codex-rs/linux-sandbox/src/landlock.rs at commit 486df09a00; modified.
+
 
 use crate::helper::SandboxRules;
 use landlock::path_beneath_rules;
@@ -31,12 +26,9 @@ use std::collections::BTreeMap;
 use std::ffi::CString;
 use std::path::Path;
 
-/// Confine the current thread to `rules`. The command that follows inherits the
-/// restrictions through `execvp`, and nothing else in the process does.
+/// Confine the current thread to `rules`.
 pub(crate) fn apply(rules: &SandboxRules) -> Result<(), String> {
-    // Both mechanisms below require `no_new_privs`, and it has to be set before either
-    // one: it is what stops the confined command from dropping the restrictions by
-    // executing a setuid binary.
+    
     set_no_new_privs()?;
 
     if !rules.allow_network {
@@ -70,7 +62,7 @@ pub(crate) fn exec(command: &[String]) -> ! {
         libc::execvp(program.as_ptr(), pointers.as_ptr());
     }
 
-    // Reached only when the command could not be started at all.
+    
     let error = std::io::Error::last_os_error();
     crate::helper::fail(&format!("could not run {}: {error}", command[0]))
 }
@@ -86,13 +78,8 @@ fn set_no_new_privs() -> Result<(), String> {
     Ok(())
 }
 
-/// Allow reading the whole filesystem, and writing only under the roots the policy
-/// grants, minus the paths it protects inside them.
-///
-/// Landlock applies the rule of the closest matching ancestor, so a read-only rule on a
-/// protected subpath overrides the writable rule on the root it sits in. A protected path
-/// that does not exist yet cannot be given a rule; the in-process checks in
-/// [`crate::Sandbox`] still refuse it, and the file tools go through those.
+/// Allow reading the whole filesystem, and writing only under the roots the policy grants, minus
+/// the paths it protects inside them.
 fn install_filesystem_rules(rules: &SandboxRules) -> Result<(), String> {
     let writable: Vec<&Path> = rules
         .writable_roots
@@ -136,8 +123,7 @@ fn restrict_current_thread(
         .set_compatibility(CompatLevel::BestEffort)
         .handle_access(access_rw)?
         .create()?
-        // Writing to /dev/null is how a command discards output, not a way out of the
-        // sandbox.
+        
         .add_rules(path_beneath_rules(["/dev/null"], access_rw))?
         .no_new_privs(true);
 
@@ -161,8 +147,8 @@ fn restrict_current_thread(
     ruleset.restrict_self()
 }
 
-/// Block the syscalls that reach off the machine, leaving Unix-domain sockets alone so
-/// local tooling keeps working.
+/// Block the syscalls that reach off the machine, leaving Unix-domain sockets alone so local
+/// tooling keeps working.
 fn install_network_seccomp_filter() -> Result<(), String> {
     let mut rules: BTreeMap<i64, Vec<SeccompRule>> = BTreeMap::new();
     let mut deny = |syscall: i64| {
@@ -183,8 +169,7 @@ fn install_network_seccomp_filter() -> Result<(), String> {
     deny(libc::SYS_getsockopt);
     deny(libc::SYS_setsockopt);
 
-    // A process that can drive io_uring or read another process's memory can reach the
-    // network without ever issuing one of the syscalls above.
+    
     deny(libc::SYS_ptrace);
     deny(libc::SYS_process_vm_readv);
     deny(libc::SYS_process_vm_writev);
@@ -192,8 +177,7 @@ fn install_network_seccomp_filter() -> Result<(), String> {
     deny(libc::SYS_io_uring_enter);
     deny(libc::SYS_io_uring_register);
 
-    // The rule matches — and so is refused — when the socket domain is anything other
-    // than AF_UNIX.
+    
     let domain_is_not_unix = SeccompCondition::new(
         0,
         SeccompCmpArgLen::Dword,

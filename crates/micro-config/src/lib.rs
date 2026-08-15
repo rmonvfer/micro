@@ -1,24 +1,4 @@
 //! Persisted settings: what micro does when nothing is said on the command line.
-//!
-//! Settings live in `config.json`, under micro's configuration directory — `~/.micro`, or
-//! the XDG directories on a fresh install, as `micro_dirs` settles it. Every field is
-//! optional, so a missing file is the same as an empty one, and a key this version does
-//! not know is carried through a save untouched rather than dropped.
-//!
-//! Three layers decide what is in force, each beating the one below it: an explicit
-//! command-line argument, then an environment variable, then the config file.
-//!
-//! ```no_run
-//! use micro_config::{Config, Overrides};
-//!
-//! let config = Config::load()?;
-//! let settings = config.resolve_from_env(&Overrides {
-//!     model: Some("opus".to_string()),
-//!     ..Overrides::default()
-//! })?;
-//! println!("{:?} at {:?}", settings.model, settings.thinking);
-//! # Ok::<(), micro_config::ConfigError>(())
-//! ```
 
 use serde::Deserialize;
 use serde::Serialize;
@@ -64,8 +44,8 @@ pub const EXPERIMENTAL_ENV: &str = "MICRO_EXPERIMENTAL";
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum TuiMode {
-    /// A region at the cursor, as tall as the interface needs, leaving the conversation
-    /// in the terminal's own scrollback.
+    /// A region at the cursor, as tall as the interface needs, leaving the conversation in the
+    /// terminal's own scrollback.
     Regular,
     /// The whole screen, which scrolls internally and leaves the scrollback untouched.
     #[default]
@@ -73,9 +53,6 @@ pub enum TuiMode {
 }
 
 /// Whether this run has experimental behavior turned on.
-///
-/// Read from the environment rather than the settings file on purpose: it is a thing to
-/// try for one run, not a preference to carry between them.
 pub fn experimental_enabled() -> bool {
     std::env::var(EXPERIMENTAL_ENV).is_ok_and(|value| value == "1")
 }
@@ -110,7 +87,7 @@ pub enum ConfigError {
     Override { assignment: String, message: String },
 }
 
-/// How much reasoning to ask a model for.
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Thinking {
@@ -163,7 +140,7 @@ pub enum SteeringMode {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum TreeFilter {
-    /// Prompts and answers, which is what the shape of a conversation is made of.
+    
     #[default]
     Default,
     /// The same, without what the tools did.
@@ -180,10 +157,10 @@ pub enum TreeFilter {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum ExitOutput {
-    /// The conversation, so it is still there to read and copy from.
+    
     #[default]
     Transcript,
-    /// The line that brings it back, and nothing else.
+    
     ResumeHint,
 }
 
@@ -214,10 +191,6 @@ pub enum Mermaid {
 }
 
 /// The config file, as it is written on disk.
-///
-/// Every field is optional: absent means "no preference", and the default applies. Keys
-/// this version does not recognize are kept in `extra` so that saving from an older
-/// binary does not discard what a newer one wrote.
 #[derive(Debug, Clone, Default, PartialEq, Serialize)]
 pub struct Config {
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -228,8 +201,7 @@ pub struct Config {
     pub thinking: Option<Thinking>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub theme: Option<String>,
-    /// How much of the terminal the interface takes: `regular` draws inline, leaving the
-    /// conversation in the terminal's own scrollback; `fullscreen` takes the whole screen.
+    
     pub tui_mode: Option<TuiMode>,
     /// Merge live provider listings into the model catalog on startup.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -238,7 +210,7 @@ pub struct Config {
     /// Summarize the conversation on its own once the context fills up.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub auto_compact: Option<bool>,
-    /// Keep the model's reasoning folded away until it is asked for.
+    
     #[serde(skip_serializing_if = "Option::is_none")]
     pub hide_thinking: Option<bool>,
     /// Draw images in the terminal, where the terminal can.
@@ -271,7 +243,7 @@ pub struct Config {
     /// How many completions the command menu offers at once.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub autocomplete_max_items: Option<usize>,
-    /// Let the terminal draw its own cursor rather than the interface drawing one.
+    
     #[serde(skip_serializing_if = "Option::is_none")]
     pub show_hardware_cursor: Option<bool>,
     /// Report progress to the terminal while a turn runs.
@@ -280,7 +252,7 @@ pub struct Config {
     /// Open without the introduction.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub quiet_startup: Option<bool>,
-    /// Show only the newest entry when the changelog is asked for.
+    
     #[serde(skip_serializing_if = "Option::is_none")]
     pub collapse_changelog: Option<bool>,
     /// Show warnings at all.
@@ -304,14 +276,11 @@ pub struct Config {
     /// Models this workspace may use, when it should not have the whole catalog.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub scoped_models: Option<Vec<String>>,
-    /// Programs that provide tools over the Model Context Protocol, by the name their
-    /// tools are announced under. Held as written rather than as a parsed shape, so this
-    /// crate does not need to know what an MCP server is to carry the setting.
+    /// Programs that provide tools over the Model Context Protocol, by the name their tools are
+    /// announced under.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mcp_servers: Option<Map<String, Value>>,
-    /// How many tools beyond the built-in ones are described to the model up front. Past
-    /// this many, the rest are found with `tool_search` instead. Zero describes them all,
-    /// however many there are.
+    /// How many tools beyond the built-in ones are described to the model up front.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tool_search_threshold: Option<usize>,
     /// Warn that Anthropic subscription auth bills per token in a third-party harness.
@@ -320,15 +289,10 @@ pub struct Config {
     /// How the ChatGPT Codex backend should answer: `sse`, or `auto` to let it decide.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub transport: Option<String>,
-    /// What the commands a session runs are confined to: `read-only`, `workspace-write`,
-    /// or `full`, or a table spelling out what `workspace-write` grants beyond the
-    /// default. Held as it was written — what a policy means is the sandbox's business,
-    /// not this crate's, and a setting this crate had to understand to carry would be one
-    /// more place for the two to disagree.
+    
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sandbox: Option<Value>,
-    /// What one session may spend before it stops, in US dollars. Zero is no ceiling,
-    /// which is also what leaving it out means.
+    /// What one session may spend before it stops, in US dollars.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub budget: Option<f64>,
     /// Extensions to load beyond the ones found in the project and the home directory.
@@ -353,8 +317,7 @@ pub struct Overrides {
 /// The settings actually in force, with every default applied.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Settings {
-    /// A model query — an id, a qualified id, a prefix, or an alias. The catalog resolves
-    /// it; nothing here assumes a particular model exists.
+    
     pub model: Option<String>,
     pub provider: Option<String>,
     pub thinking: Thinking,
@@ -393,11 +356,9 @@ pub struct Settings {
     pub tool_search_threshold: usize,
     pub anthropic_extra_usage: bool,
     pub transport: String,
-    /// The sandbox policy the user settled on, if they settled on one. Left unresolved
-    /// rather than defaulted, because a project of its own gets a say between this and the
-    /// default and could not be given one if the two had already been merged.
+    /// The sandbox policy the user settled on, if they settled on one.
     pub sandbox: Option<Value>,
-    /// What one session may spend before it stops, in US dollars. Zero is no ceiling.
+    /// What one session may spend before it stops, in US dollars.
     pub budget: f64,
     pub extensions: Vec<String>,
 }
@@ -405,10 +366,6 @@ pub struct Settings {
 /// The widest an image is drawn when nothing says otherwise.
 pub const DEFAULT_IMAGE_WIDTH_CELLS: u16 = 60;
 /// How far in from the terminal's edges the interface sits when nothing says otherwise.
-///
-/// None: a rule spans the whole width and the conversation starts in the first column,
-/// which reads as a terminal program rather than an interface wrapped in whitespace. The
-/// settings are still there for anyone who wants the room.
 pub const DEFAULT_PADDING: u16 = 0;
 /// How many completions the command menu offers at once.
 pub const DEFAULT_AUTOCOMPLETE_MAX_ITEMS: usize = 5;
@@ -466,7 +423,7 @@ impl Default for Settings {
 }
 
 impl Config {
-    /// Read the config from its default path. A missing file is an empty config.
+    /// Read the config from its default path.
     pub fn load() -> Result<Config> {
         Config::load_from(default_path()?)
     }
@@ -481,10 +438,6 @@ impl Config {
     }
 
     /// Read the config, then apply the settings named on the command line.
-    ///
-    /// The overrides land on the file's contents rather than on the resolved settings, so
-    /// a nested key writes into the same shape the file uses and an unknown one is
-    /// reported the same way an unknown key in the file would be.
     pub fn load_from_with(path: impl AsRef<Path>, overrides: &[String]) -> Result<Config> {
         let path = path.as_ref();
         let contents = match fs::read_to_string(path) {
@@ -493,9 +446,7 @@ impl Config {
             Err(error) => return Err(io_error(path, error)),
         };
 
-        // A missing file and one an editor left empty are both "nothing configured yet".
-        // An override still needs somewhere to land, so both become an empty object
-        // rather than an early return.
+        
         let mut value: Value = if contents.trim().is_empty() {
             Value::Object(Map::new())
         } else {
@@ -507,10 +458,7 @@ impl Config {
 
         let written = assignments::apply_all(&mut value, overrides)?;
 
-        // A setting the command line wrote is reported against the flag that wrote it.
-        // Naming the file instead would point at somewhere the bad value is not, and
-        // falling back to the stored settings would run with something other than what
-        // was asked for.
+        
         Config::from_value(value, path).map_err(|error| match &error {
             ConfigError::Field { field, message, .. } => written
                 .iter()
@@ -529,8 +477,7 @@ impl Config {
         self.save_to(default_path()?)
     }
 
-    /// Write the config through a temporary file, so an interrupted save cannot leave a
-    /// half-written file where a readable one used to be.
+    /// Write the config through a temporary file.
     pub fn save_to(&self, path: impl AsRef<Path>) -> Result<()> {
         let path = path.as_ref();
         let directory = path.parent().unwrap_or_else(|| Path::new("."));
@@ -563,11 +510,7 @@ impl Config {
         self.resolve(arguments, |variable| std::env::var(variable).ok())
     }
 
-    /// The settings in force. `environment` supplies the middle layer, so a caller can
-    /// hand in its own for a test.
-    ///
-    /// A variable set to nothing counts as unset, which is what an exported-but-empty
-    /// shell variable is meant to say.
+    /// The settings in force.
     pub fn resolve(
         &self,
         arguments: &Overrides,
@@ -613,8 +556,7 @@ impl Config {
             )
             .unwrap_or(false),
 
-            // Nothing on the command line or in the environment sets these: they are
-            // preferences a user settles once, in `/settings`, and leaves alone.
+            
             auto_compact: self.auto_compact.unwrap_or(defaults.auto_compact),
             hide_thinking: self.hide_thinking.unwrap_or(defaults.hide_thinking),
             show_images: self.show_images.unwrap_or(defaults.show_images),
@@ -663,13 +605,9 @@ impl Config {
                 .anthropic_extra_usage
                 .unwrap_or(defaults.anthropic_extra_usage),
             transport: self.transport.clone().unwrap_or(defaults.transport),
-            // Nothing in the environment sets this. `MICRO_SANDBOX` already means
-            // something else — it is what a confined command reads to learn it is confined
-            // — and a variable that both announces a sandbox and asks for one would let a
-            // sandboxed run of micro reconfigure the sandbox it is inside.
+            
             sandbox: self.sandbox.clone().or(defaults.sandbox),
-            // A negative ceiling is a ceiling nothing could ever be under, so it is read as
-            // the absence of one rather than as a session that may not run at all.
+            
             budget: self.budget.unwrap_or(defaults.budget).max(0.0),
             extensions: self.extensions.clone().unwrap_or(defaults.extensions),
         })
@@ -729,14 +667,13 @@ impl Config {
     }
 }
 
-/// The value in force for one setting: an explicit argument beats the environment, which
-/// beats the config file.
+/// The value in force for one setting: an explicit argument beats the environment, which beats the
+/// config file.
 pub fn layered<T>(argument: Option<T>, environment: Option<T>, configured: Option<T>) -> Option<T> {
     argument.or(environment).or(configured)
 }
 
-/// Read a setting out of one environment variable, naming the variable if its value
-/// cannot be read.
+/// Read a setting out of one environment variable, naming the variable if its value cannot be read.
 fn from_env<T: FromStr<Err = String>>(variable: &str, value: Option<String>) -> Result<Option<T>> {
     value
         .map(|value| {
@@ -761,8 +698,7 @@ pub fn default_path() -> Result<PathBuf> {
     Ok(config_dir()?.join(FILE_NAME))
 }
 
-/// Read one field, naming it if it does not fit. An explicit `null` is read as "unset",
-/// so a field can be cleared without deleting the line.
+/// Read one field, naming it if it does not fit.
 fn take<T: serde::de::DeserializeOwned>(
     fields: &mut Map<String, Value>,
     key: &str,
@@ -877,8 +813,7 @@ mod tests {
         None
     }
 
-    /// Where the settings go is not decided here: the file sits beside the trust and
-    /// capability decisions, in whichever directory holds the configuration.
+    
     #[test]
     fn the_settings_file_sits_in_the_configuration_directory() {
         let directory = config_dir().expect("a home directory");
@@ -922,8 +857,7 @@ mod tests {
         assert!(config.extra.is_empty());
     }
 
-    /// The policy a user settled on is carried through as it was written, and left
-    /// unresolved: a project of its own gets a say between this and the default.
+    
     #[test]
     fn a_settled_sandbox_policy_survives_resolution() {
         let path = scratch("sandbox").join("config.json");
@@ -1028,7 +962,7 @@ mod tests {
         assert_eq!(Config::load_from(&path).unwrap(), config);
         let written = fs::read_to_string(&path).unwrap();
         assert!(written.contains("\"model\": \"opus\""), "{written}");
-        // Fields nobody set stay out of the file rather than being written as null.
+        
         assert!(!written.contains("theme"), "{written}");
     }
 

@@ -1,9 +1,4 @@
 //! Undo history for the prompt.
-//!
-//! Snapshots rather than operations, coalesced the way fish coalesces: a run of word
-//! characters is one unit, and whitespace opens the next one. Undoing a sentence therefore
-//! takes back a word at a time rather than a keystroke at a time, and the space that
-//! separated two words goes back with the word that followed it.
 
 use crate::editor::kill_ring::LastAction;
 
@@ -48,9 +43,6 @@ impl UndoStack {
 }
 
 /// Whether typing `character` should open a new undo unit.
-///
-/// A word character continues the run it is part of; anything else — a space, punctuation —
-/// starts its own, so undo takes back a word and the space before it together.
 pub fn opens_new_unit(character: char, last: LastAction) -> bool {
     match is_word_character(character) {
         true => last != LastAction::TypeWord,
@@ -58,8 +50,7 @@ pub fn opens_new_unit(character: char, last: LastAction) -> bool {
     }
 }
 
-/// What counts as part of a word while typing. Letters, digits and underscore, matching
-/// what the word-motion commands treat as one run.
+/// What counts as part of a word while typing.
 pub fn is_word_character(character: char) -> bool {
     character.is_alphanumeric() || character == '_'
 }

@@ -1,10 +1,4 @@
 //! GitHub Copilot authentication.
-//!
-//! Signing in is GitHub's OAuth device flow: micro asks for a device code, the user
-//! enters it at a verification URL, and micro polls until GitHub grants a long-lived
-//! GitHub token. That token is not the one the Copilot API accepts — it buys short-lived
-//! Copilot API tokens, which is what [`exchange_token`] does and what the credential's
-//! access token holds.
 
 use crate::AuthError;
 use crate::OAuthCredential;
@@ -15,33 +9,27 @@ use std::time::Duration;
 use std::time::Instant;
 
 /// The client the device flow signs in as.
-///
-/// Copilot is granted to an application, not to a token: a token issued to an app the
-/// account has no Copilot entitlement for is refused at the exchange below, with a 403
-/// whose body is GitHub's generic scraping notice rather than anything about Copilot.
-/// This is the editor client Copilot is granted to.
 const CLIENT_ID: &str = "Iv1.b507a08c87ecfe98";
 const SCOPE: &str = "read:user";
 const DEVICE_CODE_URL: &str = "https://github.com/login/device/code";
 const ACCESS_TOKEN_URL: &str = "https://github.com/login/oauth/access_token";
 const API_TOKEN_URL: &str = "https://api.github.com/copilot_internal/v2/token";
 
-/// The editor Copilot is told it is serving. GitHub gates the API on these.
+/// The editor Copilot is told it is serving.
 pub const USER_AGENT: &str = "GitHubCopilotChat/0.35.0";
 pub const EDITOR_VERSION: &str = "vscode/1.107.0";
 pub const EDITOR_PLUGIN_VERSION: &str = "copilot-chat/0.35.0";
 /// Which Copilot integration is asking, which the service expects to be told.
 pub const INTEGRATION_ID: &str = "vscode-chat";
 
-/// GitHub's polling interval is a floor, not a target; a small margin keeps a slow clock
-/// from tripping `slow_down`.
+/// GitHub's polling interval is a floor, not a target; a small margin keeps a slow clock from
+/// tripping `slow_down`.
 const POLL_MARGIN: Duration = Duration::from_secs(3);
 const SLOW_DOWN_PENALTY_SECS: u64 = 5;
 /// Used when the exchange response omits both an expiry and a refresh hint.
 const DEFAULT_TOKEN_LIFETIME_MS: i64 = 25 * 60 * 1000;
 
-/// A pending device authorization. The user code and verification URL are what a UI
-/// shows; the device code is what the poll redeems.
+/// A pending device authorization.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeviceAuthorization {
     pub verification_uri: String,
@@ -51,7 +39,7 @@ pub struct DeviceAuthorization {
     pub expires_in_secs: u64,
 }
 
-/// Ask GitHub for a device code. Show the result, then call [`poll_for_token`].
+/// Ask GitHub for a device code.
 pub async fn start_device_flow(http: &reqwest::Client) -> Result<DeviceAuthorization> {
     let response = http
         .post(DEVICE_CODE_URL)
@@ -81,8 +69,7 @@ pub async fn start_device_flow(http: &reqwest::Client) -> Result<DeviceAuthoriza
     parse_device_authorization(&body)
 }
 
-/// Wait for the user to finish authorizing, then return a credential that is ready to
-/// use: a Copilot API token, plus the GitHub token that will mint the next one.
+
 pub async fn poll_for_token(
     http: &reqwest::Client,
     authorization: &DeviceAuthorization,
@@ -146,12 +133,7 @@ pub async fn poll_for_token(
     }
 }
 
-/// Where a Copilot token says its account is served from.
-///
-/// The token carries a `proxy-ep=` claim naming the host that answers for this account.
-/// An individual plan gets the default host; a Business or Enterprise account gets its
-/// own, and sending its requests to the default one is refused. The proxy host and the
-/// API host differ only in their first label.
+
 pub fn base_url_from_token(token: &str) -> Option<String> {
     let proxy = token
         .split(';')
@@ -194,9 +176,7 @@ pub async fn exchange_token(http: &reqwest::Client, github_token: &str) -> Resul
         .map_err(|error| AuthError::TokenExchange(error.to_string()))?;
 
     if !status.is_success() {
-        // A refused exchange is almost always a credential from an application Copilot
-        // is not granted to, and GitHub answers that with a notice about scraping that
-        // explains none of it. Say what actually has to happen instead.
+        
         if status.as_u16() == 403 {
             return Err(AuthError::TokenExchange(
                 "this GitHub credential is not entitled to Copilot. Sign in again with \
@@ -235,14 +215,12 @@ fn parse_device_authorization(body: &Value) -> Result<DeviceAuthorization> {
     })
 }
 
-/// What one poll of the device-code endpoint means. GitHub answers with HTTP 200 either
-/// way, so the body decides.
+/// What one poll of the device-code endpoint means.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum PollOutcome {
     Granted(String),
     Pending,
-    /// RFC 8628 §3.5: back off, either to the interval the server names or by five
-    /// seconds.
+    /// RFC 8628 §3.5: back off, either to the interval the server names or by five seconds.
     SlowDown {
         interval_secs: Option<u64>,
     },
@@ -277,8 +255,7 @@ fn classify_poll(body: &Value) -> PollOutcome {
     }
 }
 
-/// `expires_at` is Unix seconds. Older responses carry only `refresh_in`, the number of
-/// seconds after which the token should be replaced.
+/// `expires_at` is Unix seconds.
 fn parse_api_token(body: &Value, github_token: &str, now_ms: i64) -> Result<OAuthCredential> {
     let token = body
         .get("token")
@@ -445,8 +422,8 @@ mod tests {
 mod endpoints {
     use super::*;
 
-    /// A Business or Enterprise account is served somewhere other than the default host,
-    /// and the token is what says where.
+    /// A Business or Enterprise account is served somewhere other than the default host, and the
+    /// token is what says where.
     #[test]
     fn the_token_says_where_the_account_is_served() {
         let token = "tid=abc;exp=1234;proxy-ep=proxy.business.githubcopilot.com;other=1";

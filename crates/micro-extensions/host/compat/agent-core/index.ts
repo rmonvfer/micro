@@ -1,31 +1,4 @@
-// What `@earendil-works/pi-agent-core` and `@mariozechner/pi-agent-core` resolve to for a
-// pi extension running under micro.
-//
-// Evidence, not guesswork: every extension under
-// `pi/packages/coding-agent/examples/extensions` that imports from
-// `@earendil-works/pi-agent-core` imports only types (`AgentMessage`, `AgentToolResult`,
-// `ThinkingLevel` — see `plan-mode/index.ts`, `subagent/index.ts`, `handoff.ts`). Those
-// need nothing here: Bun erases `import type` before module resolution runs, the same as
-// every other type-only import from this SDK. The one extension that looks agent-like,
-// `subagent/index.ts`, spawns a separate `pi` child process per subagent rather than
-// driving pi-agent-core's `Agent` class in this process — so even that extension takes the
-// type-only path.
-//
-// What's real below: `uuidv7` (pi-agent-core's own `index.ts` re-exports it from pi-ai
-// unchanged) and the telemetry primitives pi-agent-core's `index.ts` re-exports from
-// `@earendil-works/pi-telemetry` (`NOOP_TELEMETRY_CONTEXT`, `InMemoryTelemetryContext`,
-// `defineTelemetrySchema`, `createTypedSpanStarter`) — pure in-memory span recording, no
-// network, no filesystem, ported faithfully from pi-telemetry's own source even though
-// pi-telemetry itself is a third package outside this shim's two assigned modules.
-//
-// `Agent` constructs for real — nothing about building one needs pi's runtime — but every
-// method on it throws the moment it is actually asked to do anything: running a turn means
-// sending a real request to a real model, and resolving credentials for that is
-// deliberately kept out of the extension host's reach (see the note on `modelRegistry` in
-// `../../context.ts`), the same boundary drawn everywhere else this layer meets it. No
-// real extension constructs one directly today (see above), but pi-subagents' watchdog
-// review pattern is exactly the shape that would, so it fails with a specific, named
-// reason rather than "does not provide an export named Agent".
+
 
 export { uuidv7 } from "../pi-ai/index.ts";
 
@@ -152,7 +125,7 @@ function automaticErrorStatus(error: unknown): SpanStatus {
 			return { status: "error", error: { name: error.name, message: error.message } };
 		}
 	} catch {
-		// Error inspection is passive. Fall through to an error status without details.
+		
 	}
 	return { status: "error" };
 }
@@ -205,7 +178,7 @@ function startInMemorySpan<T>(
 			try {
 				recordedSpan.events.push({ name, attributes: copyAttributes(attributes) });
 			} catch {
-				// Recording is passive. Ignore malformed or unreadable telemetry payloads.
+				
 			}
 		},
 		setAttributes(attributes) {
@@ -213,7 +186,7 @@ function startInMemorySpan<T>(
 			try {
 				recordedSpan.attributes = mergeAttributes(recordedSpan.attributes, attributes);
 			} catch {
-				// Recording is passive. Ignore malformed or unreadable telemetry payloads.
+				
 			}
 		},
 		setStatus(status) {
@@ -222,7 +195,7 @@ function startInMemorySpan<T>(
 				recordedSpan.status = copyStatus(status);
 				recordedSpan.explicitStatus = true;
 			} catch {
-				// Recording is passive. Ignore malformed or unreadable telemetry payloads.
+				
 			}
 		},
 	};
@@ -247,8 +220,7 @@ function startInMemorySpan<T>(
 	);
 }
 
-/** Backend-neutral reference implementation that records spans in process memory. Create
- *  a fresh instance to isolate tests or independent recording scopes. */
+/** Backend-neutral reference implementation that records spans in process memory. */
 export class InMemoryTelemetryContext implements TelemetryContext {
 	private readonly state: InMemoryTelemetryState = { spans: [], nextSpanId: 1, nextEndSequence: 1 };
 
@@ -271,13 +243,7 @@ export class InMemoryTelemetryContext implements TelemetryContext {
 	}
 }
 
-/**
- * Bind an explicit parent telemetry context to a callable span-starter. pi-agent-core's
- * own version infers a per-schema-name overload set for compile-time attribute checking;
- * that type machinery is `import type`-only (free via elision) so this keeps the runtime
- * behavior — bind once, call with any span name the context accepts — without reproducing
- * the overload inference itself.
- */
+/** Bind an explicit parent telemetry context to a callable span-starter. */
 export function createTypedSpanStarter(
 	telemetryContext: TelemetryContext,
 	_schemas: readonly TelemetrySchemaDefinition[],
@@ -293,18 +259,13 @@ export function createTypedSpanStarter(
 
 function agentRunUnavailable(method: string): never {
 	throw new Error(
-		`pi-agent-core's Agent.${method}() would send a real request to a real model. Resolving credentials for that is deliberately kept out of the extension host's reach — micro does not hand extensions a way to authenticate as the user. An extension that needs a model call should ask through the ordinary extension API instead (the object passed to export default (micro) => {...}), not by constructing its own Agent.`,
+		`pi-agent-core Agent.${method}() is unavailable in micro; use the extension API instead`,
 	);
 }
 
 export class Agent {
 	constructor(_options?: unknown) {
-		// Constructing an Agent is bookkeeping — options are read, nothing is sent
-		// anywhere — so it succeeds for real. What it returns is a Proxy rather than
-		// `this`: pi-agent-core's Agent has a wide method surface (`run`, `ask`,
-		// `prompt`, `stream`, event subscriptions, and more depending on version) and
-		// this layer would rather every one of them fail the same specific way than
-		// silently answer `undefined` for whichever names it did not happen to list.
+		
 		return new Proxy(
 			{},
 			{

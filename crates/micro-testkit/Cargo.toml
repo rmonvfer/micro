@@ -19,6 +19,5 @@ tokio = { workspace = true }
 micro-auth = { workspace = true }
 micro-models = { workspace = true }
 
-# `test-util` lets the retry tests run the agent's backoff on paused virtual time
-# instead of waiting out the real delays.
+# Required for paused-time retry tests.
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "test-util"] }

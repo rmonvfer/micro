@@ -1,65 +1,21 @@
-// What `@earendil-works/pi-coding-agent` and `@mariozechner/pi-coding-agent` resolve to
-// for a pi extension running under micro.
-//
-// pi-coding-agent's own index.ts exports well over a hundred names, and the great
-// majority of them — every type, every interface — are erased by Bun's own TypeScript
-// transpiler before this file is ever reached: an extension writing
-// `import type { ExtensionContext } from "@earendil-works/pi-coding-agent"` never asks
-// this module for anything at runtime at all. What is left, once the types are set aside,
-// splits three ways:
-//
-// - Pure functions with no dependency on pi's own runtime — theme utilities, the message
-//   converter, the session-branching logic a tool like pi-subagents' forked execution
-//   reaches for directly. These are real, working implementations below, ported from
-//   pi's own source (see the comment above each).
-// - Functions and classes that exist to run pi's own agent loop, its own session runtime,
-//   its own interactive TUI — `AgentSession`, `ExtensionRunner`, `main`, every component
-//   in pi's `modes/interactive/components`. micro is a different program under a
-//   different runtime; there is no honest way to make these do what they do under pi, so
-//   reaching for one throws a specific error naming it, at the point it is actually
-//   called rather than at import time.
-// - A handful of plain constants (`CONFIG_DIR_NAME`, `VERSION`, and the like) that are
-//   just data, not behavior — carried through as themselves since there is nothing to get
-//   wrong about a string.
+
 import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute as isAbsolutePath, join, resolve as resolvePath } from "node:path";
 import { randomUUID } from "node:crypto";
-// `CustomEditor` below subclasses pi-tui's real `Editor` (`class ModalEditor extends
-// CustomEditor` is pi's own documented usage — a real extension's own subclass, which
-// needs `CustomEditor` itself to be a plain, synchronously available class rather than
-// something built behind an async factory). Every other cross-package need in this file
-// uses a dynamic `import()` instead, deliberately: that isolates the rest of this
-// module's stability from pi-tui's own — reaching for `keyHint` and finding pi-tui
-// broken fails only that one call, not every extension's tool factories and
-// `SessionManager` along with it. Subclassing does not have that luxury: a class
-// declaration needs a real base class at the time it is evaluated, so this one import is
-// static, matching what pi's own `custom-editor.ts` does for the same reason.
+
 import { Editor, KeybindingsManager, TUI_KEYBINDINGS } from "@earendil-works/pi-tui";
 
-// ============================================================================
-// Keybinding hints — modes/interactive/components/keybinding-hints.ts
-//
-// Real: `@earendil-works/pi-tui`'s own `getKeybindings()` is real now (vendored for real
-// by this shim's own pi-tui package — see its `keybindings.ts`), so `keyText`/
-// `keyDisplayText`/`keyHint` resolve a logical binding name (e.g. "tui.select.cancel")
-// against it rather than throwing. The honest gap: `getKeybindings()` answers from
-// pi-tui's *default* keybinding table, since nothing calls its `setKeybindings()` with
-// micro's own bindings — micro keeps those entirely on the Rust side (see the
-// `keybindings-help` skill) and does not expose them to the extension host. A binding a
-// user rebound through micro's own config shows its pi-default key here, not the
-// rebound one — real resolution logic and real default data, just not a live read of
-// what this particular user actually configured. `rawKeyHint` takes a literal key
-// string, not a lookup, so it was already real; the color pi's own global theme
-// singleton would apply is still missing, since nothing here has a copy of one.
-// ============================================================================
+
 
 function formatKeyPart(part: string, capitalize: boolean): string {
 	const displayPart = process.platform === "darwin" && part.toLowerCase() === "alt" ? "option" : part;
 	return capitalize ? displayPart.charAt(0).toUpperCase() + displayPart.slice(1) : displayPart;
 }
 
-/** Ported unchanged from keybinding-hints.ts's `formatKeyText`: cosmetic-only, so it
- * needs nothing beyond the string it is given. */
+/**
+ * Ported unchanged from keybinding-hints.ts's `formatKeyText`: cosmetic-only, so it needs nothing
+ * beyond the string it is given.
+ */
 function formatKeyText(key: string, capitalize = false): string {
 	return key
 		.split("/")
@@ -72,10 +28,7 @@ function formatKeyText(key: string, capitalize = false): string {
 		.join("/");
 }
 
-/** `@earendil-works/pi-tui`'s `KeybindingsManager`, typed loosely here rather than
- * imported statically: a dynamic `import()` (below) is what lets this stay a plain
- * value-level dependency between two packages in the same shim `node_modules` tree
- * rather than a build-time one this file would need bundling to resolve. */
+
 interface KeybindingsManagerLike {
 	getKeys(keybinding: string): string[];
 }
@@ -113,24 +66,12 @@ export function rawKeyHint(key: string, description: string): string {
 	return `${formatKeyText(key)} ${description}`;
 }
 
-// ============================================================================
-// DynamicBorder — modes/interactive/components/dynamic-border.ts
-//
-// Real: it draws one line of box-drawing characters, optionally through a caller-supplied
-// color function. pi's own default parameter reaches for its global `theme` singleton;
-// this layer has no such singleton, so the default here is the identity function instead
-// — uncolored is a real, honest answer where pi's own file already warns that default
-// does not survive being loaded outside its own process (see its own comment, carried
-// below).
-// ============================================================================
 
-/** Matches `crates/micro-extensions/host/components.ts`'s `Component` shape structurally,
- * without importing it — that file lives in the host's own module graph, unreachable
- * from a shim package copied out into its own `node_modules` tree. A plain object
- * satisfying this shape still registers and drives correctly when an extension hands it
- * to `ctx.ui.setEditorComponent`/`ctx.ui.custom()`, since that registration happens in
- * host code that already has the real `Component` type — this file only needs to match
- * its structure, not import it. */
+
+/**
+ * Matches `crates/micro-extensions/host/components.ts`'s `Component` shape structurally, without
+ * importing it.
+ */
 interface RenderableComponent {
 	render(width: number): string[];
 	handleInput?(data: string): { consume?: boolean } | void;
@@ -152,24 +93,7 @@ export class DynamicBorder implements RenderableComponent {
 	}
 }
 
-// ============================================================================
-// CustomEditor — modes/interactive/components/custom-editor.ts
-//
-// Real: subclasses pi-tui's real `Editor` (see the import above), overriding
-// `handleInput` to check app-level keybindings before falling through to `Editor`'s own
-// text-editing ones — the same order pi's own file uses, ported unchanged in logic.
-//
-// `keybindings` (pi's `core/keybindings.ts`, a coding-agent-level table layered on top
-// of pi-tui's own `tui.*` bindings) is not vendored anywhere — it is app configuration
-// pi's own interactive mode owns, not pure logic. `APP_KEYBINDINGS` below is pi's own
-// *default* table for it (every `app.*` binding's `defaultKeys`, read from that file),
-// merged with pi-tui's real `TUI_KEYBINDINGS` and driven through pi-tui's own real
-// `KeybindingsManager` — the same honest tradeoff `keyHint` above already makes: real
-// resolution logic and pi's own default data, not a live read of a user's rebound keys,
-// since micro keeps those entirely on the Rust side. Used only as a fallback: the
-// `keybindings` a caller passes to the constructor is used as-is when it looks usable,
-// so a caller that does have a real `KeybindingsManager` of its own is not overridden.
-// ============================================================================
+
 
 const APP_KEYBINDINGS = {
 	"app.interrupt": { defaultKeys: "escape" },
@@ -230,9 +154,10 @@ function looksLikeKeybindings(value: unknown): value is KeybindingsLike {
 
 let fallbackKeybindings: KeybindingsLike | undefined;
 
-/** pi-tui's real `KeybindingsManager`, seeded with pi's real app-level defaults merged
- * over pi-tui's own real `tui.*` table — built once, reused for every `CustomEditor`
- * that needs it. */
+/**
+ * pi-tui's real `KeybindingsManager`, seeded with pi's real app-level defaults merged over pi-
+ * tui's own real `tui.*` table.
+ */
 function defaultAppKeybindings(): KeybindingsLike {
 	if (!fallbackKeybindings) {
 		fallbackKeybindings = new KeybindingsManager({ ...TUI_KEYBINDINGS, ...APP_KEYBINDINGS } as never);
@@ -251,10 +176,7 @@ export class CustomEditor extends Editor {
 	constructor(tui: unknown, theme: unknown, keybindings?: unknown, options?: unknown) {
 		// biome-ignore lint: Editor's real constructor signature, ported as-is.
 		super(tui as never, theme as never, options as never);
-		// `micro`'s `ctx.ui.setEditorComponent` passes `{}` as the third factory argument
-		// today (see `crates/micro-extensions/host/ui.ts`'s `setEditorComponent`) rather
-		// than a real `KeybindingsManager` — falling back here rather than throwing on
-		// `keybindings.matches is not a function` the first time a bound key is pressed.
+		
 		this.keybindings = looksLikeKeybindings(keybindings) ? keybindings : defaultAppKeybindings();
 	}
 
@@ -311,25 +233,7 @@ export class CustomEditor extends Editor {
 	}
 }
 
-// ============================================================================
-// BorderedLoader — modes/interactive/components/bordered-loader.ts
-//
-// Real: a bordered, spinning loader, cancellable with Escape — composed by hand from
-// `DynamicBorder` above plus a spinner and a cancel hint, rather than pi-tui's own
-// `Container`/`Spacer`/`Text` (which this shim does not carry), but drawing the same
-// frames at the same interval pi's own `Loader` does (`pi/packages/tui/src/components/
-// loader.ts`'s `DEFAULT_FRAMES`/`DEFAULT_INTERVAL_MS`).
-//
-// The one real behavioral difference: pi's `Loader` drives its own animation with
-// `setInterval` and pushes each frame by calling `tui.requestRender()` on a live
-// terminal driver this shim does not have. This one instead computes its frame from
-// elapsed wall-clock time inside `render()` itself — no timer, no live `TUI` reference
-// needed — so it animates correctly as long as whatever is drawing it (a focused
-// `ctx.ui.custom()` overlay, typically re-rendered on every keystroke and on its own
-// idle cadence) asks it to render again periodically, which is the same condition
-// under which a real terminal spinner would visibly advance regardless of how the
-// frame was chosen.
-// ============================================================================
+
 
 const LOADER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 const LOADER_INTERVAL_MS = 80;
@@ -377,10 +281,7 @@ export class BorderedLoader implements RenderableComponent {
 
 	handleInput(data: string): { consume?: boolean } | void {
 		if (!this.cancellable) return;
-		// "esc" is pi-tui's own default binding for `tui.select.cancel` — matched
-		// literally rather than through `getKeybindings()`, since Escape arrives as the
-		// raw byte 0x1b (or a CSI sequence prefixed by it) and this only needs to
-		// recognize the plain, unmodified key, not resolve an arbitrary rebound one.
+		
 		if (data === "\x1b") {
 			this.aborted = true;
 			this.onAbort?.();
@@ -391,17 +292,7 @@ export class BorderedLoader implements RenderableComponent {
 	invalidate(): void {}
 }
 
-// ============================================================================
-// Theme utilities — modes/interactive/theme/theme.ts
-//
-// `getLanguageFromPath` is a real, if smaller, version of pi's own extension table.
-// `highlightCode` returns its input unchanged: pi's own implementation defers to a
-// syntax-highlighting library this layer does not carry, and returning the plain source
-// is a real, defined answer — a reader sees uncolored code, not broken or fabricated
-// color codes. `getMarkdownTheme` hands back a plausible theme shape built from the ANSI
-// basics, since nothing here carries micro's actual palette (`ctx.ui.theme` does, for a
-// call made through the ordinary extension API instead of this one).
-// ============================================================================
+
 
 const LANGUAGE_BY_EXTENSION: Record<string, string> = {
 	ts: "typescript",
@@ -497,16 +388,7 @@ export function getSettingsListTheme(): {
 	};
 }
 
-// ============================================================================
-// Agent directory — config.ts's getAgentDir
-//
-// Real: micro's own data directory, the same one `crates/micro-session`'s `default_root`
-// sits under, resolved by the rule `crates/micro-dirs` holds — `MICRO_DIR` when it names a
-// directory, an existing `~/.micro` when it is there, and `XDG_DATA_HOME` otherwise. pi's
-// own `getAgentDir` answers `~/.pi/agent`; the shape an extension actually depends on is
-// "the directory micro keeps its own state under", not that exact path, so this answers
-// with micro's real one rather than a directory nothing on this machine uses.
-// ============================================================================
+
 
 export function getAgentDir(): string {
 	const configured = process.env.MICRO_DIR?.trim();
@@ -522,17 +404,7 @@ export function getAgentDir(): string {
 	return join(base && isAbsolutePath(base) ? base : join(home, ".local", "share"), "micro");
 }
 
-// ============================================================================
-// Frontmatter — utils/frontmatter.ts
-//
-// Real for the common case: a YAML frontmatter block of flat `key: value` pairs (what
-// every skill and prompt template in practice writes) is parsed for real. Pi's own
-// version defers to the `yaml` package for arbitrary YAML (nested maps, lists, multiline
-// scalars); that package is not part of this shim's vendored surface (only `typebox` is),
-// so a frontmatter block using any of that is read as a best-effort flat map rather than
-// failing outright — a value that looks like a plain string when it was meant to be
-// structured is the honest cost of not carrying a full YAML parser here.
-// ============================================================================
+
 
 function parseFrontmatterYaml(yamlText: string): Record<string, unknown> {
 	const result: Record<string, unknown> = {};
@@ -585,13 +457,8 @@ export function stripFrontmatter(content: string): string {
 }
 
 // ============================================================================
-// Conversation serialization for summarization — core/compaction/utils.ts's
-// serializeConversation
-//
-// Real: ported unchanged in behavior — a pure text transform over already-converted
-// `Message[]` (run `convertToLlm` first, same as pi's own docs for this function say),
-// truncating tool-result content to keep a summarization prompt within budget.
-// ============================================================================
+// Conversation serialization for summarization.
+
 
 const SERIALIZE_TOOL_RESULT_MAX_CHARS = 2000;
 
@@ -644,16 +511,7 @@ export function serializeConversation(messages: Record<string, unknown>[]): stri
 	return parts.join("\n\n");
 }
 
-// ============================================================================
-// Read-only tools — core/tools/index.ts's createReadOnlyTools
-//
-// Real: four small tool definitions that genuinely read the filesystem, matching pi's
-// contract (name/description/parameters/execute) closely enough for an extension that
-// builds its own Agent from them (as pi-subagents' watchdog review does). Not pi's own
-// implementations byte for byte — those carry line-numbered output, gitignore-aware
-// walking and truncation limits this layer does not reproduce — but real reads of real
-// files rather than a placeholder that returns nothing.
-// ============================================================================
+
 
 interface SimpleTool {
 	name: string;
@@ -773,25 +631,7 @@ export function createReadOnlyTools(cwd: string, _options?: ToolsOptions): Simpl
 	return [simpleReadTool(cwd), simpleGrepTool(cwd), simpleFindTool(cwd), simpleLsTool(cwd)];
 }
 
-// ============================================================================
-// Built-in tools proxied to micro's own — core/tools/{bash,edit,find,grep,ls,read,write}.ts's
-// createXTool factories
-//
-// Real, not approximated: `execute` crosses to `crates/micro-tools`'s actual Bash/Read/
-// Write/Edit/Find/Grep/Ls implementations — the same line-numbered reads, gitignore-aware
-// search, and fuzzy-matched edits the model's own built-in tools use — rather than
-// reimplementing them in Node the way `createReadOnlyTools` above does. A function does
-// not need to cross a process boundary to be called from one: `globalThis.__MICRO_WIRE__`
-// (published by `host/wire.ts`) is the same `ask`/`send` channel `ctx.sessionManager` and
-// every other host-side facade already use, asking for a `run_builtin_tool` request this
-// layer's own `compat.rs` answers by constructing the real tool for `cwd` and
-// calling its `execute`.
-//
-// `SimpleTool.execute` here takes pi's own parameter names, translated to
-// `crates/micro-tools`'s (snake_case `old_string`/`new_string`, `case_insensitive`)
-// before the request is sent — accepting both spellings for a field pi's docs and
-// micro-tools disagree on, so a caller using either one still reaches the same tool.
-// ============================================================================
+
 
 interface MicroWire {
 	ask(request: Record<string, unknown>): Promise<Record<string, unknown>>;
@@ -937,16 +777,11 @@ export function createBashTool(cwd: string): SimpleTool {
 }
 
 export function createCodingTools(cwd: string, _options?: ToolsOptions): SimpleTool[] {
-	// pi's own default built-ins (docs/sdk.md: "Default built-ins: read, bash, edit, write").
+	
 	return [createReadTool(cwd), createBashTool(cwd), createEditTool(cwd), createWriteTool(cwd)];
 }
 
-// ============================================================================
-// Message conversion — core/messages.ts
-//
-// Real: ported unchanged in behavior. Every branch is a pure transform of the message
-// shape it is given; none of it reaches into pi's own runtime.
-// ============================================================================
+
 
 export const COMPACTION_SUMMARY_PREFIX = `The conversation history before this point was compacted into the following summary:
 
@@ -1038,37 +873,7 @@ export function convertToLlm(messages: AgentMessageLike[]): unknown[] {
 		.filter((m) => m !== undefined);
 }
 
-// ============================================================================
-// SessionManager — core/session-manager.ts
-//
-// Real, for pi's fourteen-method `ReadonlySessionManager` (the same fourteen
-// `crates/micro-cli/src/extensions.rs`'s `session_snapshot` answers for the live
-// `ctx.sessionManager` — see that function's own comment) plus `open` and
-// `createBranchedSession`, the write path pi-subagents' own fork-context.ts reaches for
-// when told to fork.
-//
-// `open()` is handed a path that can be either shape. It can be a session micro itself
-// is running — still in micro's own on-disk log (`crates/micro-session/src/tree.rs`'s
-// `Entry`: snake_case `parent_id`, no header line in the log at all, cwd/id/title in a
-// sibling `.meta.json` instead) — which is exactly what `ctx.sessionManager.getSessionFile()`
-// points at, and so what `SessionManager.open(ctx.sessionManager.getSessionFile())`
-// (pi-subagents' fork-context.ts's own pattern) hands this. Or it can be a session this
-// same module already wrote via `createBranchedSession`, already in the camelCase shape
-// pi's own session files use. `parseLine` tells a line's shape apart and normalizes
-// either into one shape, so every method past that point reads one format, not two, and
-// the entry-wrapper translation (`parentId`, the synthesized compaction id) matches
-// `session_snapshot`'s own field for field rather than inventing a second convention for
-// the same problem.
-//
-// One honest gap `session_snapshot` also carries and this matches rather than quietly
-// fixing in only one of the two places an extension can reach a session from: a real
-// micro-native file's header timestamp is milliseconds since the epoch (from
-// `.meta.json`), not pi's ISO 8601 string, since nothing in this workspace formats one
-// today.
-//
-// Any method beyond this fourteen-plus-two is simply not defined on the class, so
-// reaching for one is a plain, specific "is not a function" — not a silent no-op.
-// ============================================================================
+
 
 interface NormalizedMessageEntry {
 	type: "message";
@@ -1111,10 +916,7 @@ function isoTimestamp(value: unknown): string {
 	return new Date().toISOString();
 }
 
-/** A content block, translated from micro's snake_case `ContentBlock` tag/fields
- * (`crates/micro-types/src/lib.rs`) to pi's camelCase shape. Blocks already in pi's
- * shape — from a file this module wrote itself — pass through unchanged, since none of
- * their tags collide with micro's snake_case ones. */
+
 function translateContentBlock(block: unknown): unknown {
 	if (!block || typeof block !== "object") return block;
 	const b = block as Record<string, unknown>;
@@ -1136,12 +938,10 @@ function translateContentBlock(block: unknown): unknown {
 	}
 }
 
-/** A message, translated from micro's `Message` shape (`crates/micro-types/src/lib.rs`:
- * snake_case fields, `role` tag values `user`/`assistant`/`tool_result`) to pi's
- * `AgentMessage` shape. This is the translation `session_snapshot` in
- * `crates/micro-cli/src/extensions.rs` does not yet do for the live `ctx.sessionManager`
- * (it translates the entry wrapper only) — done here so a session opened through this
- * module reads correctly regardless of that gap. */
+/**
+ * A message, translated from micro's `Message` shape (`crates/micro-types/src/lib.rs`: snake_case
+ * fields, `role` tag values.
+ */
 function translateMessage(message: unknown): Record<string, unknown> {
 	if (!message || typeof message !== "object") return message as Record<string, unknown>;
 	const m = message as Record<string, unknown>;
@@ -1167,8 +967,7 @@ function translateMessage(message: unknown): Record<string, unknown> {
 					cacheRead,
 					cacheWrite,
 					totalTokens: input + output + cacheRead + cacheWrite,
-					// micro's own Usage (crates/micro-types) carries no cost figures at all —
-					// reported as zero rather than fabricated.
+					
 					cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
 				},
 				stopReason: rawStopReason === "tool_use" ? "toolUse" : rawStopReason,
@@ -1199,9 +998,7 @@ type ParsedLine =
 	| { kind: "label"; entryId: string; label: string | undefined }
 	| { kind: "bare"; message: unknown };
 
-/** One line of a session log, in either micro's native shape or this module's own
- * pi-shaped output, told apart by which fields are present — the same disambiguation
- * `crates/micro-session/src/tree.rs`'s untagged `Line` enum does on the Rust side. */
+
 function parseLine(raw: unknown): ParsedLine | undefined {
 	if (!raw || typeof raw !== "object") return undefined;
 	const obj = raw as Record<string, unknown>;
@@ -1245,9 +1042,7 @@ function parseLine(raw: unknown): ParsedLine | undefined {
 		};
 	}
 	if ("entry_id" in obj && "summary" in obj) {
-		// A compaction has no id of its own in micro's log — it is recorded by the entry
-		// it followed, not as an addressable entry — so one is made up, the same way
-		// session_snapshot makes one up for the live wire path.
+		
 		const entryId = String(obj.entry_id);
 		return {
 			kind: "compaction",
@@ -1266,7 +1061,7 @@ function parseLine(raw: unknown): ParsedLine | undefined {
 		return { kind: "label", entryId: String(obj.entry_id), label: obj.label == null ? undefined : String(obj.label) };
 	}
 	if ("targetId" in obj && "label" in obj) {
-		// pi's own LabelEntry shape, for a file this module wrote or a genuine pi file.
+		
 		return { kind: "label", entryId: String(obj.targetId), label: obj.label == null ? undefined : String(obj.label) };
 	}
 	if (typeof obj.role === "string") {
@@ -1283,13 +1078,7 @@ interface ParsedSession {
 	leafId: string | null;
 }
 
-/** Replay a session log into entries, labels and the current leaf — mirroring
- * `crates/micro-session/src/tree.rs`'s `Tree::from_lines` exactly, including which line
- * kinds move the leaf (only a message entry does; a compaction, a custom entry or a
- * label does not) and how a pre-tree bare message becomes an entry (id = its position,
- * parent = whatever the leaf already was). A line that fails to parse as JSON is
- * skipped, not fatal — the same tolerance both pi's and micro's own readers give a log a
- * crash cut short mid-line. */
+/** Replay a session log into entries, labels and the current leaf. */
 function parseSessionFile(path: string): ParsedSession {
 	const raw = readFileSync(path, "utf-8");
 	let header: NormalizedHeader | null = null;
@@ -1361,9 +1150,7 @@ interface MetaSidecar {
 	parent?: string;
 }
 
-/** micro's session metadata sidecar (`crates/micro-session/src/meta.rs`'s `SessionMeta`),
- * read when a session file carries no header line of its own — true of every real
- * micro-native session, whose header lives here instead. */
+
 function readMetaSidecar(sessionPath: string): MetaSidecar | null {
 	const metaPath = sessionPath.replace(/\.jsonl$/, ".meta.json");
 	try {
@@ -1424,10 +1211,7 @@ export class SessionManager {
 			};
 			this.cwd = meta.workspace;
 			this.sessionId = meta.id;
-			// Derived from the first message by default, same as pi's own title, and with
-			// no separate field recording whether `/name` (micro's `Session::rename`)
-			// overrode it — so this is what pi's own getSessionName would answer only once
-			// a name was actually set, plus the cases pi leaves undefined.
+			
 			this.sessionName = meta.title || undefined;
 		} else {
 			this.header = null;
@@ -1500,10 +1284,7 @@ export class SessionManager {
 		return path;
 	}
 
-	// Not compaction-aware, matching the same tradeoff ctx.sessionManager's own
-	// buildContextEntries makes (crates/micro-extensions/host/context.ts): the raw path
-	// from root to leaf, so a compacted session shows more here than the model actually
-	// read on its next turn, never less.
+	
 	buildContextEntries(): NormalizedEntry[] {
 		return this.getBranch();
 	}
@@ -1557,14 +1338,7 @@ export class SessionManager {
 	}
 }
 
-// ============================================================================
-// Truncation utilities — core/tools/truncate.ts
-//
-// Real: ported unchanged. Every function here is a pure transform of the string and
-// numbers it is given — line/byte counting and slicing — with no dependency on pi's own
-// runtime. `truncated-tool.ts`, one of pi's own documented examples, imports these
-// directly to truncate a custom tool's output the same way pi's built-in tools do.
-// ============================================================================
+
 
 export const DEFAULT_MAX_LINES = 2000;
 export const DEFAULT_MAX_BYTES = 50 * 1024;
@@ -1747,13 +1521,7 @@ export function truncateLine(line: string, maxChars: number = GREP_MAX_LINE_LENG
 	return { text: `${line.slice(0, maxChars)}... [truncated]`, wasTruncated: true };
 }
 
-// ============================================================================
-// File mutation queue — core/tools/file-mutation-queue.ts
-//
-// Real: ported unchanged. Serializes operations against the same resolved (symlinks
-// followed) path against each other while letting different files run in parallel — a
-// pure concurrency primitive over `Map`/`Promise`, nothing pi- or micro-specific in it.
-// ============================================================================
+
 
 const fileMutationQueues = new Map<string, Promise<void>>();
 let registrationQueue = Promise.resolve();
@@ -1807,15 +1575,7 @@ export async function withFileMutationQueue<T>(filePath: string, fn: () => Promi
 	}
 }
 
-// ============================================================================
-// Session-entry helpers — core/session-manager.ts's free functions
-//
-// Real: pure transforms of whatever entry array a caller hands in — this layer's own
-// `NormalizedEntry`, or any pi-shaped `SessionEntry` a caller read from a genuine pi file
-// itself via `parseSessionEntries`. Loosely typed (`Record<string, unknown>`, discriminated
-// on `.type` at runtime, the same way pi's own untyped-at-the-boundary JSONL reading works)
-// rather than constrained to `NormalizedEntry`, since these are meant to work on either.
-// ============================================================================
+
 
 interface LooseEntry {
 	type?: string;
@@ -1832,10 +1592,7 @@ export function getLatestCompactionEntry(entries: LooseEntry[]): LooseEntry | nu
 	return null;
 }
 
-/** One selected entry, projected into the messages it contributes to LLM context — every
- * type pi's own `SessionEntry` union carries a message for. A plain `custom` entry (state
- * an extension kept beside the conversation) contributes nothing, matching pi's own
- * function: it is display/state, not context. */
+/** One selected entry, projected into the messages it contributes to LLM context. */
 export function sessionEntryToContextMessages(entry: LooseEntry): unknown[] {
 	switch (entry.type) {
 		case "message":
@@ -1867,7 +1624,7 @@ export function parseSessionEntries(content: string): LooseEntry[] {
 		try {
 			entries.push(JSON.parse(line) as LooseEntry);
 		} catch {
-			// Skip malformed lines, same tolerance pi's own reader gives a damaged log.
+			
 		}
 	}
 	return entries;
@@ -1891,8 +1648,7 @@ function sessionEntryPath(entries: LooseEntry[], leafId?: string | null, byId?: 
 	return path;
 }
 
-/** The active, compaction-aware entry list: the path to the leaf, with everything before
- * the newest compaction's kept range collapsed to the compaction entry itself. */
+
 export function buildContextEntries(entries: LooseEntry[], leafId?: string | null, byId?: Map<string, LooseEntry>): LooseEntry[] {
 	const path = sessionEntryPath(entries, leafId, byId);
 	let compaction: LooseEntry | null = null;
@@ -1914,14 +1670,7 @@ export function buildContextEntries(entries: LooseEntry[], leafId?: string | nul
 	return contextEntries;
 }
 
-/** `{messages, thinkingLevel, model}` for the LLM — the messages `buildContextEntries`
- * selects, projected through `sessionEntryToContextMessages`, plus whatever
- * `thinking_level_change`/`model_change` entries or the latest assistant message on the
- * path say about which model and thinking level were in effect. micro's own session log
- * never writes `thinking_level_change`/`model_change` entries (see this file's
- * `SessionManager` comment), so for a session this layer produced, only the assistant
- * message case ever fires — real for the data that exists, not a guess at data that
- * doesn't. */
+/** `{messages, thinkingLevel, model}` for the LLM. */
 export function buildSessionContext(
 	entries: LooseEntry[],
 	leafId?: string | null,
@@ -1946,15 +1695,7 @@ export function buildSessionContext(
 	return { messages, thinkingLevel, model };
 }
 
-// ============================================================================
-// Session migration — core/session-manager.ts's migrateSessionEntries
-//
-// Real: ported unchanged. A v1 log (no id/parentId at all) is given the tree structure
-// version 2 introduced, walking entries in file order — the same "one entry followed the
-// one before it" reading `crates/micro-session`'s own `Tree::from_lines` gives a legacy
-// bare-message log (see this file's `SessionManager` comment on the `bare` line kind).
-// A v2 log has its `hookMessage` role renamed to `custom`, which version 3 renamed it to.
-// ============================================================================
+
 
 function migrateV1ToV2(entries: LooseEntry[]): void {
 	const ids = new Set<string>();
@@ -2002,13 +1743,7 @@ export function migrateSessionEntries(entries: LooseEntry[]): void {
 	if (version < 3) migrateV2ToV3(entries);
 }
 
-// ============================================================================
-// Extension-authoring helpers — core/extensions/types.ts
-//
-// Real: `defineTool` is pi's own identity function, kept only to preserve TypeScript's
-// inference for a tool assigned to a variable — nothing to reimplement. The `isXResult`
-// guards and `isToolCallEventType` are one-line checks against a `toolName` field.
-// ============================================================================
+
 
 export function defineTool<T>(tool: T): T {
 	return tool;
@@ -2043,37 +1778,18 @@ export function isToolCallEventType(toolName: string, event: ToolNamed): boolean
 	return event.toolName === toolName;
 }
 
-// ============================================================================
-// Plain constants — carried through as themselves, since there is nothing to get wrong
-// about a string or a number. `DEFAULT_MAX_BYTES`/`DEFAULT_MAX_LINES` are declared above,
-// with the truncation utilities they're the defaults for.
-//
-// `CONFIG_DIR_NAME` is `.micro`, not pi's own `.pi`: it exists so an extension builds a
-// project-local config path as `join(ctx.cwd, CONFIG_DIR_NAME, "my-extension.json")`
-// instead of hardcoding a directory name, and micro's own project-local directory
-// (`crates/micro-extensions/src/discover.rs`'s `PROJECT_DIR`) is `.micro/extensions` —
-// answering `.pi` here would point that join at a directory micro never looks at.
-// `CURRENT_SESSION_VERSION` is 3, matching pi's own value: sessions built through this
-// module's `SessionManager` are already tree-structured (id/parentId on every entry),
-// which is what pi's version 3 describes, not version 1's flat legacy list.
-// ============================================================================
+
 
 export const CONFIG_DIR_NAME = ".micro";
 export const VERSION = "0.0.0-micro-compat";
 export const CURRENT_SESSION_VERSION = 3;
 
-// ============================================================================
-// Everything else pi-coding-agent exports as a value: pi's own agent loop, its own
-// session runtime, its own interactive TUI. None of it has a micro equivalent to run
-// against, so each reaches for a specific, named error only when actually called —
-// importing the name is not yet a mistake, since most of what pi-coding-agent exports is
-// erased TypeScript types by the time this runs.
-// ============================================================================
+
 
 function unsupported(name: string): (..._args: unknown[]) => never {
 	return function unsupportedPiCodingAgentExport(): never {
 		throw new Error(
-			`pi-coding-agent's ${name} runs pi's own agent loop, session runtime, or interactive TUI, none of which micro's compatibility layer for pi extensions provides — micro is a different program with its own runtime underneath. Extensions reach micro's real capabilities through the ordinary extension API (the object export default (micro) => {...} is called with), not through this module.`,
+			`pi-coding-agent export ${name} is unavailable in micro; use the extension API instead`,
 		);
 	};
 }

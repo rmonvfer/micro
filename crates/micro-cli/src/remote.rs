@@ -1,12 +1,4 @@
 //! Handing this session to a phone.
-//!
-//! The interface owns the agent and the relay owns the phone, so this sits between them:
-//! it holds the pairing, keeps the connection, answers what the phone asks about the
-//! session, and turns the phone's prompts into lines the interface submits as though they
-//! had been typed there.
-//!
-//! What it deliberately does not hold is the agent. Everything that changes the session
-//! goes through [`micro_tui::remote`], which is the same path a keystroke takes.
 
 use micro_remote::AvailableModel;
 use micro_remote::Bridge;
@@ -40,11 +32,6 @@ const DEFAULT_RELAY: &str = "https://parley-relay.up.railway.app";
 const RELAY_ENV: &str = "MICRO_REMOTE_RELAY_URL";
 
 /// The commands a phone is offered.
-///
-/// Not every command micro knows can be run from a phone. A command that opens a picker,
-/// asks for a credential or hands the terminal to an editor needs someone sitting at the
-/// machine, and offering it would be offering something that appears to do nothing. What
-/// is left is the set that finishes on its own and reports what it did.
 const PHONE_COMMANDS: &[&str] = &[
     "compact", "name", "clear", "new", "cwd", "session", "skills", "thinking", "help",
 ];
@@ -59,8 +46,7 @@ pub struct Snapshot {
     pub cwd: String,
 }
 
-/// Both ends of the seam to the interface, held from startup so `/remote` has
-/// somewhere to plug into.
+
 pub struct Seam {
     /// What to tell the interface to do.
     pub to_interface: UnboundedSender<FromPhone>,
@@ -75,9 +61,7 @@ impl Seam {
         let (outgoing, from_interface) = tokio::sync::mpsc::unbounded_channel();
         let running = Arc::new(AtomicBool::new(false));
 
-        // Drained from the moment the session starts rather than from the moment a phone
-        // arrives: the interface reports every turn either way, and a channel nobody reads
-        // is a channel that grows.
+        
         tokio::spawn(watch_running(from_interface, Arc::clone(&running)));
 
         (
@@ -102,14 +86,6 @@ pub fn is_paired(micro_dir: &std::path::Path) -> bool {
 }
 
 /// Bonds a phone to this machine, and says what to read out.
-///
-/// A code rather than a link, because a link carries the secret and is therefore too long
-/// to move by hand. The two ends swap public halves under the code and arrive at the same
-/// secret without it ever crossing the relay — so what has to be typed is eight
-/// characters, and what the relay learns is nothing.
-///
-/// Returns as soon as there is a code to show. Finishing waits on somebody picking up a
-/// phone, which happens on its own and writes the pairing when it lands.
 pub async fn pair(micro_dir: &std::path::Path, qr: bool) -> Result<Vec<String>, String> {
     let relay = std::env::var(RELAY_ENV).unwrap_or_else(|_| DEFAULT_RELAY.to_string());
     let enrolment = micro_remote::begin_enrolment(&relay).await?;
@@ -118,8 +94,7 @@ pub async fn pair(micro_dir: &std::path::Path, qr: bool) -> Result<Vec<String>, 
     let path = micro_remote::path_in(micro_dir);
     let relay_for_task = relay.clone();
     tokio::spawn(async move {
-        // Nothing is reported back from here: the phone says whether it paired, which is
-        // where somebody typing a code is already looking.
+        
         if let Ok(secret) = enrolment.complete().await {
             let _ = micro_remote::write_pairing(
                 &path,
@@ -139,7 +114,7 @@ pub async fn pair(micro_dir: &std::path::Path, qr: bool) -> Result<Vec<String>, 
         ),
     ];
     if qr {
-        // The code as a code, for a phone that is looking at this screen anyway.
+        
         lines.push(String::new());
         lines.extend(micro_remote::qr_lines(code.as_str()));
     }
@@ -178,10 +153,6 @@ impl RemoteSessionAccess for PhoneView {
     }
 
     /// The branch as the phone rebuilds a transcript from it.
-    ///
-    /// Entries are numbered rather than carrying the tree's own ids: what the phone keys a
-    /// row on has to be stable for as long as the list is, and a reload hands it the whole
-    /// list at once.
     fn entries(&self) -> Vec<Value> {
         let Ok(session) = self.session.try_lock() else {
             return Vec::new();
@@ -230,9 +201,7 @@ impl RemoteSessionAccess for PhoneView {
             .collect()
     }
 
-    /// Changing the model and the thinking level go through micro's own commands rather
-    /// than around them, so a phone changing either lands exactly where the terminal would
-    /// land — including in the transcript, where someone at the machine can see it.
+    
     fn set_model(&mut self, model_id: &str) -> Result<(), String> {
         self.submit(
             &format!("/model {model_id}"),
@@ -246,9 +215,6 @@ impl RemoteSessionAccess for PhoneView {
 }
 
 /// Hands this session to a phone.
-///
-/// Pairing happens once and is reused, so this shows a code only the first time. Everything
-/// after that is the connection being made again.
 pub async fn start(
     seam: &Seam,
     mirror: &Mirror,
@@ -277,16 +243,12 @@ pub async fn start(
         micro_remote::Direction::Push,
     );
 
-    // Registered every time rather than only when the pairing is new. The relay stores
-    // hashes of tokens derived from the secret, so writing them again writes the same
-    // record — which is what puts a pairing back after a relay has lost its database,
-    // without anyone being asked to pair a second time.
+    
     micro_remote::register(&config).await?;
     let (events, incoming) = tokio::sync::mpsc::unbounded_channel();
     let client = Arc::new(RelayClient::start(config, events));
 
-    // The run is copied to the phone from here on. Registered before the offer goes out,
-    // so nothing the session does between the two is missed.
+    
     let (mirrored, mirrored_rx) = tokio::sync::mpsc::unbounded_channel();
     *mirror.lock().await = Some(mirrored);
 
@@ -333,9 +295,7 @@ async fn serve(
         machine_name: pairing.machine_name.clone(),
     };
 
-    // The offer goes out the moment there is anywhere to send it, and again whenever the
-    // phone arrives: the relay tells a newly joined leg only about peers that connect
-    // after it, so a phone already waiting would otherwise hear nothing.
+    
     let mut announce = || {
         let snapshot = snapshot.try_lock().map(|held| held.clone()).unwrap_or_default();
         let name = match snapshot.session_name.is_empty() {
@@ -368,8 +328,7 @@ async fn serve(
                 let settled = event.get("type").and_then(Value::as_str) == Some("agent_settled");
                 client.send(bridge.mirror(event));
 
-                // A turn that has finished is worth waking a phone for; one that is still
-                // going is already being watched by whoever is watching.
+                
                 if settled {
                     let snapshot = snapshot.lock().await.clone();
                     let payload = PushPayload {
@@ -381,8 +340,7 @@ async fn serve(
                         },
                         machine_name: pairing.machine_name.clone(),
                     };
-                    // Best effort: a phone on the open channel already knows, so a push
-                    // that does not land is not worth interrupting the session over.
+                    
                     let _ = client.push_trigger(&push_key, &payload, Some(&session_id)).await;
                 }
             }
@@ -415,12 +373,11 @@ mod tests {
 
         assert!(is_paired(&dir));
         assert!(lines.iter().any(|line| line.starts_with("parley://pair?")));
-        // What it says next is the point of the whole arrangement.
+        
         assert!(lines.iter().any(|line| line.contains("no link, no code")));
     }
 
-    /// Pairing twice keeps the phone already bonded rather than cutting it off, so
-    /// running it again is a way to see the link, not a way to lose the phone.
+    
     #[tokio::test]
     async fn pairing_again_keeps_the_phone_already_bonded() {
         let dir = scratch("pair-twice");
@@ -437,8 +394,7 @@ mod tests {
         assert_eq!(link(&first), link(&second));
     }
 
-    /// Asked for a code, it draws one — and still prints the link, because a simulator
-    /// has no camera to scan with.
+    
     #[tokio::test]
     async fn a_code_is_drawn_when_one_is_asked_for() {
         let dir = scratch("pair-qr");

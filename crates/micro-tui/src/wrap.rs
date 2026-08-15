@@ -1,9 +1,4 @@
 //! Width-aware text wrapping.
-//!
-//! The transcript is wrapped here rather than by ratatui's `Paragraph` so scroll math can
-//! count the lines that actually reach the screen. Two shapes are needed: styled spans,
-//! wrapped into display lines, and a plain string, wrapped into byte ranges so the editor
-//! can map a cursor position onto a visual row.
 
 use ratatui::style::Style;
 use ratatui::text::Line;
@@ -12,8 +7,7 @@ use std::ops::Range;
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
-/// Columns a grapheme cluster occupies. Tabs render as a single space so a pasted tab
-/// cannot silently shift everything after it out of alignment with the wrap math.
+/// Columns a grapheme cluster occupies.
 pub fn grapheme_width(grapheme: &str) -> usize {
     if grapheme == "\t" {
         return 1;
@@ -52,16 +46,12 @@ pub fn truncate(text: &str, width: usize) -> String {
 }
 
 /// Byte ranges partitioning `text` into rows no wider than `width` columns.
-///
-/// The ranges are contiguous and cover the whole string, which is what lets the editor
-/// translate a byte cursor into a row and column without a second pass. Breaks prefer the
-/// position after a whitespace run; a word wider than the row is split mid-word.
 pub fn wrap_ranges(text: &str, width: usize) -> Vec<Range<usize>> {
     let width = width.max(1);
     let mut rows: Vec<Range<usize>> = Vec::new();
     let mut start = 0usize;
     let mut column = 0usize;
-    // Byte index just past the most recent whitespace run in the current row.
+    
     let mut break_at: Option<usize> = None;
     let mut previous_was_space = false;
 
@@ -88,9 +78,6 @@ pub fn wrap_ranges(text: &str, width: usize) -> Vec<Range<usize>> {
 }
 
 /// Wrap styled spans into display lines no wider than `width` columns.
-///
-/// Continuation lines are prefixed with `indent` spaces, which is how tool output and list
-/// items keep their left edge when they spill past the terminal width.
 pub fn wrap_spans(spans: &[Span<'static>], width: usize, indent: usize) -> Vec<Line<'static>> {
     let width = width.max(1);
     let indent = indent.min(width.saturating_sub(1));
@@ -103,9 +90,7 @@ pub fn wrap_spans(spans: &[Span<'static>], width: usize, indent: usize) -> Vec<L
         let token_width = text_width(&token.text);
 
         if token.is_space {
-            // Whitespace opening a continuation row would push the text out of alignment
-            // with the indent. Whitespace opening the first row is the caller's own
-            // indentation and is kept.
+            
             if current.is_empty() && !lines.is_empty() {
                 continue;
             }
@@ -131,7 +116,7 @@ pub fn wrap_spans(spans: &[Span<'static>], width: usize, indent: usize) -> Vec<L
             continue;
         }
 
-        // Wider than a whole row: split it across as many rows as it needs.
+        
         for chunk in split_to_width(
             &token.text,
             width.saturating_sub(column),
@@ -153,9 +138,6 @@ pub fn wrap_spans(spans: &[Span<'static>], width: usize, indent: usize) -> Vec<L
 }
 
 /// Wrap styled spans at the width, without regard for word boundaries.
-///
-/// Code and command output are read column by column, so breaking them at the edge keeps
-/// their shape; re-flowing them as prose does not.
 pub fn wrap_spans_hard(spans: &[Span<'static>], width: usize, indent: usize) -> Vec<Line<'static>> {
     let width = width.max(1);
     let indent = indent.min(width.saturating_sub(1));
@@ -207,8 +189,7 @@ fn flush(
     *column = indent;
 }
 
-/// Whitespace left at a wrap point would paint the row's background past its last
-/// character, so it is removed before the row is closed.
+/// Whitespace left at a wrap point would paint the row's background past its last character.
 fn trim_trailing_space(spans: &mut Vec<Span<'static>>) {
     while let Some(last) = spans.last_mut() {
         let trimmed = last.content.trim_end();

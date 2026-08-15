@@ -1,10 +1,6 @@
 use serde::{Deserialize, Serialize};
 
 /// Tokens consumed by one request, as reported by the provider.
-///
-/// `input` counts only tokens billed at the full input rate: providers report
-/// cached tokens separately, and this type keeps them separate so each is
-/// priced at its own rate.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TokenUsage {
     #[serde(default)]
@@ -133,7 +129,7 @@ mod tests {
         let catalog = Catalog::bundled();
         let opus = catalog.get("anthropic", "claude-opus-5").unwrap();
 
-        // 12k fresh input, 3k output, 40k served from cache.
+        
         let priced = opus.price(TokenUsage::new(12_000, 3_000).with_cache(40_000, 0));
 
         assert_close(priced.input, 0.06);
@@ -181,7 +177,7 @@ mod tests {
 
         assert_eq!(usage, TokenUsage::new(30_000, 3_000));
         assert_eq!(usage.total(), 33_000);
-        // 30k input at $2/M plus 3k output at $10/M.
+        
         assert_close(spent.total(), 0.06 + 0.03);
     }
 }
@@ -228,8 +224,7 @@ mod tiers {
         assert_close(priced.input, 0.5);
     }
 
-    /// Past the threshold the whole request is billed at the tier, not only the part
-    /// above it.
+    /// Past the threshold the whole request is billed at the tier, not only the part above it.
     #[test]
     fn a_long_request_pays_the_tier_on_everything() {
         let priced = tiered().price(TokenUsage {
@@ -242,8 +237,7 @@ mod tiers {
         assert_close(priced.output, 45.0);
     }
 
-    /// Everything the model read counts towards the threshold, cached or not. A request
-    /// that is mostly cache still reaches the tier.
+    /// Everything the model read counts towards the threshold, cached or not.
     #[test]
     fn cached_tokens_count_towards_the_threshold() {
         let priced = tiered().price(TokenUsage {
@@ -255,8 +249,8 @@ mod tiers {
         assert_close(priced.cache_read, 0.3);
     }
 
-    /// The bundled catalog carries the tiers, so a long request against a real model is
-    /// priced the way the service charges for it.
+    /// The bundled catalog carries the tiers, so a long request against a real model is priced the
+    /// way the service charges for it.
     #[test]
     fn the_catalog_carries_long_context_pricing() {
         let catalog = Catalog::bundled();

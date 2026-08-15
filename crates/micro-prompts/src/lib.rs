@@ -1,14 +1,4 @@
 //! Slash commands a user writes for themselves.
-//!
-//! A markdown file in `prompts/` becomes a command named after the file. Running it
-//! substitutes whatever was typed after the name into the file's body, and the result is
-//! sent as the prompt. Nothing about it reaches the model until it is run, so a directory
-//! of them costs nothing to have.
-//!
-//! The substitutions are the ones a shell uses, because that is what the syntax looks
-//! like and guessing differently would be a trap: `$1` for the first argument, `$@` and
-//! `$ARGUMENTS` for all of them, `${1:-default}` for one that may be missing, and
-//! `${@:2}` or `${@:2:3}` for a run of them.
 
 mod frontmatter;
 
@@ -46,9 +36,6 @@ impl PromptTemplate {
 }
 
 /// Split what was typed after the command name into arguments.
-///
-/// Quoting works the way it does in a shell, so an argument with a space in it can be
-/// written as one.
 pub fn parse_arguments(text: &str) -> Vec<String> {
     let mut arguments = Vec::new();
     let mut current = String::new();
@@ -74,9 +61,6 @@ pub fn parse_arguments(text: &str) -> Vec<String> {
 }
 
 /// Replace the argument placeholders in `content`.
-///
-/// Only the template is rewritten. An argument that itself contains something looking like
-/// a placeholder is left as it is, so what a user typed is never re-read as syntax.
 pub fn substitute(content: &str, arguments: &[String]) -> String {
     let all = arguments.join(" ");
     let characters: Vec<char> = content.chars().collect();
@@ -95,7 +79,7 @@ pub fn substitute(content: &str, arguments: &[String]) -> String {
                 out.push_str(&resolve(&replacement, arguments, &all));
                 index += length;
             }
-            // Not a placeholder, so it is just a dollar sign.
+            
             None => {
                 out.push('$');
                 index += 1;
@@ -105,7 +89,7 @@ pub fn substitute(content: &str, arguments: &[String]) -> String {
     out
 }
 
-/// What a placeholder asks for.
+
 enum Placeholder {
     /// `$1`, `$2`, …
     Positional(usize),
@@ -131,7 +115,7 @@ fn placeholder_at(characters: &[char], start: usize) -> Option<(Placeholder, usi
         return Some((placeholder, close - start + 1));
     }
 
-    // `$ARGUMENTS`, `$@`, `$1`
+    
     if characters[after] == '@' {
         return Some((Placeholder::All, 2));
     }
@@ -177,7 +161,7 @@ fn braced(inside: &str) -> Option<Placeholder> {
 fn resolve(placeholder: &Placeholder, arguments: &[String], all: &str) -> String {
     match placeholder {
         Placeholder::All => all.to_string(),
-        // Written 1-indexed, the way a shell writes them.
+        
         Placeholder::Positional(position) => position
             .checked_sub(1)
             .and_then(|index| arguments.get(index))
@@ -191,7 +175,7 @@ fn resolve(placeholder: &Placeholder, arguments: &[String], all: &str) -> String
             }
         }
         Placeholder::Slice { start, length } => {
-            // A shell counts from 1 here too, and treats 0 as 1.
+            
             let from = start.saturating_sub(1).min(arguments.len());
             let taken = match length {
                 Some(length) => arguments[from..].iter().take(*length),
@@ -202,7 +186,7 @@ fn resolve(placeholder: &Placeholder, arguments: &[String], all: &str) -> String
     }
 }
 
-/// Read one prompt file. A file that cannot be read is not a template.
+/// Read one prompt file.
 pub fn load(path: &Path) -> Option<PromptTemplate> {
     let raw = std::fs::read_to_string(path).ok()?;
     let parsed = parse_frontmatter(&raw);
@@ -213,8 +197,7 @@ pub fn load(path: &Path) -> Option<PromptTemplate> {
         return None;
     }
 
-    // A file that does not describe itself is described by its first line, which is
-    // usually a heading and says enough to pick it out of a list.
+    
     let description = match parsed.field("description") {
         Some(description) if !description.trim().is_empty() => description.trim().to_string(),
         _ => derive_description(&body),
@@ -248,13 +231,6 @@ fn derive_description(body: &str) -> String {
 }
 
 /// Every prompt available here, by name.
-///
-/// The user's own are read first and the project's are laid over them, so a project can
-/// offer a command of its own without the user losing theirs elsewhere. The project's are
-/// read only once it is trusted: a prompt is text put in front of the model.
-/// Read the prompt templates at `path`, which may be a directory of them or one file.
-///
-/// For a path named on the command line rather than found in one of the usual places.
 pub fn load_from_path(path: &Path) -> Vec<PromptTemplate> {
     if !path.is_dir() {
         return load(path).into_iter().collect();
@@ -331,7 +307,7 @@ mod tests {
             substitute("fix $1 please", &args("auth")),
             "fix auth please"
         );
-        // One that was not given leaves nothing behind.
+        
         assert_eq!(substitute("fix $2", &args("auth")), "fix ");
     }
 
@@ -355,13 +331,12 @@ mod tests {
     fn a_run_of_arguments_can_be_taken() {
         assert_eq!(substitute("${@:2}", &args("a b c d")), "b c d");
         assert_eq!(substitute("${@:2:2}", &args("a b c d")), "b c");
-        // A shell counts from one, and treats zero as one.
+        
         assert_eq!(substitute("${@:0}", &args("a b")), "a b");
         assert_eq!(substitute("${@:9}", &args("a b")), "");
     }
 
-    /// What the user typed is text, not more template. A `$1` inside an argument stays a
-    /// `$1` rather than being read again.
+    /// What the user typed is text, not more template.
     #[test]
     fn an_argument_is_not_substituted_into_twice() {
         assert_eq!(
@@ -413,8 +388,8 @@ mod discovery {
         (root, home)
     }
 
-    /// A markdown file becomes a command named after it, and running it substitutes what
-    /// was typed into the body.
+    /// A markdown file becomes a command named after it, and running it substitutes what was typed
+    /// into the body.
     #[test]
     fn a_file_becomes_a_command() {
         let (root, home) = scratch("basic");

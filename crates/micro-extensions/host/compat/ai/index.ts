@@ -1,29 +1,4 @@
-// What `@earendil-works/pi-ai` and `@mariozechner/pi-ai` resolve to for a pi extension
-// running under micro.
-//
-// pi-ai's real index.ts is a hub of `export *` across a dozen submodules of its own —
-// provider auth, model catalogs, telemetry, event-stream parsing. Most of an extension's
-// use of it is types, erased by Bun before this file is ever reached. What's below is
-// everything else: real, working code for every piece that is pure logic — touches no
-// network, needs no credential — ported faithfully from pi-ai's own source rather than
-// redesigned. None of it is a stub: every export does what pi-ai's own version does, for
-// the same input.
-//
-// What's still a real gap, not silently papered over: the provider API clients
-// (`anthropicMessagesApi`, `openAIResponsesApi`, `openAICompletionsApi`, and the rest under
-// pi-ai's `api/`) are real HTTP+SSE clients against `@anthropic-ai/sdk`, `openai`,
-// `@google/genai`, and `@aws-sdk/client-bedrock-runtime` — thousands of lines of wire-format
-// logic, not glue, and not vendored into this shim. `createProvider()` below still lets an
-// extension register a provider backed by its *own* `stream`/`streamSimple` (exactly what
-// `custom-provider-gitlab-duo/index.ts` does — see `./compat.ts`), so the gap is narrower
-// than "provider registration doesn't work"; it's specifically "pi-ai's own built-in API
-// clients aren't here to register." `Type`/`Static`/`TSchema` are typebox's own schema
-// builder, re-exported from the real `typebox` package rather than reimplemented — micro's
-// NODE_PATH wiring (`crates/micro-extensions/src/compat.rs`) already makes the genuine
-// one reachable, the same package extensions build tool parameters against.
-//
-// `@earendil-works/pi-ai/oauth` needs no runtime exports at all — see `./oauth.ts`: pi-ai's
-// real `oauth.ts` is `export type` only, so every import from it is already free.
+
 
 import type { TSchema, TUnsafe } from "typebox";
 import { Type } from "typebox";
@@ -34,11 +9,7 @@ import { Value } from "typebox/value";
 export type { Static, TSchema } from "typebox";
 export { Type };
 
-// Shapes carried across this file, typed locally rather than imported from pi-ai's own
-// `types.ts` — a value-level import of that file would need everything else it pulls in,
-// while every consumer of these as *types* already reaches the real ones through
-// `import type` at zero cost (see the file header). Kept narrow: only what the functions
-// below actually construct or inspect.
+
 
 export type KnownApi =
 	| "openai-completions"
@@ -211,9 +182,7 @@ export interface Model<TApi extends Api = Api> {
 	compat?: unknown;
 }
 
-/** Passthrough request shape. Every field here rides opaquely through this file's
- *  functions (`lazyStream`, `createProvider`, ...) without being read, so it is typed
- *  loosely rather than reproducing pi-ai's full per-field documentation. */
+/** Passthrough request shape. */
 export interface StreamOptions {
 	signal?: AbortSignal;
 	telemetryContext?: unknown;
@@ -243,14 +212,11 @@ export interface ProviderStreams {
 	cancelDeferred?(model: Model<Api>, handle: DeferredHandle, options?: DeferredCancelOptions): Promise<void>;
 }
 
-// ---------------------------------------------------------------------------------------
-// utils/typebox-helpers.ts
-// ---------------------------------------------------------------------------------------
+
 
 /**
- * Creates a string enum schema compatible with Google's API and other providers that
- * don't support anyOf/const patterns. Identical to pi-ai's own implementation — it is a
- * thin wrapper over `Type.Unsafe`, nothing about it is provider- or process-specific.
+ * Creates a string enum schema compatible with Google's API and other providers that don't support
+ * anyOf/const patterns.
  */
 export function StringEnum<T extends readonly string[]>(
 	values: T,
@@ -264,9 +230,7 @@ export function StringEnum<T extends readonly string[]>(
 	});
 }
 
-// ---------------------------------------------------------------------------------------
-// utils/uuid.ts
-// ---------------------------------------------------------------------------------------
+
 
 let lastTimestamp = -Infinity;
 let sequence = 0;
@@ -317,9 +281,7 @@ export function uuidv7(): string {
 	return `${hex.slice(0, 4).join("")}-${hex.slice(4, 6).join("")}-${hex.slice(6, 8).join("")}-${hex.slice(8, 10).join("")}-${hex.slice(10, 16).join("")}`;
 }
 
-// ---------------------------------------------------------------------------------------
-// utils/text.ts
-// ---------------------------------------------------------------------------------------
+
 
 type ContentBlock = TextContent | ImageContent | ThinkingContent | ToolCall;
 
@@ -332,9 +294,7 @@ export function contentText(content: string | readonly ContentBlock[], separator
 		.join(separator);
 }
 
-// ---------------------------------------------------------------------------------------
-// utils/overflow.ts
-// ---------------------------------------------------------------------------------------
+
 
 const OVERFLOW_PATTERNS = [
 	/prompt is too long/i,
@@ -366,8 +326,7 @@ const OVERFLOW_PATTERNS = [
 
 const NON_OVERFLOW_PATTERNS = [/^(Throttling error|Service unavailable):/i, /rate limit/i, /too many requests/i];
 
-/** Check if an assistant message represents a context overflow error. See pi-ai's
- *  `utils/overflow.ts` for the full per-provider reliability notes this mirrors. */
+/** Check if an assistant message represents a context overflow error. */
 export function isContextOverflow(message: AssistantMessage, contextWindow?: number): boolean {
 	if (message.stopReason === "error" && message.errorMessage) {
 		const isNonOverflow = NON_OVERFLOW_PATTERNS.some((p) => p.test(message.errorMessage!));
@@ -403,9 +362,7 @@ export function getOverflowPatterns(): RegExp[] {
 	return [...OVERFLOW_PATTERNS];
 }
 
-// ---------------------------------------------------------------------------------------
-// utils/retry.ts
-// ---------------------------------------------------------------------------------------
+
 
 function buildProviderErrorPattern(patterns: readonly string[]): RegExp {
 	return new RegExp(patterns.join("|"), "i");
@@ -504,8 +461,7 @@ function sleep(ms: number, signal?: AbortSignal): Promise<void> {
 	});
 }
 
-/** Run a single assistant-producing call with bounded retry on transient errors. See
- *  pi-ai's `utils/retry.ts` for the full behavior contract this mirrors exactly. */
+/** Run a single assistant-producing call with bounded retry on transient errors. */
 export async function retryAssistantCall(
 	produce: () => Promise<AssistantMessage>,
 	policy: RetryPolicy | undefined,
@@ -552,8 +508,10 @@ export async function retryAssistantCall(
 	}
 }
 
-/** Classifies whether a failed assistant message looks like a transient provider or
- *  transport error, so callers can decide if the last assistant turn should be restarted. */
+/**
+ * Classifies whether a failed assistant message looks like a transient provider or transport
+ * error.
+ */
 export function isRetryableAssistantError(message: AssistantMessage): boolean {
 	if (message.stopReason !== "error" || !message.errorMessage) return false;
 	const errorMessage = message.errorMessage;
@@ -561,20 +519,7 @@ export function isRetryableAssistantError(message: AssistantMessage): boolean {
 	return RETRYABLE_PROVIDER_ERROR_PATTERN.test(errorMessage);
 }
 
-// ---------------------------------------------------------------------------------------
-// utils/json-parse.ts
-//
-// `parseStreamingJson`'s fallback in pi-ai goes through the `partial-json` npm package
-// once `repairJson` isn't enough. That package isn't vendored into this shim (a small,
-// standalone dependency — see the report to the team for the concrete ask), so the
-// fallback here is a real tolerant parser written against the same contract instead:
-// never throw, return as much of the streamed object as is syntactically complete, drop
-// only the trailing fragment that streaming hasn't finished emitting yet. It works by
-// closing whatever string/array/object is still open at the end of the text and, if that
-// still doesn't parse, trimming one character at a time from the tail and re-closing
-// until something does. A well-formed prefix (a tool call's first three finished
-// arguments, say) survives; only the incomplete tail is ever dropped.
-// ---------------------------------------------------------------------------------------
+
 
 const VALID_JSON_ESCAPES = new Set(['"', "\\", "/", "b", "f", "n", "r", "t", "u"]);
 
@@ -600,8 +545,7 @@ function escapeControlCharacter(char: string): string {
 	}
 }
 
-/** Repairs malformed JSON string literals by escaping raw control characters inside
- *  strings and doubling backslashes before invalid escape characters. */
+
 export function repairJson(json: string): string {
 	let repaired = "";
 	let inString = false;
@@ -667,8 +611,7 @@ export function parseJsonWithRepair<T>(json: string): T {
 	}
 }
 
-/** Scan text for what's still open at the end: a stack of unclosed `{`/`[`, and whether
- *  the text ends inside an unterminated string (with a dangling escape, if so). */
+
 function scanOpenStructures(text: string): { stack: ("{" | "[")[]; inString: boolean; trailingEscape: boolean } {
 	const stack: ("{" | "[")[] = [];
 	let inString = false;
@@ -695,8 +638,10 @@ function scanOpenStructures(text: string): { stack: ("{" | "[")[]; inString: boo
 	return { stack, inString, trailingEscape: escapeNext };
 }
 
-/** Close whatever string/array/object `text` leaves open, so it has a chance of parsing
- *  as valid (if still incomplete) JSON. */
+/**
+ * Close whatever string/array/object `text` leaves open, so it has a chance of parsing as valid
+ * (if still incomplete) JSON.
+ */
 function closePartialJson(text: string): string {
 	const { stack, inString, trailingEscape } = scanOpenStructures(text);
 	let closed = trailingEscape ? text.slice(0, -1) : text;
@@ -707,9 +652,7 @@ function closePartialJson(text: string): string {
 	return closed;
 }
 
-/** Best-effort parse of JSON that may still be streaming in. Trims a trailing fragment
- *  that hasn't finished arriving rather than failing outright — see the section header
- *  for why this exists in place of pi-ai's `partial-json` dependency. */
+/** Best-effort parse of JSON that may still be streaming in. */
 function tolerantParsePartialJson<T>(text: string): T | undefined {
 	const trimmed = text.trim();
 	if (!trimmed) return undefined;
@@ -719,14 +662,13 @@ function tolerantParsePartialJson<T>(text: string): T | undefined {
 		try {
 			return JSON.parse(closePartialJson(candidate)) as T;
 		} catch {
-			// The tail up to this cut isn't a complete value yet; trim further.
+			
 		}
 	}
 	return undefined;
 }
 
-/** Attempts to parse potentially incomplete JSON during streaming. Always returns a valid
- *  object, even if the JSON is incomplete. */
+/** Attempts to parse potentially incomplete JSON during streaming. */
 export function parseStreamingJson<T = Record<string, unknown>>(partialJson: string | undefined): T {
 	if (!partialJson || partialJson.trim() === "") {
 		return {} as T;
@@ -742,9 +684,7 @@ export function parseStreamingJson<T = Record<string, unknown>>(partialJson: str
 	}
 }
 
-// ---------------------------------------------------------------------------------------
-// utils/diagnostics.ts
-// ---------------------------------------------------------------------------------------
+
 
 export interface DiagnosticErrorInfo {
 	name?: string;
@@ -785,9 +725,7 @@ export function appendAssistantMessageDiagnostic<T extends { diagnostics?: Assis
 	message.diagnostics = [...(message.diagnostics ?? []), diagnostic];
 }
 
-// ---------------------------------------------------------------------------------------
-// utils/event-stream.ts
-// ---------------------------------------------------------------------------------------
+
 
 /** Generic event stream class for async iteration. */
 export class EventStream<T, R = T> implements AsyncIterable<T> {
@@ -874,9 +812,7 @@ export function createAssistantMessageEventStream(): AssistantMessageEventStream
 	return new AssistantMessageEventStream();
 }
 
-// ---------------------------------------------------------------------------------------
-// utils/validation.ts
-// ---------------------------------------------------------------------------------------
+
 
 const validatorCache = new WeakMap<object, ReturnType<typeof Compile>>();
 const TYPEBOX_KIND = Symbol.for("TypeBox.Kind");
@@ -1119,11 +1055,11 @@ function formatValidationPath(error: TLocalizedValidationError): string {
 		const requiredProperties = (error.params as { requiredProperties?: string[] }).requiredProperties;
 		const requiredProperty = requiredProperties?.[0];
 		if (requiredProperty) {
-			const basePath = error.instancePath.replace(/^\//, "").replace(/\//g, ".");
+			const basePath = error.instancePath.replace(/^\
 			return basePath ? `${basePath}.${requiredProperty}` : requiredProperty;
 		}
 	}
-	const path = error.instancePath.replace(/^\//, "").replace(/\//g, ".");
+	const path = error.instancePath.replace(/^\
 	return path || "root";
 }
 
@@ -1172,9 +1108,7 @@ export function validateToolArguments(tool: Tool, toolCall: ToolCall): any {
 	throw new Error(errorMessage);
 }
 
-// ---------------------------------------------------------------------------------------
-// session-resources.ts
-// ---------------------------------------------------------------------------------------
+
 
 export type SessionResourceCleanup = (sessionId?: string) => void;
 
@@ -1201,9 +1135,7 @@ export function cleanupSessionResources(sessionId?: string): void {
 	}
 }
 
-// ---------------------------------------------------------------------------------------
-// utils/abort.ts
-// ---------------------------------------------------------------------------------------
+
 
 function abortReason(signal: AbortSignal): unknown {
 	if (signal.reason !== undefined) return signal.reason;
@@ -1217,8 +1149,7 @@ export function operationSignal(signal?: AbortSignal): AbortSignal {
 	return signal ?? new AbortController().signal;
 }
 
-/** Stop waiting for an operation when its signal aborts while continuing to observe the
- *  abandoned promise so a later rejection is always handled. */
+
 export function raceWithAbortSignal<T>(operation: Promise<T>, signal: AbortSignal): Promise<T> {
 	if (signal.aborted) {
 		void operation.catch(() => {});
@@ -1254,9 +1185,7 @@ export function raceWithAbortSignal<T>(operation: Promise<T>, signal: AbortSigna
 	});
 }
 
-// ---------------------------------------------------------------------------------------
-// auth/types.ts (value-carrying pieces only — everything else is a type, free via elision)
-// ---------------------------------------------------------------------------------------
+
 
 export interface ApiKeyCredential {
 	type: "api_key";
@@ -1368,9 +1297,7 @@ export interface CredentialStore {
 	delete(providerId: string, options?: AuthOperationOptions): Promise<void>;
 }
 
-// ---------------------------------------------------------------------------------------
-// auth/context.ts
-// ---------------------------------------------------------------------------------------
+
 
 interface NodeFsModule {
 	access(path: string): Promise<void>;
@@ -1380,7 +1307,7 @@ interface NodeOsModule {
 	homedir(): string;
 }
 
-// Variable specifier so browser bundlers do not try to resolve node builtins.
+
 const importNodeModule = (specifier: string): Promise<unknown> => import(specifier);
 
 function getProcessEnv(): Record<string, string | undefined> | undefined {
@@ -1413,13 +1340,9 @@ export function defaultProviderAuthContext(): AuthContext {
 	};
 }
 
-// ---------------------------------------------------------------------------------------
-// auth/credential-store.ts
-// ---------------------------------------------------------------------------------------
 
-/** Default in-memory credential store. Apps inject persistent stores. Keyed by
- *  `Provider.id`, one credential per provider. Writes are serialized per provider through
- *  a promise chain. */
+
+/** Default in-memory credential store. */
 export class InMemoryCredentialStore implements CredentialStore {
 	private credentials = new Map<string, Credential>();
 	private chains = new Map<string, Promise<unknown>>();
@@ -1479,12 +1402,9 @@ export class InMemoryCredentialStore implements CredentialStore {
 	}
 }
 
-// ---------------------------------------------------------------------------------------
-// auth/helpers.ts
-// ---------------------------------------------------------------------------------------
 
-/** Standard api-key auth: a stored credential key wins, otherwise the first set env var
- *  resolves. Includes a `login` that prompts for the key. */
+
+/** Standard api-key auth: a stored credential key wins, otherwise the first set env var resolves. */
 export function envApiKeyAuth(name: string, envVars: readonly string[]): ApiKeyAuth {
 	return {
 		name,
@@ -1509,8 +1429,7 @@ export function envApiKeyAuth(name: string, envVars: readonly string[]): ApiKeyA
 	};
 }
 
-/** Wraps a dynamically imported `OAuthAuth` so provider definitions can advertise OAuth
- *  without importing the implementation up front. */
+
 export function lazyOAuth(input: {
 	name: string;
 	isSubscription?: boolean;
@@ -1532,9 +1451,7 @@ export function lazyOAuth(input: {
 	};
 }
 
-// ---------------------------------------------------------------------------------------
-// auth/resolve.ts
-// ---------------------------------------------------------------------------------------
+
 
 export type ModelsErrorCode = "model_source" | "model_validation" | "provider" | "stream" | "auth" | "oauth";
 
@@ -1553,18 +1470,15 @@ export class ModelsError extends Error {
 	}
 }
 
-/** Minimum remaining lifetime, in milliseconds, an OAuth credential must have after
- *  refresh before it's trusted for a request — mirrors pi-ai's own margin. */
+/**
+ * Minimum remaining lifetime, in milliseconds, an OAuth credential must have after refresh before
+ * it's trusted for a request.
+ */
 const OAUTH_EXPIRY_MARGIN_MS = 60_000;
 
 /**
  * Resolve provider auth from a stored credential plus a `ProviderAuth`'s api-key/OAuth
- * implementations. OAuth credentials are refreshed through `credentials.modify()` so
- * concurrent callers cannot double-refresh a rotated token; api-key resolution never
- * touches the store's write path. Faithful to pi-ai's `resolveProviderAuth` — this is
- * pure orchestration over caller-supplied `CredentialStore`/`AuthContext`/`ProviderAuth`
- * values, the same shape `envApiKeyAuth`/`InMemoryCredentialStore` above produce; it never
- * reaches for a credential this host wouldn't otherwise have handed the extension.
+ * implementations.
  */
 export async function resolveProviderAuth(
 	providerId: string,
@@ -1629,9 +1543,7 @@ export async function resolveProviderAuth(
 	}
 }
 
-// ---------------------------------------------------------------------------------------
-// api/lazy.ts
-// ---------------------------------------------------------------------------------------
+
 
 function createSetupErrorMessage(model: Model<Api>, error: unknown): AssistantMessage {
 	return {
@@ -1670,8 +1582,10 @@ async function forwardStream(
 	target.end(hasResult(source) ? await source.result() : undefined);
 }
 
-/** Returns a stream synchronously while running async setup (auth resolution, lazy module
- *  loading) behind it. Setup failures terminate the stream with an error event. */
+/**
+ * Returns a stream synchronously while running async setup (auth resolution, lazy module loading)
+ * behind it.
+ */
 export function lazyStream(
 	model: Model<Api>,
 	setup: () => Promise<AsyncIterable<AssistantMessageEvent>>,
@@ -1694,9 +1608,7 @@ export interface LazyApiCapabilities {
 	cancelDeferred?: boolean;
 }
 
-/** Wraps a dynamically imported API implementation module as `ProviderStreams`. The
- *  module loads on first stream call; load failures terminate the returned stream with an
- *  error event. */
+/** Wraps a dynamically imported API implementation module as `ProviderStreams`. */
 export function lazyApi(load: () => Promise<ProviderStreams>, capabilities?: LazyApiCapabilities): ProviderStreams {
 	const api: ProviderStreams = {
 		stream: (model, context, options) => lazyStream(model, async () => (await load()).stream(model, context, options)),
@@ -1723,14 +1635,7 @@ export function lazyApi(load: () => Promise<ProviderStreams>, capabilities?: Laz
 	return api;
 }
 
-// ---------------------------------------------------------------------------------------
-// models.ts — the pure composition/arithmetic pieces only. `createModels()`'s full
-// `MutableModels` registry (refresh scheduling, catalog persistence, `getAvailable()`,
-// login/logout orchestration — some 700 lines in pi-ai) is not reproduced here: no
-// example extension constructs one directly, pi-coding-agent's own `ModelRuntime` is what
-// extensions actually reach for that. `createProvider()` — what `pi.registerProvider()`'s
-// own docs show extensions building directly — is reproduced in full.
-// ---------------------------------------------------------------------------------------
+
 
 export interface RefreshModelsContext {
 	credential?: Credential;
@@ -1768,11 +1673,7 @@ export interface CreateProviderOptions<TApi extends Api = Api> {
 	api: ProviderStreams | Partial<Record<TApi, ProviderStreams>>;
 }
 
-/** Builds a provider from parts — id/name/auth/models plus one `ProviderStreams`
- *  implementation (or a map keyed by `model.api` for mixed-API providers). Identical
- *  composition logic to pi-ai's `createProvider`: no network I/O of its own, it only
- *  dispatches to whatever `api` the caller supplied — a hand-written `streamSimple` (as
- *  `custom-provider-gitlab-duo/index.ts` does) or a vendored API client. */
+/** Builds a provider from parts. */
 export function createProvider<TApi extends Api = Api>(input: CreateProviderOptions<TApi>): Provider<TApi> {
 	const baselineModels = input.models;
 	let dynamicModels: readonly Model<TApi>[] = [];

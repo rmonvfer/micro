@@ -1,9 +1,4 @@
 //! Reading and writing the system clipboard.
-//!
-//! Shelling out rather than taking a dependency: every platform already ships something
-//! that does this, and an agent that runs shell commands for a living is not made less safe
-//! by running one more. Each helper is tried in turn and the first that answers wins, so a
-//! machine with none of them reports nothing rather than failing.
 
 use std::io::Read as _;
 use std::io::Write as _;
@@ -54,7 +49,7 @@ pub fn read_image() -> Option<ClipboardImage> {
         .or_else(read_via_macos)
 }
 
-/// Wayland reports what it holds, so the type is asked for rather than guessed.
+
 fn read_via_wayland() -> Option<ClipboardImage> {
     let listed = run(&["wl-paste", "--list-types"])?;
     let available = String::from_utf8_lossy(&listed);
@@ -65,7 +60,7 @@ fn read_via_wayland() -> Option<ClipboardImage> {
     encoded(mime_type, &data)
 }
 
-/// X11 advertises its targets the same way.
+
 fn read_via_x11() -> Option<ClipboardImage> {
     let listed = run(&["xclip", "-selection", "clipboard", "-t", "TARGETS", "-o"])?;
     let available = String::from_utf8_lossy(&listed);
@@ -76,8 +71,7 @@ fn read_via_x11() -> Option<ClipboardImage> {
     encoded(mime_type, &data)
 }
 
-/// macOS has no way to list what it holds, so the image is read through a temporary file
-/// and the attempt simply fails when the clipboard holds something else.
+/// macOS has no way to list what it holds.
 fn read_via_macos() -> Option<ClipboardImage> {
     let path = std::env::temp_dir().join(format!("micro-clipboard-{}.png", std::process::id()));
     let script = format!(
@@ -146,8 +140,7 @@ fn run(command: &[&str]) -> Option<Vec<u8>> {
 
 const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 
-/// Standard base64, written out rather than pulled in: it is twenty lines, and an image
-/// encoder is not worth a dependency in a binary this size.
+
 fn base64(bytes: &[u8]) -> String {
     let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
     for chunk in bytes.chunks(3) {
@@ -158,7 +151,7 @@ fn base64(bytes: &[u8]) -> String {
         };
         out.push(ALPHABET[(block >> 18 & 63) as usize] as char);
         out.push(ALPHABET[(block >> 12 & 63) as usize] as char);
-        // The tail is padded so the length is always a multiple of four.
+        
         out.push(match chunk.len() > 1 {
             true => ALPHABET[(block >> 6 & 63) as usize] as char,
             false => '=',

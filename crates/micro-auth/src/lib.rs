@@ -1,9 +1,4 @@
 //! Credentials for the providers micro talks to.
-//!
-//! Credentials live in `auth.json`, under micro's configuration directory — one entry per
-//! provider, in a file only the owner can read. Resolving a provider prefers the stored
-//! credential, exchanges it for a fresh token when the provider issues short-lived ones,
-//! and falls back to the conventional environment variable when nothing is stored.
 
 pub mod copilot;
 mod lockfile;
@@ -24,15 +19,13 @@ pub const GOOGLE: &str = "google";
 pub const GITHUB_COPILOT: &str = "github-copilot";
 pub const OPENAI: &str = "openai";
 pub const OPENROUTER: &str = "openrouter";
-/// The ChatGPT Codex backend, reached with a ChatGPT subscription token rather than a
-/// platform API key. Kept apart from `openai` because the credential is not interchangeable.
+
 pub const OPENAI_CODEX: &str = "openai-codex";
 
 /// One service micro can authenticate.
 #[derive(Debug, Clone, Deserialize)]
 pub struct ProviderEntry {
-    /// The canonical id: the key its credential is stored under, and the name a UI
-    /// hands back.
+    /// The canonical id: the key its credential is stored under, and the name a UI hands back.
     pub id: String,
     /// The name to show a person.
     pub name: String,
@@ -42,8 +35,8 @@ pub struct ProviderEntry {
     pub key: String,
 }
 
-/// Every provider micro can authenticate, generated alongside the model catalog so the
-/// two always name the same services.
+/// Every provider micro can authenticate, generated alongside the model catalog so the two always
+/// name the same services.
 static TABLE: &str = include_str!("../data/providers.json");
 
 pub fn provider_table() -> &'static [ProviderEntry] {
@@ -75,8 +68,7 @@ const ALIASES: &[(&str, &str)] = &[
     ("chatgpt", OPENAI_CODEX),
 ];
 
-/// Fold a name onto the id everything else uses. An unknown name comes back unchanged, so
-/// a provider micro does not know about can still carry a credential.
+/// Fold a name onto the id everything else uses.
 pub fn canonical_provider(name: &str) -> &str {
     let trimmed = name.trim();
     for (alias, canonical) in ALIASES {
@@ -147,16 +139,12 @@ pub fn now_ms() -> i64 {
 }
 
 /// An OAuth credential.
-///
-/// For GitHub Copilot the refresh token is the long-lived GitHub OAuth token obtained
-/// from the device flow, and the access token is the short-lived Copilot API token minted
-/// from it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct OAuthCredential {
     pub access_token: String,
     pub refresh_token: String,
-    /// Milliseconds since the Unix epoch. Zero means the token carries no expiry.
+    /// Milliseconds since the Unix epoch.
     pub expires: i64,
 }
 
@@ -185,8 +173,7 @@ impl Credential {
 
 /// What a UI must do next to log a provider in.
 pub enum LoginFlow {
-    /// Prompt for a key, then hand it to [`AuthStore::store_api_key`]. The environment
-    /// variables are worth naming in the prompt, since setting one is the alternative.
+    /// Prompt for a key, then hand it to [`AuthStore::store_api_key`].
     ApiKey {
         provider: String,
         env_names: Vec<String>,
@@ -218,7 +205,7 @@ impl PendingDeviceLogin {
     }
 }
 
-/// Where a provider's credential comes from.
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CredentialSource {
     /// The credential file.
@@ -236,11 +223,9 @@ pub struct ProviderStatus {
     pub provider: String,
     pub method: AuthMethod,
     pub source: CredentialSource,
-    /// When the stored token lapses, in milliseconds since the Unix epoch. Absent for
-    /// keys and for tokens that carry no expiry.
+    /// When the stored token lapses, in milliseconds since the Unix epoch.
     pub expires: Option<i64>,
     /// The stored token is past its expiry and will be exchanged on the next request.
-    /// This is a note, not a fault: the provider is still authenticated.
     pub needs_refresh: bool,
 }
 
@@ -250,10 +235,7 @@ impl ProviderStatus {
     }
 }
 
-/// What was read from the file, and the state of the file it was read from.
-///
-/// The revision is how a read notices that another process has written since, so a
-/// long-lived session sees a credential stored by `micro auth login` beside it.
+
 #[derive(Default)]
 struct Cache {
     credentials: BTreeMap<String, Credential>,
@@ -326,9 +308,6 @@ impl AuthStore {
     }
 
     /// Change the file while holding it against every other process.
-    ///
-    /// The file is read again inside the lock rather than trusted from startup, so a
-    /// credential stored since then is carried forward instead of being written over.
     fn mutate(&self, change: impl FnOnce(&mut BTreeMap<String, Credential>)) -> Result<()> {
         let mut cache = self.lock();
         let _held = lockfile::FileLock::acquire(&self.path)
@@ -343,8 +322,8 @@ impl AuthStore {
         Ok(())
     }
 
-    /// A credential ready to send: stored if present, otherwise from the environment,
-    /// refreshed first if the provider's tokens expire.
+    /// A credential ready to send: stored if present, otherwise from the environment, refreshed
+    /// first if the provider's tokens expire.
     pub async fn resolve(&self, provider: &str) -> Result<Credential> {
         let provider = canonical_provider(provider);
 
@@ -378,9 +357,7 @@ impl AuthStore {
         Ok(credential)
     }
 
-    /// Begin an interactive login. An API-key provider needs nothing from the network and
-    /// answers immediately with the prompt to show; an OAuth provider reserves a device
-    /// code the UI must display before awaiting [`AuthStore::complete_device_login`].
+    /// Begin an interactive login.
     pub async fn begin_login(&self, provider: &str) -> Result<LoginFlow> {
         let provider = canonical_provider(provider).to_string();
         match auth_method(&provider) {
@@ -399,7 +376,6 @@ impl AuthStore {
     }
 
     /// Wait for the user to finish authorizing in the browser, then store the credential.
-    /// Runs until the device code is redeemed or expires, so a UI should show progress.
     pub async fn complete_device_login(&self, pending: &PendingDeviceLogin) -> Result<Credential> {
         let credential =
             Credential::OAuth(copilot::poll_for_token(&self.http, &pending.authorization).await?);
@@ -407,7 +383,7 @@ impl AuthStore {
         Ok(credential)
     }
 
-    /// Store a key the user pasted. Blank input is refused rather than written.
+    /// Store a key the user pasted.
     pub fn store_api_key(&self, provider: &str, key: &str) -> Result<Credential> {
         let key = key.trim();
         if key.is_empty() {
@@ -420,14 +396,12 @@ impl AuthStore {
         Ok(credential)
     }
 
-    /// Forget a provider's stored credential. The environment is untouched, so a provider
-    /// configured that way stays usable.
+    /// Forget a provider's stored credential.
     pub fn logout(&self, provider: &str) -> Result<()> {
         self.remove(provider)
     }
 
-    /// Where every provider stands, for a UI to render. Reads the environment but never
-    /// the network, so it is safe to call on every frame.
+    /// Where every provider stands, for a UI to render.
     pub fn status(&self) -> Vec<ProviderStatus> {
         let known = providers();
         let stored = self.providers();
@@ -473,8 +447,8 @@ impl AuthStore {
         }
     }
 
-    /// Only credentials that came from the file are written back; an environment token is
-    /// the user's to manage, so a token exchanged from one stays in memory.
+    /// Only credentials that came from the file are written back; an environment token is the
+    /// user's to manage.
     async fn prepare(
         &self,
         provider: &str,
@@ -514,10 +488,6 @@ fn revision_of(path: &Path) -> Option<Revision> {
 }
 
 /// Read the file again if another process has written it since it was last read.
-///
-/// A failed read leaves what is already held rather than emptying it: a file being
-/// replaced by another process is briefly unreadable, and that is not the same as a
-/// credential having been removed.
 fn refresh(path: &Path, cache: &mut Cache) {
     let current = revision_of(path);
     if current == cache.revision {
@@ -543,10 +513,6 @@ async fn refresh_oauth(
 }
 
 /// Whether an OAuth credential must be exchanged before it can be used.
-///
-/// A Copilot API token is minted from the stored GitHub token and lives about half an
-/// hour, so a Copilot credential with no recorded expiry has never been exchanged and is
-/// not usable as it stands. Every other provider treats a zero expiry as "never expires".
 fn needs_refresh(provider: &str, credential: &OAuthCredential, now: i64) -> bool {
     match provider {
         GITHUB_COPILOT => credential.expires <= now + EXPIRY_SKEW_MS,
@@ -554,8 +520,7 @@ fn needs_refresh(provider: &str, credential: &OAuthCredential, now: i64) -> bool
     }
 }
 
-/// A Copilot token found in the environment is a GitHub OAuth token, which buys API
-/// tokens rather than being one; everything else is used as it stands.
+/// A Copilot token found in the environment is a GitHub OAuth token.
 fn from_env(provider: &str, value: String) -> Credential {
     match provider {
         GITHUB_COPILOT => Credential::OAuth(OAuthCredential {
@@ -567,9 +532,7 @@ fn from_env(provider: &str, value: String) -> Credential {
     }
 }
 
-/// Environment variables to try for a provider, in order. A provider the table does not
-/// name gets the conventional `<PROVIDER>_API_KEY`, which is what an extension declaring
-/// its own provider relies on.
+/// Environment variables to try for a provider, in order.
 pub fn env_names(provider: &str) -> Vec<String> {
     match provider_entry(provider) {
         Some(entry) if !entry.env.is_empty() => entry.env.clone(),
@@ -588,8 +551,7 @@ fn env_value(provider: &str, get: impl Fn(&str) -> Option<String>) -> Option<Str
         .find_map(|name| get(&name).filter(|value| !value.trim().is_empty()))
 }
 
-/// A stored key may point at the environment as `$VAR`. A name that is not set is left
-/// alone so the failure surfaces at the provider rather than as a silently empty key.
+/// A stored key may point at the environment as `$VAR`.
 fn expand(raw: &str, get: impl Fn(&str) -> Option<String>) -> String {
     match raw.strip_prefix('$') {
         Some(name) if !name.is_empty() => get(name).unwrap_or_else(|| raw.to_string()),
@@ -606,8 +568,7 @@ pub fn default_path() -> Result<PathBuf> {
     Ok(directory.join(FILE_NAME))
 }
 
-/// Read the store. A missing file is an empty store; an entry that does not parse is
-/// skipped so one damaged credential cannot lock every provider out.
+/// Read the store.
 fn load(path: &Path) -> Result<BTreeMap<String, Credential>> {
     let contents = match fs::read_to_string(path) {
         Ok(contents) => contents,
@@ -631,8 +592,7 @@ fn load(path: &Path) -> Result<BTreeMap<String, Credential>> {
         .collect())
 }
 
-/// Write the store through a temporary file created owner-only, so the credentials are
-/// never briefly world-readable between creation and a follow-up permission change.
+/// Write the store through a temporary file created owner-only.
 fn save(path: &Path, credentials: &BTreeMap<String, Credential>) -> Result<()> {
     let directory = path.parent().unwrap_or_else(|| Path::new("."));
     fs::create_dir_all(directory).map_err(|error| storage_error(path, error))?;
@@ -722,10 +682,6 @@ mod tests {
     }
 
     /// Two processes writing different providers both keep their work.
-    ///
-    /// Each store reads the file when it opens. Without a lock and a fresh read at write
-    /// time, the second one writes the map it read at startup and the first one's
-    /// credential is gone with nothing to show that it ever arrived.
     #[test]
     fn a_write_carries_forward_what_another_store_wrote() {
         let path = scratch("concurrent").join("auth.json");
@@ -768,12 +724,12 @@ mod tests {
         assert_eq!(
             session.get("anthropic"),
             Some(Credential::api_key("signed-in")),
-            "the long-lived store re-read rather than serving its startup snapshot",
+            "credential store should reload",
         );
     }
 
-    /// A credential is something the user put there, so it travels with the settings and
-    /// not with what micro produced.
+    /// A credential is something the user put there, so it travels with the settings and not with
+    /// what micro produced.
     #[test]
     fn credentials_sit_in_the_configuration_directory() {
         assert_eq!(
@@ -897,9 +853,7 @@ mod tests {
         assert_eq!(env_names(OPENROUTER), vec!["OPENROUTER_API_KEY"]);
         assert_eq!(env_names(GOOGLE), vec!["GEMINI_API_KEY"]);
         assert_eq!(env_names(GITHUB_COPILOT), vec!["COPILOT_GITHUB_TOKEN"]);
-        // A bearer token is tried first, since it is what points micro at a gateway and
-        // is set deliberately; then a subscription token, which a signed-in plan issues;
-        // then a platform key.
+        
         assert_eq!(
             env_names(ANTHROPIC),
             vec![
@@ -908,7 +862,7 @@ mod tests {
                 "ANTHROPIC_API_KEY"
             ]
         );
-        // A provider the table does not name still has a conventional variable.
+        
         assert_eq!(env_names("z-ai"), vec!["Z_AI_API_KEY"]);
     }
 
@@ -957,7 +911,7 @@ mod tests {
         store.logout(OPENROUTER).unwrap();
 
         assert!(store.providers().is_empty());
-        // Whatever the environment holds, nothing is stored any more.
+        
         assert_ne!(store.status_of(OPENROUTER).source, CredentialSource::Stored);
     }
 
@@ -970,7 +924,7 @@ mod tests {
         let status = store.status();
         let ids: Vec<&str> = status.iter().map(|entry| entry.provider.as_str()).collect();
         let mut expected = providers();
-        // A provider carrying a credential but absent from the table is reported after it.
+        
         expected.push("a-proxy");
         assert_eq!(ids, expected);
 

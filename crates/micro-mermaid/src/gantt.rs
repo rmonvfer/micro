@@ -1,13 +1,4 @@
 //! Gantt charts: sections of tasks laid out as bars along a shared date axis.
-//!
-//! There is no `Graph` here — a gantt chart is not nodes and edges, it is
-//! rows of intervals on a timeline — so this reads its own source and lays
-//! out its own grid, the way `pie` does for the same reason.
-//!
-//! Dates are tracked as a day count from the Unix epoch and converted to and
-//! from year/month/day with Howard Hinnant's constant-time civil calendar
-//! algorithm, which is what lets `after <id>` chaining and `excludes` both
-//! work as plain integer arithmetic instead of a lookup calendar.
 
 use std::collections::{HashMap, HashSet};
 
@@ -16,39 +7,33 @@ use crate::labels::{ascii_lower, clean_label, fit_label, strip_controls};
 use crate::types::Cls;
 use crate::width::string_width;
 
-/// Tasks past this and a chart says nothing useful in a terminal, so it is
-/// refused rather than squeezed in — the same reasoning as `graph::MAX_NODES`.
+/// Tasks past this and a chart says nothing useful in a terminal.
 const MAX_TASKS: usize = 128;
 
-/// A duration longer than this is almost certainly a typo (a missing unit,
-/// a stray digit); walking it out day by day would also take a while, so it
-/// is refused rather than laid out.
+
 const MAX_DURATION_DAYS: i64 = 100_000;
 
-/// Refuse to allocate a canvas larger than this many cells, mirroring the
-/// bound `layout::layout_canvas` places on graph diagrams.
+/// Refuse to allocate a canvas larger than this many cells, mirroring the bound
+/// `layout::layout_canvas` places on graph diagrams.
 const MAX_CANVAS_CELLS: usize = 1 << 21;
 
-/// Task/section labels are truncated to this many columns, the same width
-/// flowchart node labels wrap to.
+/// Task/section labels are truncated to this many columns, the same width flowchart node labels
+/// wrap to.
 const LABEL_MAX: usize = crate::labels::WRAP_WIDTH;
 
-/// Minimum columns between axis ticks: `MM-DD` is five columns wide, plus one
-/// column of daylight so adjacent labels never touch.
+/// Minimum columns between axis ticks: `MM-DD` is five columns wide, plus one column of daylight so
+/// adjacent labels never touch.
 const TICK_MIN_GAP: usize = 6;
-/// However wide the chart is, no more than this many ticks are drawn — past
-/// this a date axis is a smear, not a scale.
+
 const MAX_TICKS: usize = 12;
 
 struct Task {
-    /// The id a later task's `after` can name. Absent for tasks declared
-    /// with only a start and a duration, which nothing can reference back.
+    /// The id a later task's `after` can name.
     id: Option<String>,
     label: String,
     /// Day the task begins.
     start: i64,
-    /// Day the task ends, exclusive — the day after its last working day,
-    /// and so also the day an `after` reference starts on.
+    
     end: i64,
     milestone: bool,
     done: bool,
@@ -67,10 +52,7 @@ struct Chart {
     groups: Vec<Group>,
 }
 
-/// Which days do not count toward a duration: weekends, explicit dates, or
-/// both. Only changes how a duration turns into an end date — the bar drawn
-/// for a task still spans every calendar day between start and end, so a
-/// task that has to cross a weekend simply draws a longer bar.
+/// Which days do not count toward a duration: weekends, explicit dates, or both.
 #[derive(Default)]
 struct Exclusions {
     weekends: bool,
@@ -115,16 +97,12 @@ fn parse_gantt(src: &str) -> Option<Chart> {
         match ascii_lower(word).as_str() {
             "title" => title = Some(clean_label(rest)),
             "dateformat" => {
-                // `YYYY-MM-DD` is the only literal date form read below, so
-                // any other declared format cannot be honoured; refusing
-                // beats silently misreading every date in the chart.
+                
                 if rest != "YYYY-MM-DD" {
                     return None;
                 }
             }
-            // The axis is always drawn `MM-DD`, so there is nothing to
-            // apply the declared format to — it is read only so the line
-            // does not fall through to "unreadable statement".
+            
             "axisformat" => {}
             "excludes" => {
                 for token in rest.split(',') {
@@ -165,10 +143,7 @@ fn parse_gantt(src: &str) -> Option<Chart> {
     Some(Chart { title, groups })
 }
 
-/// One task line: `label :[tags,] [id,] start, duration`. Tags (`done`,
-/// `active`, `crit`, `milestone`) can appear anywhere in the list and in any
-/// combination; whatever is left is the id (if three fields remain) or just
-/// the start and duration (if two).
+/// One task line: `label :[tags,] [id,] start, duration`.
 fn parse_task(st: &str, by_id: &HashMap<String, (i64, i64)>, excl: &Exclusions) -> Option<Task> {
     let (label, rest) = st.split_once(':')?;
     let label = clean_label(label.trim());
@@ -220,8 +195,7 @@ fn parse_task(st: &str, by_id: &HashMap<String, (i64, i64)>, excl: &Exclusions) 
     })
 }
 
-/// `after <id>`, split at the word boundary so `afterthought` is not misread
-/// as `after thought`.
+/// `after <id>`, split at the word boundary so `afterthought` is not misread as `after thought`.
 fn strip_after(spec: &str) -> Option<&str> {
     let rest = spec.strip_prefix("after")?;
     if !rest.starts_with(char::is_whitespace) {
@@ -247,9 +221,7 @@ fn parse_date(token: &str) -> Option<i64> {
     Some(days_from_civil(y, m, d))
 }
 
-/// `30d`, `2w` or `6h`, in days. An hour count that does not fill a whole day
-/// still rounds up to one, so a sub-day task keeps a visible column rather
-/// than vanishing from the axis.
+/// `30d`, `2w` or `6h`, in days.
 fn parse_duration(token: &str) -> Option<i64> {
     if token.len() < 2 {
         return None;
@@ -268,7 +240,6 @@ fn parse_duration(token: &str) -> Option<i64> {
 }
 
 /// Step forward `n` days that are not excluded, returning the day landed on.
-/// With no exclusions every day counts, so this is exactly `start + n`.
 fn add_working_days(start: i64, mut n: i64, excl: &Exclusions) -> i64 {
     let mut day = start;
     while n > 0 {
@@ -280,19 +251,15 @@ fn add_working_days(start: i64, mut n: i64, excl: &Exclusions) -> i64 {
     day
 }
 
-// -------------------------------------------------------------- civil dates
 
-/// Days since 1970-01-01 for a Gregorian calendar date. Proleptic and exact
-/// for any year an `i64` can hold, per Howard Hinnant's `days_from_civil`
-/// (http://howardhinnant.github.io/date_algorithms.html), which this ports
-/// directly — it relies on integer division truncating toward zero, which is
-/// what `/` on `i64` does in Rust just as it does in C++.
+
+/// Days since 1970-01-01 for a Gregorian calendar date.
 fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
     let y = if m <= 2 { y - 1 } else { y };
     let era = if y >= 0 { y } else { y - 399 } / 400;
-    let yoe = y - era * 400; // [0, 399]
-    let doy = (153 * (m + if m > 2 { -3 } else { 9 }) + 2) / 5 + d - 1; // [0, 365]
-    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy; // [0, 146096]
+    let yoe = y - era * 400; 
+    let doy = (153 * (m + if m > 2 { -3 } else { 9 }) + 2) / 5 + d - 1; 
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy; 
     era * 146097 + doe - 719468
 }
 
@@ -300,17 +267,17 @@ fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
 fn civil_from_days(days: i64) -> (i64, i64, i64) {
     let z = days + 719468;
     let era = if z >= 0 { z } else { z - 146096 } / 146097;
-    let doe = z - era * 146097; // [0, 146096]
-    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365; // [0, 399]
+    let doe = z - era * 146097; 
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365; 
     let y = yoe + era * 400;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100); // [0, 365]
-    let mp = (5 * doy + 2) / 153; // [0, 11]
-    let d = doy - (153 * mp + 2) / 5 + 1; // [1, 31]
-    let m = if mp < 10 { mp + 3 } else { mp - 9 }; // [1, 12]
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100); 
+    let mp = (5 * doy + 2) / 153; 
+    let d = doy - (153 * mp + 2) / 5 + 1; 
+    let m = if mp < 10 { mp + 3 } else { mp - 9 }; 
     (if m <= 2 { y + 1 } else { y }, m, d)
 }
 
-/// 0 = Sunday .. 6 = Saturday, for the same day count `days_from_civil` uses.
+
 fn weekday_from_days(days: i64) -> i64 {
     if days >= -4 {
         (days + 4) % 7
@@ -319,13 +286,12 @@ fn weekday_from_days(days: i64) -> i64 {
     }
 }
 
-// ------------------------------------------------------------------ drawing
+
 
 fn draw_gantt(chart: &Chart) -> Option<Canvas> {
     let tasks: Vec<&Task> = chart.groups.iter().flat_map(|g| g.tasks.iter()).collect();
     let min_start = tasks.iter().map(|t| t.start).min()?;
-    // A milestone or any other zero-duration task still claims one day of
-    // the axis, so the column it is drawn on always exists.
+    
     let max_end = tasks.iter().map(|t| t.end.max(t.start + 1)).max()?;
     let total_days = (max_end - min_start).max(1) as usize;
 
@@ -337,7 +303,7 @@ fn draw_gantt(chart: &Chart) -> Option<Canvas> {
     for g in chart.groups.iter().filter(|g| !g.tasks.is_empty()) {
         rows += usize::from(g.name.is_some()) + g.tasks.len();
     }
-    rows += 2; // axis rule + axis labels
+    rows += 2; 
 
     let last_tick_end = ticks
         .last()
@@ -375,9 +341,7 @@ fn draw_gantt(chart: &Chart) -> Option<Canvas> {
             if t.milestone {
                 draw_text(&mut canvas, "◆", grid_x + offset, y, Cls::Border);
             } else {
-                // Darkness rises with how much attention a task wants:
-                // scheduled is faint, critical is darker still, and done is
-                // solid — a finished task needs no more attention at all.
+                
                 let glyph = if t.done {
                     "█"
                 } else if t.active {
@@ -408,9 +372,7 @@ fn draw_gantt(chart: &Chart) -> Option<Canvas> {
     Some(canvas)
 }
 
-/// The left column is wide enough for the longest label; a task's is
-/// measured with its two-column indent so a wide task name still lines up
-/// under a narrower section name rather than crowding into the grid.
+
 fn label_column_width(chart: &Chart) -> usize {
     let mut width = 0usize;
     for g in &chart.groups {
@@ -424,9 +386,7 @@ fn label_column_width(chart: &Chart) -> usize {
     width
 }
 
-/// Tick marks across the axis, spaced far enough apart that neighbouring
-/// `MM-DD` labels never run into each other, and capped so a long chart gets
-/// a coarser scale instead of a wall of ticks.
+
 fn axis_ticks(min_start: i64, total_days: usize) -> Vec<(usize, String)> {
     let step = TICK_MIN_GAP.max(total_days / MAX_TICKS + 1);
     let mut ticks = Vec::new();
@@ -450,9 +410,7 @@ mod tests {
             .plain
     }
 
-    /// The civil-date round trip this whole module is built on: a day count
-    /// converts to a date and back to the same day count, and a known date
-    /// (1970-01-01, day zero) lands on the weekday it actually was.
+    
     #[test]
     fn civil_dates_round_trip_and_know_their_weekday() {
         assert_eq!(days_from_civil(1970, 1, 1), 0);
@@ -465,8 +423,8 @@ mod tests {
         }
     }
 
-    /// A single task draws its label and a bar the width of its duration,
-    /// starting at the axis origin.
+    /// A single task draws its label and a bar the width of its duration, starting at the axis
+    /// origin.
     #[test]
     fn a_task_is_drawn_as_a_bar_on_the_date_axis() {
         let rows = drawn("gantt\n  dateFormat YYYY-MM-DD\n  Design :des1, 2024-01-01, 3d");
@@ -476,8 +434,8 @@ mod tests {
         );
     }
 
-    /// `done`, `active` and `crit` each draw in their own bar glyph, so three
-    /// tasks in three different states are told apart at a glance.
+    /// `done`, `active` and `crit` each draw in their own bar glyph, so three tasks in three
+    /// different states are told apart at a glance.
     #[test]
     fn task_status_changes_the_bar_glyph() {
         let rows = drawn(
@@ -492,18 +450,14 @@ mod tests {
         assert!(rows[2].contains("▓▓"), "{rows:?}");
     }
 
-    /// A milestone is a point in time, not a span, so it draws as a single
-    /// marker rather than a bar sized from a duration.
+    
     #[test]
     fn a_milestone_draws_as_a_single_marker() {
         let rows = drawn("gantt\n  dateFormat YYYY-MM-DD\n  Ship :milestone, m1, 2024-01-05, 0d");
         assert!(rows[0].contains('◆'), "{rows:?}");
     }
 
-    /// `after` chains a task to the end of the one it names, and `excludes
-    /// weekends` skips Saturday and Sunday when turning a duration into an
-    /// end date — so a 3-day task starting Friday finishes the following
-    /// Wednesday, and whatever comes `after` it starts there too.
+    
     #[test]
     fn after_chains_to_the_end_of_the_named_task_honouring_excluded_weekends() {
         let rows = drawn(
@@ -513,8 +467,7 @@ mod tests {
              Design :des1, 2024-01-05, 3d\n\
              Review  :des2, after des1, 1d",
         );
-        // des1 spans Fri 01-05 through Tue 01-09 (Sat/Sun do not count), so
-        // des2 starts on Wed 01-10 — five columns after the axis origin.
+        
         assert!(rows[0].contains("░░░░░"), "{rows:?}");
         let review = &rows[1];
         let bar_col = review.find('░').expect("des2 has a bar");
@@ -540,8 +493,7 @@ mod tests {
         assert!(rows[3].trim_start().starts_with("Release"), "{rows:?}");
     }
 
-    /// Anything that is not a gantt chart, or is one but malformed, is
-    /// refused rather than guessed at.
+    
     #[test]
     fn what_is_not_a_gantt_chart_is_left_alone() {
         assert!(render_gantt("graph TD\n A --> B").is_none());
@@ -564,8 +516,7 @@ mod tests {
         );
     }
 
-    /// A chart of hundreds of tasks says nothing useful in a terminal, so
-    /// laying it out is refused rather than attempted.
+    
     #[test]
     fn too_many_tasks_are_refused() {
         let mut source = String::from("gantt\n  dateFormat YYYY-MM-DD\n");

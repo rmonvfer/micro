@@ -12,9 +12,6 @@ fn text(message: &Message) -> String {
 }
 
 /// A session that compacted reopens on the summary, not on the stretch it replaced.
-///
-/// This is what makes compaction worth recording: without it a long conversation pays to
-/// summarize the same messages again every time it is resumed.
 #[tokio::test]
 async fn a_compacted_session_reopens_on_its_summary() {
     let root = std::env::temp_dir().join(format!("micro-resume-{}", std::process::id()));
@@ -39,9 +36,9 @@ async fn a_compacted_session_reopens_on_its_summary() {
     let id = session.id().to_string();
     drop(session);
 
-    // Reopened from disk, which is what a resume does.
+    
     let reopened = store.load(&id).await.expect("the session reopens");
-    // What the agent is handed on resume.
+    
     let conversation = reopened.messages.clone();
 
     assert!(
@@ -56,6 +53,6 @@ async fn a_compacted_session_reopens_on_its_summary() {
         "the summary, the two it kept, and what was said after",
     );
 
-    // Nothing was lost: the replaced messages are still on the tree.
+    
     assert_eq!(reopened.session.tree().entries().len(), 7);
 }

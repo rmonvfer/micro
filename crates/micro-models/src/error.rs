@@ -17,8 +17,8 @@ pub enum Error {
         source: io::Error,
     },
 
-    /// A user-defined model that names a provider the catalog has never seen,
-    /// without supplying the endpoint details needed to reach it.
+    /// A user-defined model that names a provider the catalog has never seen, without supplying the
+    /// endpoint details needed to reach it.
     #[error("model `{provider}/{id}` must declare both `api` and `base_url`")]
     IncompleteModel { provider: String, id: String },
 

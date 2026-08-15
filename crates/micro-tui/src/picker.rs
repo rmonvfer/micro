@@ -1,8 +1,4 @@
 //! The list a command opens when it wants the user to choose.
-//!
-//! A title, a filter the user types into, a list that narrows as they type, and a marker on
-//! whatever is in use now. Choosing hands back the command line the item carries, which the
-//! interface dispatches as though it had been typed.
 
 use micro_commands::Picker as Choices;
 use micro_commands::PickerItem;
@@ -26,16 +22,15 @@ pub enum Scope {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Picker {
     choices: Choices,
-    /// Which view is showing. A list with a shortlist opens on it, because a workspace that
-    /// named a handful of models meant those to be the ones in front of you.
+    /// Which view is showing.
     scope: Scope,
     query: String,
     /// Indices into `choices.items`, narrowed by the query and ranked by it.
     matches: Vec<usize>,
     /// What the list leaves out, when it leaves anything out.
     hint: Option<String>,
-    /// What is happening behind the list, when something is: the catalogs being refreshed,
-    /// and then whether that worked.
+    /// What is happening behind the list, when something is: the catalogs being refreshed, and then
+    /// whether that worked.
     status: Option<(String, bool)>,
     selected: usize,
 }
@@ -56,7 +51,7 @@ impl Picker {
             selected: 0,
         };
         picker.refilter();
-        // Opening on whatever is in use saves a scroll to find where you already are.
+        
         if let Some(current) = picker
             .matches
             .iter()
@@ -116,9 +111,7 @@ impl Picker {
         self.choices.titled
     }
 
-    /// How wide the label's column is: the widest label there is, held between the bounds
-    /// the list asked for. Measured over everything the query left rather than over what is
-    /// on screen, so scrolling the list does not shift its second column.
+    
     pub fn column(&self) -> usize {
         if self.choices.layout == micro_commands::PickerLayout::Badges {
             return 0;
@@ -149,9 +142,6 @@ impl Picker {
     }
 
     /// Replace what the list offers, keeping where the reader is and what they typed.
-    ///
-    /// The catalogs finishing a refresh must not move the selection out from under a hand
-    /// already on its way to pressing enter, so the chosen row is found again by name.
     pub fn replace_items(&mut self, choices: Choices) {
         let chosen = self.selected_item().map(|item| item.command.clone());
         self.choices = choices;
@@ -241,9 +231,7 @@ impl Picker {
         start..start + max_visible
     }
 
-    /// An item is matched on its label and its detail together, so `/model` narrows on a
-    /// context size as readily as on a name — or on whatever text the item says it is found
-    /// by, when that is more than the row shows.
+    /// An item is matched on its label and its detail together.
     fn refilter(&mut self) {
         let items = match self.scope {
             Scope::All => &self.choices.items,
@@ -340,7 +328,7 @@ mod tests {
         picker.push("zzzz");
         assert!(picker.is_empty());
         assert_eq!(picker.commit(), None);
-        // Moving through an empty list is not an error, it just does nothing.
+        
         picker.select_next();
         assert_eq!(picker.selected(), 0);
     }

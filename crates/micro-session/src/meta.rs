@@ -7,14 +7,13 @@ use serde::Deserialize;
 use serde::Serialize;
 use std::path::PathBuf;
 
-/// Longest title kept for a session. Longer first messages are cut at a word boundary.
+/// Longest title kept for a session.
 pub const MAX_TITLE_CHARS: usize = 60;
 
 /// Everything a listing needs about a session without opening its message log.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SessionMeta {
-    /// The schema this record was written against, so a later reader knows what it is
-    /// looking at. A sidecar written before sessions were versioned reads as version zero.
+    /// The schema this record was written against, so a later reader knows what it is looking at.
     #[serde(default)]
     pub v: u32,
     pub id: String,
@@ -29,11 +28,6 @@ pub struct SessionMeta {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent: Option<String>,
     /// Who the session belongs to, when it belongs to anyone beyond the person who ran it.
-    ///
-    /// Nothing in micro fills these in and nothing is sent anywhere. They are here because
-    /// an exported ledger is a record somebody may need to file against an organization or
-    /// against the agent that produced it, and a field that arrives later cannot be
-    /// backfilled onto sessions already written.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub org_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -83,8 +77,7 @@ fn derive_title(content: &[ContentBlock]) -> String {
     }
 
     let clipped: String = single_line.chars().take(MAX_TITLE_CHARS).collect();
-    // Losing a partial word reads better than cutting mid-word, but only while enough
-    // of the title survives to still describe the session.
+    
     let boundary = clipped.rfind(' ').filter(|at| *at >= clipped.len() / 2);
     let kept = match boundary {
         Some(at) => &clipped[..at],

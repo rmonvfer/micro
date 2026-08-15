@@ -1,13 +1,4 @@
 //! The connection to the relay, and how it is kept.
-//!
-//! The relay is a router that cannot read what it routes. It holds one channel per
-//! pairing with two legs, machine and phone, and copies frames between them. Both legs
-//! authenticate with a token derived from the pairing secret, so the relay can tell a
-//! leg apart without ever holding the secret itself.
-//!
-//! A connection that drops is a connection that comes back: a session handed to a phone
-//! outlives a train tunnel, a closed laptop lid and a restarted relay, and the machine
-//! keeps trying on a widening interval rather than giving the session up.
 
 use crate::crypto::derive_key;
 use crate::crypto::seal;
@@ -30,11 +21,10 @@ use tokio::sync::mpsc;
 const BACKOFF_INITIAL: Duration = Duration::from_secs(1);
 const BACKOFF_CAP: Duration = Duration::from_secs(30);
 
-/// The relay closes a channel with this code when it has never heard of the pairing —
-/// which, for a pairing registered once, means the relay lost its database.
+/// The relay closes a channel with this code when it has never heard of the pairing.
 const CLOSE_PAIRING_UNKNOWN: u16 = 4404;
 
-/// Which leg of the channel a token is for.
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Role {
     Machine,
@@ -74,19 +64,12 @@ pub struct RelayConfig {
     pub relay_url: String,
     pub pairing_id: String,
     pub secret: Vec<u8>,
-    /// Which session this leg stands for.
-    ///
-    /// A phone talks to as many sessions as a machine is running, so the relay keeps a
-    /// leg per session rather than one per machine. Saying which session this is is what
-    /// lets a second one join alongside the first instead of taking its place.
+    
     pub session_id: String,
 }
 
 impl RelayConfig {
     /// The token that proves this end may use its leg of the channel.
-    ///
-    /// Derived rather than stored: the relay keeps only a hash of it, so a relay whose
-    /// database is read gives up nothing that opens a channel.
     pub fn auth_token(&self, role: Role) -> String {
         let mut mac = hmac::Hmac::<sha2::Sha256>::new_from_slice(&self.secret)
             .expect("HMAC accepts a key of any length");
@@ -136,9 +119,6 @@ pub struct RelayClient {
 
 impl RelayClient {
     /// Opens the connection and starts keeping it.
-    ///
-    /// Returns as soon as the work is under way rather than once it is connected: a
-    /// session must not wait on a relay to become usable in its own terminal.
     pub fn start(config: RelayConfig, events: mpsc::UnboundedSender<RelayEvent>) -> Self {
         let (outgoing, outgoing_rx) = mpsc::unbounded_channel();
         let (stop, stop_rx) = mpsc::unbounded_channel();
@@ -155,10 +135,6 @@ impl RelayClient {
     }
 
     /// Sends a payload, if there is anywhere to send it.
-    ///
-    /// A payload written while the connection is down is dropped rather than queued:
-    /// what the phone needs on reconnect is the session as it stands then, which the
-    /// machine sends fresh, not a replay of what it missed.
     pub fn send(&self, payload: MachinePayload) {
         let _ = self.outgoing.send(payload);
     }
@@ -168,20 +144,11 @@ impl RelayClient {
     }
 
     /// Tells the relay a pairing exists, handing it the hashes of both legs' tokens.
-    ///
-    /// A pairing the relay has never heard of has no channel to join, so a first
-    /// connection made before this lands is refused and waits out a backoff. Prefer
-    /// [`register`] before starting the client; this is for re-registering a pairing a
-    /// relay has forgotten, which can only be found out by being refused.
     pub async fn register_pairing(&self) -> Result<(), String> {
         register_pairing(&self.http, &self.config).await
     }
 
     /// Asks the relay to wake the phone.
-    ///
-    /// The payload is sealed under its own key before it leaves, so what reaches Apple
-    /// and the phone's notification service is opaque. Delivery is the relay's
-    /// business from there.
     pub async fn push_trigger(
         &self,
         push_key: &[u8; 32],
@@ -212,10 +179,6 @@ impl RelayClient {
 }
 
 /// Tells the relay about a pairing before anything tries to use it.
-///
-/// Separate from the client because the order matters: a channel cannot be joined until
-/// the relay knows the pairing, so a brand-new pairing is registered first and connected
-/// second.
 pub async fn register(config: &RelayConfig) -> Result<(), String> {
     register_pairing(&reqwest::Client::new(), config).await
 }
@@ -272,8 +235,7 @@ async fn run(
                 backoff = BACKOFF_INITIAL;
                 serve(socket, &config, &events, &mut outgoing, &mut stop, &mut decoder).await
             }
-            // A relay that will not accept the socket is one to try again, on the same
-            // widening interval as one that accepted and then went away.
+            
             Err(_) => Outcome::Retry(None),
         };
 
@@ -292,10 +254,7 @@ async fn run(
         }
         backoff = (backoff * 2).min(BACKOFF_CAP);
 
-        // Both verifiers come from the pairing secret, so re-registering a pairing the
-        // relay has forgotten restores exactly the record it lost — and the phone keeps
-        // working with the secret it already holds. A failed attempt is not fatal: the
-        // socket below fails in turn and the next round tries both again.
+        
         if reregister {
             let _ = register_pairing(&http, &config).await;
         }
@@ -328,8 +287,7 @@ async fn serve(
 
     let (mut writer, mut reader) = socket.split();
 
-    // A fresh connection means the phone can no longer assume the counters from the
-    // last one, so both directions start over.
+    
     let mut encoder = FrameEncoder::new(derive_key(
         &config.secret,
         &config.pairing_id,
@@ -363,8 +321,7 @@ async fn serve(
                     Some(Ok(tokio_tungstenite::tungstenite::Message::Close(frame))) => {
                         return Outcome::Retry(frame.map(|frame| u16::from(frame.code)));
                     }
-                    // Anything else the relay sends — a ping, a binary frame it has no
-                    // reason to send — changes nothing about the session.
+                    
                     Some(Ok(_)) => {}
                     Some(Err(_)) | None => return Outcome::Retry(None),
                 }
@@ -373,8 +330,8 @@ async fn serve(
     }
 }
 
-/// One message off the socket: either the relay talking about the channel, or the phone
-/// talking through it.
+/// One message off the socket: either the relay talking about the channel, or the phone talking
+/// through it.
 fn handle(text: &str, events: &mpsc::UnboundedSender<RelayEvent>, decoder: &mut FrameDecoder) {
     let Ok(parsed) = serde_json::from_str::<serde_json::Value>(text) else {
         return;
@@ -387,9 +344,7 @@ fn handle(text: &str, events: &mpsc::UnboundedSender<RelayEvent>, decoder: &mut 
         if peer.relay != "peer" || peer.role != "phone" {
             return;
         }
-        // The phone's encoder restarts its numbering on every fresh join, so the
-        // decoder for its frames restarts in step — otherwise the phone's first frame
-        // after reconnecting looks like a replay of an old one and is dropped.
+        
         if peer.connected {
             decoder.reset();
         }
@@ -456,8 +411,7 @@ mod tests {
         );
     }
 
-    /// The token is derived, so the same pairing always produces the same one — which
-    /// is what lets a machine reconnect without being re-registered.
+    /// The token is derived.
     #[test]
     fn a_token_is_the_same_every_time_it_is_derived() {
         assert_eq!(
@@ -466,7 +420,7 @@ mod tests {
         );
     }
 
-    /// The relay stores the hash rather than the token, so what it keeps opens nothing.
+    
     #[test]
     fn the_verifier_is_not_the_token() {
         let token = config().auth_token(Role::Machine);
@@ -480,7 +434,7 @@ mod tests {
     fn the_websocket_address_follows_the_relays_own_scheme() {
         assert_eq!(websocket_base("https://relay.example"), "wss://relay.example");
         assert_eq!(websocket_base("http://localhost:8090"), "ws://localhost:8090");
-        // Anything already a websocket address is left as it stands.
+        
         assert_eq!(websocket_base("ws://localhost:8090"), "ws://localhost:8090");
     }
 
@@ -489,13 +443,11 @@ mod tests {
         let url = config().channel_url();
         assert!(url.starts_with("ws://localhost:8090/channel/vector-pairing?"));
         assert!(url.contains("role=machine"));
-        // The token is base64url, whose characters survive a query string, but it is
-        // encoded anyway rather than trusted to.
+        
         assert!(url.contains("token="));
     }
 
-    /// A peer frame is the relay talking about the channel, not the phone talking
-    /// through it, and it must never be read as a sealed payload.
+    
     #[test]
     fn a_peer_frame_is_reported_as_the_phone_arriving() {
         let (events, mut received) = mpsc::unbounded_channel();

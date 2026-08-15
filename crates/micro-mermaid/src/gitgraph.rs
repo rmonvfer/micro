@@ -1,11 +1,4 @@
 //! Git graphs, drawn as commit marks on horizontal branch lanes.
-//!
-//! A git history is a timeline: commits happen in order, and branches are
-//! parallel tracks that fork from and rejoin each other. That reads best in a
-//! terminal exactly the way `git log --graph` already draws it — one row per
-//! branch, commits as marks along a shared left-to-right clock, and forks and
-//! merges as short vertical jogs between rows. So a lane is a row, a commit is
-//! a column, and every statement just advances one or the other.
 
 use std::collections::HashMap;
 
@@ -14,15 +7,15 @@ use crate::labels::{ascii_lower, ascii_upper, clean_label, fit_label, strip_cont
 use crate::types::Cls;
 use crate::width::{measured, string_width};
 
-/// Branches past this and the graph is refused: a history with hundreds of
-/// live branches has nothing left to read as a shape.
+/// Branches past this and the graph is refused: a history with hundreds of live branches has
+/// nothing left to read as a shape.
 const MAX_LANES: usize = 64;
 /// Commits, merges and cherry-picks combined, across every lane.
 const MAX_COMMITS: usize = 256;
 /// Minimum columns between two commits on the same lane.
 const GAP_MIN: usize = 4;
-/// A tag or id longer than this is truncated, so one long label cannot blow
-/// out the column spacing for the whole graph.
+/// A tag or id longer than this is truncated, so one long label cannot blow out the column spacing
+/// for the whole graph.
 const LABEL_WIDTH: usize = 16;
 const MAX_CANVAS_CELLS: usize = 1 << 21;
 
@@ -52,8 +45,8 @@ enum Connector {
     },
     /// `from` merging into `to`, landing on the mark at `col`.
     Merge { from: usize, to: usize, col: usize },
-    /// A cherry-pick copying the commit at `(from_lane, from_col)` onto the
-    /// mark at `(to_lane, to_col)`.
+    /// A cherry-pick copying the commit at `(from_lane, from_col)` onto the mark at `(to_lane,
+    /// to_col)`.
     CherryPick {
         from_lane: usize,
         from_col: usize,
@@ -69,8 +62,7 @@ struct Lane {
     touched: bool,
 }
 
-/// The graph as it is built up statement by statement. `current` is what
-/// `checkout` moves and `commit` writes to, same as git's HEAD.
+/// The graph as it is built up statement by statement.
 struct GitGraph {
     title: Option<String>,
     lanes: Vec<Lane>,
@@ -152,7 +144,7 @@ impl GitGraph {
             parent,
             col: start_col,
         });
-        // `branch` checks out what it creates, same as `git branch` followed by a switch.
+        
         self.current = child;
         Some(())
     }
@@ -239,8 +231,7 @@ pub(crate) fn render_gitgraph(src: &str) -> Option<Canvas> {
     draw(&graph)
 }
 
-/// Pull `key: value` out of `body`, where `value` is a quoted string or a
-/// bare word, and remove it so a second field can be found after it.
+
 fn take_field(body: &mut String, key: &str) -> Option<String> {
     let pat = format!("{key}:");
     let start = body.find(&pat)?;
@@ -272,8 +263,7 @@ fn commit_kind(token: &str) -> Option<MarkKind> {
     }
 }
 
-/// Apply one statement line to `graph`. `None` means the line could not be
-/// read, which refuses the whole diagram rather than drawing part of it.
+/// Apply one statement line to `graph`.
 fn apply(line: &str, graph: &mut GitGraph) -> Option<()> {
     let word = line.split_whitespace().next()?;
     let first = ascii_lower(word);
@@ -311,11 +301,7 @@ fn apply(line: &str, graph: &mut GitGraph) -> Option<()> {
     }
 }
 
-/// Place text at `row`, stopping before it would overwrite a glyph already
-/// drawn there — another commit's mark or its own label. A lane's dash fill
-/// underneath is fair game: those cells only carry routing bits so far, not
-/// a character, since `finalize_mask` has not run yet — resolving them into
-/// dashes is exactly what drawing a real character over them pre-empts.
+
 fn place(canvas: &mut Canvas, text: &str, row: usize, start_x: usize) {
     if row >= canvas.h {
         return;
@@ -420,12 +406,8 @@ fn draw(graph: &GitGraph) -> Option<Canvas> {
                 to_lane,
                 to_col,
             } => {
-                // Travel along the source's own row first and turn at the
-                // landing column, rather than the other way around: the
-                // source lane has nothing else drawn past its own last
-                // commit, so the dotted path stays clear of it, where turning
-                // at the source column would instead run the dots straight
-                // over the target lane's solid timeline and lose them to it.
+                
+                
                 canvas.cur_style = STY_DOT;
                 canvas.seg_h(row(from_lane), x(from_col), x(to_col));
                 canvas.seg_v(x(to_col), row(from_lane), row(to_lane));
@@ -467,16 +449,14 @@ mod tests {
         assert_eq!(rows[0].matches('●').count(), 3);
     }
 
-    /// A branch gets its own row, joined to its parent by a vertical jog at the
-    /// column it forked from.
+    
     #[test]
     fn a_branch_forks_off_its_parent_lane() {
         let rows = drawn("gitGraph\n  commit\n  branch feature\n  commit");
         assert_eq!(rows.len(), 2);
         assert!(rows[0].starts_with("main "), "{rows:?}");
         assert!(rows[1].starts_with("feature "), "{rows:?}");
-        // The fork happens under the commit on main, so a vertical mark sits at
-        // that column on the row between the two lane labels' text.
+        
         let fork_col = rows[0].chars().position(|c| c == '●').unwrap();
         assert!(
             rows[1].chars().nth(fork_col).is_some_and(|c| c != ' '),
@@ -484,15 +464,15 @@ mod tests {
         );
     }
 
-    /// `merge` draws a joining line from the merged branch's lane into a new
-    /// commit on the current one.
+    /// `merge` draws a joining line from the merged branch's lane into a new commit on the current
+    /// one.
     #[test]
     fn a_merge_joins_two_branch_lanes() {
         let rows = drawn(
             "gitGraph\n  commit\n  branch feature\n  commit\n  checkout main\n  merge feature",
         );
         assert_eq!(rows.len(), 2);
-        // main gets a second mark for the merge commit, after the fork column.
+        
         assert_eq!(rows[0].matches('●').count(), 2);
         assert_eq!(rows[1].matches('●').count(), 1);
         let merge_col = rows[0]
@@ -508,8 +488,7 @@ mod tests {
         );
     }
 
-    /// A cherry-pick copies a commit onto the current branch with a dotted
-    /// line back to where it came from, distinct from a merge's solid one.
+    
     #[test]
     fn a_cherry_pick_draws_a_dotted_line_back_to_its_source() {
         let rows = drawn(
@@ -523,8 +502,8 @@ mod tests {
         );
     }
 
-    /// `type: HIGHLIGHT` and `type: REVERSE` get their own glyphs so a reader
-    /// can tell them apart from an ordinary commit at a glance.
+    /// `type: HIGHLIGHT` and `type: REVERSE` get their own glyphs so a reader can tell them apart
+    /// from an ordinary commit at a glance.
     #[test]
     fn commit_types_get_distinct_glyphs() {
         let rows = drawn("gitGraph\n  commit type: HIGHLIGHT\n  commit type: REVERSE\n  commit");
@@ -548,8 +527,7 @@ mod tests {
         assert!(rows[1].starts_with("main "), "{rows:?}");
     }
 
-    /// Anything that is not a git graph, or a graph whose grammar breaks down
-    /// partway through, is refused rather than drawn half right.
+    
     #[test]
     fn what_is_not_a_gitgraph_is_left_alone() {
         assert!(render_gitgraph("graph TD\n A --> B").is_none());

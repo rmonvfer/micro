@@ -1,8 +1,4 @@
 //! What a session recorded about itself, read back through the binary.
-//!
-//! These run the real program against the fake provider, so what a test compares against
-//! is the body that actually crossed the socket rather than one assembled a second time
-//! inside the test.
 
 mod support;
 
@@ -25,9 +21,7 @@ fn only_session(fixture: &Fixture) -> String {
         .to_string()
 }
 
-/// A session records every request it issued completely enough to put it back together:
-/// what is printed for a turn is the body the provider was actually sent, down to the
-/// bytes.
+
 #[test]
 fn a_recorded_turn_rebuilds_the_request_that_was_sent() {
     let api = FakeApi::start([
@@ -63,9 +57,7 @@ fn a_recorded_turn_rebuilds_the_request_that_was_sent() {
     );
 }
 
-/// Read without `--raw`, a turn is explained rather than reproduced: every stretch of the
-/// prompt is named by whoever supplied it, so a reader can see what they were charged for
-/// before deciding whether it should have been there.
+
 #[test]
 fn a_turn_names_who_supplied_each_stretch_of_the_prompt() {
     let api = FakeApi::start([Reply::text("done")]);
@@ -94,8 +86,8 @@ fn a_turn_names_who_supplied_each_stretch_of_the_prompt() {
     );
 }
 
-/// A session with no turn named lists the turns it holds, so a reader knows what there is
-/// to ask about.
+/// A session with no turn named lists the turns it holds, so a reader knows what there is to ask
+/// about.
 #[test]
 fn a_session_lists_the_turns_it_recorded() {
     let api = FakeApi::start([
@@ -122,8 +114,7 @@ fn a_session_lists_the_turns_it_recorded() {
     );
 }
 
-/// Exporting a session hands over the whole ledger as it is on disk: the conversation and
-/// every fact recorded beside it, in the order they happened, one JSON object per line.
+
 #[test]
 fn exporting_a_session_yields_its_whole_ledger() {
     let api = FakeApi::start([Reply::text("done")]);
@@ -163,8 +154,7 @@ fn exporting_a_session_yields_its_whole_ledger() {
     }
 }
 
-/// Asking about a session that was written before any of this existed says so, rather
-/// than failing or inventing a turn for it.
+
 #[test]
 fn a_session_recorded_before_the_ledger_says_it_has_no_turns() {
     let api = FakeApi::start([Reply::text("done")]);
@@ -174,7 +164,7 @@ fn a_session_recorded_before_the_ledger_says_it_has_no_turns() {
         .expect_success("micro --print");
 
     let id = only_session(&fixture);
-    // The shape of the very first session logs: messages, and nothing else.
+    
     let log = fixture.home().join("sessions").join(format!("{id}.jsonl"));
     let kept: Vec<String> = std::fs::read_to_string(&log)
         .expect("the log")

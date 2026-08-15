@@ -6,9 +6,7 @@ use typst_as_lib::TypstEngine;
 
 const PIXELS_PER_POINT: f32 = 3.0;
 
-/// The page color used to rasterize mathematics. Transparent Typst pages are composited as
-/// black by terminal image protocols, so the expression is rendered onto the active theme's
-/// terminal ground before it is encoded.
+/// The page color used to rasterize mathematics.
 fn page_fill(background: Color) -> String {
     match background {
         Color::Rgb(red, green, blue) => {
@@ -46,12 +44,6 @@ fn text_fill(foreground: Color) -> String {
 }
 
 /// Render one Typst display-math expression as a PNG.
-///
-/// The page uses the terminal's active ground and text colors: image protocols do not
-/// composite transparent PNGs with the terminal background consistently.
-///
-/// The page hugs its content, so reserving image cells leaves no empty paper around the
-/// expression. Compilation errors return `None`; the caller then retains its text fallback.
 pub fn render_math(source: &str, foreground: Color, background: Color) -> Option<String> {
     let source = source.trim();
     if source.is_empty() {

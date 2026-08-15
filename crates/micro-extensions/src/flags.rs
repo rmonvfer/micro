@@ -1,30 +1,15 @@
 //! Flags micro does not know about.
-//!
-//! An extension may declare a command-line flag, and it declares it after the command line
-//! has already been read — the extensions are loaded by the run the flags configure. So the
-//! arguments are split first: everything micro's own parser understands goes to it, and
-//! anything left over is held until the extensions have said what they answer to.
-//!
-//! A value for an unknown flag is written with an equals sign: `--env=staging`. Nothing
-//! else would be safe, because whether a flag takes a value is declared by an extension
-//! that has not loaded yet — and guessing wrong would swallow the prompt.
-//!
-//! Nothing is guessed. A leftover flag nobody claims is reported rather than ignored, so a
-//! typo is visible instead of silently doing nothing.
 
 /// A flag that was written on the command line but not understood by micro.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Given {
     pub name: String,
-    /// What followed it, when anything did. A flag with no value is a flag that is on.
+    /// What followed it, when anything did.
     pub value: Option<String>,
 }
 
 /// Split arguments into the ones micro's own parser should see and the ones it would not
 /// understand.
-///
-/// `known` names the long flags micro takes a value for, so `--model opus` keeps its value
-/// rather than leaving `opus` stranded.
 pub fn split_unknown(
     arguments: impl IntoIterator<Item = String>,
     known: &[&str],
@@ -33,7 +18,7 @@ pub fn split_unknown(
     let mut kept = Vec::new();
     let mut leftover = Vec::new();
     let mut arguments = arguments.into_iter().peekable();
-    // Everything after `--` is a positional argument, whatever it looks like.
+    
     let mut only_positional = false;
 
     while let Some(argument) = arguments.next() {
@@ -50,7 +35,7 @@ pub fn split_unknown(
 
         if known.contains(&name) || known_with_value.contains(&name) {
             kept.push(argument.clone());
-            // A known flag that takes a value written apart from it keeps that value.
+            
             if inline.is_none() && known_with_value.contains(&name) {
                 if let Some(value) = arguments.peek() {
                     if !value.starts_with("--") {
@@ -61,8 +46,7 @@ pub fn split_unknown(
             continue;
         }
 
-        // Only a value written with an equals sign is taken. Anything after a space
-        // belongs to the prompt until an extension says otherwise.
+        
         leftover.push(Given {
             name: name.to_string(),
             value: inline,
@@ -107,14 +91,13 @@ mod tests {
         );
     }
 
-    /// A value is written with an equals sign, because whether the flag takes one is not
-    /// known until the extension that declared it has loaded.
+    /// A value is written with an equals sign.
     #[test]
     fn a_value_is_written_with_an_equals_sign() {
         let (_, leftover) = split(&["micro", "--env=staging"]);
         assert_eq!(leftover[0].value.as_deref(), Some("staging"));
 
-        // Written apart, the word belongs to the prompt rather than to the flag.
+        
         let (kept, leftover) = split(&["micro", "--env", "staging"]);
         assert_eq!(kept, vec!["micro", "staging"]);
         assert_eq!(leftover[0].value, None);

@@ -1,11 +1,5 @@
-// pi-tui's generic undo stack, vendored unchanged: `structuredClone` and an array are all
-// it is built from, so nothing about running under micro changes its behaviour.
-/**
- * Generic undo stack with clone-on-push semantics.
- *
- * Stores deep clones of state snapshots. Popped snapshots are returned
- * directly (no re-cloning) since they are already detached.
- */
+
+/** Generic undo stack with clone-on-push semantics. */
 export class UndoStack<S> {
 	private stack: S[] = [];
 

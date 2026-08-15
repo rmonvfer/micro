@@ -1,45 +1,9 @@
-//! A place for pi's own runtime modules to resolve to, so a pi extension that imports
-//! `@earendil-works/pi-coding-agent` (or its older `@mariozechner/*` names) finds
-//! something real rather than failing to load outright.
-//!
-//! pi bundles its own runtime into its own Bun binary and hands an extension's import a
-//! reference to that bundle directly — see `pi/packages/coding-agent/src/core/extensions/
-//! loader.ts`'s `VIRTUAL_MODULES`. micro is not that binary, and the module it would hand
-//! back is not micro's to give: pi's own agent loop, session runtime and interactive TUI
-//! have no micro equivalent to run against. What is written here instead is a real,
-//! working answer for the part of pi's runtime that genuinely has one — text measurement,
-//! key matching, session-file branching, message conversion, the handful of pure
-//! utilities a real extension actually reaches for — and, for everything else that
-//! package exports, a stand-in that fails with a specific message naming exactly what was
-//! reached for, once, at the point it is actually used. See the header comment in each
-//! file under `../host/compat/` for what is real and what is not, package by package.
-//!
-//! # Why a directory on disk rather than a loader hook
-//!
-//! A pi extension does not live beside micro's own host files — it lives wherever it was
-//! installed (`crates/micro-extensions/src/packages.rs`'s `npm/node_modules/<name>`, or a
-//! project's own `.micro`), and Node-style module resolution for a bare specifier like
-//! `@earendil-works/pi-coding-agent` walks up from *that* file's own directory looking for
-//! a `node_modules` beside it — not from wherever the process that started things sits.
-//! Bun's runtime plugin API (`Bun.plugin`'s `onResolve`) looks like the more direct tool
-//! for rewriting a bare specifier, but does not intercept a dynamic `import()` of one that
-//! Bun's own resolver cannot already find — confirmed empirically before writing this,
-//! not assumed from documentation. `NODE_PATH` is the mechanism both Node and Bun already
-//! honor for exactly this: an extra directory consulted for every bare specifier,
-//! regardless of where the importing file lives. [`install`] writes a real
-//! `node_modules` tree once per host start — the same "rewritten every start" reasoning
-//! [`crate::host::install_host`] already uses, so an upgraded micro never runs a
-//! compatibility layer an older one left behind — and [`node_path`] says where it and
-//! micro's own installed npm packages both are, for `host::Host::start` to set as the
-//! spawned Bun process's `NODE_PATH`.
+//! A place for pi's own runtime modules to resolve to.
 
 use std::path::Path;
 use std::path::PathBuf;
 
-/// pi-tui's own pure utilities and small components, vendored unchanged (see the header
-/// comment in each file for exactly what depends on what), plus this layer's own
-/// `index.ts` and `tui.ts` standing in for the parts of pi-tui that are a terminal driver
-/// rather than a text-measurement library.
+
 const PI_TUI_FILES: &[(&str, &str)] = &[
     ("index.ts", include_str!("../host/compat/tui/index.ts")),
     ("tui.ts", include_str!("../host/compat/tui/tui.ts")),
@@ -157,42 +121,26 @@ const PI_AI_FILES: &[(&str, &str)] = &[
     ),
 ];
 
-/// `get-east-asian-width` is the one real npm dependency pi-tui's vendored `utils.ts`
-/// has — see that file's own header comment for why this layer approximates it rather
-/// than carries the real one.
+/// `get-east-asian-width` is the one real npm dependency pi-tui's vendored `utils.ts` has.
 const EAST_ASIAN_WIDTH_FILES: &[(&str, &str)] = &[(
     "index.ts",
     include_str!("../host/compat/east-asian-width/index.ts"),
 )];
 
-/// The real typebox, bundled with `bun build --target=browser --format=esm` from its
-/// published `.mjs` build so it carries no external imports of its own — see the header of
-/// each file for how to regenerate it against a newer typebox version. Not one of pi's own
-/// packages, but it is how nearly every real extension describes a tool's parameters
-/// (`Type.Object(...)`), and pi-ai's own real API return a typebox schema builder
-/// (`StringEnum`) too — this layer's `ai/index.ts` re-exports from it rather than carrying
-/// a second implementation, which only works if a real `typebox` is actually here to
-/// re-export.
+
 const TYPEBOX_FILES: &[(&str, &str)] = &[
     ("index.mjs", include_str!("../host/compat/typebox/index.mjs")),
     ("compile.mjs", include_str!("../host/compat/typebox/compile.mjs")),
     ("value.mjs", include_str!("../host/compat/typebox/value.mjs")),
 ];
 
-/// The real `marked`, vendored the same way and for the same reason as typebox above —
-/// pinned to the exact version pi-tui itself depends on (see the file's own header) so
-/// pi-tui's `Markdown` component parses with the identical library it was built against,
-/// not merely a same-major one reached for at random.
+
 const MARKED_FILES: &[(&str, &str)] = &[("index.mjs", include_str!("../host/compat/marked/index.mjs"))];
 
-/// pi's own runtime is published under two npm scopes — `@earendil-works` is current,
-/// `@mariozechner` is what it was called before, kept working the same way
-/// `pi/packages/coding-agent/src/core/extensions/loader.ts`'s own alias map keeps both
-/// resolving to the same real module.
+/// pi's own runtime is published under two npm scopes.
 const SCOPES: &[&str] = &["@earendil-works", "@mariozechner"];
 
-/// One package this layer answers for: its name under each scope above, and the files
-/// that make it up, relative to the package's own directory.
+
 struct Package {
     name: &'static str,
     files: &'static [(&'static str, &'static str)],
@@ -217,10 +165,7 @@ const PACKAGES: &[Package] = &[
     },
 ];
 
-/// Write a minimal `package.json` a bare `import "name"` resolves through: enough for
-/// Bun's own resolver to find the package directory at all, nothing else — there is no
-/// `exports` map restricting subpaths, so `pi-ai/compat` still resolves to `compat.ts`
-/// sitting right beside `index.ts` the ordinary way.
+
 fn package_json(name: &str) -> String {
     format!(r#"{{"name":"{name}","version":"0.0.0","type":"module"}}"#)
 }
@@ -252,10 +197,6 @@ fn write_package(
 }
 
 /// Put this layer's `node_modules` where [`node_path`] says it is, and say where that is.
-///
-/// Rewritten every start, the same as [`crate::host::install_host`] and for the same
-/// reason: an upgraded micro should never run a compatibility layer an older one left
-/// behind.
 pub fn install(home: &Path) -> Result<PathBuf, String> {
     let node_modules = home.join("node_modules");
     for scope in SCOPES {
@@ -264,32 +205,17 @@ pub fn install(home: &Path) -> Result<PathBuf, String> {
         }
     }
     write_package(&node_modules, None, "get-east-asian-width", EAST_ASIAN_WIDTH_FILES)?;
-    // Not scoped under either pi npm scope, and written unconditionally rather than left to
-    // however `crates/micro-extensions/src/packages.rs` happens to have populated
-    // `npm/node_modules`: an extension's `import "typebox"` should resolve to something
-    // real every time, not only on a machine where some other extension install already
-    // happened to pull typebox in as a side effect.
+    
     write_package(&node_modules, None, "typebox", TYPEBOX_FILES)?;
     write_package(&node_modules, Some("@sinclair"), "typebox", TYPEBOX_FILES)?;
-    // pi-tui's own `Markdown` component imports `Marked`/`Tokenizer` directly from
-    // `marked` — real, for the same reason typebox is: an extension that reaches it (or
-    // pi-tui's own `Markdown`, once it is real) gets the genuine parser every time, not
-    // only on a machine where something else already happened to install it.
+    
     write_package(&node_modules, None, "marked", MARKED_FILES)?;
     write_catalog_json(&node_modules)?;
     Ok(node_modules)
 }
 
-/// `ai/catalog.json`, beside `ai/index.ts` in the `pi-ai` package directory under both
-/// scopes: pi-ai's own `getBuiltinModel`/`getBuiltinModels`/`getBuiltinProviders` are
-/// synchronous, so `providers-all.ts` reads this file directly with a JSON import rather
-/// than asking micro over the wire for something it cannot `await`.
-///
-/// Computed at install time rather than embedded as source, since it is data — micro's own
-/// bundled model catalog — not a file this layer wrote. [`micro_models::catalog_json`] is
-/// the same function `crates/micro-cli/src/extensions.rs`'s live `model_catalog` wire
-/// request answers with, so a model reads identically whichever way an extension reaches
-/// for it.
+/// `ai/catalog.json`, beside `ai/index.ts` in the `pi-ai` package directory under both scopes: pi-
+/// ai's own.
 fn write_catalog_json(node_modules: &Path) -> Result<(), String> {
     let catalog = micro_models::Catalog::bundled();
     let json = micro_models::catalog_json(&catalog, None);
@@ -302,16 +228,7 @@ fn write_catalog_json(node_modules: &Path) -> Result<(), String> {
     Ok(())
 }
 
-/// Everywhere the spawned Bun process should look for a bare specifier beyond its ordinary
-/// resolution: this layer's own compatibility packages first, then micro's own
-/// npm-installed extension dependencies (`crates/micro-extensions/src/packages.rs`'s
-/// `npm/node_modules`) — so an extension's own declared dependency still resolves the same
-/// way regardless of how deep in its own directory tree the importing file sits, without
-/// this layer's own vendored packages (`typebox` and `marked` among them) being shadowed by
-/// whatever an extension happened to install under the same name.
-///
-/// Joined with [`std::env::join_paths`] rather than a literal separator, so this reads
-/// correctly on every platform Bun runs on rather than only the one this was written on.
+
 pub fn node_path(home: &Path, compat_node_modules: &Path) -> Result<std::ffi::OsString, String> {
     let npm_node_modules = home.join("npm").join("node_modules");
     std::env::join_paths([compat_node_modules.as_os_str(), npm_node_modules.as_os_str()])
@@ -333,8 +250,7 @@ mod tests {
         path
     }
 
-    /// Every package this layer answers for is written under both scopes pi's own alias
-    /// map recognizes, with a `package.json` Bun's resolver can find it through.
+    
     #[test]
     fn every_package_is_written_under_both_scopes() {
         let home = scratch("both-scopes");
@@ -360,9 +276,8 @@ mod tests {
         let _ = std::fs::remove_dir_all(&home);
     }
 
-    /// `ai/catalog.json` sits under both scopes, beside the `pi-ai` files `PACKAGES`
-    /// already writes, and it is the real bundled catalog — the same JSON
-    /// `extensions.rs`'s live `model_catalog` wire request would answer with.
+    /// `ai/catalog.json` sits under both scopes, beside the `pi-ai` files `PACKAGES` already
+    /// writes, and it is the real bundled catalog.
     #[test]
     fn the_model_catalog_is_written_beside_pi_ai_under_both_scopes() {
         let home = scratch("catalog-json");
@@ -381,9 +296,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&home);
     }
 
-    /// `providers-all.ts` reads `./catalog.json` synchronously — run for real under Bun,
-    /// confirming the JSON import actually resolves and carries real models, not just that
-    /// the file is on disk.
+    /// `providers-all.ts` reads `./catalog.json` synchronously.
     #[tokio::test]
     async fn providers_all_reads_the_real_catalog_json_synchronously() {
         let Some(bun) = crate::host::which_bun() else {
@@ -429,9 +342,8 @@ console.log(JSON.stringify({
         let _ = std::fs::remove_dir_all(&script_dir);
     }
 
-    /// typebox is written unscoped and under `@sinclair`, matching every specifier a real
-    /// extension might use — and, unlike the pi packages above, it is written whole rather
-    /// than approximated: the assertion is on content, not just presence.
+    /// typebox is written unscoped and under `@sinclair`, matching every specifier a real extension
+    /// might use.
     #[test]
     fn typebox_is_written_under_its_own_name_and_its_sinclair_alias() {
         let home = scratch("typebox");
@@ -448,10 +360,7 @@ console.log(JSON.stringify({
         let _ = std::fs::remove_dir_all(&home);
     }
 
-    /// The vendored typebox is not just present but genuinely working, run for real under
-    /// Bun with `NODE_PATH` set exactly the way `host::Host::start` sets it — `Type.Object`
-    /// builds a real schema and `Compile` validates against it, both from a script that
-    /// never sat anywhere near this layer's own files on disk.
+    
     #[tokio::test]
     async fn the_vendored_typebox_actually_works() {
         let Some(bun) = crate::host::which_bun() else {
@@ -498,8 +407,7 @@ console.log(JSON.stringify({ schema, valid: check.Check({ who: "x" }), invalid: 
         let _ = std::fs::remove_dir_all(&script_dir);
     }
 
-    /// marked is written unscoped, whole rather than approximated: the assertion is on
-    /// content, the same as typebox's own equivalent test.
+    
     #[test]
     fn marked_is_written_under_its_own_name() {
         let home = scratch("marked");
@@ -515,9 +423,7 @@ console.log(JSON.stringify({ schema, valid: check.Check({ who: "x" }), invalid: 
         let _ = std::fs::remove_dir_all(&home);
     }
 
-    /// The vendored marked is not just present but genuinely working, run for real under
-    /// Bun with `NODE_PATH` set exactly the way `host::Host::start` sets it — `Marked`
-    /// parses real markdown into real HTML.
+    
     #[tokio::test]
     async fn the_vendored_marked_actually_works() {
         let Some(bun) = crate::host::which_bun() else {
@@ -561,8 +467,7 @@ console.log(marked.parse("hello world **bold**\n\n# heading"));
         let _ = std::fs::remove_dir_all(&script_dir);
     }
 
-    /// `pi-ai`'s own shim re-exports `Type` from the vendored typebox rather than carrying
-    /// a second copy — this is what breaks if the two are ever wired up wrong.
+    
     #[tokio::test]
     async fn pi_ais_shim_reaches_the_vendored_typebox() {
         let Some(bun) = crate::host::which_bun() else {
@@ -603,8 +508,7 @@ console.log(JSON.stringify(Type.String()));
         let _ = std::fs::remove_dir_all(&script_dir);
     }
 
-    /// `NODE_PATH` carries both this layer's own directory and micro's npm root, in an
-    /// encoding the platform's own `PATH`-like variables use.
+    
     #[test]
     fn node_path_carries_both_directories() {
         let home = scratch("node-path");
@@ -616,11 +520,7 @@ console.log(JSON.stringify(Type.String()));
         let _ = std::fs::remove_dir_all(&home);
     }
 
-    /// A session file exactly as `crates/micro-session` writes one: snake_case
-    /// `parent_id`, no header line, cwd/id/title in a sibling `.meta.json` — built by
-    /// hand here (rather than depending on the `micro-session` crate, which
-    /// `micro-extensions` does not otherwise need) so this test exercises the same shape
-    /// a real running session's file has, not an approximation of it.
+    
     fn write_real_micro_session(dir: &Path, workspace: &str) -> PathBuf {
         let log = dir.join("1700000000000.jsonl");
         std::fs::write(
@@ -645,14 +545,7 @@ console.log(JSON.stringify(Type.String()));
         log
     }
 
-    /// `SessionManager.open()` against a real micro-native session file — not one this
-    /// layer wrote itself — reads the whole chain with the fields pi's own shape expects,
-    /// and a branch cut from it round-trips through `createBranchedSession` correctly.
-    /// Regression test for the bug this file's `SessionManager` had before: reading
-    /// `parentId` off an entry whose real key is `parent_id` is `undefined`, which
-    /// silently stops a chain walk after one entry instead of raising an error — exactly
-    /// what `pi-subagents`' own fork-context.ts would hit forking the session it is
-    /// actually running in.
+    /// `SessionManager.open()` against a real micro-native session file.
     #[tokio::test]
     async fn session_manager_reads_a_real_micro_session_and_forks_it_correctly() {
         let Some(bun) = crate::host::which_bun() else {
@@ -731,16 +624,7 @@ console.log(JSON.stringify({
         let _ = std::fs::remove_dir_all(&script_dir);
     }
 
-    /// The pure-logic pieces of `../host/compat/ai/index.ts` run for real under Bun,
-    /// not just parse: `StringEnum` and `Type` build a real typebox schema,
-    /// `validateToolArguments` compiles and checks against it (coercing a stringified
-    /// number the way pi-ai's own version does), `retryAssistantCall` actually retries a
-    /// transient error and stops on success, `parseStreamingJson` closes an unterminated
-    /// string in a still-streaming tool-call-argument buffer rather than losing the whole
-    /// object, `createProvider` dispatches a request to the caller-supplied `stream`
-    /// implementation by model id — the same shape `custom-provider-gitlab-duo/index.ts`
-    /// uses — and `calculateCost`/`clampThinkingLevel` do the arithmetic pi-ai's own
-    /// versions do.
+    
     #[tokio::test]
     async fn pi_ais_pure_logic_actually_works() {
         let Some(bun) = crate::host::which_bun() else {
@@ -852,11 +736,7 @@ console.log(JSON.stringify(results));
         let _ = std::fs::remove_dir_all(&script_dir);
     }
 
-    /// `../host/compat/ai/compat.ts`'s api-registry dispatches a real request to
-    /// whatever `stream`/`streamSimple` an extension registered under a given api id —
-    /// the shape `custom-provider-gitlab-duo/index.ts` uses — and refuses an api id
-    /// nothing has registered with the same named error pi-ai's own dispatch throws,
-    /// rather than a silent empty response.
+    
     #[tokio::test]
     async fn pi_ai_compat_registry_dispatches_and_refuses_unregistered_apis() {
         let Some(bun) = crate::host::which_bun() else {
@@ -911,10 +791,8 @@ console.log(JSON.stringify({ dispatchedText: dispatched.content[0], refusedMessa
         let _ = std::fs::remove_dir_all(&script_dir);
     }
 
-    /// `../host/compat/ai/oauth.ts` and `../host/compat/ai/providers-all.ts` import
-    /// cleanly for their side effect alone — every real use a pi extension makes of either
-    /// subpath is `import type`, already free via Bun's elision, so the only thing left to
-    /// prove is that a bare `import "..."` does not itself fail to resolve.
+    /// `../host/compat/ai/oauth.ts` and `../host/compat/ai/providers-all.ts` import cleanly for
+    /// their side effect alone.
     #[tokio::test]
     async fn pi_ai_subpath_side_effect_imports_succeed() {
         let Some(bun) = crate::host::which_bun() else {
@@ -952,12 +830,7 @@ console.log(JSON.stringify({ ok: true }));
         let _ = std::fs::remove_dir_all(&script_dir);
     }
 
-    /// `../host/compat/agent-core/index.ts`: `uuidv7` is the exact same function
-    /// pi-ai's own module exports (pi-agent-core's real `index.ts` re-exports it
-    /// unchanged, not a second implementation), `InMemoryTelemetryContext` records a real
-    /// span with its events and settled state, and constructing an `Agent` succeeds while
-    /// calling any method on it fails with a reason naming the credential boundary rather
-    /// than "not a function" or a silent `undefined`.
+    
     #[tokio::test]
     async fn pi_agent_core_uuid_telemetry_and_agent_boundary() {
         let Some(bun) = crate::host::which_bun() else {
@@ -1023,11 +896,7 @@ console.log(JSON.stringify({
         let _ = std::fs::remove_dir_all(&script_dir);
     }
 
-    /// `Input` and `getKeybindings` were stubs — every real caller of `Input` calls
-    /// `getKeybindings()` internally, so as long as that was a throwing stub `Input` could
-    /// never actually be exercised even though it was already real code. Run both for real,
-    /// end to end: type a character, move the cursor with a real keybinding lookup, delete
-    /// backward, and read the render back out — the whole point of the fix.
+    /// `Input` and `getKeybindings` were stubs.
     #[tokio::test]
     async fn input_and_keybindings_are_real_not_stubbed() {
         let Some(bun) = crate::host::which_bun() else {
@@ -1082,11 +951,7 @@ console.log(JSON.stringify({
         let _ = std::fs::remove_dir_all(&script_dir);
     }
 
-    /// `pi-coding-agent`'s `keyHint`/`BorderedLoader` reach across into `pi-tui` for real —
-    /// `getKeybindings()`'s default table for the former, `DynamicBorder` plus a
-    /// wall-clock-driven spinner for the latter — proving the two shim packages resolve
-    /// each other through the shared `node_modules` tree this layer writes, not just
-    /// their own package's own files.
+    /// `pi-coding-agent`'s `keyHint`/`BorderedLoader` reach across into `pi-tui` for real.
     #[tokio::test]
     async fn coding_agent_reaches_pi_tui_for_real_keybindings_and_a_bordered_loader() {
         let Some(bun) = crate::host::which_bun() else {
@@ -1154,13 +1019,7 @@ console.log(JSON.stringify({
         let _ = std::fs::remove_dir_all(&script_dir);
     }
 
-    /// `pi-coding-agent`'s `CustomEditor` genuinely subclasses `pi-tui`'s real `Editor` —
-    /// the exact relationship pi's own docs example (`modal-editor.ts`'s
-    /// `class ModalEditor extends CustomEditor`) depends on — and its app-level
-    /// keybinding handling (`app.interrupt` = escape, by pi's own default) works even
-    /// though `ctx.ui.setEditorComponent` (`host/ui.ts`) passes an empty object where a
-    /// real `KeybindingsManager` would go, because the fallback built from pi's own
-    /// default table takes over.
+    /// `pi-coding-agent`'s `CustomEditor` genuinely subclasses `pi-tui`'s real `Editor`.
     #[tokio::test]
     async fn custom_editor_subclasses_the_real_pi_tui_editor() {
         let Some(bun) = crate::host::which_bun() else {
@@ -1177,13 +1036,11 @@ console.log(JSON.stringify({
             r#"
 import { CustomEditor, getSelectListTheme } from "@earendil-works/pi-coding-agent";
 
-// A real extension subclassing CustomEditor, exactly like pi's own modal-editor.ts does.
 class ModalEditor extends CustomEditor {}
 
 const tui = { requestRender() {}, terminal: { rows: 24 } };
 const theme = { borderColor: (t: string) => t, selectList: getSelectListTheme() };
 
-// No keybindings argument — the same shape host/ui.ts's setEditorComponent passes ({}).
 const editor = new ModalEditor(tui, theme, {});
 
 editor.handleInput("h");
@@ -1223,10 +1080,7 @@ console.log(JSON.stringify({
         let _ = std::fs::remove_dir_all(&script_dir);
     }
 
-    /// `getMarkdownTheme()`'s answer satisfies pi-tui's real `Markdown` component fully —
-    /// regression test for a missing `underline` field (pi-tui's `MarkdownTheme` requires
-    /// it; `Markdown` calls `theme.underline(...)` rendering a link) that threw
-    /// "theme.underline is not a function" the first time a real extension rendered one.
+    /// `getMarkdownTheme()`'s answer satisfies pi-tui's real `Markdown` component fully.
     #[tokio::test]
     async fn markdown_theme_satisfies_the_real_markdown_component() {
         let Some(bun) = crate::host::which_bun() else {

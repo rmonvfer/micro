@@ -1,7 +1,4 @@
 //! A fake provider served from the test process, and a scratch home to point the binary at.
-//!
-//! Nothing here reaches the network or the caller's real configuration: the server binds a
-//! loopback port the operating system chooses, and every run gets its own `MICRO_DIR`.
 
 use std::collections::BTreeMap;
 use std::collections::VecDeque;
@@ -128,17 +125,14 @@ impl FakeApi {
         std::thread::spawn(move || {
             while running.load(Ordering::Relaxed) {
                 match listener.accept() {
-                    // Each connection is served on its own thread. An HTTP client may hold
-                    // an idle connection open, and reading it on the accept loop would
-                    // stall every later request behind it.
+                    
                     Ok((stream, _)) => {
                         let requests = requests.clone();
                         let headers = headers.clone();
                         let replies = replies.clone();
                         std::thread::spawn(move || serve(stream, &requests, &headers, &replies));
                     }
-                    // Nothing waiting, or a connection that went away between the queue and
-                    // the accept. Neither is a reason to stop serving.
+                    
                     Err(_) => std::thread::sleep(Duration::from_millis(5)),
                 }
             }
@@ -160,8 +154,7 @@ impl FakeApi {
         self.requests.lock().expect("requests lock").len()
     }
 
-    /// The request at `index`, waiting briefly for it in case the binary is still in
-    /// flight, and failing with a legible message when it never arrives.
+    
     pub fn request(&self, index: usize) -> Value {
         let deadline = std::time::Instant::now() + REQUEST_TIMEOUT;
         while std::time::Instant::now() < deadline {
@@ -179,7 +172,7 @@ impl FakeApi {
 
     /// The headers of the request at `index`, keyed by lowercased name.
     pub fn headers(&self, index: usize) -> Headers {
-        // Waiting on the body first means the matching headers are already recorded.
+        
         self.request(index);
         self.headers
             .lock()
@@ -196,20 +189,16 @@ impl Drop for FakeApi {
     }
 }
 
-/// Read one HTTP request, record its headers and body, and answer with the next scripted
-/// reply.
+/// Read one HTTP request, record its headers and body, and answer with the next scripted reply.
 fn serve(
     mut stream: TcpStream,
     requests: &Mutex<Vec<Value>>,
     headers: &Mutex<Vec<Headers>>,
     replies: &Mutex<VecDeque<Reply>>,
 ) {
-    // The listener polls for connections, and an accepted socket inherits that on the BSD
-    // socket layer. Left alone it would report "would block" for data that has not landed
-    // yet, which reads as an empty request and hangs up on a client that was mid-send.
+    
     let _ = stream.set_nonblocking(false);
-    // A client may open a connection it never uses. Without a deadline that thread would
-    // hold its scripted reply hostage for the life of the test.
+    
     let _ = stream.set_read_timeout(Some(CONNECTION_TIMEOUT));
     let _ = stream.set_write_timeout(Some(CONNECTION_TIMEOUT));
     let mut reader = BufReader::new(stream.try_clone().expect("clone the connection"));
@@ -236,8 +225,7 @@ fn serve(
     if reader.read_exact(&mut body).is_err() {
         return;
     }
-    // Recording the request and claiming a reply happen together, so the count a test
-    // asserts on and the script it wrote can never drift apart.
+    
     let Ok(value) = serde_json::from_slice::<Value>(&body) else {
         let _ = write!(
             stream,
@@ -273,7 +261,7 @@ fn serve(
                 body.len()
             );
         }
-        // Running out of script is a test bug, so it is reported rather than hung on.
+        
         None => {
             let body = "{\"error\":{\"message\":\"the fake provider ran out of replies\"}}";
             let _ = write!(
@@ -286,10 +274,7 @@ fn serve(
     }
     let _ = stream.flush();
 
-    // An SSE body ends at the close, so the close has to be orderly: signal end-of-body,
-    // then drain whatever the client still had in flight. Dropping the socket with unread
-    // bytes queued makes the kernel send a reset, which the client reports as a failed
-    // request rather than a finished response.
+    
     let _ = stream.shutdown(std::net::Shutdown::Write);
     let mut discard = [0u8; 1024];
     while let Ok(read) = stream.read(&mut discard) {
@@ -299,8 +284,8 @@ fn serve(
     }
 }
 
-/// A scratch `MICRO_DIR` and workspace, wired so the binary resolves a model that lives on
-/// the fake provider.
+/// A scratch `MICRO_DIR` and workspace, wired so the binary resolves a model that lives on the fake
+/// provider.
 pub struct Fixture {
     root: PathBuf,
 }
@@ -319,15 +304,14 @@ impl Fixture {
         std::fs::create_dir_all(&home).expect("create the scratch home");
         std::fs::create_dir_all(&workspace).expect("create the scratch workspace");
 
-        // A credential for a provider the registry knows, so no network and no real key.
+        
         std::fs::write(
             home.join("auth.json"),
             json!({ "openai": { "type": "api_key", "key": "test-key" } }).to_string(),
         )
         .expect("write auth.json");
 
-        // A model whose endpoint is the fake provider. The catalog supplies the base URL
-        // the client posts to, so nothing else has to be redirected.
+        
         std::fs::write(
             home.join("models.json"),
             json!({
@@ -349,8 +333,7 @@ impl Fixture {
         )
         .expect("write models.json");
 
-        // The workspace is vouched for, the way a user vouches for a project they are
-        // working in. Without it a project's own extensions and skills are left alone.
+        
         std::fs::write(
             home.join("config.json"),
             json!({ "default_project_trust": "always" }).to_string(),
@@ -358,7 +341,7 @@ impl Fixture {
         .expect("write config.json");
 
         Fixture {
-            // Canonicalized so the workspace matches what the session store records.
+            
             root: root.canonicalize().unwrap_or(root),
         }
     }
@@ -371,14 +354,14 @@ impl Fixture {
         self.root.join("workspace")
     }
 
-    /// The home directory of a machine that has never run micro, so nothing about it says
-    /// where micro's own directory should be.
+    /// The home directory of a machine that has never run micro, so nothing about it says where
+    /// micro's own directory should be.
     pub fn xdg_home(&self) -> PathBuf {
         self.root.join("xdg/home")
     }
 
-    /// Where a fresh install keeps what the user wrote, once nothing names one directory
-    /// for everything.
+    /// Where a fresh install keeps what the user wrote, once nothing names one directory for
+    /// everything.
     pub fn xdg_config(&self) -> PathBuf {
         self.root.join("xdg/config/micro")
     }
@@ -388,13 +371,7 @@ impl Fixture {
         self.root.join("xdg/data/micro")
     }
 
-    /// The binary run as a machine that has never held a `~/.micro`: nothing names one
-    /// directory, the home directory is empty, and the XDG variables say where each half
-    /// goes.
-    ///
-    /// The credential and the catalog the fixture wrote are put in the configuration half,
-    /// which is where a run that resolves the split correctly will look for them — so a
-    /// request reaching the fake provider is itself the assertion that it did.
+    
     pub fn micro_split(&self) -> Command {
         let home = self.xdg_home();
         let config = self.xdg_config();
@@ -443,13 +420,12 @@ impl Fixture {
             .collect()
     }
 
-    /// The binary, pointed at this fixture and stripped of anything inherited that could
-    /// reach a real provider or a real configuration directory.
+    
     pub fn micro(&self) -> Command {
         let mut command = Command::new(env!("CARGO_BIN_EXE_micro"));
         command.current_dir(self.workspace());
         command.env("MICRO_DIR", self.home());
-        // A stray HOME would let anything that misses MICRO_DIR find the real one.
+        
         command.env("HOME", self.home());
         for leaked in [
             "MICRO_MODEL",
@@ -468,14 +444,14 @@ impl Fixture {
         command
     }
 
-    /// Drive the headless protocol: write these command lines to stdin, and take back
-    /// every line that came out.
+    /// Drive the headless protocol: write these command lines to stdin, and take back every line
+    /// that came out.
     pub fn rpc(&self, commands: &[&str]) -> Vec<Value> {
         use std::process::Stdio;
 
         let mut command = self.micro();
         command.arg("--rpc");
-        // The fixture's own model, so the run reaches the fake provider and not a real one.
+        
         command.args(["-m", "test"]);
         command.stdin(Stdio::piped());
         command.stdout(Stdio::piped());
@@ -488,7 +464,7 @@ impl Fixture {
                 writeln!(stdin, "{line}").expect("a command is written");
             }
         }
-        // Closing stdin is what ends the mode; without it the child waits for more.
+        
         drop(child.stdin.take());
 
         let finished = child.wait_with_output().expect("micro --rpc finishes");
@@ -516,8 +492,8 @@ impl Fixture {
         Output::run(&mut command)
     }
 
-    /// Run one prompt to completion with `--print`, with stdin closed so nothing can be
-    /// mistaken for an approval.
+    /// Run one prompt to completion with `--print`, with stdin closed so nothing can be mistaken
+    /// for an approval.
     pub fn print(&self, arguments: &[&str]) -> Output {
         let mut command = self.micro();
         command.arg("--print");
@@ -540,8 +516,7 @@ pub struct Output {
 }
 
 impl Output {
-    /// Takes the command by reference so `Command::args`, which borrows, chains directly
-    /// into it.
+    /// Takes the command by reference so `Command::args`, which borrows, chains directly into it.
     pub fn run(command: &mut Command) -> Output {
         command.stdin(std::process::Stdio::null());
         let output = command.output().expect("run the micro binary");
@@ -579,8 +554,8 @@ impl Output {
     }
 }
 
-/// The text of every message in a recorded request, joined so a test can look for what it
-/// expects without walking the wire shape.
+/// The text of every message in a recorded request, joined so a test can look for what it expects
+/// without walking the wire shape.
 pub fn transcript(request: &Value) -> String {
     request["messages"].to_string()
 }
@@ -616,8 +591,7 @@ pub fn path_of(fixture: &Fixture, name: &str) -> String {
     fixture.workspace().join(name).display().to_string()
 }
 
-/// A theme file's `colors` block, every token the same color — enough to write a custom
-/// theme a test can look for without spelling out all forty-eight tokens by hand.
+/// A theme file's `colors` block, every token the same color.
 pub fn theme_colors(hex: &str) -> Value {
     Value::Object(
         micro_tui::Theme::TOKEN_NAMES

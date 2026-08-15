@@ -1,9 +1,4 @@
 //! Why a turn paid for a prompt the provider already had.
-//!
-//! A cache miss is normally invisible: the bill is larger and nothing says what moved. The
-//! ledger recorded what each turn opened with and every change to it, so the question is
-//! answerable exactly — which span of the prompt differs, what it used to say, and which
-//! recorded change is responsible.
 
 use crate::CommandContext;
 use crate::CommandOutcome;
@@ -14,15 +9,9 @@ use micro_types::PrefixSpan;
 use std::collections::HashSet;
 
 /// How many message boundaries a provider will hold a cache breakpoint on.
-///
-/// Providers place a small, fixed number of them, and the last ones sit on the most recent
-/// turns; everything before the oldest breakpoint is only reused when nothing in front of
-/// it moved. A turn that added more messages than this since the last request can miss even
-/// with an identical prefix, so it is worth saying so.
 const BREAKPOINT_WINDOW: usize = 2;
 
-/// The most lines of prompt this will compare. Beyond it the comparison is quadratic in
-/// the size of the prompt, which is a bad trade for output nobody would read anyway.
+/// The most lines of prompt this will compare.
 const MAX_DIFF_LINES: usize = 1_000;
 
 #[derive(Clone)]
@@ -59,10 +48,6 @@ pub(crate) async fn command(
 }
 
 /// Why the prefix of one turn was, or was not, the prefix of the turn before it.
-///
-/// `turn` names which one. Without one, the latest completed turn on the current branch
-/// whose prefix differs from its parent is used. What comes back is the whole explanation, so the caller
-/// showing it — a terminal, a subcommand — decides nothing about it.
 pub async fn why_miss(
     store: &SessionStore,
     session_id: &str,
@@ -84,8 +69,7 @@ pub async fn why_miss(
                 prefix_hash,
                 ..
             } => {
-                // A turn re-issued after a transient failure was recorded once per attempt.
-                // The last attempt is the request that stands.
+                
                 let request = Request {
                     turn: *turn,
                     seq: recorded.seq,
@@ -108,10 +92,7 @@ pub async fn why_miss(
     }
 
     if requests.is_empty() {
-        return Err(format!(
-            "session {session_id} recorded no requests. A session written before the ledger \
-             existed holds its conversation and nothing else."
-        ));
+        return Err(format!("session {session_id} has no recorded requests"));
     }
 
     let current_path = loaded.session.tree().path_entry_ids();
@@ -152,7 +133,7 @@ pub async fn why_miss(
     let previous = parent.turn;
     let previous_seq = parent.seq;
     let wanted_seq = request.seq;
-    // Only what happened between the two requests can explain the difference between them.
+    
     let between: Vec<&(u64, LedgerEvent)> = changes
         .iter()
         .filter(|(seq, _)| *seq > previous_seq && *seq < wanted_seq)
@@ -174,8 +155,7 @@ pub async fn why_miss(
     Ok(out)
 }
 
-/// The model request this request continues. Branches are paths through message entry ids,
-/// so the parent is the latest earlier request whose path is a prefix of this one.
+/// The model request this request continues.
 fn parent_of<'a>(requests: &'a [Request], request: &Request) -> Option<&'a Request> {
     requests
         .iter()
@@ -271,11 +251,7 @@ fn moved(
 
     out.push('\n');
     match recorded.as_slice() {
-        [] => out.push_str(
-            "Nothing recorded says why. A change to the prompt or the tools that leaves no \
-             prefix change behind it was made on the way to the provider rather than at a \
-             turn boundary, which is the one thing this cannot account for.\n",
-        ),
+        [] => out.push_str("No recorded event explains the prefix change.\n"),
         recorded => {
             for (seq, reason) in recorded {
                 out.push_str(&format!(
@@ -287,7 +263,7 @@ fn moved(
     }
 }
 
-/// What a recorded reason means, said as a sentence rather than as a tag.
+
 fn said(reason: &str) -> String {
     match reason {
         "reload" => "the project's instructions and skills were read again (reload)".to_string(),
@@ -299,7 +275,7 @@ fn said(reason: &str) -> String {
     }
 }
 
-/// Everything about the conversation, rather than the prefix, that could still cost a hit.
+
 fn tail_reasons(
     previous: u64,
     before: &ReconstructedTurn,
@@ -375,10 +351,6 @@ fn tools_changed(before: &ReconstructedTurn, after: &ReconstructedTurn) -> Strin
 }
 
 /// The one stretch of the prompt that differs, and both sides of it.
-///
-/// Spans tile the prompt exactly, so a stretch can be cut back out of it by adding up the
-/// lengths in front. When the two prompts were not built from the same parts — an extension
-/// replaced one outright — there is no such stretch and the whole prompt is compared.
 fn changed_span(
     before_prompt: &str,
     before_spans: &[PrefixSpan],
@@ -420,7 +392,7 @@ fn changed_span(
     }
 }
 
-/// One span's own text, cut back out of the prompt it was joined into.
+
 fn cut<'a>(prompt: &'a str, spans: &[PrefixSpan], index: usize) -> Option<&'a str> {
     let start: usize = spans[..index].iter().map(|span| span.bytes as usize).sum();
     let end = start + spans[index].bytes as usize;
@@ -428,11 +400,6 @@ fn cut<'a>(prompt: &'a str, spans: &[PrefixSpan], index: usize) -> Option<&'a st
 }
 
 /// A line-by-line comparison, in the shape a patch is read in.
-///
-/// Written here rather than taken from a library because what it has to do is small: two
-/// stretches of a system prompt, compared once, for a person deciding what changed. The
-/// longest common subsequence of the lines is what everything not in it is reported
-/// against.
 fn diff(before: &str, after: &str) -> Vec<String> {
     let had: Vec<&str> = before.lines().collect();
     let has: Vec<&str> = after.lines().collect();
@@ -445,8 +412,7 @@ fn diff(before: &str, after: &str) -> Vec<String> {
         )];
     }
 
-    // The length of the longest common subsequence of every pair of suffixes, filled from
-    // the end so the walk below can always take the larger of the two ways forward.
+    
     let mut common = vec![vec![0u32; has.len() + 1]; had.len() + 1];
     for left in (0..had.len()).rev() {
         for right in (0..has.len()).rev() {
@@ -482,8 +448,7 @@ fn diff(before: &str, after: &str) -> Vec<String> {
     around_the_changes(lines)
 }
 
-/// The changed lines and enough either side to place them, rather than the whole of two
-/// prompts that are mostly the same.
+
 fn around_the_changes(lines: Vec<String>) -> Vec<String> {
     const CONTEXT: usize = 2;
 
@@ -551,8 +516,7 @@ mod tests {
         assert_eq!(lines, vec!["  keep".to_string(), "+ added".to_string()]);
     }
 
-    /// The spans tile the prompt, so the stretch one of them stands for is exactly the
-    /// bytes between what came before it and its own length.
+    /// The spans tile the prompt.
     #[test]
     fn a_span_is_cut_back_out_of_the_prompt_it_was_joined_into() {
         let prompt = "be brief\n\nproject says hello";
@@ -602,8 +566,7 @@ mod tests {
         assert_eq!(has, "\n\nfly");
     }
 
-    /// A prompt something replaced outright is not built from the parts the last one was,
-    /// so there is no one span to point at and the whole thing is compared.
+    /// A prompt something replaced outright is not built from the parts the last one was.
     #[test]
     fn a_prompt_rebuilt_from_different_parts_is_compared_whole() {
         let before = vec![PrefixSpan {

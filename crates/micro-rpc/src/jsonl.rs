@@ -1,27 +1,19 @@
 //! Strict JSON-lines framing.
-//!
-//! Records are separated by `\n` and by nothing else. A JSON string may legally hold
-//! U+2028 and U+2029, and a reader that treats those as line breaks — as several standard
-//! line readers do — will split a record in half and then fail to parse both halves.
 
 use tokio::io::AsyncBufReadExt;
 use tokio::io::AsyncRead;
 use tokio::io::BufReader;
 
-/// One record, ready to write. The trailing newline is the frame.
+/// One record, ready to write.
 pub fn line(value: &impl serde::Serialize) -> String {
     match serde_json::to_string(value) {
         Ok(encoded) => format!("{encoded}\n"),
-        // A value that cannot be encoded is still a record: saying so keeps the stream
-        // parseable, where a silent drop would leave a caller waiting forever.
+        
         Err(error) => format!("{{\"type\":\"error\",\"error\":\"{error}\"}}\n"),
     }
 }
 
 /// Read records off a stream, one line at a time.
-///
-/// A trailing `\r` is taken off, so a caller writing CRLF is understood. Blank lines are
-/// skipped rather than reported as unreadable.
 pub struct Lines<R> {
     reader: BufReader<R>,
     buffer: Vec<u8>,
