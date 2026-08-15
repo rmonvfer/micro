@@ -45,6 +45,10 @@ pub struct Bill {
     pub unmetered: Vec<String>,
     /// Every turn and every compaction, added up.
     pub total: f64,
+    /// Spend on turns whose recorded message path is an ancestor of the current head.
+    pub current_branch_total: f64,
+    /// Attempts that returned no usage and therefore have unknown cost.
+    pub unknown_attempts: Vec<UnknownAttempt>,
     /// Whether this was read from the ledger. A session recorded before the ledger existed
     /// is billed from the answers it kept: turn by turn, and no finer.
     pub from_ledger: bool,
@@ -59,10 +63,19 @@ pub struct TurnBill {
     pub usage: Usage,
     /// What the provider billed, priced against the model's rates. Exact.
     pub cost: RequestCost,
+    /// Whether this turn is on the branch at the session's current head.
+    pub on_current_branch: bool,
     /// What each source contributed to that, adding up to [`RequestCost::total`]. Empty
     /// for a turn nothing was recorded about, which is every turn of a session written
     /// before the ledger existed.
     pub lines: Vec<BillLine>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UnknownAttempt {
+    pub turn: u64,
+    pub attempt: u32,
+    pub error: String,
 }
 
 impl TurnBill {
@@ -110,6 +123,7 @@ pub struct CompactionBill {
     pub model: String,
     pub usage: Usage,
     pub cost: RequestCost,
+    pub on_current_branch: bool,
 }
 
 /// What a session cost, read out of its ledger and priced against the catalog.
@@ -126,6 +140,7 @@ pub async fn bill(
         .await
         .map_err(|error| format!("cannot read session {session_id}: {error}"))?;
     let session = &loaded.session;
+    let current_path = session.tree().path_entry_ids();
 
     // Named rather than positional, because a turn records the entries it was shown by the
     // names the tree gave them.
@@ -139,6 +154,7 @@ pub async fn bill(
     let mut requests: Vec<(u64, Requested)> = Vec::new();
     let mut usages: Vec<(u64, Usage, String, String)> = Vec::new();
     let mut compactions: Vec<CompactionBill> = Vec::new();
+    let mut unknown_attempts = Vec::new();
     let mut reached = 0;
     for recorded in session.events() {
         match &recorded.event {
@@ -175,15 +191,31 @@ pub async fn bill(
                 reached = reached.max(*turn);
                 usages.push((*turn, *usage, provider.clone(), model.clone()));
             }
-            LedgerEvent::Compaction { cost, .. } if cost.usage.total_tokens() > 0 => {
+            LedgerEvent::Compaction {
+                cost,
+                message_entry_ids,
+                ..
+            } if cost.usage.total_tokens() > 0 => {
                 compactions.push(CompactionBill {
                     after_turn: reached,
                     provider: cost.provider.clone(),
                     model: cost.model.clone(),
                     usage: cost.usage,
                     cost: RequestCost::default(),
+                    on_current_branch: message_entry_ids.len() <= current_path.len()
+                        && current_path[..message_entry_ids.len()] == message_entry_ids[..],
                 });
             }
+            LedgerEvent::RequestAttemptFailed {
+                turn,
+                attempt,
+                error,
+                usage_unknown: true,
+            } => unknown_attempts.push(UnknownAttempt {
+                turn: *turn,
+                attempt: *attempt,
+                error: error.clone(),
+            }),
             _ => {}
         }
     }
@@ -210,12 +242,21 @@ pub async fn bill(
             }
             None => Vec::new(),
         };
+        let on_current_branch = match requests.iter().find(|(at, _)| *at == turn) {
+            Some((_, requested)) => {
+                requested.message_entry_ids.len() <= current_path.len()
+                    && current_path[..requested.message_entry_ids.len()]
+                        == requested.message_entry_ids[..]
+            }
+            None => true,
+        };
         turns.push(TurnBill {
             turn,
             provider,
             model,
             usage,
             cost,
+            on_current_branch,
             lines,
         });
     }
@@ -238,6 +279,7 @@ pub async fn bill(
                 model: assistant.model.clone(),
                 usage: assistant.usage,
                 cost: priced.price(counted(assistant.usage)),
+                on_current_branch: true,
                 lines: Vec::new(),
             });
         }
@@ -251,6 +293,16 @@ pub async fn bill(
     let total = turns.iter().map(TurnBill::total).sum::<f64>()
         + compactions
             .iter()
+            .filter(|summarized| summarized.on_current_branch)
+            .map(|summarized| summarized.cost.total())
+            .sum::<f64>();
+    let current_branch_total = turns
+        .iter()
+        .filter(|turn| turn.on_current_branch)
+        .map(TurnBill::total)
+        .sum::<f64>()
+        + compactions
+            .iter()
             .map(|summarized| summarized.cost.total())
             .sum::<f64>();
 
@@ -261,6 +313,8 @@ pub async fn bill(
         turns,
         compactions,
         total,
+        current_branch_total,
+        unknown_attempts,
         from_ledger,
     })
 }
@@ -475,7 +529,7 @@ impl Bill {
     pub fn report(&self) -> String {
         let mut out = format!("Bill for session {}\n", self.session_id);
 
-        if self.turns.is_empty() {
+        if self.turns.is_empty() && self.unknown_attempts.is_empty() {
             out.push_str("\nNothing was billed: no turn of this session reported any usage.\n");
             return out;
         }
@@ -501,7 +555,22 @@ impl Bill {
             out.push_str(&summary_row(summarized));
         }
 
-        out.push_str(&format!("\n{:<44}{}\n", "Total", money(self.total)));
+        out.push_str(&format!("\n{:<44}{}\n", "Total session cost", money(self.total)));
+        if (self.total - self.current_branch_total).abs() > f64::EPSILON {
+            out.push_str(&format!(
+                "{:<44}{}\n{:<44}{}\n",
+                "Current branch",
+                money(self.current_branch_total),
+                "Other branches",
+                money(self.total - self.current_branch_total),
+            ));
+        }
+        for attempt in &self.unknown_attempts {
+            out.push_str(&format!(
+                "turn {} attempt {}: usage unknown ({})\n",
+                attempt.turn, attempt.attempt, attempt.error
+            ));
+        }
         out.push_str(&format!("\n{}\n", self.tokens()));
 
         // Two ways a bill comes to nothing, and they are not the same answer, so a zero on
@@ -769,10 +838,10 @@ pub(crate) async fn command(
     };
     match turn {
         Some(turn) => match billed.added_by(turn) {
-            Ok(report) => CommandOutcome::info(report),
+            Ok(report) => CommandOutcome::inspect("Session bill", report),
             Err(reason) => CommandOutcome::error(reason),
         },
-        None => CommandOutcome::info(billed.report()),
+        None => CommandOutcome::inspect("Session bill", billed.report()),
     }
 }
 
@@ -846,6 +915,7 @@ mod tests {
                 model: "test-model".into(),
                 prefix_hash: "aa".into(),
                 request_hash: "bb".into(),
+                request_body_blob: None,
                 system_prompt_blob: None,
                 tools_blob,
                 model_blob: "cc".into(),

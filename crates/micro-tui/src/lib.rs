@@ -696,6 +696,7 @@ async fn submit(
             terminal_input,
             host_asker,
             remote,
+            None,
             prompt,
         )
         .await;
@@ -722,6 +723,7 @@ async fn submit(
                 terminal_input,
                 host_asker,
                 remote,
+                Some(commands),
                 prompt,
             )
             .await
@@ -740,6 +742,7 @@ async fn submit(
                 terminal_input,
                 host_asker,
                 remote,
+                Some(commands),
                 prompt,
             )
             .await
@@ -844,6 +847,7 @@ async fn apply_outcome(
 ) -> Result<()> {
     match outcome {
         CommandOutcome::Message { kind, text } => app.notice(text, kind),
+        CommandOutcome::Inspect { title, text } => app.open_inspection(title, text),
         CommandOutcome::Quit => app.should_quit = true,
         CommandOutcome::Choose(picker) => {
             // A list of models is drawn from what is already known and asked about at the
@@ -1111,6 +1115,7 @@ async fn run_turn(
     terminal_input: &Option<crate::ui::TerminalInputAsker>,
     host_asker: &Option<crate::ui::HostAsker>,
     remote: &mut Option<crate::remote::Remote>,
+    mut commands: Option<&mut (dyn Commands + 'static)>,
     prompt: Message,
 ) -> Result<()> {
     // The phone shows a stop button in place of a send button while a turn runs, and
@@ -1232,6 +1237,9 @@ async fn run_turn(
         app.apply_event(event);
     }
     app.finish_turn(aborted);
+    if let Some(commands) = commands.as_mut() {
+        app.set_session_cost(commands.session_cost().await);
+    }
     report_progress(progress, false);
     Ok(())
 }

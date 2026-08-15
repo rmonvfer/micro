@@ -862,10 +862,9 @@ impl Agent {
 
     /// Record the request about to go out: what identifies it, and what it was built from.
     ///
-    /// The body itself is not recorded — it is the hash that identifies it, and the
-    /// prompt, the tools and the model that rebuild it. Those three are named by hash and
-    /// carried along the first time each is seen, which is what keeps a hundred turns of
-    /// the same prompt to one copy on disk.
+    /// The exact serialized body is retained beside the prompt, tools, and model that
+    /// explain it. Every blob is named by its hash and carried only the first time it is
+    /// seen, so repeated prefixes do not multiply storage.
     fn record_request(&mut self, context: &Context, attempt: u32) {
         if self.recorder.is_none() {
             return;
@@ -894,6 +893,7 @@ impl Agent {
             .map(|prompt| self.blob(&mut blobs, prompt.as_bytes()));
         let tools_blob = self.blob(&mut blobs, &tools);
         let model_blob = self.blob(&mut blobs, &described);
+        let request_body_blob = Some(self.blob(&mut blobs, &body));
 
         let event = LedgerEvent::TurnRequest {
             turn: self.turn,
@@ -901,6 +901,7 @@ impl Agent {
             model: self.model.id.clone(),
             prefix_hash: sent.hash().to_string(),
             request_hash: content_hash(&body),
+            request_body_blob,
             system_prompt_blob,
             tools_blob,
             model_blob,
@@ -1375,6 +1376,12 @@ impl Agent {
                     return message;
                 }
                 Err(error) => {
+                    self.record_event(LedgerEvent::RequestAttemptFailed {
+                        turn,
+                        attempt,
+                        error: error.clone(),
+                        usage_unknown: true,
+                    });
                     let retryable =
                         !emitted_content && attempt < MAX_ATTEMPTS && is_retryable(&error);
 

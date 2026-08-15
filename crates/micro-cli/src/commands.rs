@@ -797,6 +797,13 @@ impl CliCommands {
 
 #[async_trait]
 impl Commands for CliCommands {
+    async fn session_cost(&mut self) -> Option<f64> {
+        micro_commands::bill(&self.sessions, &self.catalog, &self.session_id)
+            .await
+            .ok()
+            .map(|bill| bill.total)
+    }
+
     /// What the user typed, before anything is done with it. An extension may rewrite it,
     /// or swallow it by answering that it handled it.
     ///

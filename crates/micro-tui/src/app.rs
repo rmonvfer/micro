@@ -111,6 +111,8 @@ pub struct TuiOptions {
     pub auto_compact: bool,
     /// What the model charges, for the session's running cost.
     pub price: Option<micro_models::ModelCost>,
+    /// Durable cost read from the session ledger.
+    pub session_cost: Option<f64>,
     /// Whether this run has experimental behavior turned on, which is worth showing
     /// because it changes what micro does.
     pub experimental: bool,
@@ -154,6 +156,7 @@ impl Default for TuiOptions {
             subscription: false,
             auto_compact: true,
             price: None,
+            session_cost: None,
             experimental: false,
             tui_mode: Default::default(),
             resources: Default::default(),
@@ -318,6 +321,7 @@ pub struct App {
     pub provider: String,
     /// What a million tokens costs, for the running total. Absent when nothing is charged.
     pub price: Option<micro_models::ModelCost>,
+    session_cost: Option<f64>,
     /// Images taken off the clipboard, riding with the next prompt.
     attachments: Vec<ContentBlock>,
     /// The tool result the reader has selected, as an index into the transcript.
@@ -385,6 +389,8 @@ pub struct App {
     /// A live component shown with keyboard focus, from `custom()`. `None` when nothing is
     /// open this way.
     component_overlay: Option<ComponentOverlay>,
+    /// A local, read-only ledger view opened by `/bill`, `/why-miss`, or `/request`.
+    inspection: Option<InspectionOverlay>,
     /// The component `setEditorComponent` replaced the built-in editor with, and what it
     /// last looked like. `None` is the built-in editor.
     editor_component: Option<ComponentOverlay>,
@@ -449,6 +455,13 @@ pub struct CompletionRequest {
 struct ComponentOverlay {
     component_id: String,
     lines: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct InspectionOverlay {
+    title: String,
+    text: String,
+    scroll: usize,
 }
 
 /// A real [`Editor`] shown for an extension's `editor()`, unlike [`ComponentOverlay`] — there
@@ -633,6 +646,7 @@ impl App {
             auto_compact: options.auto_compact,
             provider: options.provider,
             price: options.price,
+            session_cost: options.session_cost,
             attachments: Vec::new(),
             focus: None,
             scroll: 0,
@@ -667,6 +681,7 @@ impl App {
             drawn: Drawn::default(),
             retired_tools: Vec::new(),
             component_overlay: None,
+            inspection: None,
             editor_component: None,
             self_framed_tools,
             extension_editor: None,
@@ -842,6 +857,7 @@ impl App {
         self.key_prompt.is_some()
             || self.picker.is_some()
             || self.component_overlay.is_some()
+            || self.inspection.is_some()
             || self.extension_editor.is_some()
     }
 
@@ -978,6 +994,20 @@ impl App {
             .map(|overlay| overlay.lines.as_slice())
     }
 
+    pub fn inspection(&self) -> Option<(&str, &str, usize)> {
+        self.inspection
+            .as_ref()
+            .map(|overlay| (overlay.title.as_str(), overlay.text.as_str(), overlay.scroll))
+    }
+
+    pub fn open_inspection(&mut self, title: String, text: String) {
+        self.inspection = Some(InspectionOverlay {
+            title,
+            text,
+            scroll: 0,
+        });
+    }
+
     /// Redraw the open `custom()` overlay with what its component looked like after
     /// handling a key. A stale answer for an overlay that has since closed changes nothing.
     pub fn set_component_overlay_lines(&mut self, component_id: &str, lines: Vec<String>) {
@@ -1089,26 +1119,13 @@ impl App {
         self.picker.as_mut()
     }
 
-    /// What the session has cost so far, priced against the model it is running.
-    ///
-    /// Absent when there is no price to apply, which is what a subscription-backed
-    /// provider reports.
+    /// What the persisted ledger says the complete session has cost so far.
     pub fn session_cost(&self) -> Option<f64> {
-        let price = self.price.as_ref()?;
-        if price.is_free() {
-            return None;
-        }
-        let total = self.transcript.total_usage();
-        Some(
-            price
-                .price(micro_models::TokenUsage {
-                    input: total.input as u64,
-                    output: total.output as u64,
-                    cache_read: total.cache_read as u64,
-                    cache_write: total.cache_write as u64,
-                })
-                .total(),
-        )
+        self.session_cost
+    }
+
+    pub fn set_session_cost(&mut self, cost: Option<f64>) {
+        self.session_cost = cost;
     }
 
     /// The provider to name in the footer, which is nothing when the model already says
@@ -1929,6 +1946,9 @@ impl App {
         if self.component_overlay.is_some() {
             return self.handle_component_overlay(action);
         }
+        if self.inspection.is_some() {
+            return self.handle_inspection(action);
+        }
         if self.extension_editor.is_some() {
             return self.handle_extension_editor(action);
         }
@@ -2477,6 +2497,31 @@ impl App {
             Action::QuitOrDelete => Outcome::Quit,
             _ => Outcome::Handled,
         }
+    }
+
+    fn handle_inspection(&mut self, action: Action) -> Outcome {
+        if matches!(action, Action::Cancel | Action::Interrupt) {
+            self.inspection = None;
+            return Outcome::Handled;
+        }
+        if matches!(action, Action::QuitOrDelete) {
+            return Outcome::Quit;
+        }
+        let page = self.rows as usize / 2;
+        let Some(overlay) = self.inspection.as_mut() else {
+            return Outcome::Handled;
+        };
+        match action {
+            Action::MoveUp | Action::ScrollUp => overlay.scroll = overlay.scroll.saturating_sub(1),
+            Action::MoveDown | Action::ScrollDown => {
+                overlay.scroll = overlay.scroll.saturating_add(1)
+            }
+            Action::PageUp => overlay.scroll = overlay.scroll.saturating_sub(page),
+            Action::PageDown => overlay.scroll = overlay.scroll.saturating_add(page),
+            Action::MoveLineStart => overlay.scroll = 0,
+            _ => {}
+        }
+        Outcome::Handled
     }
 
     /// Drive an extension's `editor()` overlay. Unlike a `custom()` component this is a real

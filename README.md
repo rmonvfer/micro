@@ -77,7 +77,9 @@ micro bill <SESSION_ID>
 micro why-miss <SESSION_ID> 4
 ```
 
-`--raw` rebuilds the provider request from the recorded data and checks it against the stored request hash before printing it.
+New sessions retain the serialized provider request as a content-addressed blob. `--raw` verifies that body against the recorded hash before printing it. Older sessions are reconstructed and printed only when reconstruction produces the same hash.
+
+Inside the TUI, `/bill`, `/why-miss [turn]`, and `/request <turn> [--raw]` open local inspection views. They do not add messages to the conversation.
 
 ## Command sandbox
 

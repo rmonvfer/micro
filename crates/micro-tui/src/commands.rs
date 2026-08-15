@@ -108,6 +108,11 @@ pub struct Listings {
 /// credentials, the session log and the conversation these outcomes change.
 #[async_trait]
 pub trait Commands: Send {
+    /// Re-read the complete session cost from the persisted ledger.
+    async fn session_cost(&mut self) -> Option<f64> {
+        None
+    }
+
     /// Tell whatever is listening what the user typed, before anything is done with it.
     ///
     /// The line comes back, possibly changed: an extension may rewrite what was submitted,

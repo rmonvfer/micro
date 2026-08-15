@@ -59,9 +59,8 @@ pub trait Provider: Send + Sync {
     /// The body [`Provider::stream`] would send for this model and this context.
     ///
     /// The same assembly the request itself goes through, so what comes back is what the
-    /// service is told rather than a description of it. That is what lets a session record
-    /// a request by its hash and rebuild it afterwards without storing a copy of every
-    /// body it ever sent.
+    /// service is told rather than a description of it. The agent serializes and retains
+    /// this value at the provider boundary before calling `stream`.
     ///
     /// A body that cannot be assembled — a tool schema the service would refuse — is
     /// answered as null rather than as an error: this is a reading of the request, and the

@@ -11,6 +11,7 @@ use micro_session::ReconstructedTurn;
 use micro_session::SessionStore;
 use micro_types::LedgerEvent;
 use micro_types::PrefixSpan;
+use std::collections::HashSet;
 
 /// How many message boundaries a provider will hold a cache breakpoint on.
 ///
@@ -23,6 +24,14 @@ const BREAKPOINT_WINDOW: usize = 2;
 /// The most lines of prompt this will compare. Beyond it the comparison is quadratic in
 /// the size of the prompt, which is a bad trade for output nobody would read anyway.
 const MAX_DIFF_LINES: usize = 1_000;
+
+#[derive(Clone)]
+struct Request {
+    turn: u64,
+    seq: u64,
+    path: Vec<String>,
+    prefix_hash: String,
+}
 
 /// `/why-miss [turn]`.
 pub(crate) async fn command(
@@ -44,15 +53,15 @@ pub(crate) async fn command(
     };
 
     match why_miss(context.sessions, session_id, turn).await {
-        Ok(explanation) => CommandOutcome::info(explanation),
+        Ok(explanation) => CommandOutcome::inspect("Cache diagnosis", explanation),
         Err(reason) => CommandOutcome::error(reason),
     }
 }
 
 /// Why the prefix of one turn was, or was not, the prefix of the turn before it.
 ///
-/// `turn` names which one; the latest recorded turn is the one asked about when nothing
-/// does. What comes back is the whole explanation as it should be read, so the caller
+/// `turn` names which one. Without one, the latest completed turn on the current branch
+/// whose prefix differs from its parent is used. What comes back is the whole explanation, so the caller
 /// showing it — a terminal, a subcommand — decides nothing about it.
 pub async fn why_miss(
     store: &SessionStore,
@@ -64,17 +73,32 @@ pub async fn why_miss(
         .await
         .map_err(|error| format!("cannot read session {session_id}: {error}"))?;
 
-    let mut requests: Vec<(u64, u64)> = Vec::new();
+    let mut requests: Vec<Request> = Vec::new();
     let mut changes: Vec<(u64, LedgerEvent)> = Vec::new();
+    let mut completed = HashSet::new();
     for recorded in loaded.session.events() {
         match &recorded.event {
-            LedgerEvent::TurnRequest { turn, .. } => {
+            LedgerEvent::TurnRequest {
+                turn,
+                message_entry_ids,
+                prefix_hash,
+                ..
+            } => {
                 // A turn re-issued after a transient failure was recorded once per attempt.
                 // The last attempt is the request that stands.
-                match requests.last_mut().filter(|(last, _)| last == turn) {
-                    Some(last) => last.1 = recorded.seq,
-                    None => requests.push((*turn, recorded.seq)),
+                let request = Request {
+                    turn: *turn,
+                    seq: recorded.seq,
+                    path: message_entry_ids.clone(),
+                    prefix_hash: prefix_hash.clone(),
+                };
+                match requests.iter_mut().find(|known| known.turn == *turn) {
+                    Some(known) => *known = request,
+                    None => requests.push(request),
                 }
+            }
+            LedgerEvent::TurnUsage { turn, .. } => {
+                completed.insert(*turn);
             }
             LedgerEvent::PrefixChanged { .. }
             | LedgerEvent::Compaction { .. }
@@ -90,21 +114,44 @@ pub async fn why_miss(
         ));
     }
 
-    let wanted = turn.unwrap_or_else(|| requests[requests.len() - 1].0);
-    let Some(position) = requests.iter().position(|(turn, _)| *turn == wanted) else {
+    let current_path = loaded.session.tree().path_entry_ids();
+    let wanted = match turn {
+        Some(turn) => turn,
+        None => requests
+            .iter()
+            .filter(|request| {
+                path_is_prefix(&request.path, &current_path) && completed.contains(&request.turn)
+            })
+            .rev()
+            .find(|request| {
+                parent_of(&requests, request)
+                    .is_some_and(|parent| parent.prefix_hash != request.prefix_hash)
+            })
+            .or_else(|| {
+                requests.iter().rev().find(|request| {
+                    path_is_prefix(&request.path, &current_path)
+                        && completed.contains(&request.turn)
+                })
+            })
+            .map(|request| request.turn)
+            .ok_or_else(|| format!("session {session_id} has no completed turn on this branch"))?,
+    };
+    let Some(request) = requests.iter().find(|request| request.turn == wanted) else {
         return Err(format!("session {session_id} has no turn {wanted}"));
     };
 
     let mut out = format!("session {session_id}  turn {wanted}\n\n");
 
-    let Some((previous, previous_seq)) = requests.get(position.wrapping_sub(1)).copied() else {
+    let Some(parent) = parent_of(&requests, request) else {
         out.push_str(
             "This is the session's first request, so there was nothing cached to reuse. The \
              prompt it sent is what every later turn is compared against.\n",
         );
         return Ok(out);
     };
-    let (_, wanted_seq) = requests[position];
+    let previous = parent.turn;
+    let previous_seq = parent.seq;
+    let wanted_seq = request.seq;
     // Only what happened between the two requests can explain the difference between them.
     let between: Vec<&(u64, LedgerEvent)> = changes
         .iter()
@@ -125,6 +172,23 @@ pub async fn why_miss(
         false => moved(&mut out, wanted, previous, &before, &after, &between),
     }
     Ok(out)
+}
+
+/// The model request this request continues. Branches are paths through message entry ids,
+/// so the parent is the latest earlier request whose path is a prefix of this one.
+fn parent_of<'a>(requests: &'a [Request], request: &Request) -> Option<&'a Request> {
+    requests
+        .iter()
+        .filter(|candidate| {
+            candidate.turn != request.turn
+                && candidate.seq < request.seq
+                && path_is_prefix(&candidate.path, &request.path)
+        })
+        .max_by_key(|candidate| (candidate.path.len(), candidate.seq))
+}
+
+fn path_is_prefix(ancestor: &[String], descendant: &[String]) -> bool {
+    ancestor.len() <= descendant.len() && descendant[..ancestor.len()] == ancestor[..]
 }
 
 /// The report for a turn whose prefix was byte for byte the one before it.
@@ -215,7 +279,7 @@ fn moved(
         recorded => {
             for (seq, reason) in recorded {
                 out.push_str(&format!(
-                    "The cache broke because {}, recorded at seq {seq}.\n",
+                    "The prefix changed because {}, recorded at seq {seq}.\n",
                     said(reason)
                 ));
             }

@@ -34,6 +34,44 @@ const NARROW: usize = 40;
 /// A detail shorter than this says nothing, so it is left off.
 const MIN_DETAIL: usize = 10;
 
+pub fn inspection_lines(
+    title: &str,
+    text: &str,
+    scroll: usize,
+    theme: &Theme,
+    width: usize,
+    budget: usize,
+) -> Vec<Line<'static>> {
+    let mut body = Vec::new();
+    for source in text.lines() {
+        body.extend(wrap_spans(
+            &[
+                Span::raw("  "),
+                Span::styled(source.to_string(), theme.body()),
+            ],
+            width,
+            2,
+        ));
+    }
+    let body_height = budget.saturating_sub(3).max(1);
+    let first = scroll.min(body.len().saturating_sub(body_height));
+    let mut out = vec![
+        Line::from(vec![
+            Span::raw("  "),
+            Span::styled(
+                title.to_string(),
+                Style::new().fg(theme.accent).add_modifier(Modifier::BOLD),
+            ),
+        ]),
+        Line::default(),
+    ];
+    out.extend(body.into_iter().skip(first).take(body_height));
+    out.push(hint("↑↓ scroll · esc close", theme));
+    out.into_iter()
+        .map(|line| tint(line, width, theme.surface))
+        .collect()
+}
+
 pub fn picker_lines(
     picker: &Picker,
     theme: &Theme,
