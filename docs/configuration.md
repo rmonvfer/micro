@@ -168,6 +168,20 @@ The default is 15. Zero describes every tool however many there are. The built-i
 always described, since deferring those would cost a search before the model could read a
 file.
 
+## sandbox
+
+What the commands a session runs are allowed to touch: `read-only`, `workspace-write`, or
+`full`. The default is `workspace-write` — the workspace is writable, nothing else is, and
+the network is off.
+
+```json
+{ "sandbox": "workspace-write" }
+```
+
+A project can settle it for its own sessions in `.micro/settings.json`, once the project has
+been trusted, and `--sandbox` on the command line beats both. `docs/sandbox.md` describes
+what each policy enforces, on which platforms, and how to check it.
+
 ## sessions/
 
 One conversation per session, as two files: a JSONL log with one serialized message per

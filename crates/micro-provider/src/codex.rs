@@ -208,9 +208,12 @@ async fn run(
     // an API key and asks for nothing else.
     let request = match backend {
         Backend::ChatGpt => {
-            // One id for the request, sent as both the session and the client request id,
-            // which is what lets the backend tie a retry to the attempt it repeats.
-            let request_id = format!("micro-{}", now_ms());
+            // The conversation's own name, sent as both the session and the client request
+            // id. The backend routes by it, and a cached prompt lives wherever the last
+            // request under that name landed — so a name minted per request would send
+            // every turn somewhere that has never seen this conversation and pay for the
+            // whole prompt again. Every turn of one session carries one name.
+            let request_id = session_name(context.cache_key.as_deref());
             request
                 .header("chatgpt-account-id", account_id(&api_key)?)
                 .header("originator", "micro")
@@ -366,6 +369,36 @@ fn user_agent() -> String {
         std::env::consts::OS,
         std::env::consts::ARCH
     )
+}
+
+/// What this conversation is called on the wire.
+///
+/// The name a session gives itself, where it gave one. A request made outside any session
+/// falls back to a name minted once for the whole process, so several turns of one run
+/// still land together rather than scattering across whatever the backend has warm.
+/// Punctuation a header cannot carry is folded to a dash, since a name the request cannot
+/// be sent with is worse than an approximate one.
+fn session_name(cache_key: Option<&str>) -> String {
+    static PROCESS: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+
+    let named = match cache_key.filter(|key| !key.is_empty()) {
+        Some(key) => key.to_string(),
+        None => {
+            return PROCESS
+                .get_or_init(|| format!("micro-{}", now_ms()))
+                .clone()
+        }
+    };
+    let safe: String = named
+        .chars()
+        .map(
+            |character| match character.is_ascii_alphanumeric() || character == '_' {
+                true => character,
+                false => '-',
+            },
+        )
+        .collect();
+    format!("micro-{safe}")
 }
 
 /// The account a subscription token belongs to, read from the token's own claims.

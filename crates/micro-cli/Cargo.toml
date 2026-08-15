@@ -20,6 +20,7 @@ micro-models = { workspace = true }
 micro-provider = { workspace = true }
 micro-remote = { workspace = true }
 micro-rpc = { workspace = true }
+micro-sandbox = { workspace = true }
 micro-session = { workspace = true }
 micro-skills = { workspace = true }
 micro-prompts = { workspace = true }

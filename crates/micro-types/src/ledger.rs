@@ -86,7 +86,17 @@ pub enum LedgerEvent {
         model: String,
     },
     /// A stretch of the conversation replaced by a summary of it.
-    Compaction { summary_blob: String, kept: usize },
+    ///
+    /// Summarizing is itself a request to a model, so it has a price, and it is the one
+    /// request a session makes that nobody asked for. It is recorded here rather than as a
+    /// turn of its own: a turn is what the conversation moved forward by, and this moved it
+    /// backwards to make room.
+    Compaction {
+        summary_blob: String,
+        kept: usize,
+        #[serde(default)]
+        cost: CompactionCost,
+    },
     /// The conversation now continues from a different entry.
     HeadMoved { entry_id: String },
     /// A tool call something watching the run would not let happen. The model was told,
@@ -134,6 +144,22 @@ pub enum LedgerEvent {
     /// corrupt and dropping everything on it.
     #[serde(other)]
     Unknown,
+}
+
+/// What writing a summary cost, as the provider that wrote it reported.
+///
+/// Zero for a summary that took no request to produce, which is what a caller supplying its
+/// own summarizer does. Carried apart from the usage of the turns around it so a bill can
+/// show compaction as its own line: it is spending the user did not ask for, and hiding it
+/// inside the turn that triggered it would make it unaccountable.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct CompactionCost {
+    #[serde(default)]
+    pub usage: Usage,
+    #[serde(default)]
+    pub provider: String,
+    #[serde(default)]
+    pub model: String,
 }
 
 /// One stretch of the system prompt, and where it came from.
@@ -329,6 +355,16 @@ mod tests {
             LedgerEvent::Compaction {
                 summary_blob: "aa".into(),
                 kept: 4,
+                cost: CompactionCost {
+                    usage: Usage {
+                        input: 900,
+                        output: 120,
+                        cache_read: 0,
+                        cache_write: 0,
+                    },
+                    provider: "anthropic".into(),
+                    model: "claude-opus-5".into(),
+                },
             },
             LedgerEvent::HeadMoved {
                 entry_id: "3".into(),
@@ -374,6 +410,21 @@ mod tests {
                 "round trip of {encoded}"
             );
         }
+    }
+
+    /// A compaction recorded before anyone priced one says nothing about what it cost,
+    /// which reads back as having cost nothing rather than as an unreadable line.
+    #[test]
+    fn a_compaction_recorded_without_a_price_still_reads() {
+        let line = r#"{"type":"compaction","summary_blob":"aa","kept":4}"#;
+        assert_eq!(
+            serde_json::from_str::<LedgerEvent>(line).unwrap(),
+            LedgerEvent::Compaction {
+                summary_blob: "aa".into(),
+                kept: 4,
+                cost: CompactionCost::default(),
+            }
+        );
     }
 
     /// A log written by a later build carries kinds this one has never seen. Reading one

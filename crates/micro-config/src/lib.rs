@@ -34,7 +34,11 @@ pub const FILE_NAME: &str = "config.json";
 pub const MICRO_DIR_ENV: &str = "MICRO_DIR";
 
 pub mod assignments;
+mod project;
 mod trust;
+
+pub use project::ProjectConfig;
+pub use project::PROJECT_SETTINGS_FILE;
 
 pub use trust::requires_decision;
 pub use trust::ProjectTrust;
@@ -311,6 +315,13 @@ pub struct Config {
     /// How the ChatGPT Codex backend should answer: `sse`, or `auto` to let it decide.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub transport: Option<String>,
+    /// What the commands a session runs are confined to: `read-only`, `workspace-write`,
+    /// or `full`, or a table spelling out what `workspace-write` grants beyond the
+    /// default. Held as it was written — what a policy means is the sandbox's business,
+    /// not this crate's, and a setting this crate had to understand to carry would be one
+    /// more place for the two to disagree.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sandbox: Option<Value>,
     /// Extensions to load beyond the ones found in the project and the home directory.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub extensions: Option<Vec<String>>,
@@ -373,6 +384,10 @@ pub struct Settings {
     pub tool_search_threshold: usize,
     pub anthropic_extra_usage: bool,
     pub transport: String,
+    /// The sandbox policy the user settled on, if they settled on one. Left unresolved
+    /// rather than defaulted, because a project of its own gets a say between this and the
+    /// default and could not be given one if the two had already been merged.
+    pub sandbox: Option<Value>,
     pub extensions: Vec<String>,
 }
 
@@ -434,6 +449,7 @@ impl Default for Settings {
             tool_search_threshold: 15,
             anthropic_extra_usage: true,
             transport: DEFAULT_TRANSPORT.to_string(),
+            sandbox: None,
             extensions: Vec::new(),
         }
     }
@@ -637,6 +653,11 @@ impl Config {
                 .anthropic_extra_usage
                 .unwrap_or(defaults.anthropic_extra_usage),
             transport: self.transport.clone().unwrap_or(defaults.transport),
+            // Nothing in the environment sets this. `MICRO_SANDBOX` already means
+            // something else — it is what a confined command reads to learn it is confined
+            // — and a variable that both announces a sandbox and asks for one would let a
+            // sandboxed run of micro reconfigure the sandbox it is inside.
+            sandbox: self.sandbox.clone().or(defaults.sandbox),
             extensions: self.extensions.clone().unwrap_or(defaults.extensions),
         })
     }
@@ -686,6 +707,7 @@ impl Config {
             tool_search_threshold: take(&mut fields, "tool_search_threshold", path)?,
             anthropic_extra_usage: take(&mut fields, "anthropic_extra_usage", path)?,
             transport: take(&mut fields, "transport", path)?,
+            sandbox: take(&mut fields, "sandbox", path)?,
             extensions: take(&mut fields, "extensions", path)?,
             extra: fields,
         };
@@ -914,6 +936,29 @@ mod tests {
         assert_eq!(config.theme.as_deref(), Some("light"));
         assert_eq!(config.live_models, Some(true));
         assert!(config.extra.is_empty());
+    }
+
+    /// The policy a user settled on is carried through as it was written, and left
+    /// unresolved: a project of its own gets a say between this and the default.
+    #[test]
+    fn a_settled_sandbox_policy_survives_resolution() {
+        let path = scratch("sandbox").join("config.json");
+        fs::write(&path, r#"{"sandbox": "read-only"}"#).unwrap();
+
+        let config = Config::load_from(&path).unwrap();
+        assert_eq!(config.sandbox, Some(Value::from("read-only")));
+        assert!(config.extra.is_empty(), "it is a key this build knows");
+
+        let settings = config.resolve(&Overrides::default(), |_| None).unwrap();
+        assert_eq!(settings.sandbox, Some(Value::from("read-only")));
+        assert_eq!(
+            Config::default()
+                .resolve(&Overrides::default(), |_| None)
+                .unwrap()
+                .sandbox,
+            None,
+            "nobody having said anything is not the same as having said the default"
+        );
     }
 
     #[test]

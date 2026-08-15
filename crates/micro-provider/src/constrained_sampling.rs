@@ -60,9 +60,10 @@ fn is_structured_schema(schema: &Value) -> bool {
     let names_type = |value: &Value| -> bool {
         match value {
             Value::String(name) => name == "object" || name == "array",
-            Value::Array(items) => items
-                .iter()
-                .any(|item| item.as_str().is_some_and(|name| name == "object" || name == "array")),
+            Value::Array(items) => items.iter().any(|item| {
+                item.as_str()
+                    .is_some_and(|name| name == "object" || name == "array")
+            }),
             _ => false,
         }
     };
@@ -145,7 +146,9 @@ fn make_node_strict(schema: &mut Value) -> Result<(), String> {
 
     match object.get("additionalProperties") {
         None | Some(Value::Bool(false)) => {}
-        Some(_) => return Err("schema-valued or true additionalProperties is unsupported".to_string()),
+        Some(_) => {
+            return Err("schema-valued or true additionalProperties is unsupported".to_string())
+        }
     }
     if let Some(properties) = object.get("properties") {
         if !properties.is_object() {
@@ -250,7 +253,10 @@ pub fn resolve_json_schema_strict_sampling(
 /// The parameter schema to send for a tool, given what [`resolve_json_schema_strict_sampling`]
 /// decided: the strict rewrite when it resolved to `true`, the schema exactly as the tool
 /// wrote it otherwise.
-pub fn json_schema_tool_parameters(tool: &ToolDefinition, strict: Option<bool>) -> Result<Value, String> {
+pub fn json_schema_tool_parameters(
+    tool: &ToolDefinition,
+    strict: Option<bool>,
+) -> Result<Value, String> {
     match strict {
         Some(true) => make_strict_json_schema(&tool.parameters),
         _ => Ok(tool.parameters.clone()),
@@ -263,7 +269,10 @@ mod tests {
     use micro_types::GrammarVariants;
     use serde_json::json;
 
-    fn tool(parameters: Value, constrained_sampling: Option<ConstrainedSampling>) -> ToolDefinition {
+    fn tool(
+        parameters: Value,
+        constrained_sampling: Option<ConstrainedSampling>,
+    ) -> ToolDefinition {
         ToolDefinition {
             name: "grep".to_string(),
             description: "search".to_string(),
@@ -317,7 +326,10 @@ mod tests {
 
         let strict = make_strict_json_schema(&schema).unwrap();
 
-        assert_eq!(strict["properties"]["note"], json!({ "type": ["string", "null"] }));
+        assert_eq!(
+            strict["properties"]["note"],
+            json!({ "type": ["string", "null"] })
+        );
     }
 
     #[test]
@@ -336,7 +348,10 @@ mod tests {
 
         let strict = make_strict_json_schema(&schema).unwrap();
 
-        assert_eq!(strict["properties"]["target"]["additionalProperties"], json!(false));
+        assert_eq!(
+            strict["properties"]["target"]["additionalProperties"],
+            json!(false)
+        );
     }
 
     #[test]
@@ -378,7 +393,10 @@ mod tests {
                 },
             }),
         );
-        assert_eq!(resolve_json_schema_strict_sampling(&grammar, true), Ok(None));
+        assert_eq!(
+            resolve_json_schema_strict_sampling(&grammar, true),
+            Ok(None)
+        );
     }
 
     #[test]
@@ -420,7 +438,10 @@ mod tests {
                 strict: JsonSchemaStrictness::Prefer,
             }),
         );
-        assert_eq!(resolve_json_schema_strict_sampling(&prefer, false), Ok(None));
+        assert_eq!(
+            resolve_json_schema_strict_sampling(&prefer, false),
+            Ok(None)
+        );
     }
 
     #[test]

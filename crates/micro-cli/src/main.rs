@@ -6,6 +6,7 @@ mod extensions;
 mod headless;
 mod remote;
 mod runtime;
+mod sandbox;
 mod share;
 mod subcommands;
 
@@ -114,6 +115,10 @@ struct Cli {
     #[arg(long = "no-approve", conflicts_with = "approve")]
     no_approve: bool,
 
+    /// What commands may touch: read-only, workspace-write, or full.
+    #[arg(long = "sandbox", value_name = "POLICY")]
+    sandbox: Option<String>,
+
     /// Set one config value for this run: `-c theme=dracula`, `-c show_images=false`.
     ///
     /// The key is a dotted path into the config file. Repeat the flag for more than one.
@@ -164,6 +169,31 @@ enum Command {
     Sessions {
         #[command(subcommand)]
         action: Option<SessionAction>,
+    },
+    /// Say why a turn paid for a prompt the provider already had.
+    WhyMiss {
+        /// The session to explain.
+        session: String,
+        /// Which turn, rather than the most recent one.
+        turn: Option<u64>,
+    },
+    /// Try the sandbox out.
+    Sandbox {
+        #[command(subcommand)]
+        action: SandboxAction,
+    },
+}
+
+#[derive(Subcommand)]
+enum SandboxAction {
+    /// Run a command the way a session's own tools would, and say what became of it.
+    Try {
+        /// The policy to try, in place of the one this workspace would run under.
+        #[arg(long = "sandbox", value_name = "POLICY")]
+        sandbox: Option<String>,
+        /// The command to run, after `--`.
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true, required = true)]
+        command: Vec<String>,
     },
 }
 
@@ -345,8 +375,46 @@ fn own_flags() -> (Vec<String>, Vec<String>) {
     (switches, valued)
 }
 
+/// What a user settled once and left alone. A command-line argument still wins, which is
+/// what `resolve_from_env` layers for us.
+fn settled(cli: &Cli) -> micro_config::Settings {
+    micro_config::Config::load_with(&cli.config_override)
+        .and_then(|config| {
+            config.resolve_from_env(&micro_config::Overrides {
+                model: cli.model.clone(),
+                provider: cli.provider.clone(),
+                ..micro_config::Overrides::default()
+            })
+        })
+        .unwrap_or_else(|error| {
+            // A setting named on the command line is a thing just typed, so a bad one is
+            // a mistake to correct rather than something to fall back from: carrying on
+            // would run with settings other than the ones that were asked for.
+            if matches!(error, micro_config::ConfigError::Override { .. }) {
+                eprintln!("micro: {error}");
+                std::process::exit(2);
+            }
+            eprintln!("note: {error}; using defaults");
+            micro_config::Settings::default()
+        })
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
+    // Linux has no way to confine a command from the outside: the restrictions have to be
+    // applied by the process that then becomes the command. So micro re-runs itself to run
+    // anything a session spawns, and this is that second run recognizing itself — before
+    // the parser, before the configuration, before anything that could fail and leave the
+    // command running unconfined.
+    #[cfg(target_os = "linux")]
+    {
+        let mut arguments = std::env::args();
+        let program = arguments.next();
+        if program.is_some() && arguments.next().as_deref() == Some(micro_sandbox::HELPER_ARG) {
+            micro_sandbox::run_linux_helper(arguments);
+        }
+    }
+
     // Flags micro does not know are held back rather than refused: an extension may have
     // declared one, and the extensions have not loaded yet. Which flags micro knows is
     // asked of the parser rather than listed here, because a list would drift from the
@@ -394,31 +462,23 @@ async fn main() -> Result<()> {
                 None => subcommands::sessions_list(&root, false).await,
             };
         }
+        Some(Command::WhyMiss { session, turn }) => {
+            return subcommands::why_miss(session, *turn).await
+        }
+        Some(Command::Sandbox { action }) => {
+            let root = runtime::workspace(&cli.cwd)?;
+            let settings = settled(&cli);
+            return match action {
+                SandboxAction::Try { sandbox, command } => {
+                    sandbox::try_command(&root, sandbox.as_deref(), &settings, command).await
+                }
+            };
+        }
         None => {}
     }
 
     let root = runtime::workspace(&cli.cwd)?;
-    // What a user settled once and left alone. A command-line argument still wins, which
-    // is what `resolve_from_env` layers for us.
-    let settings = micro_config::Config::load_with(&cli.config_override)
-        .and_then(|config| {
-            config.resolve_from_env(&micro_config::Overrides {
-                model: cli.model.clone(),
-                provider: cli.provider.clone(),
-                ..micro_config::Overrides::default()
-            })
-        })
-        .unwrap_or_else(|error| {
-            // A setting named on the command line is a thing just typed, so a bad one is
-            // a mistake to correct rather than something to fall back from: carrying on
-            // would run with settings other than the ones that were asked for.
-            if matches!(error, micro_config::ConfigError::Override { .. }) {
-                eprintln!("micro: {error}");
-                std::process::exit(2);
-            }
-            eprintln!("note: {error}; using defaults");
-            micro_config::Settings::default()
-        });
+    let settings = settled(&cli);
 
     // Each front end answers the policy its own way: the non-interactive path prompts on
     // the terminal, while the interface routes requests to a modal over the transcript.
@@ -494,6 +554,13 @@ async fn main() -> Result<()> {
         _ => None,
     };
     let trusted = project_trusted(&root, &settings, has_ui, told).await;
+    // Settled before anything of the project's is loaded and before the first command can
+    // be run, and settled once: the tools are built around it, and so is whatever an
+    // extension asks micro to run.
+    let confined = sandbox::around(
+        sandbox::policy(cli.sandbox.as_deref(), &root, trusted, &settings)?,
+        &root,
+    );
     let mut built = runtime::build(
         &root,
         &selection,
@@ -502,6 +569,7 @@ async fn main() -> Result<()> {
         trusted,
         has_ui,
         mode,
+        confined.clone(),
     )
     .await?;
     // Extensions are told the session has begun, and told again when it ends, which is
@@ -575,6 +643,7 @@ async fn main() -> Result<()> {
         tokio::spawn(extensions::serve(
             std::sync::Arc::clone(host),
             root.clone(),
+            confined.clone(),
             asker.clone(),
             state,
             std::sync::Arc::clone(&built.session),
@@ -860,6 +929,7 @@ mod flag_tests {
             "no-prompt-templates",
             "no-context-files",
             "theme",
+            "sandbox",
         ] {
             assert!(known(flag), "`--{flag}` is not recognised as micro's own");
         }

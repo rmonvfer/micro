@@ -4,6 +4,7 @@ mod bash;
 mod deferred;
 mod files;
 mod fuzzy;
+mod guard;
 mod mutations;
 mod search;
 
@@ -15,6 +16,7 @@ pub use files::Ls;
 pub use files::MultiEdit;
 pub use files::Read;
 pub use files::Write;
+pub use guard::Guard;
 pub use search::Find;
 pub use search::Grep;
 
@@ -109,18 +111,18 @@ impl Progress {
     }
 }
 
-/// The default tool set, rooted at `root`.
-pub fn builtin_tools(root: impl Into<PathBuf>) -> Vec<Arc<dyn Tool>> {
+/// The default tool set, rooted at `root` and held to `guard`'s policy.
+pub fn builtin_tools(root: impl Into<PathBuf>, guard: Guard) -> Vec<Arc<dyn Tool>> {
     let root = root.into();
     vec![
-        Arc::new(Read::new(root.clone())),
-        Arc::new(Write::new(root.clone())),
-        Arc::new(Edit::new(root.clone())),
-        Arc::new(MultiEdit::new(root.clone())),
-        Arc::new(Ls::new(root.clone())),
-        Arc::new(Grep::new(root.clone())),
-        Arc::new(Find::new(root.clone())),
-        Arc::new(Bash::new(root)),
+        Arc::new(Read::new(root.clone(), guard.clone())),
+        Arc::new(Write::new(root.clone(), guard.clone())),
+        Arc::new(Edit::new(root.clone(), guard.clone())),
+        Arc::new(MultiEdit::new(root.clone(), guard.clone())),
+        Arc::new(Ls::new(root.clone(), guard.clone())),
+        Arc::new(Grep::new(root.clone(), guard.clone())),
+        Arc::new(Find::new(root.clone(), guard.clone())),
+        Arc::new(Bash::new(root, guard)),
     ]
 }
 

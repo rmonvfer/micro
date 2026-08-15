@@ -5,6 +5,7 @@ mod summarizer;
 
 pub use summarizer::ProviderSummarizer;
 
+use micro_context::Compacted;
 use micro_context::CompactionConfig;
 use micro_context::Compactor;
 use micro_context::Summarizer;
@@ -15,12 +16,14 @@ use micro_types::content_hash;
 use micro_types::now_ms;
 use micro_types::AgentEvent;
 use micro_types::AssistantMessage;
+use micro_types::CompactionCost;
 use micro_types::ContentBlock;
 use micro_types::Context;
 use micro_types::EventSource;
 use micro_types::LedgerEvent;
 use micro_types::Message;
 use micro_types::Model;
+use micro_types::Prefix;
 use micro_types::PrefixSpan;
 use micro_types::StopReason;
 use micro_types::StreamEvent;
@@ -94,10 +97,11 @@ impl PartialEq for ModelSwap {
 pub enum Record {
     Message(Message),
     /// A stretch replaced by a summary, with how many of the most recent messages are
-    /// still part of the conversation.
+    /// still part of the conversation, and what writing the summary cost.
     Compacted {
         summary: String,
         kept: usize,
+        cost: CompactionCost,
     },
     /// A fact about the run, and the content it names by hash.
     ///
@@ -177,12 +181,90 @@ impl Steering {
     }
 }
 
+/// A way to change what the model is told before the conversation, from outside the run.
+///
+/// The agent owns the prefix and nothing else may write it, because a prompt that changes
+/// mid-request is a cache miss nobody recorded. What reaches here is a request for a
+/// change: it is picked up at the next turn boundary, hashed, and written to the ledger
+/// with the reason it was made. Between those boundaries the prefix stands still, which is
+/// the whole point of it.
+#[derive(Clone, Default)]
+pub struct PrefixControl {
+    asked: Arc<std::sync::Mutex<Asked>>,
+}
+
+#[derive(Default)]
+struct Asked {
+    /// What the model is told before the conversation — or is about to be, when a change
+    /// is waiting below.
+    prompt: String,
+    spans: Vec<PrefixSpan>,
+    /// Why the prompt above is not the one in force yet. `None` means nothing is waiting.
+    reason: Option<String>,
+}
+
+impl PrefixControl {
+    /// What the model is being told before the conversation, including a change that has
+    /// been asked for and not yet taken effect.
+    ///
+    /// Whoever asked for that change has to read back what they asked for rather than what
+    /// the last turn used, or every reader between the ask and the next turn would be told
+    /// something that is already out of date.
+    pub fn system_prompt(&self) -> String {
+        self.lock().prompt.clone()
+    }
+
+    /// Tell the model this instead, from the next turn on, and say why.
+    ///
+    /// The reason is what a session is read back by: `reload`, `extension:deploy`. It ends
+    /// up on the ledger event beside the two hashes, which is what turns "the cache missed"
+    /// into "the cache missed because the project's instructions were re-read".
+    pub fn change(
+        &self,
+        prompt: impl Into<String>,
+        spans: Vec<PrefixSpan>,
+        reason: impl Into<String>,
+    ) {
+        let mut asked = self.lock();
+        asked.prompt = prompt.into();
+        asked.spans = spans;
+        asked.reason = Some(reason.into());
+    }
+
+    /// Say what the run was built with, so the first thing to read this is told what is
+    /// actually in force rather than nothing at all.
+    pub(crate) fn opened_with(&self, prompt: &str, spans: &[PrefixSpan]) {
+        let mut asked = self.lock();
+        asked.prompt = prompt.to_string();
+        asked.spans = spans.to_vec();
+    }
+
+    /// The change that is waiting, if one is, taken so it is applied once.
+    pub(crate) fn take(&self) -> Option<(String, Vec<PrefixSpan>, String)> {
+        let mut asked = self.lock();
+        let reason = asked.reason.take()?;
+        Some((asked.prompt.clone(), asked.spans.clone(), reason))
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, Asked> {
+        self.asked
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+}
+
 pub struct Agent {
     provider: Arc<dyn Provider>,
     tools: Vec<Arc<dyn Tool>>,
     model: Model,
     api_key: ApiKey,
-    system_prompt: Option<String>,
+    /// What every request opens with, and what identifies it.
+    ///
+    /// Held as one hashed value rather than as a prompt and a tool list, so there is no way
+    /// to change half of it without the hash moving and the change being recorded.
+    prefix: Prefix,
+    /// How anything outside the run asks for the prefix to change.
+    prefix_control: PrefixControl,
     messages: Vec<Message>,
     recorder: Option<UnboundedSender<Record>>,
     /// Anything else watching the events this run produces.
@@ -205,12 +287,13 @@ pub struct Agent {
     /// How many requests this agent has issued, which is what numbers a turn in the
     /// ledger. Counted here because this is the only thing that issues one.
     turn: u64,
-    /// Where each stretch of the system prompt came from, as whoever assembled it said.
+    /// Results written to answer tool calls a conversation arrived with unanswered, waiting
+    /// for a run to report them.
     ///
-    /// The agent is handed a prompt as one string and cannot tell a project's
-    /// instructions from a skill's description by looking at it, so what it is told about
-    /// the parts is what it records.
-    prefix_spans: Vec<PrefixSpan>,
+    /// The repair happens where the conversation is installed, which is before there is
+    /// anything to report it to: no recorder is set yet on a fresh agent, and nobody is
+    /// watching between runs.
+    repairs: Vec<Message>,
     /// Content already handed to the recorder, by hash. A system prompt that stands
     /// unchanged for a hundred turns crosses this channel once.
     stored_blobs: HashSet<String>,
@@ -235,7 +318,8 @@ impl Agent {
             tools,
             model,
             api_key,
-            system_prompt: None,
+            prefix: Prefix::default(),
+            prefix_control: PrefixControl::default(),
             messages: Vec::new(),
             recorder: None,
             observer: None,
@@ -247,7 +331,7 @@ impl Agent {
             steering: Steering::default(),
             offered: None,
             turn: 0,
-            prefix_spans: Vec::new(),
+            repairs: Vec::new(),
             stored_blobs: HashSet::new(),
         }
     }
@@ -261,8 +345,27 @@ impl Agent {
     }
 
     pub fn with_system_prompt(mut self, prompt: impl Into<String>) -> Self {
-        self.system_prompt = Some(prompt.into());
+        let spans = self.prefix.spans().to_vec();
+        self.prefix = self.prefix.with_system_prompt(prompt, spans);
+        self.prefix_control.opened_with(
+            self.prefix.system_prompt().unwrap_or_default(),
+            self.prefix.spans(),
+        );
         self
+    }
+
+    /// How anything outside the run asks for the prefix to change: `/reload` re-reading the
+    /// project's instructions, an extension replacing the prompt.
+    ///
+    /// Taken before the run starts, the same way steering is, since a run borrows the agent
+    /// for as long as it lasts.
+    pub fn prefix_control(&self) -> PrefixControl {
+        self.prefix_control.clone()
+    }
+
+    /// What every request this agent issues opens with.
+    pub fn prefix(&self) -> &Prefix {
+        &self.prefix
     }
 
     /// Point the agent at a different model, keeping the conversation.
@@ -275,11 +378,21 @@ impl Agent {
         self.model = swap.model;
         self.api_key = swap.api_key;
         self.context_window = swap.context_window;
-        self.summarizer = Arc::new(ProviderSummarizer::new(
-            self.provider.clone(),
-            self.model.clone(),
-            self.api_key.clone(),
-        ));
+        self.summarizer = self.provider_summarizer();
+    }
+
+    /// A summarizer that asks whichever model the agent is running, on behalf of the
+    /// conversation it is running: compaction is part of this session, not a request from
+    /// nowhere, and a provider caching against a name has to be told the same name.
+    fn provider_summarizer(&self) -> Arc<dyn Summarizer> {
+        Arc::new(
+            ProviderSummarizer::new(
+                self.provider.clone(),
+                self.model.clone(),
+                self.api_key.clone(),
+            )
+            .for_conversation(self.cache_key.clone()),
+        )
     }
 
     pub fn model(&self) -> &Model {
@@ -326,11 +439,7 @@ impl Agent {
     /// and a credential, which is [`Agent::set_model`].
     pub fn set_runtime_model(&mut self, model: Model) {
         self.model = model;
-        self.summarizer = Arc::new(ProviderSummarizer::new(
-            self.provider.clone(),
-            self.model.clone(),
-            self.api_key.clone(),
-        ));
+        self.summarizer = self.provider_summarizer();
     }
 
     /// Summarize with something other than the model the agent is running, which is how a
@@ -348,15 +457,27 @@ impl Agent {
     }
 
     /// Name the conversation, so a provider that caches a prompt can recognise it again.
+    ///
+    /// The summarizer is rebuilt with it: its request is part of this conversation, and one
+    /// sent unnamed lands wherever nothing is cached and pays for the transcript twice.
     pub fn with_cache_key(mut self, key: impl Into<String>) -> Self {
         self.cache_key = Some(key.into());
+        self.summarizer = self.provider_summarizer();
         self
     }
 
     /// Say what the system prompt was assembled from, so every request the agent records
     /// can be attributed span by span rather than only as one block of text.
     pub fn with_prefix_spans(mut self, spans: Vec<PrefixSpan>) -> Self {
-        self.prefix_spans = spans;
+        self.prefix = Prefix::new(
+            self.prefix.system_prompt().map(str::to_string),
+            self.prefix.tools().to_vec(),
+            spans,
+        );
+        self.prefix_control.opened_with(
+            self.prefix.system_prompt().unwrap_or_default(),
+            self.prefix.spans(),
+        );
         self
     }
 
@@ -394,18 +515,12 @@ impl Agent {
 
     /// Seed the conversation with prior history, for resuming a saved session.
     pub fn with_history(mut self, history: Vec<Message>) -> Self {
-        self.messages = history;
+        self.set_messages(history);
         self
     }
 
     pub fn messages(&self) -> &[Message] {
         &self.messages
-    }
-
-    /// Replace what the model is told before the conversation, which is how re-read
-    /// instruction files and skills reach a run that is already going.
-    pub fn set_system_prompt(&mut self, prompt: impl Into<String>) {
-        self.system_prompt = Some(prompt.into());
     }
 
     /// Summarize the conversation now, whether or not it has grown enough to trigger on
@@ -426,7 +541,7 @@ impl Agent {
             })?;
 
         let summary = compacted.messages[0].clone();
-        self.record_compaction(&compacted.messages);
+        self.record_compaction(&compacted);
         self.messages = compacted.messages;
         Ok(summary)
     }
@@ -436,8 +551,19 @@ impl Agent {
     /// Branching, resuming and clearing all change what has been said, not just what is on
     /// screen. Anything less than this leaves the model answering from messages the user
     /// can no longer see.
+    ///
+    /// A conversation that arrives from outside — read back from a log, or taken from an
+    /// earlier point in the tree — can hold tool calls that were never answered, and a
+    /// provider rejects a request carrying one. They are answered here, where the
+    /// conversation arrives, and nowhere else: the repair inserts results in the middle of
+    /// the history, and doing that between two turns of a live session would move bytes a
+    /// provider had already cached, for no reason the session could name.
     pub fn set_messages(&mut self, messages: Vec<Message>) {
         self.messages = messages;
+        // Replaced rather than added to: a repair belongs to the conversation it was made
+        // in, and this one has just been put aside. Reporting it against what took its
+        // place would describe a message that is not there.
+        self.repairs = answer_abandoned_calls(&mut self.messages);
     }
 
     /// Put a message into the conversation without asking the model anything.
@@ -534,19 +660,63 @@ impl Agent {
 
     /// Append to the conversation, reporting the message to the recorder if one is set.
     /// Record that a stretch was summarized, so reopening the session reads the summary
-    /// rather than paying to write it again.
-    fn record_compaction(&self, messages: &[Message]) {
+    /// rather than paying to write it again, and what writing it cost.
+    fn record_compaction(&self, compacted: &Compacted) {
         let Some(recorder) = &self.recorder else {
             return;
         };
-        let Some(summary) = messages.first().and_then(micro_context::summary_text) else {
+        let Some(summary) = compacted
+            .messages
+            .first()
+            .and_then(micro_context::summary_text)
+        else {
             return;
         };
         let _ = recorder.send(Record::Compacted {
             summary: summary.to_string(),
             // Everything after the summary is what was kept.
-            kept: messages.len().saturating_sub(1),
+            kept: compacted.messages.len().saturating_sub(1),
+            cost: compacted.cost.clone(),
         });
+    }
+
+    /// Take up whatever was asked of the prefix while the last turn ran.
+    ///
+    /// The one moment the head of a request is allowed to move. Everything that wants to
+    /// change it — a reload, an extension, a narrowed tool list — has left its request
+    /// somewhere for this, so a change lands between two turns rather than in the middle of
+    /// one, and lands once with a reason attached instead of quietly on every request.
+    fn settle_prefix(&mut self) {
+        if let Some((prompt, spans, reason)) = self.prefix_control.take() {
+            let asked = self.prefix.with_system_prompt(prompt, spans);
+            self.adopt_prefix(asked, &reason);
+        }
+        // Narrowing is read here rather than each time the model is told what exists, so a
+        // list changed mid-turn reaches the model at the next one and is recorded when it
+        // does. What is offered is a fact about the request, not a live value.
+        let offered = self.tool_definitions();
+        if offered != self.prefix.tools() {
+            let narrowed = self.prefix.with_tools(offered);
+            self.adopt_prefix(narrowed, "tools");
+        }
+    }
+
+    /// Run on this prefix from now on, recording that the cacheable head moved.
+    ///
+    /// Nothing is recorded before the first request goes out: a prefix that has never been
+    /// sent cannot have broken a cache, and a session that opened by reporting a change
+    /// from nothing to its own opening prompt would be noise in front of every real one.
+    fn adopt_prefix(&mut self, prefix: Prefix, reason: &str) {
+        let from_hash = self.prefix.hash().to_string();
+        let moved = prefix.hash() != from_hash;
+        self.prefix = prefix;
+        if moved && self.turn > 0 {
+            self.record_event(LedgerEvent::PrefixChanged {
+                reason: reason.to_string(),
+                from_hash,
+                to_hash: self.prefix.hash().to_string(),
+            });
+        }
     }
 
     /// Record a fact about the run that refers to nothing outside itself.
@@ -570,18 +740,21 @@ impl Agent {
             return;
         }
 
-        let prompt = context.system_prompt.clone().unwrap_or_default();
         let tools = serde_json::to_vec(&context.tools).unwrap_or_default();
         let described = serde_json::to_vec(&self.model).unwrap_or_default();
-        let body = serde_json::to_vec(&self.provider.payload(&self.model, context))
-            .unwrap_or_default();
+        let body =
+            serde_json::to_vec(&self.provider.payload(&self.model, context)).unwrap_or_default();
 
-        // The prefix is the part of a request a provider can cache: what the model is told
-        // before the conversation, and the tools it may call. Hashing them together is
-        // what makes two turns comparable at a glance — the same prefix hash means the
-        // same cacheable head, and a different one is a cache miss waiting to happen.
-        let mut prefix = prompt.into_bytes();
-        prefix.extend_from_slice(&tools);
+        // Hashed from the request as it is about to go out rather than from the prefix the
+        // agent holds, because those are the same thing only as long as nothing rewrote the
+        // context on its way past. When something did, the hash recorded here is the one
+        // that was actually sent, and it belongs to no recorded change — which is exactly
+        // what a reader trying to account for a cache miss needs to be able to see.
+        let sent = Prefix::new(
+            context.system_prompt.clone(),
+            context.tools.clone(),
+            self.prefix.spans().to_vec(),
+        );
 
         let mut blobs = Vec::new();
         let system_prompt_blob = context
@@ -595,12 +768,12 @@ impl Agent {
             turn: self.turn,
             provider: self.model.provider.clone(),
             model: self.model.id.clone(),
-            prefix_hash: content_hash(&prefix),
+            prefix_hash: sent.hash().to_string(),
             request_hash: content_hash(&body),
             system_prompt_blob,
             tools_blob,
             model_blob,
-            prefix_spans: self.prefix_spans.clone(),
+            prefix_spans: sent.spans().to_vec(),
             // Named by the session as it writes this, which is the only place the entries
             // the conversation stands at have names.
             message_entry_ids: Vec::new(),
@@ -619,6 +792,26 @@ impl Agent {
             carried.push((hash.clone(), content.to_vec()));
         }
         hash
+    }
+
+    /// Report messages the conversation already holds: written to the log, announced to
+    /// whoever is watching, and counted as part of what this run produced.
+    ///
+    /// Unlike [`Agent::commit`] nothing is appended, because these are already in place —
+    /// a repair belongs beside the call it answers, not at the end of the conversation.
+    fn announce(&self, messages: Vec<Message>, events: &Fan<'_>, produced: &mut Vec<Message>) {
+        for message in messages {
+            if let Some(recorder) = &self.recorder {
+                let _ = recorder.send(Record::Message(message.clone()));
+            }
+            events.send(AgentEvent::MessageStart {
+                message: message.clone(),
+            });
+            events.send(AgentEvent::MessageEnd {
+                message: message.clone(),
+            });
+            produced.push(message);
+        }
     }
 
     fn commit(&mut self, message: Message, produced: &mut Vec<Message>) {
@@ -681,23 +874,21 @@ impl Agent {
         };
         let mut produced = Vec::new();
 
-        // A turn abandoned partway — Ctrl+C during a tool, or a crash — leaves an assistant
-        // message whose tool calls were never answered. Providers reject a request that
-        // contains one, so the conversation would stay unusable for the rest of its life and
-        // its log would be unresumable. Answering the abandoned calls first makes the
-        // conversation valid again, whether it was interrupted moments ago in this process
-        // or a week ago in another one.
-        for repair in answer_abandoned_calls(&mut self.messages) {
-            if let Some(recorder) = &self.recorder {
-                let _ = recorder.send(Record::Message(repair.clone()));
-            }
-            events.send(AgentEvent::MessageStart {
-                message: repair.clone(),
-            });
-            events.send(AgentEvent::MessageEnd {
-                message: repair.clone(),
-            });
-            produced.push(repair);
+        // Answering an abandoned tool call is what makes a conversation sendable again: a
+        // provider rejects a request that contains one, so an unanswered call would poison
+        // every later turn and make the log unresumable. A conversation that arrived
+        // already broken was repaired where it arrived, and this is the first moment there
+        // is anywhere to report that.
+        let installed = std::mem::take(&mut self.repairs);
+        self.announce(installed, events, &mut produced);
+
+        // A turn abandoned partway through this process — Ctrl+C during a tool — leaves its
+        // own last answer unanswered. Nothing else will fix that: the run that was
+        // abandoned is gone, and this is the next one. It appends to the end of the
+        // conversation rather than rewriting anything earlier in it.
+        if ends_unanswered(&self.messages) {
+            let repairs = answer_abandoned_calls(&mut self.messages);
+            self.announce(repairs, events, &mut produced);
         }
 
         events.send(AgentEvent::AgentStart);
@@ -724,6 +915,9 @@ impl Agent {
             }
 
             events.send(AgentEvent::TurnStart);
+            // Between turns is where the head of a request is allowed to move, so it moves
+            // here, before anything is assembled from it.
+            self.settle_prefix();
             self.compact_if_needed(events).await;
 
             let assistant = self.stream_once(events).await;
@@ -786,8 +980,9 @@ impl Agent {
             // refused or unresolved still counts — the model asked for that tool by name,
             // and that is what the batch is scheduled around.
             let sequential = calls.iter().any(|(_, name, _)| {
-                self.find_tool(name)
-                    .is_some_and(|tool| tool.execution_mode() == Some(ToolExecutionMode::Sequential))
+                self.find_tool(name).is_some_and(|tool| {
+                    tool.execution_mode() == Some(ToolExecutionMode::Sequential)
+                })
             });
 
             // Every call is vetted and then announced, in the order the model asked for it,
@@ -931,7 +1126,7 @@ impl Agent {
         };
 
         let summary = compacted.messages[0].clone();
-        self.record_compaction(&compacted.messages);
+        self.record_compaction(&compacted);
         self.messages = compacted.messages;
 
         // The summary joins the conversation like any other message, so it is announced
@@ -950,13 +1145,9 @@ impl Agent {
     /// makes it the one place a turn can be recorded completely: after anything watching
     /// the run has had its say about the context, and before the provider is handed it.
     async fn stream_once(&mut self, events: &Fan<'_>) -> AssistantMessage {
-        let context = Context {
-            system_prompt: self.system_prompt.clone(),
-            messages: self.messages.clone(),
-            tools: self.tool_definitions(),
-            headers: Vec::new(),
-            cache_key: self.cache_key.clone(),
-        };
+        let context = self
+            .prefix
+            .ahead_of(self.messages.clone(), self.cache_key.clone());
         // Whatever is watching gets the conversation before the provider does, and may
         // change it: this is where a summary is swapped in, or a file is added.
         let context = match &self.hooks {
@@ -1167,6 +1358,36 @@ fn answer_abandoned_calls(messages: &mut Vec<Message>) -> Vec<Message> {
     }
 
     repairs
+}
+
+/// Whether the conversation ends on tool calls that nothing answered.
+///
+/// True only of the last answer in it, which is what a turn abandoned partway through
+/// leaves behind. An unanswered call earlier than that came in with the conversation and
+/// was dealt with where it arrived; answering one here would move the middle of a history
+/// a provider may already be caching.
+fn ends_unanswered(messages: &[Message]) -> bool {
+    let Some(last) = messages
+        .iter()
+        .rposition(|message| matches!(message, Message::Assistant(_)))
+    else {
+        return false;
+    };
+    let Message::Assistant(assistant) = &messages[last] else {
+        unreachable!("the position above is an assistant message");
+    };
+
+    let answered: Vec<&str> = messages[last + 1..]
+        .iter()
+        .filter_map(|message| match message {
+            Message::ToolResult { tool_call_id, .. } => Some(tool_call_id.as_str()),
+            _ => None,
+        })
+        .collect();
+    assistant
+        .tool_calls()
+        .iter()
+        .any(|(id, ..)| !answered.contains(id))
 }
 
 /// True when an error message carries a transient HTTP status.

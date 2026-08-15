@@ -599,9 +599,7 @@ pub(crate) fn build_payload(model: &Model, context: &Context) -> Result<Value, S
                         // `parameters`/OpenAPI field a tool that never opted in still uses
                         // does not reliably carry them at all.
                         let parameters =
-                            crate::constrained_sampling::json_schema_tool_parameters(
-                                tool, strict,
-                            )?;
+                            crate::constrained_sampling::json_schema_tool_parameters(tool, strict)?;
                         json!({
                             "name": tool.name,
                             "description": tool.description,
@@ -1143,7 +1141,10 @@ mod tests {
             declaration.get("parameters").is_none(),
             "a strict tool is declared under parametersJsonSchema, not parameters"
         );
-        assert_eq!(declaration["parametersJsonSchema"]["additionalProperties"], false);
+        assert_eq!(
+            declaration["parametersJsonSchema"]["additionalProperties"],
+            false
+        );
         assert_eq!(
             payload["toolConfig"]["functionCallingConfig"]["mode"],
             "VALIDATED"
@@ -1167,7 +1168,10 @@ mod tests {
         let payload = build_payload(&gemini_3_model(), &context).unwrap();
 
         assert!(payload.get("toolConfig").is_none());
-        assert_eq!(payload["tools"][0]["functionDeclarations"][0]["parameters"]["type"], "object");
+        assert_eq!(
+            payload["tools"][0]["functionDeclarations"][0]["parameters"]["type"],
+            "object"
+        );
         assert!(payload["tools"][0]["functionDeclarations"][0]
             .get("parametersJsonSchema")
             .is_none());
@@ -1236,7 +1240,10 @@ mod tests {
             "VALIDATED"
         );
         // The tool that never opted in is still declared the ordinary way.
-        assert_eq!(payload["tools"][0]["functionDeclarations"][0]["parameters"]["type"], "object");
+        assert_eq!(
+            payload["tools"][0]["functionDeclarations"][0]["parameters"]["type"],
+            "object"
+        );
     }
 
     /// The failure this guards was a live 400 from Gemini: `required[0]: property is not
@@ -1245,7 +1252,7 @@ mod tests {
     /// `required` entry naming it was left pointing at nothing.
     #[test]
     fn a_parameter_named_after_a_keyword_survives() {
-        let grep = micro_tools::builtin_tools("/work")
+        let grep = micro_tools::builtin_tools("/work", micro_tools::Guard::for_workspace("/work"))
             .into_iter()
             .find(|tool| tool.definition().name == "grep")
             .expect("grep is a builtin tool");
@@ -1387,7 +1394,7 @@ mod tests {
             }
         }
 
-        let tools = micro_tools::builtin_tools("/work");
+        let tools = micro_tools::builtin_tools("/work", micro_tools::Guard::for_workspace("/work"));
         assert!(!tools.is_empty(), "there are builtin tools to check");
         for tool in tools {
             let definition = tool.definition();

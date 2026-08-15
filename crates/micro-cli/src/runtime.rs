@@ -168,6 +168,7 @@ fn default_model(catalog: &Catalog, provider: Option<&str>) -> Result<ModelDef> 
 }
 
 /// Build the agent, opening or resuming a session and wiring durable persistence.
+#[allow(clippy::too_many_arguments)]
 pub async fn build(
     root: &Path,
     selection: &Selection,
@@ -176,6 +177,7 @@ pub async fn build(
     trusted: bool,
     has_ui: bool,
     mode: &str,
+    sandbox: micro_sandbox::Sandbox,
 ) -> Result<Runtime> {
     // Set before any provider is built, since a client carries the timeout it was made
     // with.
@@ -288,7 +290,12 @@ pub async fn build(
         ),
     };
 
-    let mut tools = micro_tools::builtin_tools(root.to_path_buf());
+    // Where the tools say what the policy refused them. A channel of its own rather than
+    // the recorder itself: micro-tools knows what a fact about a run is and nothing about
+    // how a session is written, so the two are joined below, once there is a recorder.
+    let (decisions, refusals) = tokio::sync::mpsc::unbounded_channel();
+    let guard = micro_tools::Guard::new(sandbox.clone()).recording(decisions);
+    let mut tools = micro_tools::builtin_tools(root.to_path_buf(), guard);
     // The tools the loop is built around, which are described to the model whatever else
     // is on offer: deferring these would cost a search before it could read a file.
     let builtin: Vec<String> = tools.iter().map(|tool| tool.definition().name).collect();
@@ -378,6 +385,29 @@ pub async fn build(
     let resources = resources(&context, &prompts, extensions.as_deref(), &extension_roots);
 
     let (recorder, receiver) = tokio::sync::mpsc::unbounded_channel();
+    tokio::spawn(record_decisions(refusals, recorder.clone()));
+    // Running unconfined is a fact about the whole session rather than about any one
+    // command, so it is said once, out loud, in both places a reader might look: the
+    // ledger, and the screen.
+    let mut warnings = mcp_notices;
+    if sandbox.policy().allows_all_writes() {
+        let _ = recorder.send(micro_agent::Record::Event {
+            event: micro_types::LedgerEvent::SandboxDecision {
+                policy: sandbox.policy().name().to_string(),
+                operation: "session-start".to_string(),
+                path_or_host: root.display().to_string(),
+                allowed: true,
+                tool_call_id: None,
+            },
+            blobs: Vec::new(),
+        });
+        warnings.push(format!(
+            "the sandbox is off: commands run under `{}` can reach anything you can. \
+             `--sandbox workspace-write` confines them to {}.",
+            sandbox.policy(),
+            root.display()
+        ));
+    }
     // Extensions watch the run rather than sitting in the middle of it: the events go to
     // whoever asked for the turn, and a copy comes here.
     let (watching, watched) = tokio::sync::mpsc::unbounded_channel();
@@ -412,11 +442,16 @@ pub async fn build(
     .with_observer(watching)
     // The session names the conversation, so a cached prompt is recognised across turns.
     .with_cache_key(session.id());
+    // The one way anything outside the run changes what the model is told before the
+    // conversation. Both an extension and `/reload` ask through this, so a re-read
+    // instruction file and an extension's replacement prompt land the same way: at a turn
+    // boundary, hashed, with the reason on the ledger.
+    let prefix = agent.prefix_control();
     // Extensions get a say in what a tool call does, before it runs and after it answers.
     let agent = match extensions.as_ref() {
         Some(host) => agent.with_hooks(Arc::new(crate::extensions::ExtensionHooks::new(
             Arc::clone(host),
-            system_prompt.clone(),
+            prefix.clone(),
             root.display().to_string(),
         ))),
         None => agent,
@@ -459,6 +494,7 @@ pub async fn build(
         model: model.clone(),
         session: Arc::clone(&session),
         session_id,
+        prefix,
         home: micro_context::micro_home().unwrap_or_default(),
         scoped_models: settings.scoped_models.clone(),
         resources: selection.resources.clone(),
@@ -478,7 +514,7 @@ pub async fn build(
     Ok(Runtime {
         agent,
         notice,
-        warnings: mcp_notices,
+        warnings,
         extensions,
         tool_names,
         offered_tools,
@@ -501,6 +537,26 @@ pub async fn build(
     })
 }
 
+/// Carry what the tools decided about the policy into the same log everything else is
+/// written to.
+///
+/// The task ends when the last tool holding the other end is dropped, which is what lets
+/// the recorder channel close and the session's writer finish.
+async fn record_decisions(
+    mut decisions: tokio::sync::mpsc::UnboundedReceiver<micro_types::LedgerEvent>,
+    recorder: tokio::sync::mpsc::UnboundedSender<micro_agent::Record>,
+) {
+    while let Some(event) = decisions.recv().await {
+        let sent = recorder.send(micro_agent::Record::Event {
+            event,
+            blobs: Vec::new(),
+        });
+        if sent.is_err() {
+            return;
+        }
+    }
+}
+
 /// Drain what the run produced into the session log as it happens, so a crash leaves
 /// everything that was already said on disk.
 pub fn persist(
@@ -512,8 +568,16 @@ pub fn persist(
             let written = match &record {
                 micro_agent::Record::Message(message) => session.lock().await.append(message).await,
                 // Not part of the conversation: where the conversation is read from.
-                micro_agent::Record::Compacted { summary, kept } => {
-                    session.lock().await.compacted(summary, *kept).await
+                micro_agent::Record::Compacted {
+                    summary,
+                    kept,
+                    cost,
+                } => {
+                    session
+                        .lock()
+                        .await
+                        .compacted(summary, *kept, cost.clone())
+                        .await
                 }
                 // A fact about the run. What it refers to is stored before the fact that
                 // names it, so a reader never meets a hash with nothing behind it.

@@ -1124,8 +1124,7 @@ mod tests {
             "a service that was never told about strict fields is not sent one"
         );
         assert_eq!(
-            payload["tools"][0]["function"]["parameters"],
-            original_parameters,
+            payload["tools"][0]["function"]["parameters"], original_parameters,
             "the schema is exactly what the tool wrote, untouched"
         );
     }

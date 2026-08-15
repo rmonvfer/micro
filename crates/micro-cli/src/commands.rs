@@ -34,6 +34,9 @@ pub struct CliCommands {
     session: Arc<Mutex<Session>>,
     /// Held alongside so a command can be answered without waiting on the writer.
     session_id: String,
+    /// How a re-read instruction file reaches the model: asked for here, applied by the
+    /// agent at its next turn boundary, recorded as a prefix change.
+    prefix: micro_agent::PrefixControl,
     /// Where micro keeps what it remembers between runs, which is where a trust decision
     /// is written.
     home: PathBuf,
@@ -88,6 +91,8 @@ pub struct HostParts {
     pub model: ModelDef,
     pub session: Arc<Mutex<Session>>,
     pub session_id: String,
+    /// The agent's handle for what the model is told before the conversation.
+    pub prefix: micro_agent::PrefixControl,
     pub home: PathBuf,
     pub skills_enabled: bool,
     /// The models the workspace put on its shortlist, which the model list opens on.
@@ -119,6 +124,7 @@ impl CliCommands {
             model: parts.model,
             session: parts.session,
             session_id: parts.session_id,
+            prefix: parts.prefix,
             home: parts.home,
             skills_enabled: parts.skills_enabled,
             scoped_models: parts.scoped_models,
@@ -609,6 +615,11 @@ impl CliCommands {
     ///
     /// Only the standing instructions change. The conversation is left exactly as it is,
     /// because nothing that was said stopped being true.
+    ///
+    /// The new prompt is asked for rather than installed: the agent takes it up at its next
+    /// turn boundary and records the change, so a session can say afterwards that this is
+    /// where its cached prefix stopped being reusable and why. What comes back is only what
+    /// the screen needs to hear about it.
     async fn reload(&self) -> Applied {
         let trusted = !micro_config::requires_decision(&self.workspace)
             || micro_config::TrustStore::load_from(&self.home)
@@ -635,6 +646,12 @@ impl CliCommands {
             note.push('\n');
             note.push_str(diagnostic);
         }
+
+        self.prefix.change(
+            context.system_prompt.clone(),
+            context.prefix_spans,
+            "reload",
+        );
 
         Applied::SystemPrompt {
             prompt: context.system_prompt,
@@ -1157,6 +1174,9 @@ mod tests {
             model,
             session: Arc::new(Mutex::new(session)),
             session_id,
+            // Not attached to an agent here: what a command asks of the prefix is read
+            // back from this handle rather than from whoever would have applied it.
+            prefix: Default::default(),
             home: root.join("home"),
             skills_enabled: true,
             scoped_models: Vec::new(),

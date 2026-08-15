@@ -697,8 +697,7 @@ mod tests {
     /// `strict` key at all, schema untouched — the same request Bedrock has always been
     /// sent.
     #[test]
-    fn a_service_that_has_not_claimed_support_is_unaffected_by_a_tool_preferring_strict_sampling(
-    ) {
+    fn a_service_that_has_not_claimed_support_is_unaffected_by_a_tool_preferring_strict_sampling() {
         let original_parameters = json!({
             "type": "object",
             "properties": { "pattern": { "type": "string" } },

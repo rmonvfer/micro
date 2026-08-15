@@ -21,6 +21,7 @@ mod model;
 mod outcome;
 mod parse;
 mod session;
+mod why_miss;
 
 pub use outcome::CommandOutcome;
 pub use outcome::MessageKind;
@@ -32,6 +33,7 @@ pub use outcome::ThemeChoice;
 pub use parse::parse;
 pub use parse::suggest;
 pub use parse::Input;
+pub use why_miss::why_miss;
 
 use micro_auth::AuthStore;
 use micro_models::Catalog;
@@ -208,6 +210,11 @@ static COMMANDS: &[Command] = &[
         description: "show what micro knows about this session",
     },
     Command {
+        name: "why-miss",
+        argument: Some("[turn]"),
+        description: "say why a turn did not reuse the cached prompt",
+    },
+    Command {
         name: "compact",
         argument: None,
         description: "summarize the conversation to reclaim context",
@@ -352,6 +359,7 @@ pub async fn run(
         // Clearing is what starting over means when the conversation is the only state.
         "new" => CommandOutcome::Clear,
         "debug" => debug(context),
+        "why-miss" => why_miss::command(argument, context).await,
         "thinking" => thinking(argument),
         "theme" => theme(argument),
         "compact" => compact(context),
@@ -711,6 +719,7 @@ fn settings(context: &CommandContext<'_>) -> CommandOutcome {
             on_off(now.clear_on_shrink),
             "/set clear_on_shrink",
         ),
+        PickerItem::new("Sandbox", policy_name(&now), "/set sandbox"),
         PickerItem::new(
             "Where everything is kept",
             home.display().to_string(),
@@ -718,6 +727,21 @@ fn settings(context: &CommandContext<'_>) -> CommandOutcome {
         ),
     ];
     CommandOutcome::Choose(Picker::new("Settings", items))
+}
+
+/// The sandbox policy in force, as a name to show.
+///
+/// A policy can also be written as a table spelling out what it grants beyond the default,
+/// which has no short name to print; it is shown by the mode it builds on, since that is
+/// what a reader is looking for in a list of settings.
+fn policy_name(settings: &micro_config::Settings) -> &str {
+    let Some(written) = &settings.sandbox else {
+        return "workspace-write";
+    };
+    written
+        .as_str()
+        .or_else(|| written.get("mode").and_then(serde_json::Value::as_str))
+        .unwrap_or("workspace-write")
 }
 
 /// `/set <name> [value]` changes one setting and remembers it. Without a value it says
@@ -894,6 +918,18 @@ fn settable(config: &micro_config::Config, name: &str) -> Option<Vec<PickerItem>
             ]
         }
         "transport" => vec![("sse", "how the Codex backend answers", true)],
+        "sandbox" => {
+            let now = policy_name(&now).to_string();
+            vec![
+                ("read-only", "read anything, write nothing", now == "read-only"),
+                (
+                    "workspace-write",
+                    "write inside this workspace only",
+                    now == "workspace-write",
+                ),
+                ("full", "no confinement at all", now == "full"),
+            ]
+        }
         _ => return numbered(name, &now),
     };
 
@@ -1015,6 +1051,10 @@ fn describe(config: &micro_config::Config, name: &str) -> Option<String> {
             "anthropic_extra_usage is {} (on or off)",
             now.anthropic_extra_usage
         ),
+        "sandbox" => format!(
+            "sandbox is {} (read-only, workspace-write or full)",
+            policy_name(&now)
+        ),
         "scoped_models" => format!(
             "scoped_models is {} (a comma-separated list, or `all`)",
             match now.scoped_models.is_empty() {
@@ -1099,6 +1139,15 @@ fn assign(config: &mut micro_config::Config, name: &str, value: &str) -> Result<
             })
         }
         "http_idle_timeout" => config.http_idle_timeout = Some(number(3600)?),
+        "sandbox" => {
+            let policy = value.to_ascii_lowercase();
+            if !["read-only", "workspace-write", "full"].contains(&policy.as_str()) {
+                return Err(format!(
+                    "`{value}` is not read-only, workspace-write or full"
+                ));
+            }
+            config.sandbox = Some(policy.into())
+        }
         "steering_mode" => {
             config.steering_mode = Some(match value.to_ascii_lowercase().as_str() {
                 "one-at-a-time" => micro_config::SteeringMode::OneAtATime,
@@ -1419,7 +1468,12 @@ mod tests {
 
         for command in commands() {
             assert!(!command.description.is_empty(), "/{}", command.name);
-            assert!(command.name.chars().all(|c| c.is_ascii_lowercase()));
+            // Lower case throughout, with a dash where a name is two words, which is what
+            // the parser accepts as a name and what completion offers.
+            assert!(command
+                .name
+                .chars()
+                .all(|c| c.is_ascii_lowercase() || c == '-'));
         }
     }
 

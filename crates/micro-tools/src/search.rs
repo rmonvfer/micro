@@ -3,6 +3,7 @@
 use crate::required_str;
 use crate::resolve_path;
 use crate::truncate;
+use crate::Guard;
 use crate::Tool;
 use async_trait::async_trait;
 use ignore::overrides::OverrideBuilder;
@@ -33,11 +34,12 @@ const MAX_FIND_LIMIT: usize = 1000;
 
 pub struct Grep {
     root: PathBuf,
+    guard: Guard,
 }
 
 impl Grep {
-    pub fn new(root: PathBuf) -> Self {
-        Grep { root }
+    pub fn new(root: PathBuf, guard: Guard) -> Self {
+        Grep { root, guard }
     }
 }
 
@@ -116,9 +118,11 @@ impl Tool for Grep {
             false => pattern.clone(),
         };
 
+        let start = resolve_path(&self.root, requested)?;
+        self.guard.read(&start)?;
         let search = Search {
             root: self.root.clone(),
-            start: resolve_path(&self.root, requested)?,
+            start,
             regex: RegexBuilder::new(&expression)
                 .case_insensitive(case_insensitive)
                 .build()
@@ -141,11 +145,12 @@ impl Tool for Grep {
 
 pub struct Find {
     root: PathBuf,
+    guard: Guard,
 }
 
 impl Find {
-    pub fn new(root: PathBuf) -> Self {
-        Find { root }
+    pub fn new(root: PathBuf, guard: Guard) -> Self {
+        Find { root, guard }
     }
 }
 
@@ -189,9 +194,11 @@ impl Tool for Find {
             .unwrap_or(DEFAULT_FIND_LIMIT)
             .clamp(1, MAX_FIND_LIMIT);
 
+        let start = resolve_path(&self.root, requested)?;
+        self.guard.read(&start)?;
         let lookup = Lookup {
             root: self.root.clone(),
-            start: resolve_path(&self.root, requested)?,
+            start,
             pattern,
             limit,
         };
@@ -441,7 +448,7 @@ mod tests {
         write(&root, "src/main.rs", "fn main() {}\nlet needle = 1;\n");
         write(&root, "src/other.rs", "nothing here\n");
 
-        let output = Grep::new(root)
+        let output = Grep::new(root.clone(), Guard::for_workspace(&root))
             .execute(&json!({ "pattern": "needle" }))
             .await
             .unwrap();
@@ -455,7 +462,7 @@ mod tests {
         write(&root, "b.rs", "needle\n");
         write(&root, "c.rs", "nothing\n");
 
-        let output = Grep::new(root)
+        let output = Grep::new(root.clone(), Guard::for_workspace(&root))
             .execute(&json!({ "pattern": "needle", "output_mode": "files" }))
             .await
             .unwrap();
@@ -468,7 +475,7 @@ mod tests {
         write(&root, "a.rs", "needle\nneedle\n");
         write(&root, "b.rs", "needle\n");
 
-        let output = Grep::new(root)
+        let output = Grep::new(root.clone(), Guard::for_workspace(&root))
             .execute(&json!({ "pattern": "needle", "output_mode": "count" }))
             .await
             .unwrap();
@@ -483,7 +490,7 @@ mod tests {
         write(&root, "secrets.txt", "needle in a secret\n");
         write(&root, "src/keep.rs", "needle in tracked source\n");
 
-        let output = Grep::new(root)
+        let output = Grep::new(root.clone(), Guard::for_workspace(&root))
             .execute(&json!({ "pattern": "needle", "output_mode": "files" }))
             .await
             .unwrap();
@@ -499,7 +506,7 @@ mod tests {
         write(&root, "blob.bin", binary);
         write(&root, "notes.txt", "needle in text\n");
 
-        let output = Grep::new(root)
+        let output = Grep::new(root.clone(), Guard::for_workspace(&root))
             .execute(&json!({ "pattern": "needle", "output_mode": "files" }))
             .await
             .unwrap();
@@ -512,7 +519,7 @@ mod tests {
         write(&root, "src/lib.rs", "needle\n");
         write(&root, "README.md", "needle\n");
 
-        let output = Grep::new(root)
+        let output = Grep::new(root.clone(), Guard::for_workspace(&root))
             .execute(&json!({ "pattern": "needle", "glob": "*.rs", "output_mode": "files" }))
             .await
             .unwrap();
@@ -525,7 +532,7 @@ mod tests {
         write(&root, "src/lib.rs", "needle\n");
         write(&root, "docs/guide.md", "needle\n");
 
-        let output = Grep::new(root)
+        let output = Grep::new(root.clone(), Guard::for_workspace(&root))
             .execute(&json!({ "pattern": "needle", "path": "docs", "output_mode": "files" }))
             .await
             .unwrap();
@@ -536,7 +543,7 @@ mod tests {
     async fn case_insensitivity_is_opt_in() {
         let root = scratch("grep-case");
         write(&root, "a.rs", "Needle\n");
-        let tool = Grep::new(root);
+        let tool = Grep::new(root.clone(), Guard::for_workspace(&root));
 
         let sensitive = tool
             .execute(&json!({ "pattern": "needle", "output_mode": "files" }))
@@ -564,7 +571,7 @@ mod tests {
             "fn alpha() {}\nfn beta() {}\nstruct Gamma;\n",
         );
 
-        let output = Grep::new(root)
+        let output = Grep::new(root.clone(), Guard::for_workspace(&root))
             .execute(&json!({ "pattern": r"^fn (\w+)" }))
             .await
             .unwrap();
@@ -574,7 +581,7 @@ mod tests {
     #[tokio::test]
     async fn an_unparseable_pattern_is_reported_rather_than_searched() {
         let root = scratch("grep-bad-pattern");
-        let error = Grep::new(root)
+        let error = Grep::new(root.clone(), Guard::for_workspace(&root))
             .execute(&json!({ "pattern": "unclosed(" }))
             .await
             .unwrap_err();
@@ -584,7 +591,7 @@ mod tests {
     #[tokio::test]
     async fn an_unknown_output_mode_is_rejected() {
         let root = scratch("grep-bad-mode");
-        let error = Grep::new(root)
+        let error = Grep::new(root.clone(), Guard::for_workspace(&root))
             .execute(&json!({ "pattern": "x", "output_mode": "json" }))
             .await
             .unwrap_err();
@@ -594,7 +601,7 @@ mod tests {
     #[tokio::test]
     async fn searching_outside_the_workspace_is_refused() {
         let root = scratch("grep-escape");
-        let error = Grep::new(root)
+        let error = Grep::new(root.clone(), Guard::for_workspace(&root))
             .execute(&json!({ "pattern": "x", "path": "../.." }))
             .await
             .unwrap_err();
@@ -607,7 +614,7 @@ mod tests {
         let many = "needle\n".repeat(MAX_MATCHES + 50);
         write(&root, "a.rs", many);
 
-        let output = Grep::new(root)
+        let output = Grep::new(root.clone(), Guard::for_workspace(&root))
             .execute(&json!({ "pattern": "needle" }))
             .await
             .unwrap();
@@ -625,7 +632,7 @@ mod tests {
         write(&root, "src/lib.rs", "");
         write(&root, "README.md", "");
 
-        let output = Find::new(root)
+        let output = Find::new(root.clone(), Guard::for_workspace(&root))
             .execute(&json!({ "pattern": "**/*.rs" }))
             .await
             .unwrap();
@@ -651,7 +658,7 @@ mod tests {
                 .unwrap();
         }
 
-        let output = Find::new(root)
+        let output = Find::new(root.clone(), Guard::for_workspace(&root))
             .execute(&json!({ "pattern": "*.rs" }))
             .await
             .unwrap();
@@ -665,7 +672,7 @@ mod tests {
         write(&root, "target/generated.rs", "");
         write(&root, "src/main.rs", "");
 
-        let output = Find::new(root)
+        let output = Find::new(root.clone(), Guard::for_workspace(&root))
             .execute(&json!({ "pattern": "**/*.rs" }))
             .await
             .unwrap();
@@ -679,7 +686,7 @@ mod tests {
             write(&root, &format!("file{index}.rs"), "");
         }
 
-        let output = Find::new(root)
+        let output = Find::new(root.clone(), Guard::for_workspace(&root))
             .execute(&json!({ "pattern": "*.rs", "limit": 3 }))
             .await
             .unwrap();
@@ -695,7 +702,7 @@ mod tests {
         let root = scratch("find-empty");
         write(&root, "README.md", "");
 
-        let output = Find::new(root)
+        let output = Find::new(root.clone(), Guard::for_workspace(&root))
             .execute(&json!({ "pattern": "**/*.rs" }))
             .await
             .unwrap();
@@ -730,7 +737,7 @@ mod hidden {
         write(&root, ".config/settings.toml", "key = \"needle\"\n");
         write(&root, "visible.txt", "needle\n");
 
-        let output = Grep::new(root)
+        let output = Grep::new(root.clone(), Guard::for_workspace(&root))
             .execute(&json!({ "pattern": "needle", "output_mode": "files" }))
             .await
             .unwrap();
@@ -746,7 +753,7 @@ mod hidden {
         write(&root, ".gitignore", "target\n");
         write(&root, "README.md", "hello\n");
 
-        let output = Find::new(root)
+        let output = Find::new(root.clone(), Guard::for_workspace(&root))
             .execute(&json!({ "pattern": "**/*" }))
             .await
             .unwrap();
@@ -764,7 +771,7 @@ mod hidden {
         write(&root, "secret.txt", "needle\n");
         write(&root, "kept.txt", "needle\n");
 
-        let output = Grep::new(root)
+        let output = Grep::new(root.clone(), Guard::for_workspace(&root))
             .execute(&json!({ "pattern": "needle", "output_mode": "files" }))
             .await
             .unwrap();
@@ -792,7 +799,7 @@ mod literal_and_context {
         let root = scratch("literal");
         std::fs::write(root.join("a.txt"), "a.b\naxb\n").unwrap();
 
-        let regex = Grep::new(root.clone())
+        let regex = Grep::new(root.clone(), Guard::for_workspace(&root))
             .execute(&json!({ "pattern": "a.b" }))
             .await
             .unwrap();
@@ -801,7 +808,7 @@ mod literal_and_context {
             "as a regex the dot matches x: {regex}"
         );
 
-        let literal = Grep::new(root)
+        let literal = Grep::new(root.clone(), Guard::for_workspace(&root))
             .execute(&json!({ "pattern": "a.b", "literal": true }))
             .await
             .unwrap();
@@ -818,7 +825,7 @@ mod literal_and_context {
         let root = scratch("context");
         std::fs::write(root.join("a.txt"), "one\ntwo\nneedle\nfour\nfive\n").unwrap();
 
-        let output = Grep::new(root)
+        let output = Grep::new(root.clone(), Guard::for_workspace(&root))
             .execute(&json!({ "pattern": "needle", "context": 1 }))
             .await
             .unwrap();
@@ -838,7 +845,7 @@ mod literal_and_context {
         let root = scratch("nocontext");
         std::fs::write(root.join("a.txt"), "one\nneedle\nthree\n").unwrap();
 
-        let output = Grep::new(root)
+        let output = Grep::new(root.clone(), Guard::for_workspace(&root))
             .execute(&json!({ "pattern": "needle" }))
             .await
             .unwrap();

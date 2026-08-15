@@ -18,7 +18,6 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::Mutex;
-use tokio::sync::RwLock;
 
 /// Answer whatever the extensions ask for, for as long as the host is running.
 ///
@@ -27,6 +26,10 @@ use tokio::sync::RwLock;
 pub async fn serve(
     host: Arc<Host>,
     workspace: PathBuf,
+    // Handed over rather than looked up: what confines a command is settled once, where the
+    // run is assembled, and a task that had to go and find it could be handed a different
+    // answer than the tools were built around.
+    sandbox: micro_sandbox::Sandbox,
     asker: Option<micro_tui::UiAsker>,
     state: Arc<tokio::sync::RwLock<State>>,
     session: Arc<tokio::sync::Mutex<micro_session::Session>>,
@@ -46,6 +49,7 @@ pub async fn serve(
                     &request,
                     &payload,
                     &workspace,
+                    &sandbox,
                     &state,
                     &session,
                     asker.as_ref(),
@@ -189,13 +193,14 @@ async fn answer(
     request: &str,
     payload: &Value,
     workspace: &PathBuf,
+    sandbox: &micro_sandbox::Sandbox,
     state: &Arc<tokio::sync::RwLock<State>>,
     session: &Arc<tokio::sync::Mutex<micro_session::Session>>,
     asker: Option<&micro_tui::UiAsker>,
 ) -> Value {
     match request {
-        "exec" => exec(payload, workspace).await,
-        "run_builtin_tool" => run_builtin_tool(payload, workspace).await,
+        "exec" => exec(payload, workspace, sandbox).await,
+        "run_builtin_tool" => run_builtin_tool(payload, workspace, sandbox).await,
         // The pi-ai compatibility shim's facade for provider streaming and the model
         // catalog — see `crates/micro-extensions/host/compat/ai/**`. Both answer from
         // micro's own provider clients and catalog rather than a second copy of either.
@@ -602,7 +607,12 @@ fn session_snapshot(session: &micro_session::Session) -> Value {
 ///
 /// The command and its arguments are passed as they are written, with no shell between
 /// them: an argument holding shell punctuation is an argument, not a second command.
-async fn exec(payload: &Value, workspace: &PathBuf) -> Value {
+///
+/// Confined by the session's own policy. An extension is code the user installed rather
+/// than code the model wrote, but it runs inside the same session and reaches the same
+/// machine, and a policy that a program could step outside of by asking an extension to
+/// ask for it would not be a policy.
+async fn exec(payload: &Value, workspace: &PathBuf, sandbox: &micro_sandbox::Sandbox) -> Value {
     let Some(command) = payload.get("command").and_then(Value::as_str) else {
         return json!({ "error": "exec needs a command" });
     };
@@ -618,19 +628,30 @@ async fn exec(payload: &Value, workspace: &PathBuf) -> Value {
         })
         .unwrap_or_default();
 
-    let finished = tokio::process::Command::new(command)
-        .args(&arguments)
-        .current_dir(workspace)
+    let wrapped = sandbox.wrap(command, arguments, workspace);
+    let confined = wrapped.enforced;
+    let finished = tokio::process::Command::from(wrapped.to_std_command())
         .stdin(std::process::Stdio::null())
         .output()
         .await;
 
     match finished {
-        Ok(result) => json!({
-            "stdout": String::from_utf8_lossy(&result.stdout),
-            "stderr": String::from_utf8_lossy(&result.stderr),
-            "code": result.status.code().unwrap_or(-1),
-        }),
+        Ok(result) => {
+            let stderr = String::from_utf8_lossy(&result.stderr).into_owned();
+            let mut answer = json!({
+                "stdout": String::from_utf8_lossy(&result.stdout),
+                "stderr": stderr.clone(),
+                "code": result.status.code().unwrap_or(-1),
+            });
+            // Said in a field of its own rather than folded into the output: an extension
+            // decides what to do about a refusal, and reading the platform's wording out
+            // of stderr to find out is not something each of them should have to do.
+            if confined && micro_sandbox::is_likely_denied(&result.status, &stderr) {
+                answer["denied"] = json!(true);
+                answer["policy"] = json!(sandbox.policy().name());
+            }
+            answer
+        }
         Err(error) => json!({ "error": format!("cannot run {command}: {error}") }),
     }
 }
@@ -648,7 +669,11 @@ async fn exec(payload: &Value, workspace: &PathBuf) -> Value {
 /// `context.ts`, set once from this same `workspace` when the extension host loads — so
 /// trusting the value already authoritative on this side costs nothing and asks nothing
 /// of the sender.
-async fn run_builtin_tool(payload: &Value, workspace: &PathBuf) -> Value {
+async fn run_builtin_tool(
+    payload: &Value,
+    workspace: &PathBuf,
+    sandbox: &micro_sandbox::Sandbox,
+) -> Value {
     use micro_tools::Tool;
 
     let Some(tool_name) = payload.get("tool").and_then(Value::as_str) else {
@@ -656,15 +681,19 @@ async fn run_builtin_tool(payload: &Value, workspace: &PathBuf) -> Value {
     };
     let arguments = payload.get("arguments").cloned().unwrap_or_else(|| json!({}));
     let root = workspace.clone();
+    // The same instances in every respect that matters, the policy included: an extension
+    // reaching for micro's own tools gets micro's own tools, held to what the session is
+    // held to.
+    let guard = micro_tools::Guard::new(sandbox.clone());
 
     let result: Result<String, String> = match tool_name {
-        "read" => micro_tools::Read::new(root).execute(&arguments).await,
-        "write" => micro_tools::Write::new(root).execute(&arguments).await,
-        "edit" => micro_tools::Edit::new(root).execute(&arguments).await,
-        "ls" => micro_tools::Ls::new(root).execute(&arguments).await,
-        "find" => micro_tools::Find::new(root).execute(&arguments).await,
-        "grep" => micro_tools::Grep::new(root).execute(&arguments).await,
-        "bash" => micro_tools::Bash::new(root).execute(&arguments).await,
+        "read" => micro_tools::Read::new(root, guard).execute(&arguments).await,
+        "write" => micro_tools::Write::new(root, guard).execute(&arguments).await,
+        "edit" => micro_tools::Edit::new(root, guard).execute(&arguments).await,
+        "ls" => micro_tools::Ls::new(root, guard).execute(&arguments).await,
+        "find" => micro_tools::Find::new(root, guard).execute(&arguments).await,
+        "grep" => micro_tools::Grep::new(root, guard).execute(&arguments).await,
+        "bash" => micro_tools::Bash::new(root, guard).execute(&arguments).await,
         other => Err(format!("unknown builtin tool: {other}")),
     };
 
@@ -1429,10 +1458,13 @@ pub async fn cancelled(host: Option<&Arc<Host>>, event: &str, payload: Value) ->
 /// changes nothing, which is what keeps a listener from accidentally intercepting.
 pub struct ExtensionHooks {
     host: Arc<Host>,
-    /// The system prompt in force right now: ohm's `before_agent_start` and `context`
-    /// handlers can each replace it for a turn, and each later turn starts from whatever
-    /// the last one left it as. Seeded from what the agent was actually built with.
-    system_prompt: RwLock<String>,
+    /// What the model is told before the conversation, as the agent holds it.
+    ///
+    /// A handle rather than a copy: an extension replacing the prompt is asking the agent
+    /// for a change, not keeping one of its own. Holding a second copy here is what made
+    /// `/reload` a no-op with any extension loaded — the copy was written over the reloaded
+    /// prompt on the way to every request — and it left the change unrecorded besides.
+    prefix: micro_agent::PrefixControl,
     /// Where this run operates, for `before_agent_start`'s `systemPromptOptions` — the
     /// one field ohm's own default carries when nothing richer is on hand.
     cwd: String,
@@ -1443,10 +1475,10 @@ pub struct ExtensionHooks {
 }
 
 impl ExtensionHooks {
-    pub fn new(host: Arc<Host>, system_prompt: String, cwd: String) -> Self {
+    pub fn new(host: Arc<Host>, prefix: micro_agent::PrefixControl, cwd: String) -> Self {
         ExtensionHooks {
             host,
-            system_prompt: RwLock::new(system_prompt),
+            prefix,
             cwd,
             call_arguments: Mutex::new(HashMap::new()),
         }
@@ -1584,7 +1616,7 @@ impl Hooks for ExtensionHooks {
 
         let mut payload = json!({
             "prompt": text,
-            "systemPrompt": self.system_prompt.read().await.clone(),
+            "systemPrompt": self.prefix.system_prompt(),
             "systemPromptOptions": { "cwd": self.cwd },
         });
         if !images.is_empty() {
@@ -1599,22 +1631,30 @@ impl Hooks for ExtensionHooks {
         // it; `Hooks::before_agent_start` can only replace the prompt outright, so that
         // half of the result has nowhere to go and is not honoured. `systemPrompt` is:
         // each answer is applied in turn, so the last extension to set it has the final
-        // say — and it takes effect immediately, so the request this same turn sends
-        // already reflects it.
+        // say — and this runs before the first turn of the run, so the request that turn
+        // sends already reflects it.
         for answer in &answers {
             if let Some(replacement) = answer.get("systemPrompt").and_then(Value::as_str) {
-                *self.system_prompt.write().await = replacement.to_string();
+                // A replaced prompt is no longer the one the run assembled, so the spans
+                // describing that one would be describing something else. What is true of
+                // this prompt is that an extension wrote all of it.
+                let span = micro_types::PrefixSpan {
+                    source: micro_types::EventSource::Extension(String::new()),
+                    bytes: replacement.len() as u64,
+                    hash: micro_types::content_hash(replacement.as_bytes()),
+                };
+                self.prefix.change(replacement, vec![span], "extension");
             }
         }
         None
     }
 
     async fn before_request(&self, context: micro_types::Context) -> micro_types::Context {
+        // The system prompt is not touched here. It was settled at the turn boundary, hash
+        // and all, and a request that rewrote it on the way out would be a request the
+        // session cannot account for. What an extension may still change is the
+        // conversation, which is nobody's cached prefix.
         let mut context = context;
-        // Whatever `before_agent_start` (or an earlier turn's `context` handler) left the
-        // system prompt as is what this request is built with, unless a `context` handler
-        // below changes it again for this one.
-        context.system_prompt = Some(self.system_prompt.read().await.clone());
 
         let asked = self
             .host
@@ -1688,11 +1728,22 @@ impl Hooks for ExtensionHooks {
 mod tests {
     use super::*;
 
+    /// The policy these tests hand over. `full` on purpose: what a policy does to a command
+    /// is proved where it is enforced — in `micro-tools`, and in the integration tests that
+    /// run the built binary — while what is being checked here is that a request reaches
+    /// the right implementation at all. Confining these would also mean re-running micro's
+    /// own executable as the Linux helper, and the executable running a unit test is the
+    /// test harness, which knows nothing about being a helper.
+    fn unconfined() -> micro_sandbox::Sandbox {
+        micro_sandbox::Sandbox::new(micro_sandbox::SandboxPolicy::Full, std::env::temp_dir())
+    }
+
     #[tokio::test]
     async fn exec_runs_a_command_and_reports_what_it_printed() {
         let answer = exec(
             &json!({ "command": "echo", "args": ["hello"] }),
             &std::env::temp_dir(),
+            &unconfined(),
         )
         .await;
 
@@ -1706,20 +1757,29 @@ mod tests {
         let answer = exec(
             &json!({ "command": "echo", "args": ["hello; echo goodbye"] }),
             &std::env::temp_dir(),
+            &unconfined(),
         )
         .await;
 
         assert_eq!(answer["stdout"], "hello; echo goodbye\n");
     }
 
+    /// Which shape the failure arrives in depends on whether the session is confined: a
+    /// command micro spawns itself cannot start at all, while under the sandbox it is the
+    /// wrapper that starts and then reports what it could not run. Either way the
+    /// extension is told the command failed, and which one it was.
     #[tokio::test]
     async fn a_command_that_is_not_there_is_reported() {
         let answer = exec(
             &json!({ "command": "nothing-like-this-exists", "args": [] }),
             &std::env::temp_dir(),
+            &unconfined(),
         )
         .await;
-        assert!(answer["error"].as_str().unwrap().contains("cannot run"));
+
+        let said = format!("{}{}", answer["error"], answer["stderr"]);
+        assert!(said.contains("nothing-like-this-exists"), "{answer}");
+        assert_ne!(answer["code"], json!(0), "{answer}");
     }
 
     /// A scratch workspace of its own, so a builtin tool's writes land somewhere real and
@@ -1744,6 +1804,7 @@ mod tests {
         let write = run_builtin_tool(
             &json!({ "tool": "write", "arguments": { "path": "note.txt", "content": "hello there" } }),
             &workspace,
+            &unconfined(),
         )
         .await;
         assert!(write["result"].as_str().unwrap().contains("note.txt"));
@@ -1752,8 +1813,12 @@ mod tests {
             "hello there"
         );
 
-        let read = run_builtin_tool(&json!({ "tool": "read", "arguments": { "path": "note.txt" } }), &workspace)
-            .await;
+        let read = run_builtin_tool(
+            &json!({ "tool": "read", "arguments": { "path": "note.txt" } }),
+            &workspace,
+            &unconfined(),
+        )
+        .await;
         assert!(read["result"].as_str().unwrap().contains("hello there"));
     }
 
@@ -1770,6 +1835,7 @@ mod tests {
                 "arguments": { "path": "note.txt", "old_string": "hello", "new_string": "goodbye" },
             }),
             &workspace,
+            &unconfined(),
         )
         .await;
         assert!(edit["result"].as_str().unwrap().contains("Edited"));
@@ -1787,6 +1853,7 @@ mod tests {
         let bash = run_builtin_tool(
             &json!({ "tool": "bash", "arguments": { "command": "echo hi" } }),
             &workspace,
+            &unconfined(),
         )
         .await;
         assert!(bash["result"].as_str().unwrap().contains("hi"));
@@ -1796,7 +1863,12 @@ mod tests {
     /// doing nothing, the same as `answer()`'s own catch-all for a request it does not know.
     #[tokio::test]
     async fn run_builtin_tool_refuses_a_tool_it_does_not_have() {
-        let answer = run_builtin_tool(&json!({ "tool": "teleport", "arguments": {} }), &scratch_workspace()).await;
+        let answer = run_builtin_tool(
+            &json!({ "tool": "teleport", "arguments": {} }),
+            &scratch_workspace(),
+            &unconfined(),
+        )
+        .await;
         assert!(answer["error"].as_str().unwrap().contains("teleport"));
     }
 
@@ -1810,6 +1882,7 @@ mod tests {
             "run_builtin_tool",
             &json!({ "tool": "write", "arguments": { "path": "from-answer.txt", "content": "written" } }),
             &workspace,
+            &unconfined(),
             &state,
             &scratch_session().await,
             None,
@@ -1844,6 +1917,7 @@ mod tests {
             "fly",
             &json!({}),
             &std::env::temp_dir(),
+            &unconfined(),
             &state,
             &scratch_session().await,
             None,
@@ -1882,6 +1956,7 @@ mod tests {
             "get_thinking_level",
             &json!({}),
             &workspace,
+            &unconfined(),
             &state,
             &session,
             None,
@@ -1893,6 +1968,7 @@ mod tests {
             "get_active_tools",
             &json!({}),
             &workspace,
+            &unconfined(),
             &state,
             &session,
             None,
@@ -1900,7 +1976,7 @@ mod tests {
         .await;
         assert_eq!(tools["tools"][0], "read");
 
-        let model = answer("get_model", &json!({}), &workspace, &state, &session, None).await;
+        let model = answer("get_model", &json!({}), &workspace, &unconfined(), &state, &session, None).await;
         assert_eq!(model["model"]["id"], "gemini-3-pro");
         assert_eq!(model["model"]["name"], "Gemini 3 Pro");
         assert_eq!(model["model"]["provider"], "openrouter");
@@ -1912,6 +1988,7 @@ mod tests {
             "get_commands",
             &json!({}),
             &workspace,
+            &unconfined(),
             &state,
             &session,
             None,
@@ -1923,6 +2000,7 @@ mod tests {
             "get_system_prompt",
             &json!({}),
             &workspace,
+            &unconfined(),
             &state,
             &session,
             None,
@@ -1954,6 +2032,7 @@ mod tests {
             "get_context",
             &json!({}),
             &workspace,
+            &unconfined(),
             &state,
             &session,
             None,
@@ -2042,6 +2121,7 @@ mod tests {
             "get_context",
             &json!({}),
             &workspace,
+            &unconfined(),
             &state,
             &session,
             None,
@@ -2177,6 +2257,7 @@ mod tests {
             "get_context",
             &json!({}),
             &workspace,
+            &unconfined(),
             &state,
             &session,
             None,
@@ -2188,6 +2269,7 @@ mod tests {
             "get_context",
             &json!({ "commandContext": true }),
             &workspace,
+            &unconfined(),
             &state,
             &session,
             None,
@@ -2219,6 +2301,7 @@ mod tests {
             "get_session_name",
             &json!({}),
             &workspace,
+            &unconfined(),
             &state,
             &session,
             None,
@@ -2230,6 +2313,7 @@ mod tests {
             "set_session_name",
             &json!({ "name": "the good one" }),
             &workspace,
+            &unconfined(),
             &state,
             &session,
             None,
@@ -2241,6 +2325,7 @@ mod tests {
             "get_session_name",
             &json!({}),
             &workspace,
+            &unconfined(),
             &state,
             &session,
             None,
@@ -2263,6 +2348,7 @@ mod tests {
                 "reload",
                 &json!({}),
                 &workspace,
+                &unconfined(),
                 &state,
                 &session,
                 Some(&asker),
@@ -2287,7 +2373,7 @@ mod tests {
         let workspace = std::env::temp_dir();
 
         for request in ["reload", "new_session"] {
-            let answered = answer(request, &json!({}), &workspace, &state, &session, None).await;
+            let answered = answer(request, &json!({}), &workspace, &unconfined(), &state, &session, None).await;
             assert_eq!(answered["cancelled"], true, "{request}");
         }
     }
@@ -2310,6 +2396,7 @@ mod tests {
                     "switch_session",
                     &json!({ "sessionPath": "abc123" }),
                     &workspace,
+                    &unconfined(),
                     &state,
                     &session,
                     Some(&asker),
@@ -2329,6 +2416,7 @@ mod tests {
                     "navigate_tree",
                     &json!({ "targetId": "7" }),
                     &workspace,
+                    &unconfined(),
                     &state,
                     &session,
                     Some(&asker),
@@ -2365,6 +2453,7 @@ mod tests {
                 "fork",
                 &json!({ "entryId": "2", "position": "before" }),
                 &workspace,
+                &unconfined(),
                 &state,
                 &session,
                 Some(&asker),
@@ -2389,6 +2478,7 @@ mod tests {
             "fork",
             &json!({ "entryId": "not-real" }),
             &workspace,
+            &unconfined(),
             &state,
             &session,
             None,
@@ -2689,7 +2779,7 @@ export default (micro) => {
         tokio::spawn({
             let host = Arc::clone(&host);
             let root = root.clone();
-            async move { serve(host, root, Some(asker), state, session).await }
+            async move { serve(host, root, unconfined(), Some(asker), state, session).await }
         });
 
         let running = {
@@ -2781,7 +2871,7 @@ export default (micro) => {
         tokio::spawn({
             let host = Arc::clone(&host);
             let root = root.clone();
-            async move { serve(host, root, Some(asker), state, session).await }
+            async move { serve(host, root, unconfined(), Some(asker), state, session).await }
         });
 
         let running = {
@@ -2861,7 +2951,7 @@ export default (micro) => {
         tokio::spawn({
             let host = Arc::clone(&host);
             let root = root.clone();
-            async move { serve(host, root, Some(asker), state, session).await }
+            async move { serve(host, root, unconfined(), Some(asker), state, session).await }
         });
 
         let running = {
@@ -2929,7 +3019,7 @@ export default (micro) => {
         tokio::spawn({
             let host = Arc::clone(&host);
             let root = root.clone();
-            async move { serve(host, root, Some(asker), state, session).await }
+            async move { serve(host, root, unconfined(), Some(asker), state, session).await }
         });
 
         host.call_command("probe", "").await.unwrap();

@@ -80,7 +80,9 @@ later summarized still knows what it was billed for:
 ## The other events
 
 `compaction` says a stretch of the conversation was replaced by a summary, naming the
-summary by hash and how many recent messages were kept. `head_moved` says the conversation
+summary by hash, how many recent messages were kept, and what the request that wrote the
+summary cost — spending nobody asked for, so it is billed on a line of its own rather than
+folded into the turn that triggered it. `head_moved` says the conversation
 now continues from a different entry, which is what makes a branch survive being reopened.
 `tool_denied` says something watching the run refused a call; the model was told in the
 shape a failed call takes, and this is the record that it was a refusal rather than a
@@ -89,6 +91,47 @@ failure. `sandbox_decision` says what the sandbox allowed or refused and under w
 `prefix_changed` says the cacheable head of the request changed, and why.
 `budget_stop` says a run stopped because it had spent what it was allowed to. `marker` is
 for anything that has not earned a kind of its own.
+
+## When the prefix changes
+
+The head of a request is supposed to stand still for the length of a session, because
+standing still is what a provider will reuse. Everything that can move it — `/reload`
+re-reading the project's instructions, an extension replacing the prompt, a narrowed tool
+list — asks the agent for the change rather than making it, and the agent takes it up at a
+turn boundary, never inside a request already being assembled. Each one that lands is a
+line:
+
+```json
+{"type":"prefix_changed","reason":"reload","from_hash":"9f2a…","to_hash":"41bd…"}
+```
+
+`reason` says what asked: `reload`, `tools`, or `extension`. The hashes are the
+`prefix_hash` of the turns on either side, so requests and prefix changes read as one
+chain — a turn whose prefix differs from the turn before it has a recorded reason sitting
+between them, and a difference with nothing between them means something rewrote the
+request after the session had described it.
+
+Compaction is not a prefix change. It replaces the head of the conversation rather than
+what sits in front of it, and it has its own event.
+
+## Why a turn missed the cache
+
+```
+micro why-miss <id>        the most recent turn
+micro why-miss <id> 4      that one
+```
+
+The same reading is `/why-miss` inside a session. It compares a turn's request against the
+one before it and answers in one of two ways. If the two prefix hashes match, it says so
+and then names anything on the conversation side that could still have cost a hit: a
+summary written between them, a branch the conversation moved to, or more messages added
+than a provider holds breakpoints for.
+
+If the hashes differ, it names the span of the prompt that moved, resolves both versions
+out of the blobs, prints the lines that differ, and finishes with the recorded reason and
+the sequence number it was recorded at. That last line is the point of the whole thing:
+the cache broke because the project's instructions were read again, at seq 42, rather than
+for no reason anyone can name.
 
 ## Blobs
 
@@ -124,6 +167,7 @@ micro sessions show <id>                 the turns the session recorded
 micro sessions show <id> --turn 2        what the model was shown at turn 2
 micro sessions show <id> --turn 2 --raw  that turn's request, as it went out
 micro sessions export <id>               the whole ledger as JSONL
+micro why-miss <id> [turn]               why a turn paid for a prompt again
 ```
 
 `--raw` rebuilds the body from what was recorded and hashes it against `request_hash`

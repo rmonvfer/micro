@@ -257,6 +257,19 @@ pub async fn sessions_export(id: &str) -> Result<()> {
     Ok(())
 }
 
+/// `micro why-miss <session> [turn]` — why a turn paid for a prompt the provider had.
+///
+/// The reading of the ledger is [`micro_commands::why_miss`], the same one `/why-miss`
+/// shows, so what a session says about itself does not depend on where it was asked.
+pub async fn why_miss(id: &str, turn: Option<u64>) -> Result<()> {
+    let store = SessionStore::from_env()?;
+    let explanation = micro_commands::why_miss(&store, id, turn)
+        .await
+        .map_err(|reason| anyhow::anyhow!(reason))?;
+    println!("{explanation}");
+    Ok(())
+}
+
 /// Every turn the session recorded a request for, in order and without repeats.
 ///
 /// A turn re-issued after a transient failure was recorded once per attempt, and the last

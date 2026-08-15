@@ -27,6 +27,7 @@ pub use tree::Row;
 pub use tree::Tree;
 
 use micro_types::content_hash;
+use micro_types::CompactionCost;
 use micro_types::LedgerEvent;
 use micro_types::Message;
 use micro_types::Model;
@@ -682,19 +683,29 @@ impl Session {
 
     /// Record that a stretch of the conversation has been summarized.
     ///
-    /// `kept` is how many of the most recent messages are still part of the conversation.
-    /// Nothing is removed from the log; what is written is where the conversation now
-    /// starts reading from, so reopening the session costs no summarizing.
-    pub async fn compacted(&mut self, summary: &str, kept: usize) -> Result<()> {
+    /// `kept` is how many of the most recent messages are still part of the conversation,
+    /// and `cost` is what the request that wrote the summary was billed. Nothing is removed
+    /// from the log; what is written is where the conversation now starts reading from, so
+    /// reopening the session costs no summarizing.
+    pub async fn compacted(
+        &mut self,
+        summary: &str,
+        kept: usize,
+        cost: CompactionCost,
+    ) -> Result<()> {
         let compaction = self.tree.push_compaction(summary, kept);
         self.write_line(&compaction).await?;
         // Recorded twice over, and for two different readers: the compaction line is what
         // the conversation is read through when the session reopens, and the ledger event
         // is what says a compaction happened here to anything accounting for the session.
         let summary_blob = self.store_blob(summary.as_bytes()).await?;
-        self.append_event(LedgerEvent::Compaction { summary_blob, kept })
-            .await
-            .map(|_| ())
+        self.append_event(LedgerEvent::Compaction {
+            summary_blob,
+            kept,
+            cost,
+        })
+        .await
+        .map(|_| ())
     }
 
     /// Every fact recorded beside the conversation, oldest first.
@@ -1462,7 +1473,9 @@ mod tests {
 
         for _ in 0..3 {
             session
-                .append_event(LedgerEvent::Marker { data: serde_json::Value::Null })
+                .append_event(LedgerEvent::Marker {
+                    data: serde_json::Value::Null,
+                })
                 .await
                 .unwrap();
         }
@@ -1472,7 +1485,9 @@ mod tests {
         assert_eq!(
             reopened
                 .session
-                .append_event(LedgerEvent::Marker { data: serde_json::Value::Null })
+                .append_event(LedgerEvent::Marker {
+                    data: serde_json::Value::Null
+                })
                 .await
                 .unwrap(),
             4

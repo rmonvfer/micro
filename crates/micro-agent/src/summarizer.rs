@@ -4,9 +4,11 @@ use async_trait::async_trait;
 use micro_context::ContextError;
 use micro_context::Result;
 use micro_context::Summarizer;
+use micro_context::Summary;
 use micro_context::COMPACTION_PROMPT;
 use micro_provider::ApiKey;
 use micro_provider::Provider;
+use micro_types::CompactionCost;
 use micro_types::Context;
 use micro_types::Message;
 use micro_types::Model;
@@ -22,6 +24,9 @@ pub struct ProviderSummarizer {
     provider: Arc<dyn Provider>,
     model: Model,
     api_key: ApiKey,
+    /// What the conversation being summarized is called, so a provider that caches against
+    /// a name sees this request as part of it rather than as a stranger.
+    cache_key: Option<String>,
 }
 
 impl ProviderSummarizer {
@@ -30,20 +35,32 @@ impl ProviderSummarizer {
             provider,
             model,
             api_key: api_key.into(),
+            cache_key: None,
         }
+    }
+
+    /// Summarize as part of a named conversation.
+    ///
+    /// The transcript this request carries is the conversation's own opening, so a backend
+    /// that routes by session name has the rest of it warm. Sent under a name of its own it
+    /// would land somewhere with nothing cached and pay full price for a prompt the service
+    /// already holds.
+    pub fn for_conversation(mut self, key: Option<String>) -> Self {
+        self.cache_key = key;
+        self
     }
 }
 
 #[async_trait]
 impl Summarizer for ProviderSummarizer {
-    async fn summarize(&self, messages: &[Message]) -> Result<String> {
+    async fn summarize(&self, messages: &[Message]) -> Result<Summary> {
         let transcript = micro_context::render_transcript(messages);
         let context = Context {
             system_prompt: None,
             messages: vec![Message::user(format!("{transcript}\n{COMPACTION_PROMPT}"))],
             tools: Vec::new(),
             headers: Vec::new(),
-            cache_key: None,
+            cache_key: self.cache_key.clone(),
         };
 
         let mut model = self.model.clone();
@@ -64,7 +81,17 @@ impl Summarizer for ProviderSummarizer {
                     if summary.is_empty() {
                         return Err(ContextError::summarizer("the model returned no summary"));
                     }
-                    return Ok(summary);
+                    return Ok(Summary {
+                        text: summary,
+                        // Carried back rather than dropped: this was a request to a model
+                        // like any other, and a session that cannot say what compaction
+                        // cost cannot say what it cost.
+                        cost: CompactionCost {
+                            usage: message.usage,
+                            provider: message.provider,
+                            model: message.model,
+                        },
+                    });
                 }
                 StreamEvent::Error { message } => return Err(ContextError::summarizer(message)),
                 _ => {}

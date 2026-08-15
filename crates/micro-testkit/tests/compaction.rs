@@ -275,6 +275,45 @@ async fn a_tool_result_produced_this_run_is_never_split_from_its_call() {
     );
 }
 
+/// Summarizing is a request like any other: it is made on behalf of this conversation, so
+/// it carries the conversation's name, and it costs something, so the session records what.
+#[tokio::test]
+async fn what_summarizing_cost_is_recorded_with_the_compaction_it_paid_for() {
+    let provider = FakeProvider::builder()
+        .turn(Turn::text("## Goal\nship it").with_usage(Usage {
+            input: 900,
+            output: 120,
+            cache_read: 0,
+            cache_write: 0,
+        }))
+        .build();
+    let (recorder, mut recorded) = tokio::sync::mpsc::unbounded_channel();
+
+    let mut agent = Agent::new(Arc::new(provider.clone()), Vec::new(), model(), "test-key")
+        .with_history(conversation(10, 400))
+        .with_context_window(2_000)
+        .with_recorder(recorder)
+        .with_cache_key("session-7");
+
+    agent.compact_now().await.expect("a summary");
+
+    assert_eq!(
+        provider.call(0).context.cache_key.as_deref(),
+        Some("session-7"),
+        "the summarizer asks as part of the conversation it is summarizing"
+    );
+
+    let compaction = std::iter::from_fn(|| recorded.try_recv().ok())
+        .find_map(|record| match record {
+            micro_agent::Record::Compacted { cost, .. } => Some(cost),
+            _ => None,
+        })
+        .expect("the compaction was recorded");
+    assert_eq!(compaction.usage.input, 900);
+    assert_eq!(compaction.usage.output, 120);
+    assert_eq!(compaction.model, "test-model");
+}
+
 #[tokio::test]
 async fn the_summary_is_reported_so_a_renderer_can_show_it() {
     let provider = FakeProvider::once(Turn::text("carrying on"));
@@ -349,7 +388,7 @@ async fn compaction_is_recorded_rather_than_only_applied() {
         .filter(|record| matches!(record, micro_agent::Record::Compacted { .. }))
         .collect();
     assert_eq!(compactions.len(), 1, "and the compaction is recorded once");
-    let micro_agent::Record::Compacted { summary, kept } = compactions[0] else {
+    let micro_agent::Record::Compacted { summary, kept, .. } = compactions[0] else {
         unreachable!("filtered above")
     };
     assert_eq!(summary, "earlier work");
@@ -415,7 +454,7 @@ async fn the_provider_summarizer_asks_the_model_for_a_summary() {
         .await
         .unwrap();
 
-    assert_eq!(summary, "## Goal\nship the thing");
+    assert_eq!(summary.text, "## Goal\nship the thing");
 
     // One self-contained request: no tools to call, and the transcript plus the shared
     // instruction in a single user message.

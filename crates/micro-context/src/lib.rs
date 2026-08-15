@@ -22,6 +22,7 @@ pub use compaction::Compacted;
 pub use compaction::CompactionConfig;
 pub use compaction::Compactor;
 pub use compaction::Summarizer;
+pub use compaction::Summary;
 pub use compaction::CHARS_PER_TOKEN;
 pub use compaction::COMPACTION_PROMPT;
 pub use compaction::SUMMARY_CLOSE;
