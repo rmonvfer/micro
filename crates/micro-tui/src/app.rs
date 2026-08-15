@@ -27,6 +27,7 @@ use crate::theme::Theme;
 use crate::transcript::NoticeLevel;
 use crate::transcript::Transcript;
 use micro_commands::MessageKind;
+use micro_commands::InspectionItem;
 use micro_types::AgentEvent;
 use micro_types::ContentBlock;
 use micro_types::Message;
@@ -465,6 +466,9 @@ struct ComponentOverlay {
 struct InspectionOverlay {
     title: String,
     text: String,
+    items: Vec<InspectionItem>,
+    selected: usize,
+    detail_open: bool,
     scroll: usize,
 }
 
@@ -999,16 +1003,26 @@ impl App {
             .map(|overlay| overlay.lines.as_slice())
     }
 
-    pub fn inspection(&self) -> Option<(&str, &str, usize)> {
-        self.inspection
-            .as_ref()
-            .map(|overlay| (overlay.title.as_str(), overlay.text.as_str(), overlay.scroll))
+    pub fn inspection(&self) -> Option<(&str, &str, &[InspectionItem], usize, bool, usize)> {
+        self.inspection.as_ref().map(|overlay| {
+            (
+                overlay.title.as_str(),
+                overlay.text.as_str(),
+                overlay.items.as_slice(),
+                overlay.selected,
+                overlay.detail_open,
+                overlay.scroll,
+            )
+        })
     }
 
-    pub fn open_inspection(&mut self, title: String, text: String) {
+    pub fn open_inspection(&mut self, title: String, text: String, items: Vec<InspectionItem>) {
         self.inspection = Some(InspectionOverlay {
             title,
             text,
+            items,
+            selected: 0,
+            detail_open: false,
             scroll: 0,
         });
     }
@@ -2524,7 +2538,18 @@ impl App {
 
     fn handle_inspection(&mut self, action: Action) -> Outcome {
         if matches!(action, Action::Cancel | Action::Interrupt) {
-            self.inspection = None;
+            if self
+                .inspection
+                .as_ref()
+                .is_some_and(|overlay| overlay.detail_open)
+            {
+                if let Some(overlay) = self.inspection.as_mut() {
+                    overlay.detail_open = false;
+                    overlay.scroll = 0;
+                }
+            } else {
+                self.inspection = None;
+            }
             return Outcome::Handled;
         }
         if matches!(action, Action::QuitOrDelete) {
@@ -2534,6 +2559,28 @@ impl App {
         let Some(overlay) = self.inspection.as_mut() else {
             return Outcome::Handled;
         };
+        if !overlay.items.is_empty() && !overlay.detail_open {
+            match action {
+                Action::MoveUp | Action::ScrollUp => {
+                    overlay.selected = overlay.selected.saturating_sub(1)
+                }
+                Action::MoveDown | Action::ScrollDown => {
+                    overlay.selected = (overlay.selected + 1).min(overlay.items.len() - 1)
+                }
+                Action::PageUp => overlay.selected = overlay.selected.saturating_sub(page),
+                Action::PageDown => {
+                    overlay.selected = (overlay.selected + page).min(overlay.items.len() - 1)
+                }
+                Action::MoveLineStart => overlay.selected = 0,
+                Action::MoveLineEnd => overlay.selected = overlay.items.len() - 1,
+                Action::Submit => {
+                    overlay.detail_open = true;
+                    overlay.scroll = 0;
+                }
+                _ => {}
+            }
+            return Outcome::Handled;
+        }
         match action {
             Action::MoveUp | Action::ScrollUp => overlay.scroll = overlay.scroll.saturating_sub(1),
             Action::MoveDown | Action::ScrollDown => {
@@ -2778,6 +2825,36 @@ mod tests {
 
     fn type_text(app: &mut App, text: &str) {
         app.handle(Action::Insert(text.to_string()));
+    }
+
+    #[test]
+    fn inspection_items_open_a_detail_before_escape_closes_the_overlay() {
+        let mut app = app();
+        app.open_inspection(
+            "Session bill".to_string(),
+            "summary".to_string(),
+            vec![
+                InspectionItem {
+                    label: "turn 1".to_string(),
+                    detail: "first".to_string(),
+                },
+                InspectionItem {
+                    label: "turn 2".to_string(),
+                    detail: "second".to_string(),
+                },
+            ],
+        );
+
+        app.handle(Action::MoveDown);
+        app.handle(Action::Submit);
+        let (_, _, _, selected, detail_open, _) = app.inspection().unwrap();
+        assert_eq!(selected, 1);
+        assert!(detail_open);
+
+        app.handle(Action::Cancel);
+        assert!(!app.inspection().unwrap().4);
+        app.handle(Action::Cancel);
+        assert!(app.inspection().is_none());
     }
 
     /// Press up until the conversation has no more to show and the key reaches the history.

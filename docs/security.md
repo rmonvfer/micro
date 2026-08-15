@@ -37,7 +37,7 @@ The default command policy is `workspace-write`:
 - network access is blocked;
 - built-in file tools cannot read or write outside the workspace.
 
-Extension commands sent through micro use the same command policy. Configured MCP servers and the extension host itself are outside it.
+Extension commands sent through micro use the same command policy. The extension host has a separate, stricter process sandbox. Configured MCP servers remain outside the command sandbox.
 
 Select another policy for one run:
 
@@ -60,18 +60,19 @@ The extension host rejects requests outside that set. The extension receives a n
 
 Legacy extensions without a manifest may require a one-time capability decision. A trusted project does not prompt again for capabilities of the extensions it ships because project trust already covers loading that code.
 
-Capabilities limit access to micro's host API. They are not an operating-system sandbox for arbitrary code inside the Bun process. Install extensions from sources you are willing to execute.
+The Bun host also runs with an empty inherited environment, no network or write access, and a filesystem read allowlist limited to micro's host files and the loaded extension packages. It is disabled on platforms where micro cannot enforce that sandbox.
+
+The two checks are independent. Capabilities decide which host operations an extension may request. The process sandbox prevents extension code from gaining ambient machine access through Bun's own APIs. A brokered `exec` request still enters the active command sandbox, so the extension capability can narrow authority but cannot widen the session policy.
 
 ## What the sandbox does not cover
 
 The command sandbox does not wrap:
 
-- the extension host process itself;
 - configured MCP server processes;
 - commands entered manually with `!` in the terminal;
 - micro's own provider network requests.
 
-Those processes and actions run with the permissions of the user who started micro.
+Those processes and actions run with the permissions of the user who started micro. The extension host is covered by its own confinement described above.
 
 ## Recorded decisions
 

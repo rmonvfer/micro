@@ -33,6 +33,7 @@ pub use bill::Side;
 pub use bill::TurnBill;
 pub use bill::UnknownAttempt;
 pub use outcome::CommandOutcome;
+pub use outcome::InspectionItem;
 pub use outcome::MessageKind;
 pub use outcome::RemoteAction;
 pub use outcome::Picker;

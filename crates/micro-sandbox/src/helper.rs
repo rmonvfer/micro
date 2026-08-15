@@ -6,6 +6,7 @@
 use crate::WritableRoot;
 use serde::Deserialize;
 use serde::Serialize;
+use std::path::PathBuf;
 
 /// The first argument that turns a micro process into the sandbox helper.
 ///
@@ -31,6 +32,12 @@ pub const HELPER_FAILURE_EXIT_CODE: i32 = 125;
 pub struct SandboxRules {
     pub writable_roots: Vec<WritableRoot>,
     pub allow_network: bool,
+    /// `None` keeps the command sandbox's normal read-anywhere behavior. `Some` is a
+    /// fail-closed allowlist used for extension processes.
+    pub readable_roots: Option<Vec<PathBuf>>,
+    /// Empty means any executable. A non-empty list limits `process-exec` on macOS;
+    /// Landlock applies the same limit through execute access on Linux.
+    pub allowed_executables: Vec<PathBuf>,
 }
 
 /// Apply the sandbox to this process and become the command it was given.
@@ -121,6 +128,8 @@ mod tests {
                 read_only_subpaths: vec![PathBuf::from("/work/.git")],
             }],
             allow_network: false,
+            readable_roots: None,
+            allowed_executables: Vec::new(),
         }
     }
 

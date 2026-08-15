@@ -78,6 +78,8 @@ pub struct Sandbox {
     workspace: PathBuf,
     micro_homes: Vec<PathBuf>,
     helper_program: Option<PathBuf>,
+    readable_roots: Option<Vec<PathBuf>>,
+    allowed_executables: Vec<PathBuf>,
 }
 
 /// A command described so the caller can spawn it: what to run, where, and what to add to
@@ -158,7 +160,41 @@ impl Sandbox {
             workspace,
             micro_homes: Vec::new(),
             helper_program: std::env::current_exe().ok(),
+            readable_roots: None,
+            allowed_executables: Vec::new(),
         }
+    }
+
+    /// A fail-closed process sandbox for an extension runtime.
+    ///
+    /// Unlike the command sandbox, this grants no ambient filesystem reads. The runtime
+    /// can read only its own executable, the supplied extension/host roots, and the small
+    /// set of operating-system files required to start. It cannot write or use the
+    /// network. Callers must still check [`Sandbox::is_enforced`] before spawning.
+    pub fn extension_host<I, P>(runtime: impl Into<PathBuf>, readable_roots: I) -> Self
+    where
+        I: IntoIterator<Item = P>,
+        P: Into<PathBuf>,
+    {
+        let runtime = paths::canonicalize_deepest_existing(&runtime.into());
+        let mut readable_roots: Vec<PathBuf> = readable_roots
+            .into_iter()
+            .map(Into::into)
+            .map(|path| paths::canonicalize_deepest_existing(&path))
+            .collect();
+        readable_roots.push(runtime.clone());
+        readable_roots.extend(platform_runtime_roots());
+        readable_roots.sort();
+        readable_roots.dedup();
+
+        let workspace = readable_roots
+            .first()
+            .cloned()
+            .unwrap_or_else(|| PathBuf::from("/"));
+        let mut sandbox = Sandbox::new(SandboxPolicy::ReadOnly, workspace);
+        sandbox.readable_roots = Some(readable_roots);
+        sandbox.allowed_executables = vec![runtime];
+        sandbox
     }
 
     /// Protect one of micro's own directories, so a command confined to a workspace that
@@ -255,6 +291,8 @@ impl Sandbox {
         SandboxRules {
             writable_roots: self.writable_roots(),
             allow_network: self.policy.allows_network(),
+            readable_roots: self.readable_roots.clone(),
+            allowed_executables: self.allowed_executables.clone(),
         }
     }
 
@@ -278,11 +316,7 @@ impl Sandbox {
         {
             WrappedCommand {
                 program: PathBuf::from(seatbelt::SANDBOX_EXEC),
-                args: seatbelt::seatbelt_args(
-                    &self.writable_roots(),
-                    self.policy.allows_network(),
-                    command,
-                ),
+                args: seatbelt::seatbelt_args(&self.rules(), command),
                 cwd: cwd.to_path_buf(),
                 env: vec![(SANDBOX_ENV_VAR.to_string(), "seatbelt".to_string())],
                 enforced: true,
@@ -363,6 +397,47 @@ impl Sandbox {
                 }
             }
         }
+    }
+}
+
+fn platform_runtime_roots() -> Vec<PathBuf> {
+    #[cfg(target_os = "linux")]
+    {
+        [
+            "/lib",
+            "/lib64",
+            "/usr/lib",
+            "/usr/lib64",
+            "/etc/ld.so.cache",
+            "/etc/localtime",
+            "/usr/share/zoneinfo",
+            "/dev/null",
+            "/dev/urandom",
+            "/proc/self",
+        ]
+        .into_iter()
+        .map(PathBuf::from)
+        .filter(|path| path.exists())
+        .collect()
+    }
+    #[cfg(target_os = "macos")]
+    {
+        [
+            "/System/Library",
+            "/usr/lib",
+            "/etc/localtime",
+            "/usr/share/zoneinfo",
+            "/dev/null",
+            "/dev/urandom",
+        ]
+        .into_iter()
+        .map(PathBuf::from)
+        .filter(|path| path.exists())
+        .collect()
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    {
+        Vec::new()
     }
 }
 
@@ -487,6 +562,27 @@ mod tests {
         let sandbox = Sandbox::new(SandboxPolicy::ReadOnly, &workspace);
         assert!(sandbox.writable_roots().is_empty());
         assert!(sandbox.rules().writable_roots.is_empty());
+    }
+
+    #[test]
+    fn an_extension_host_has_an_explicit_read_and_execute_allowlist() {
+        let (_dir, workspace) = workspace("extension-host");
+        let runtime = workspace.join("bun");
+        std::fs::write(&runtime, "runtime").unwrap();
+        let package = workspace.join("extension");
+        std::fs::create_dir_all(&package).unwrap();
+
+        let sandbox = Sandbox::extension_host(&runtime, [&package]);
+        let rules = sandbox.rules();
+        assert!(!rules.allow_network);
+        assert!(rules.writable_roots.is_empty());
+        let readable = rules.readable_roots.expect("extension reads are allowlisted");
+        assert!(readable.contains(&std::fs::canonicalize(&runtime).unwrap()));
+        assert!(readable.contains(&std::fs::canonicalize(&package).unwrap()));
+        assert_eq!(
+            rules.allowed_executables,
+            [std::fs::canonicalize(runtime).unwrap()]
+        );
     }
 
     #[test]

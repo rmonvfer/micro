@@ -14,6 +14,7 @@
 use crate::session::thousands;
 use crate::CommandContext;
 use crate::CommandOutcome;
+use crate::InspectionItem;
 use micro_models::Catalog;
 use micro_models::ModelCost;
 use micro_models::RequestCost;
@@ -525,6 +526,70 @@ fn message_bytes(message: &Message) -> u64 {
 }
 
 impl Bill {
+    /// The fixed part of the interactive bill. Turns are separate selectable rows.
+    pub fn summary(&self) -> String {
+        let mut cost = RequestCost::default();
+        for part in self
+            .turns
+            .iter()
+            .map(|turn| turn.cost)
+            .chain(self.compactions.iter().map(|compaction| compaction.cost))
+        {
+            cost += part;
+        }
+        let mut out = format!(
+            "Session {}\n\n{:<28}{}\n",
+            self.session_id,
+            "Total spent",
+            money(self.total),
+        );
+        if (self.total - self.current_branch_total).abs() > f64::EPSILON {
+            out.push_str(&format!(
+                "{:<28}{}\n{:<28}{}\n",
+                "Current branch",
+                money(self.current_branch_total),
+                "Other branches",
+                money(self.total - self.current_branch_total),
+            ));
+        }
+        out.push_str(&format!(
+            "{:<28}{}\n{:<28}{}\n{:<28}{}\n{:<28}{}\n",
+            "Input",
+            money(cost.input),
+            "Cache reads",
+            money(cost.cache_read),
+            "Cache writes",
+            money(cost.cache_write),
+            "Output",
+            money(cost.output),
+        ));
+        out
+    }
+
+    pub fn inspection_items(&self) -> Vec<InspectionItem> {
+        self.turns
+            .iter()
+            .map(|turn| {
+                let prompt = turn.usage.input + turn.usage.cache_read + turn.usage.cache_write;
+                let cache = if prompt == 0 {
+                    0.0
+                } else {
+                    (turn.usage.cache_read as f64 / prompt as f64) * 100.0
+                };
+                InspectionItem {
+                    label: format!(
+                        "turn {:<4}  {:<28}  {}  cache {:.0}%",
+                        turn.turn,
+                        format!("{}/{}", turn.provider, turn.model),
+                        money(turn.total()),
+                        cache,
+                    ),
+                    detail: self.added_by(turn.turn).unwrap_or_else(|error| error),
+                }
+            })
+            .collect()
+    }
+
     /// The whole bill, as it should be read.
     pub fn report(&self) -> String {
         let mut out = format!("Bill for session {}\n", self.session_id);
@@ -841,7 +906,11 @@ pub(crate) async fn command(
             Ok(report) => CommandOutcome::inspect("Session bill", report),
             Err(reason) => CommandOutcome::error(reason),
         },
-        None => CommandOutcome::inspect("Session bill", billed.report()),
+        None => CommandOutcome::inspect_items(
+            "Session bill",
+            billed.summary(),
+            billed.inspection_items(),
+        ),
     }
 }
 

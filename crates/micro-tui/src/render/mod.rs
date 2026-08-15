@@ -334,8 +334,18 @@ fn overlay_lines(app: &App, theme: &Theme, width: usize) -> Vec<Line<'static>> {
     if let Some(prompt) = app.key_prompt() {
         return overlay::key_prompt_lines(prompt, theme, width);
     }
-    if let Some((title, text, scroll)) = app.inspection() {
-        return overlay::inspection_lines(title, text, scroll, theme, width, budget);
+    if let Some((title, text, items, selected, detail_open, scroll)) = app.inspection() {
+        return overlay::inspection_lines(
+            title,
+            text,
+            items,
+            selected,
+            detail_open,
+            scroll,
+            theme,
+            width,
+            budget,
+        );
     }
     if let Some(lines) = app.component_overlay_lines() {
         return lines

@@ -40,6 +40,12 @@ pub enum ThemeChoice {
     Auto,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InspectionItem {
+    pub label: String,
+    pub detail: String,
+}
+
 pub enum CommandOutcome {
     /// Text to show. Nothing else changes.
     Message {
@@ -51,6 +57,7 @@ pub enum CommandOutcome {
     Inspect {
         title: String,
         text: String,
+        items: Vec<InspectionItem>,
     },
     /// Send this to the model in place of what was typed, which is what running a prompt
     /// written for the purpose does.
@@ -166,6 +173,19 @@ impl CommandOutcome {
         CommandOutcome::Inspect {
             title: title.into(),
             text: text.into(),
+            items: Vec::new(),
+        }
+    }
+
+    pub fn inspect_items(
+        title: impl Into<String>,
+        text: impl Into<String>,
+        items: Vec<InspectionItem>,
+    ) -> Self {
+        CommandOutcome::Inspect {
+            title: title.into(),
+            text: text.into(),
+            items,
         }
     }
 
@@ -360,10 +380,11 @@ impl fmt::Debug for CommandOutcome {
                 .field("kind", kind)
                 .field("text", text)
                 .finish(),
-            CommandOutcome::Inspect { title, text } => formatter
+            CommandOutcome::Inspect { title, text, items } => formatter
                 .debug_struct("Inspect")
                 .field("title", title)
                 .field("text", text)
+                .field("items", items)
                 .finish(),
             CommandOutcome::SetModel { model } => formatter
                 .debug_struct("SetModel")

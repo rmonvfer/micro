@@ -847,7 +847,7 @@ async fn apply_outcome(
 ) -> Result<()> {
     match outcome {
         CommandOutcome::Message { kind, text } => app.notice(text, kind),
-        CommandOutcome::Inspect { title, text } => app.open_inspection(title, text),
+        CommandOutcome::Inspect { title, text, items } => app.open_inspection(title, text, items),
         CommandOutcome::Quit => app.should_quit = true,
         CommandOutcome::Choose(picker) => {
             // A list of models is drawn from what is already known and asked about at the

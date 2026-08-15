@@ -19,6 +19,7 @@ use crate::wrap::grapheme_width;
 use crate::wrap::text_width;
 use crate::wrap::truncate;
 use crate::wrap::wrap_spans;
+use micro_commands::InspectionItem;
 use ratatui::style::Modifier;
 use ratatui::style::Style;
 use ratatui::text::Line;
@@ -37,10 +38,84 @@ const MIN_DETAIL: usize = 10;
 pub fn inspection_lines(
     title: &str,
     text: &str,
+    items: &[InspectionItem],
+    selected: usize,
+    detail_open: bool,
     scroll: usize,
     theme: &Theme,
     width: usize,
     budget: usize,
+) -> Vec<Line<'static>> {
+    if detail_open {
+        if let Some(item) = items.get(selected) {
+            return inspection_text_lines(
+                &format!("{title} · {}", item.label),
+                &item.detail,
+                scroll,
+                theme,
+                width,
+                budget,
+                "↑↓ scroll · esc back",
+            );
+        }
+    }
+    if items.is_empty() {
+        return inspection_text_lines(
+            title,
+            text,
+            scroll,
+            theme,
+            width,
+            budget,
+            "↑↓ scroll · esc close",
+        );
+    }
+
+    let mut out = inspection_title(title, theme);
+    let summary_budget = (budget / 2).max(2);
+    for source in text.lines().take(summary_budget) {
+        out.extend(wrap_spans(
+            &[
+                Span::raw("  "),
+                Span::styled(source.to_string(), theme.body()),
+            ],
+            width,
+            2,
+        ));
+    }
+    out.push(Line::default());
+
+    let row_budget = budget.saturating_sub(out.len() + 1).max(1);
+    let first = selected
+        .saturating_sub(row_budget.saturating_sub(1))
+        .min(items.len().saturating_sub(row_budget));
+    for (index, item) in items.iter().enumerate().skip(first).take(row_budget) {
+        let marker = if index == selected { "› " } else { "  " };
+        let style = if index == selected {
+            Style::new().fg(theme.accent).add_modifier(Modifier::BOLD)
+        } else {
+            theme.body()
+        };
+        out.push(clip(
+            Line::from(vec![Span::styled(marker, style), Span::styled(item.label.clone(), style)]),
+            width,
+        ));
+    }
+    out.push(hint("↑↓ navigate · enter inspect · esc close", theme));
+    out.truncate(budget.max(1));
+    out.into_iter()
+        .map(|line| tint(line, width, theme.surface))
+        .collect()
+}
+
+fn inspection_text_lines(
+    title: &str,
+    text: &str,
+    scroll: usize,
+    theme: &Theme,
+    width: usize,
+    budget: usize,
+    hint_text: &str,
 ) -> Vec<Line<'static>> {
     let mut body = Vec::new();
     for source in text.lines() {
@@ -55,7 +130,16 @@ pub fn inspection_lines(
     }
     let body_height = budget.saturating_sub(3).max(1);
     let first = scroll.min(body.len().saturating_sub(body_height));
-    let mut out = vec![
+    let mut out = inspection_title(title, theme);
+    out.extend(body.into_iter().skip(first).take(body_height));
+    out.push(hint(hint_text, theme));
+    out.into_iter()
+        .map(|line| tint(line, width, theme.surface))
+        .collect()
+}
+
+fn inspection_title(title: &str, theme: &Theme) -> Vec<Line<'static>> {
+    vec![
         Line::from(vec![
             Span::raw("  "),
             Span::styled(
@@ -64,12 +148,7 @@ pub fn inspection_lines(
             ),
         ]),
         Line::default(),
-    ];
-    out.extend(body.into_iter().skip(first).take(body_height));
-    out.push(hint("↑↓ scroll · esc close", theme));
-    out.into_iter()
-        .map(|line| tint(line, width, theme.surface))
-        .collect()
+    ]
 }
 
 pub fn picker_lines(

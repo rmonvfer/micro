@@ -3,6 +3,7 @@
 //! Derived from openai/codex codex-rs/core/src/seatbelt.rs at commit a8c7f5391c and
 //! codex-rs/sandboxing/src/seatbelt.rs at commit 486df09a00; modified.
 
+use crate::SandboxRules;
 use crate::WritableRoot;
 use std::path::PathBuf;
 
@@ -20,20 +21,20 @@ pub(crate) const SANDBOX_EXEC: &str = "/usr/bin/sandbox-exec";
 /// Paths never reach the profile text. They travel as `-D` definitions and the profile
 /// refers to them by name, so a directory named `") (allow default) ;` is a directory
 /// name rather than a policy edit.
-pub(crate) fn seatbelt_args(
-    roots: &[WritableRoot],
-    allow_network: bool,
-    command: Vec<String>,
-) -> Vec<String> {
-    let (write_policy, definitions) = write_policy(roots);
-    let network_policy = if allow_network {
+pub(crate) fn seatbelt_args(rules: &SandboxRules, command: Vec<String>) -> Vec<String> {
+    let (write_policy, mut definitions) = write_policy(&rules.writable_roots);
+    let (read_policy, read_definitions) = read_policy(rules.readable_roots.as_deref());
+    definitions.extend(read_definitions);
+    let (process_policy, process_definitions) = process_policy(&rules.allowed_executables);
+    definitions.extend(process_definitions);
+    let network_policy = if rules.allow_network {
         format!("(allow network-outbound)\n(allow network-inbound)\n{NETWORK_POLICY}")
     } else {
         String::new()
     };
 
     let profile = format!(
-        "{BASE_POLICY}\n; allow read-only file operations\n(allow file-read*)\n{write_policy}\n{network_policy}"
+        "{BASE_POLICY}\n{process_policy}\n{read_policy}\n{write_policy}\n{network_policy}"
     );
 
     let mut args = vec!["-p".to_string(), profile];
@@ -45,6 +46,57 @@ pub(crate) fn seatbelt_args(
     args.push("--".to_string());
     args.extend(command);
     args
+}
+
+fn read_policy(roots: Option<&[PathBuf]>) -> (String, Vec<(String, PathBuf)>) {
+    let Some(roots) = roots else {
+        return (
+            "; allow read-only file operations\n(allow file-read*)".to_string(),
+            Vec::new(),
+        );
+    };
+    let mut matches = Vec::new();
+    let mut definitions = Vec::new();
+    for (index, root) in roots.iter().enumerate() {
+        let name = format!("READABLE_ROOT_{index}");
+        definitions.push((name.clone(), root.clone()));
+        matches.push(format!("(literal (param \"{name}\"))"));
+        matches.push(format!("(subpath (param \"{name}\"))"));
+    }
+    if matches.is_empty() {
+        return (String::new(), definitions);
+    }
+    (
+        format!(
+            "; extension read allowlist\n(allow file-read*\n{}\n)",
+            matches.join("\n")
+        ),
+        definitions,
+    )
+}
+
+fn process_policy(executables: &[PathBuf]) -> (String, Vec<(String, PathBuf)>) {
+    if executables.is_empty() {
+        return (
+            "; child processes inherit the policy\n(allow process-exec)\n(allow process-fork)"
+                .to_string(),
+            Vec::new(),
+        );
+    }
+    let mut matches = Vec::new();
+    let mut definitions = Vec::new();
+    for (index, executable) in executables.iter().enumerate() {
+        let name = format!("ALLOWED_EXECUTABLE_{index}");
+        definitions.push((name.clone(), executable.clone()));
+        matches.push(format!("(literal (param \"{name}\"))"));
+    }
+    (
+        format!(
+            "; extension runtime only\n(allow process-exec {})",
+            matches.join(" ")
+        ),
+        definitions,
+    )
 }
 
 /// The `file-write*` rule for `roots`, plus the parameter definitions it refers to.
@@ -93,6 +145,15 @@ fn write_policy(roots: &[WritableRoot]) -> (String, Vec<(String, PathBuf)>) {
 mod tests {
     use super::*;
 
+    fn rules(roots: Vec<WritableRoot>, allow_network: bool) -> SandboxRules {
+        SandboxRules {
+            writable_roots: roots,
+            allow_network,
+            readable_roots: None,
+            allowed_executables: Vec::new(),
+        }
+    }
+
     fn workspace_root() -> WritableRoot {
         WritableRoot {
             root: PathBuf::from("/work"),
@@ -102,7 +163,7 @@ mod tests {
 
     #[test]
     fn a_read_only_policy_grants_no_write_rule_at_all() {
-        let args = seatbelt_args(&[], false, vec!["/bin/echo".to_string()]);
+        let args = seatbelt_args(&rules(Vec::new(), false), vec!["/bin/echo".to_string()]);
         let profile = &args[1];
         assert!(profile.contains("(deny default)"), "{profile}");
         assert!(profile.contains("(allow file-read*)"), "{profile}");
@@ -115,7 +176,10 @@ mod tests {
 
     #[test]
     fn writable_roots_travel_as_parameters_and_never_as_profile_text() {
-        let args = seatbelt_args(&[workspace_root()], false, vec!["/bin/echo".to_string()]);
+        let args = seatbelt_args(
+            &rules(vec![workspace_root()], false),
+            vec!["/bin/echo".to_string()],
+        );
         let profile = &args[1];
         assert!(!profile.contains("/work"), "{profile}");
         assert!(
@@ -142,16 +206,25 @@ mod tests {
             root: PathBuf::from("/work/\") (allow default) ;"),
             read_only_subpaths: Vec::new(),
         };
-        let args = seatbelt_args(&[root], false, vec!["/bin/echo".to_string()]);
+        let args = seatbelt_args(
+            &rules(vec![root], false),
+            vec!["/bin/echo".to_string()],
+        );
         assert!(!args[1].contains("allow default"), "{}", args[1]);
     }
 
     #[test]
     fn the_network_rules_are_added_only_when_the_policy_allows_the_network() {
-        let denied = seatbelt_args(&[workspace_root()], false, vec!["/bin/echo".to_string()]);
+        let denied = seatbelt_args(
+            &rules(vec![workspace_root()], false),
+            vec!["/bin/echo".to_string()],
+        );
         assert!(!denied[1].contains("network-outbound"), "{}", denied[1]);
 
-        let allowed = seatbelt_args(&[workspace_root()], true, vec!["/bin/echo".to_string()]);
+        let allowed = seatbelt_args(
+            &rules(vec![workspace_root()], true),
+            vec!["/bin/echo".to_string()],
+        );
         assert!(
             allowed[1].contains("(allow network-outbound)"),
             "{}",
@@ -167,11 +240,31 @@ mod tests {
     #[test]
     fn the_command_follows_the_separator_so_its_arguments_stay_its_own() {
         let args = seatbelt_args(
-            &[workspace_root()],
-            false,
+            &rules(vec![workspace_root()], false),
             vec!["/bin/bash".to_string(), "-c".to_string(), "-p".to_string()],
         );
         let separator = args.iter().position(|arg| arg == "--").unwrap();
         assert_eq!(&args[separator + 1..], ["/bin/bash", "-c", "-p"]);
+    }
+
+    #[test]
+    fn an_extension_profile_does_not_grant_ambient_reads_or_process_fork() {
+        let rules = SandboxRules {
+            writable_roots: Vec::new(),
+            allow_network: false,
+            readable_roots: Some(vec![PathBuf::from("/host"), PathBuf::from("/extension")]),
+            allowed_executables: vec![PathBuf::from("/usr/local/bin/bun")],
+        };
+        let args = seatbelt_args(&rules, vec!["/usr/local/bin/bun".to_string()]);
+        let profile = &args[1];
+        assert!(
+            !profile
+                .lines()
+                .any(|line| line.trim() == "(allow file-read*)"),
+            "{profile}"
+        );
+        assert!(!profile.contains("(allow process-fork)"), "{profile}");
+        assert!(profile.contains("ALLOWED_EXECUTABLE_0"), "{profile}");
+        assert!(args.contains(&"-DREADABLE_ROOT_0=/host".to_string()));
     }
 }
