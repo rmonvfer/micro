@@ -1,0 +1,89 @@
+:root {
+  --micro-accent: #0f766e;
+  --micro-accent-strong: #115e59;
+  --micro-accent-soft: rgba(15, 118, 110, 0.09);
+  --micro-border: rgba(100, 116, 139, 0.22);
+}
+
+html.navy,
+html.coal,
+html.ayu {
+  --micro-accent: #5eead4;
+  --micro-accent-strong: #99f6e4;
+  --micro-accent-soft: rgba(45, 212, 191, 0.1);
+  --micro-border: rgba(148, 163, 184, 0.2);
+}
+
+.content main {
+  max-width: 880px;
+}
+
+.content main h1 {
+  margin-bottom: 0.7em;
+  font-size: clamp(2rem, 5vw, 3rem);
+  letter-spacing: -0.045em;
+  line-height: 1.05;
+}
+
+.content main h2 {
+  margin-top: 2.2em;
+  padding-bottom: 0.35em;
+  border-bottom: 1px solid var(--micro-border);
+  letter-spacing: -0.02em;
+}
+
+.content main a {
+  color: var(--micro-accent);
+  text-underline-offset: 0.18em;
+}
+
+.content main a:hover {
+  color: var(--micro-accent-strong);
+}
+
+.menu-title {
+  font-weight: 760;
+  letter-spacing: -0.025em;
+}
+
+.sidebar .chapter li a.active {
+  color: var(--micro-accent);
+  background: var(--micro-accent-soft);
+  border-radius: 0.35rem;
+}
+
+.content main code {
+  border-radius: 0.3rem;
+}
+
+.content main pre {
+  border: 1px solid var(--micro-border);
+  border-radius: 0.65rem;
+}
+
+.content main table {
+  display: table;
+  width: 100%;
+  margin: 1.25rem 0 1.75rem;
+}
+
+.content main th {
+  text-align: left;
+}
+
+.content main blockquote {
+  border-left-color: var(--micro-accent);
+  background: var(--micro-accent-soft);
+  padding: 0.75rem 1rem;
+}
+
+@media (max-width: 700px) {
+  .content main {
+    max-width: none;
+  }
+
+  .content main table {
+    display: block;
+    overflow-x: auto;
+  }
+}

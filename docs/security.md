@@ -30,12 +30,14 @@ Trust does not disable the command sandbox. It only decides whether micro loads 
 
 ## Command confinement
 
-The sandbox applies to model-requested commands, built-in file tools, and commands that extensions run through micro. The default is `workspace-write`:
+The default command policy is `workspace-write`:
 
-- writes are allowed inside the workspace;
+- shell commands may read outside the workspace but may write only inside it;
 - `.git`, `.micro`, and micro's own data directories remain read-only;
 - network access is blocked;
-- reads are not restricted.
+- built-in file tools cannot read or write outside the workspace.
+
+Extension commands sent through micro use the same command policy. Configured MCP servers and the extension host itself are outside it.
 
 Select another policy for one run:
 

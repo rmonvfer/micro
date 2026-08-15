@@ -4,7 +4,7 @@ The sandbox restricts commands and file operations performed on behalf of the mo
 
 ## Policies
 
-| Policy | Reads | Writes | Network |
+| Policy | Command reads | Command writes | Network |
 | --- | --- | --- | --- |
 | `read-only` | allowed | blocked | blocked |
 | `workspace-write` | allowed | workspace only | blocked by default |
@@ -58,7 +58,7 @@ Add writable roots or network access with a policy object:
 
 When command confinement is unavailable, micro reports that commands are running unconfined. File tools still apply path checks.
 
-The file tools resolve symlinks before checking the target. A link inside the workspace does not permit a write outside it.
+Built-in file tools are always limited to the workspace, for reads as well as writes. They resolve symlinks before checking the target, so a link inside the workspace does not grant access to a path outside it. The selected policy still decides whether an in-workspace write is allowed.
 
 ## What is covered
 

@@ -168,7 +168,7 @@ micro accepts `micro.extensions` and `pi.extensions` entries in `package.json`. 
 
 The compatibility suite runs the examples under `examples/extensions` against the real micro binary. APIs tied to pi's own agent loop, session runtime, interactive mode, or terminal image protocols do not have micro equivalents and return named runtime errors.
 
-See [Extension examples](../examples/extensions/README.md) and [Testing extensions](extension-testing.md).
+See the [extension examples on GitHub](https://github.com/rmonvfer/micro/tree/main/examples/extensions) and [Testing extensions](extension-testing.md).
 
 ## Load failures
 

@@ -50,6 +50,14 @@ micro sessions export <SESSION_ID>
 
 See [Ledger format](ledger.md) for the event schema.
 
+## Export, import, and share
+
+Inside an interactive session, `/export [path]` writes a readable Markdown transcript. `/import <path>` imports a session JSONL file and switches to it.
+
+`/share` uploads a transcript as a secret GitHub gist. It reads `GITHUB_TOKEN`, then `GH_TOKEN`; the token needs the `gist` scope. A secret gist is unlisted, not access-controlled, so anyone with the URL can read it.
+
+These commands are explicit. micro does not upload sessions automatically.
+
 ## Billing
 
 Show the latest session bill for the current workspace:

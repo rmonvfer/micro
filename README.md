@@ -10,6 +10,8 @@ micro auth login anthropic
 micro "explain this repository"
 ```
 
+Read the [documentation](https://rmonvfer.github.io/micro/) for installation, configuration, security details, and extension development.
+
 Run it directly from a checkout with:
 
 ```bash
@@ -92,16 +94,19 @@ See [Security model](docs/security.md) and [Command sandbox](docs/sandbox.md) be
 
 ## Documentation
 
-Start with the [documentation index](docs/README.md).
+Read the [documentation site](https://rmonvfer.github.io/micro/) or browse the Markdown in [`docs/`](docs/README.md).
 
 - [Getting started](docs/getting-started.md)
 - [CLI reference](docs/cli-reference.md)
 - [Sessions, billing, and cache analysis](docs/sessions.md)
+- [Tools and integrations](docs/tools.md)
+- [Project context](docs/project-context.md)
 - [Providers and models](docs/providers.md)
 - [Configuration](docs/configuration.md)
 - [Security model](docs/security.md)
 - [Extensions](docs/extensions.md)
 - [Remote control](docs/remote-control.md)
+- [RPC mode](docs/rpc.md)
 - [Ledger format](docs/ledger.md)
 - [Architecture](docs/architecture.md)
 

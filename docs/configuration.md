@@ -202,35 +202,7 @@ A trusted project may provide `.micro/settings.json`, extensions, skills, prompt
 
 `--approve` and `--no-approve` override trust for one run. `/trust on` and `/trust off` save a decision for later runs.
 
-## Project instructions
-
-micro reads `CLAUDE.md` and `AGENTS.md` from the user home directory and from parent directories down to the workspace. Files closer to the workspace are appended later.
-
-Instruction files may import another file with `@import`. Imports are resolved relative to the importing file and followed up to five levels deep.
-
-Use `--no-context-files` to disable instruction-file discovery for one run.
-
-## System prompts
-
-`SYSTEM.md` replaces the built-in system prompt. `APPEND_SYSTEM.md` appends text to it.
-
-User-level files apply globally. A trusted project may provide project-specific versions under `.micro/`. Project instructions and the available skill list are added separately.
-
-## Prompt templates
-
-A Markdown file under `prompts/` becomes a slash command named after the file:
-
-```markdown
----
-description: Review a pull request
-argument-hint: <number> [branch]
----
-Review PR $1 against ${2:-main} and list merge blockers.
-```
-
-The template supports `$1`, `$@`, `$ARGUMENTS`, `${1:-default}`, and slices such as `${@:2}`. Built-in slash commands take precedence over prompt files with the same name.
-
-Use `--prompt-template <PATH>` to load another file or directory for one run.
+See [Project context](project-context.md) for instruction discovery, system prompts, skills, and prompt templates.
 
 ## Sessions
 
