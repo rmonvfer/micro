@@ -999,6 +999,31 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn abandoned_branch_spend_stays_in_the_total() {
+        let harness = Harness::new("bill-branches");
+        let mut session = harness
+            .sessions
+            .create(&harness.workspace, "openai/test-model")
+            .await
+            .unwrap();
+        let common = usage(1_000, 100, 0);
+        let abandoned = usage(2_000, 100, 0);
+        let current = usage(500, 100, 0);
+        record_turn(&mut session, 1, common).await;
+        let fork = session.tree().entries().last().unwrap().id.clone();
+        record_turn(&mut session, 2, abandoned).await;
+        session.branch_from(&fork).await.unwrap();
+        record_turn(&mut session, 3, current).await;
+        let id = session.id().to_string();
+        drop(session);
+
+        let billed = bill(&harness.sessions, &catalog(), &id).await.unwrap();
+        assert!((billed.total - (spent(common) + spent(abandoned) + spent(current))).abs() < 1e-12);
+        assert!((billed.current_branch_total - (spent(common) + spent(current))).abs() < 1e-12);
+        assert!(!billed.turns[1].on_current_branch);
+    }
+
     /// Every source that put bytes into a turn earns a line of its own, including the tool
     /// the turn was merely offered.
     #[tokio::test]

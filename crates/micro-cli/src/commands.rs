@@ -801,7 +801,13 @@ impl Commands for CliCommands {
         micro_commands::bill(&self.sessions, &self.catalog, &self.session_id)
             .await
             .ok()
-            .map(|bill| bill.total)
+            .and_then(|bill| {
+                if bill.total == 0.0 && (!bill.unmetered.is_empty() || !bill.unpriced.is_empty()) {
+                    None
+                } else {
+                    Some(bill.total)
+                }
+            })
     }
 
     /// What the user typed, before anything is done with it. An extension may rewrite it,
