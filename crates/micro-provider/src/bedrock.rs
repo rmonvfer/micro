@@ -78,6 +78,10 @@ impl crate::Provider for Bedrock {
 
         receiver
     }
+
+    fn payload(&self, model: &Model, context: &Context) -> Value {
+        build_payload(model, context).unwrap_or(Value::Null)
+    }
 }
 
 /// How this account proves who it is.

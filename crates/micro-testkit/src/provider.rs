@@ -410,6 +410,18 @@ impl Provider for FakeProvider {
         &self.inner.name
     }
 
+    /// There is no wire format here, so the body is the context itself: the same fields
+    /// every real provider translates, written out in a stable order so two identical
+    /// requests hash identically.
+    fn payload(&self, model: &Model, context: &Context) -> Value {
+        serde_json::json!({
+            "model": model.id,
+            "system": context.system_prompt,
+            "messages": context.messages,
+            "tools": context.tools,
+        })
+    }
+
     fn stream(
         &self,
         model: Model,

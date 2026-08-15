@@ -177,6 +177,10 @@ impl Provider for Codex {
 
         receiver
     }
+
+    fn payload(&self, model: &Model, context: &Context) -> Value {
+        build_payload(self.backend, model, context).unwrap_or(Value::Null)
+    }
 }
 
 async fn run(

@@ -101,6 +101,10 @@ impl Provider for OpenAi {
 
         receiver
     }
+
+    fn payload(&self, model: &Model, context: &Context) -> Value {
+        build_payload(model, context).unwrap_or(Value::Null)
+    }
 }
 
 async fn run(

@@ -132,6 +132,10 @@ impl Provider for Gemini {
 
         receiver
     }
+
+    fn payload(&self, model: &Model, context: &Context) -> Value {
+        build_payload(model, context).unwrap_or(Value::Null)
+    }
 }
 
 /// The reasoning signature a part carries, if any.

@@ -78,6 +78,16 @@ impl Provider for Anthropic {
 
         receiver
     }
+
+    /// A request as an API key sends it.
+    ///
+    /// The one thing here a credential decides is the spelling of the tool names: a
+    /// subscription token is issued to a named client and a request made with one names
+    /// that client's tools. A reading of the request has no credential in hand, so it
+    /// reads the request as it stands without one.
+    fn payload(&self, model: &Model, context: &Context) -> Value {
+        build_payload(model, context, false).unwrap_or(Value::Null)
+    }
 }
 
 /// The tools Claude Code declares, in the casing it declares them with.

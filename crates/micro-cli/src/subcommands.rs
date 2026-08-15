@@ -168,6 +168,243 @@ pub async fn sessions_list(workspace: &std::path::Path, all: bool) -> Result<()>
     Ok(())
 }
 
+/// `micro sessions show <id>` — what the session's ledger recorded.
+///
+/// Without a turn, the turns it holds; with one, what the model was shown at that turn,
+/// each stretch of the prompt named by whoever supplied it. With `--raw`, the request
+/// itself, rebuilt from what was recorded and printed as it went out.
+pub async fn sessions_show(id: &str, turn: Option<u64>, raw: bool) -> Result<()> {
+    let store = SessionStore::from_env()?;
+    let loaded = store.load(id).await?;
+    let turns = recorded_turns(&loaded.session);
+
+    let Some(wanted) = turn.or_else(|| turns.last().map(|last| last.turn)) else {
+        println!(
+            "{id}  {}  {}",
+            loaded.session.meta().model_id,
+            loaded.session.meta().workspace.display()
+        );
+        println!(
+            "No turns recorded. A session written before the ledger existed holds its \
+             conversation and nothing else."
+        );
+        return Ok(());
+    };
+
+    if turn.is_none() && !raw {
+        println!(
+            "{id}  {}  {}",
+            loaded.session.meta().model_id,
+            loaded.session.meta().workspace.display()
+        );
+        for recorded in &turns {
+            println!(
+                "turn {:<4} {:<28} prefix {}  {} in  {} out  {} cached",
+                recorded.turn,
+                format!("{}/{}", recorded.provider, recorded.model),
+                short(&recorded.prefix_hash),
+                recorded.usage.input,
+                recorded.usage.output,
+                recorded.usage.cache_read,
+            );
+        }
+        return Ok(());
+    }
+
+    let rebuilt = store.reconstruct_turn(id, wanted).await?;
+    match raw {
+        true => print_request(id, &rebuilt),
+        false => {
+            print_turn(id, &rebuilt);
+            Ok(())
+        }
+    }
+}
+
+/// One turn as the ledger describes it, without rebuilding what it sent.
+struct RecordedTurn {
+    turn: u64,
+    provider: String,
+    model: String,
+    prefix_hash: String,
+    usage: micro_types::Usage,
+}
+
+/// `micro sessions export <id>` — the whole ledger, as it is on disk.
+///
+/// Every line, in the order it was written: the conversation, the facts recorded beside
+/// it, and the records that say where the conversation is read from. A line that cannot
+/// be read is counted rather than printed, so what comes out is JSONL throughout.
+pub async fn sessions_export(id: &str) -> Result<()> {
+    let raw = SessionStore::from_env()?
+        .raw_log(id)
+        .await
+        .with_context(|| format!("cannot read the log of session {id}"))?;
+
+    let mut skipped = 0;
+    for line in raw.lines() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        match serde_json::from_str::<serde_json::Value>(line) {
+            Ok(_) => println!("{line}"),
+            Err(_) => skipped += 1,
+        }
+    }
+    if skipped > 0 {
+        eprintln!("note: skipped {skipped} unreadable line(s) in session {id}");
+    }
+    Ok(())
+}
+
+/// Every turn the session recorded a request for, in order and without repeats.
+///
+/// A turn re-issued after a transient failure was recorded once per attempt, and the last
+/// attempt is the one that produced the answer, so it is the one kept here.
+fn recorded_turns(session: &micro_session::Session) -> Vec<RecordedTurn> {
+    let mut turns: Vec<RecordedTurn> = Vec::new();
+    for recorded in session.events() {
+        match &recorded.event {
+            micro_types::LedgerEvent::TurnRequest {
+                turn,
+                provider,
+                model,
+                prefix_hash,
+                ..
+            } => {
+                let described = RecordedTurn {
+                    turn: *turn,
+                    provider: provider.clone(),
+                    model: model.clone(),
+                    prefix_hash: prefix_hash.clone(),
+                    usage: micro_types::Usage::default(),
+                };
+                match turns.last_mut().filter(|last| last.turn == *turn) {
+                    Some(last) => *last = described,
+                    None => turns.push(described),
+                }
+            }
+            micro_types::LedgerEvent::TurnUsage { turn, usage, .. } => {
+                if let Some(found) = turns.iter_mut().find(|recorded| recorded.turn == *turn) {
+                    found.usage = *usage;
+                }
+            }
+            _ => {}
+        }
+    }
+    turns
+}
+
+/// What the model was shown at one turn, with every stretch of the prompt attributed.
+fn print_turn(id: &str, turn: &micro_session::ReconstructedTurn) {
+    println!(
+        "turn {} of session {id}  {}/{}  attempt {}",
+        turn.turn, turn.provider, turn.model_id, turn.attempt
+    );
+
+    let prompt = turn.system_prompt.as_deref().unwrap_or_default();
+    println!(
+        "\nsystem prompt  {} bytes  prefix {}",
+        prompt.len(),
+        short(&turn.prefix_hash)
+    );
+    for span in &turn.prefix_spans {
+        println!(
+            "  {:<24} {:>7} bytes  {}",
+            span.source,
+            span.bytes,
+            short(&span.hash)
+        );
+    }
+
+    let tools: Vec<&str> = turn.tools.iter().map(|tool| tool.name.as_str()).collect();
+    println!("\ntools  {}", tools.join(", "));
+
+    println!("\nmessages ({})", turn.messages.len());
+    for (index, message) in turn.messages.iter().enumerate() {
+        // Named by the entry it was read from where there is one. The summary a
+        // compaction left in its place is not an entry and has no name.
+        let named = match turn.message_entry_ids.len() == turn.messages.len() {
+            true => turn.message_entry_ids[index].clone(),
+            false => "-".to_string(),
+        };
+        let said: String = message
+            .content()
+            .iter()
+            .map(micro_types::ContentBlock::as_text)
+            .collect();
+        println!("  {named:<4} {:<12} {}", role_of(message), one_line(&said));
+    }
+
+    match turn.usage {
+        Some(usage) => println!(
+            "\nusage  {} in  {} out  {} cache read  {} cache write",
+            usage.input, usage.output, usage.cache_read, usage.cache_write
+        ),
+        None => println!("\nusage  not recorded; the turn did not come back"),
+    }
+    println!("request  {}", turn.request_hash);
+}
+
+/// The request as it went out, rebuilt from what the turn recorded.
+fn print_request(id: &str, turn: &micro_session::ReconstructedTurn) -> Result<()> {
+    let catalog = Catalog::load().unwrap_or_else(|_| Catalog::bundled());
+    let model = catalog.get(&turn.provider, &turn.model_id).ok_or_else(|| {
+        anyhow::anyhow!(
+            "{}/{} is not in the catalog any more, so its request shape is not known",
+            turn.provider,
+            turn.model_id
+        )
+    })?;
+
+    let context = micro_types::Context {
+        system_prompt: turn.system_prompt.clone(),
+        messages: turn.messages.clone(),
+        tools: turn.tools.clone(),
+        headers: Vec::new(),
+        // The session names the conversation, which is what a provider that caches a
+        // prompt is told; it was the session's own id then and it is now.
+        cache_key: Some(id.to_string()),
+    };
+    let payload = micro_provider::client_for_model(model).payload(&turn.model, &context);
+    let body = serde_json::to_vec(&payload)?;
+
+    // The record says what was sent. If what was rebuilt hashes to something else, the
+    // rebuilding is what is wrong, and saying so is better than printing it as if it were
+    // the request.
+    if micro_types::content_hash(&body) != turn.request_hash {
+        eprintln!(
+            "note: this rebuilds to a different request than the one recorded ({}). \
+             Something changed the request after it was recorded.",
+            short(&turn.request_hash)
+        );
+    }
+    println!("{}", serde_json::to_string_pretty(&payload)?);
+    Ok(())
+}
+
+/// A hash short enough to read, which is all a person comparing two of them needs.
+fn short(hash: &str) -> String {
+    hash.chars().take(12).collect()
+}
+
+fn role_of(message: &micro_types::Message) -> &'static str {
+    match message {
+        micro_types::Message::User { .. } => "user",
+        micro_types::Message::Assistant(_) => "assistant",
+        micro_types::Message::ToolResult { .. } => "tool result",
+    }
+}
+
+/// Text flattened to one line short enough to sit in a column.
+fn one_line(text: &str) -> String {
+    let single = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    match single.chars().count() > 60 {
+        true => format!("{}…", single.chars().take(60).collect::<String>()),
+        false => single,
+    }
+}
+
 pub async fn sessions_delete(id: &str) -> Result<()> {
     SessionStore::from_env()?
         .delete(id)

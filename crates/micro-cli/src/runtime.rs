@@ -404,6 +404,7 @@ pub async fn build(
         resolved.api_key.clone(),
     )
     .with_offered_tools(Arc::clone(&offered_tools))
+    .with_prefix_spans(context.prefix_spans)
     .with_system_prompt(context.system_prompt)
     .with_history(history.clone())
     .with_context_window(model.context_window as usize)
@@ -514,6 +515,16 @@ pub fn persist(
                 micro_agent::Record::Compacted { summary, kept } => {
                     session.lock().await.compacted(summary, *kept).await
                 }
+                // A fact about the run. What it refers to is stored before the fact that
+                // names it, so a reader never meets a hash with nothing behind it.
+                micro_agent::Record::Event { event, blobs } => {
+                    let mut held = session.lock().await;
+                    let mut written = Ok(());
+                    for (_, content) in blobs {
+                        written = written.and(held.store_blob(content).await.map(|_| ()));
+                    }
+                    written.and(held.append_event(event.clone()).await.map(|_| ()))
+                }
             };
             if let Err(error) = written {
                 eprintln!("warning: cannot write to the session log: {error}");
@@ -537,6 +548,10 @@ pub fn workspace(requested: &Path) -> Result<PathBuf> {
 /// copy of the assembly would drift from it.
 pub struct LoadedContext {
     pub system_prompt: String,
+    /// Where each stretch of the assembled prompt came from, in the order they were
+    /// joined. Together they tile the prompt exactly, separators included, so a reader
+    /// accounting for it can attribute every byte to whoever contributed it.
+    pub prefix_spans: Vec<micro_types::PrefixSpan>,
     /// The instruction files that contributed, in the order they were read.
     pub instruction_files: Vec<PathBuf>,
     /// Every skill that loaded, for naming them on the first screen and counting them in
@@ -658,6 +673,26 @@ fn shorten(path: &str) -> String {
     }
 }
 
+/// The stretch of the prompt appended since the last one was measured, attributed to
+/// whoever supplied it.
+///
+/// The separator between two sections belongs to the one that follows it, so the spans
+/// tile the prompt with nothing left over: what a reader adds up is the prompt itself.
+fn span(
+    prompt: &str,
+    from: &mut usize,
+    source: micro_types::EventSource,
+) -> micro_types::PrefixSpan {
+    let text = &prompt[*from..];
+    let span = micro_types::PrefixSpan {
+        source,
+        bytes: text.len() as u64,
+        hash: micro_types::content_hash(text.as_bytes()),
+    };
+    *from = prompt.len();
+    span
+}
+
 /// A prompt file the project or the user supplies, if there is one.
 ///
 /// The project's own is preferred, and only once the project is trusted: a file that
@@ -761,33 +796,64 @@ pub async fn load_context(
     let replaces_base = read_prompt_file(root, &home, "SYSTEM.md", trusted).await;
     let mut system_prompt = match &replaces_base {
         Some(replacement) => replacement.clone(),
-        None => {
-            let mut base = BASE_PROMPT.to_string();
-            // A tool earns a line here only by setting a one-line snippet — one that sets
-            // none is left out of the listing entirely rather than named with nothing to
-            // say, and a tool the run never actually offers to the model contributes
-            // neither its snippet nor its guidelines.
-            if let Some(host) = extensions {
-                if let Some(section) = micro_extensions::prompt_section(&host.tools(), active_tools) {
-                    base.push_str("\n\n");
-                    base.push_str(&section);
-                }
-            }
-            base
-        }
+        None => BASE_PROMPT.to_string(),
     };
+    // Each section is measured as it is joined on, so what the model was told can be
+    // attributed to whoever said it rather than only read as one block of text.
+    let mut prefix_spans = Vec::new();
+    let mut spanned = 0;
+    prefix_spans.push(span(
+        &system_prompt,
+        &mut spanned,
+        micro_types::EventSource::SystemPrompt,
+    ));
+    // A tool earns a line here only by setting a one-line snippet — one that sets none is
+    // left out of the listing entirely rather than named with nothing to say, and a tool
+    // the run never actually offers to the model contributes neither its snippet nor its
+    // guidelines.
+    if replaces_base.is_none() {
+        if let Some(host) = extensions {
+            if let Some(section) = micro_extensions::prompt_section(&host.tools(), active_tools) {
+                system_prompt.push_str("\n\n");
+                system_prompt.push_str(&section);
+                // The whole of what the extensions had to say about their tools, rather
+                // than one extension's share of it: they are merged into one listing
+                // before anything here can tell them apart.
+                prefix_spans.push(span(
+                    &system_prompt,
+                    &mut spanned,
+                    micro_types::EventSource::Extension(String::new()),
+                ));
+            }
+        }
+    }
     let appended_prompt = read_prompt_file(root, &home, "APPEND_SYSTEM.md", trusted).await;
     if let Some(appended) = &appended_prompt {
         system_prompt.push_str("\n\n");
         system_prompt.push_str(appended);
+        prefix_spans.push(span(
+            &system_prompt,
+            &mut spanned,
+            micro_types::EventSource::SystemPrompt,
+        ));
     }
     if !instructions.text.trim().is_empty() {
         system_prompt.push_str("\n\n");
         system_prompt.push_str(&instructions.text);
+        prefix_spans.push(span(
+            &system_prompt,
+            &mut spanned,
+            micro_types::EventSource::ProjectInstructions,
+        ));
     }
     if let Some(section) = micro_skills::system_prompt_section(&skills.skills) {
         system_prompt.push_str("\n\n");
         system_prompt.push_str(&section);
+        prefix_spans.push(span(
+            &system_prompt,
+            &mut spanned,
+            micro_types::EventSource::Skill(String::new()),
+        ));
     }
 
     // Read again, individually, so each file's own content is on hand apart from the one
@@ -802,6 +868,7 @@ pub async fn load_context(
 
     LoadedContext {
         system_prompt,
+        prefix_spans,
         instruction_files: instructions.sources,
         skills: skills.skills,
         custom_prompt: replaces_base,

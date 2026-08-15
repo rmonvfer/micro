@@ -11,13 +11,17 @@ use micro_context::Summarizer;
 use micro_provider::ApiKey;
 use micro_provider::Provider;
 use micro_tools::Tool;
+use micro_types::content_hash;
 use micro_types::now_ms;
 use micro_types::AgentEvent;
 use micro_types::AssistantMessage;
 use micro_types::ContentBlock;
 use micro_types::Context;
+use micro_types::EventSource;
+use micro_types::LedgerEvent;
 use micro_types::Message;
 use micro_types::Model;
+use micro_types::PrefixSpan;
 use micro_types::StopReason;
 use micro_types::StreamEvent;
 use micro_types::ThinkingLevel;
@@ -25,6 +29,7 @@ use micro_types::ToolDefinition;
 use micro_types::ToolExecutionMode;
 use micro_types::Usage;
 use serde_json::Value;
+use std::collections::HashSet;
 use std::fmt;
 use std::sync::Arc;
 use std::time::Duration;
@@ -79,9 +84,12 @@ impl PartialEq for ModelSwap {
 
 /// Something a run produced that belongs in the session log.
 ///
-/// Almost everything is a message. Compaction is not: it does not add to the
-/// conversation, it changes where the conversation is read from, and a session that
+/// Almost everything the model says is a message. Compaction is not: it does not add to
+/// the conversation, it changes where the conversation is read from, and a session that
 /// recorded only messages would summarize the same stretch again every time it reopened.
+/// Everything else a run does — what it asked a provider for, what it was billed, what it
+/// was not allowed to do — is a ledger event, which is a fact about the run rather than
+/// part of the conversation.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Record {
     Message(Message),
@@ -90,6 +98,16 @@ pub enum Record {
     Compacted {
         summary: String,
         kept: usize,
+    },
+    /// A fact about the run, and the content it names by hash.
+    ///
+    /// An event refers to a system prompt or a set of tool definitions rather than
+    /// carrying one, so a long prompt is not written into the log once a turn. The content
+    /// travels with the event the first time that hash is used and never again; the
+    /// session files it under the same name and every later event points at it.
+    Event {
+        event: LedgerEvent,
+        blobs: Vec<(String, Vec<u8>)>,
     },
 }
 
@@ -184,6 +202,18 @@ pub struct Agent {
     /// time the model is told what exists rather than settled when the agent is built.
     /// `None` inside means nobody has narrowed anything and every tool is offered.
     offered: Option<Arc<std::sync::RwLock<Option<Vec<String>>>>>,
+    /// How many requests this agent has issued, which is what numbers a turn in the
+    /// ledger. Counted here because this is the only thing that issues one.
+    turn: u64,
+    /// Where each stretch of the system prompt came from, as whoever assembled it said.
+    ///
+    /// The agent is handed a prompt as one string and cannot tell a project's
+    /// instructions from a skill's description by looking at it, so what it is told about
+    /// the parts is what it records.
+    prefix_spans: Vec<PrefixSpan>,
+    /// Content already handed to the recorder, by hash. A system prompt that stands
+    /// unchanged for a hundred turns crosses this channel once.
+    stored_blobs: HashSet<String>,
 }
 
 impl Agent {
@@ -216,6 +246,9 @@ impl Agent {
             context_window: DEFAULT_CONTEXT_WINDOW,
             steering: Steering::default(),
             offered: None,
+            turn: 0,
+            prefix_spans: Vec::new(),
+            stored_blobs: HashSet::new(),
         }
     }
 
@@ -317,6 +350,13 @@ impl Agent {
     /// Name the conversation, so a provider that caches a prompt can recognise it again.
     pub fn with_cache_key(mut self, key: impl Into<String>) -> Self {
         self.cache_key = Some(key.into());
+        self
+    }
+
+    /// Say what the system prompt was assembled from, so every request the agent records
+    /// can be attributed span by span rather than only as one block of text.
+    pub fn with_prefix_spans(mut self, spans: Vec<PrefixSpan>) -> Self {
+        self.prefix_spans = spans;
         self
     }
 
@@ -507,6 +547,78 @@ impl Agent {
             // Everything after the summary is what was kept.
             kept: messages.len().saturating_sub(1),
         });
+    }
+
+    /// Record a fact about the run that refers to nothing outside itself.
+    fn record_event(&self, event: LedgerEvent) {
+        if let Some(recorder) = &self.recorder {
+            let _ = recorder.send(Record::Event {
+                event,
+                blobs: Vec::new(),
+            });
+        }
+    }
+
+    /// Record the request about to go out: what identifies it, and what it was built from.
+    ///
+    /// The body itself is not recorded — it is the hash that identifies it, and the
+    /// prompt, the tools and the model that rebuild it. Those three are named by hash and
+    /// carried along the first time each is seen, which is what keeps a hundred turns of
+    /// the same prompt to one copy on disk.
+    fn record_request(&mut self, context: &Context, attempt: u32) {
+        if self.recorder.is_none() {
+            return;
+        }
+
+        let prompt = context.system_prompt.clone().unwrap_or_default();
+        let tools = serde_json::to_vec(&context.tools).unwrap_or_default();
+        let described = serde_json::to_vec(&self.model).unwrap_or_default();
+        let body = serde_json::to_vec(&self.provider.payload(&self.model, context))
+            .unwrap_or_default();
+
+        // The prefix is the part of a request a provider can cache: what the model is told
+        // before the conversation, and the tools it may call. Hashing them together is
+        // what makes two turns comparable at a glance — the same prefix hash means the
+        // same cacheable head, and a different one is a cache miss waiting to happen.
+        let mut prefix = prompt.into_bytes();
+        prefix.extend_from_slice(&tools);
+
+        let mut blobs = Vec::new();
+        let system_prompt_blob = context
+            .system_prompt
+            .as_ref()
+            .map(|prompt| self.blob(&mut blobs, prompt.as_bytes()));
+        let tools_blob = self.blob(&mut blobs, &tools);
+        let model_blob = self.blob(&mut blobs, &described);
+
+        let event = LedgerEvent::TurnRequest {
+            turn: self.turn,
+            provider: self.model.provider.clone(),
+            model: self.model.id.clone(),
+            prefix_hash: content_hash(&prefix),
+            request_hash: content_hash(&body),
+            system_prompt_blob,
+            tools_blob,
+            model_blob,
+            prefix_spans: self.prefix_spans.clone(),
+            // Named by the session as it writes this, which is the only place the entries
+            // the conversation stands at have names.
+            message_entry_ids: Vec::new(),
+            attempt,
+        };
+        if let Some(recorder) = &self.recorder {
+            let _ = recorder.send(Record::Event { event, blobs });
+        }
+    }
+
+    /// Name a piece of content by the hash of its bytes, carrying the content itself along
+    /// the first time that name is used.
+    fn blob(&mut self, carried: &mut Vec<(String, Vec<u8>)>, content: &[u8]) -> String {
+        let hash = content_hash(content);
+        if self.stored_blobs.insert(hash.clone()) {
+            carried.push((hash.clone(), content.to_vec()));
+        }
+        hash
     }
 
     fn commit(&mut self, message: Message, produced: &mut Vec<Message>) {
@@ -700,8 +812,18 @@ impl Agent {
                 } else {
                     match self.decide(&id, &name, &arguments).await {
                         // Something watching the run refused the call. The model is told
-                        // why, in the same shape a tool's own failure takes.
-                        ToolDecision::Refuse(reason) => settled = Some((reason, true)),
+                        // why, in the same shape a tool's own failure takes — and the
+                        // ledger says it was a refusal, which a failed result cannot.
+                        ToolDecision::Refuse(reason) => {
+                            self.record_event(LedgerEvent::ToolDenied {
+                                tool: name.clone(),
+                                reason: reason.clone(),
+                                // The agent knows the decision came from what is watching
+                                // the run, and watching is what an extension does here.
+                                source: EventSource::Extension(String::new()),
+                            });
+                            settled = Some((reason, true));
+                        }
                         decision => {
                             // Rewritten arguments are the ones that run, so they are also
                             // the ones announced, recorded, and handed to the tool.
@@ -823,7 +945,11 @@ impl Agent {
 
     /// Issue one model request, forwarding stream events and retrying transient failures
     /// that happen before any content is shown.
-    async fn stream_once(&self, events: &Fan<'_>) -> AssistantMessage {
+    ///
+    /// Every request the agent makes is assembled here and nowhere else, which is what
+    /// makes it the one place a turn can be recorded completely: after anything watching
+    /// the run has had its say about the context, and before the provider is handed it.
+    async fn stream_once(&mut self, events: &Fan<'_>) -> AssistantMessage {
         let context = Context {
             system_prompt: self.system_prompt.clone(),
             messages: self.messages.clone(),
@@ -838,6 +964,9 @@ impl Agent {
             None => context,
         };
 
+        self.turn += 1;
+        let turn = self.turn;
+
         let mut attempt = 0;
         // Tracked across attempts: a retry continues the same assistant message, so a
         // second `MessageStart` would leave a consumer with two bubbles for one response.
@@ -845,6 +974,10 @@ impl Agent {
 
         loop {
             attempt += 1;
+            // Recorded once per attempt rather than once per turn: a request that was
+            // issued is a request that was issued, whether or not the one before it came
+            // back, and a reader counting what a session cost has to see both.
+            self.record_request(&context, attempt);
             // Asked for once per attempt rather than held: a credential that expires is
             // exchanged by whoever owns it, and a request made an hour into a session
             // must carry the token that is current then, not the one it started with.
@@ -891,6 +1024,16 @@ impl Agent {
 
             match result {
                 Ok(message) => {
+                    // What the provider says the turn cost, as it says it. Recorded as its
+                    // own fact rather than left inside the answer, so a session that is
+                    // later summarized still knows what it was billed for.
+                    self.record_event(LedgerEvent::TurnUsage {
+                        turn,
+                        usage: message.usage,
+                        stop_reason: message.stop_reason,
+                        provider: message.provider.clone(),
+                        model: message.model.clone(),
+                    });
                     events.send(AgentEvent::MessageEnd {
                         message: Message::Assistant(message.clone()),
                     });

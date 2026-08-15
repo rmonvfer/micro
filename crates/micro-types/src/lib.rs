@@ -3,6 +3,7 @@
 
 mod compat;
 mod events;
+mod ledger;
 mod model;
 mod tool;
 
@@ -14,6 +15,11 @@ pub use compat::SessionAffinity;
 pub use compat::ThinkingFormat;
 pub use events::AgentEvent;
 pub use events::StreamEvent;
+pub use ledger::content_hash;
+pub use ledger::EventSource;
+pub use ledger::LedgerEvent;
+pub use ledger::PrefixSpan;
+pub use ledger::SCHEMA_VERSION;
 pub use model::Model;
 pub use model::ThinkingLevel;
 pub use tool::ConstrainedSampling;

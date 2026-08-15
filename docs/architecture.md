@@ -32,8 +32,12 @@ pub trait Provider: Send + Sync {
     fn name(&self) -> &str;
     fn stream(&self, model: Model, context: Context, api_key: String)
         -> UnboundedReceiver<StreamEvent>;
+    fn payload(&self, model: &Model, context: &Context) -> serde_json::Value;
 }
 ```
+
+`payload` is the same assembly `stream` sends, without sending it, which is what lets a
+session record a request by its hash and rebuild it afterwards. See [the ledger](ledger.md).
 
 A `Context` carries a system prompt, a list of messages, and a list of `ToolDefinition`s —
 names, descriptions, and JSON Schemas. That is a description of what the model may ask for,

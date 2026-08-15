@@ -191,6 +191,18 @@ enum SessionAction {
         #[arg(long)]
         all: bool,
     },
+    /// Show what a session recorded, turn by turn.
+    Show {
+        id: String,
+        /// One turn of it, rather than a listing of all of them.
+        #[arg(long)]
+        turn: Option<u64>,
+        /// Print the request as it went to the provider, rebuilt from what was recorded.
+        #[arg(long)]
+        raw: bool,
+    },
+    /// Print a session's whole ledger as JSONL.
+    Export { id: String },
     /// Delete a session.
     Delete { id: String },
 }
@@ -374,6 +386,10 @@ async fn main() -> Result<()> {
             let root = runtime::workspace(&cli.cwd)?;
             return match action {
                 Some(SessionAction::List { all }) => subcommands::sessions_list(&root, *all).await,
+                Some(SessionAction::Show { id, turn, raw }) => {
+                    subcommands::sessions_show(id, *turn, *raw).await
+                }
+                Some(SessionAction::Export { id }) => subcommands::sessions_export(id).await,
                 Some(SessionAction::Delete { id }) => subcommands::sessions_delete(id).await,
                 None => subcommands::sessions_list(&root, false).await,
             };
@@ -865,5 +881,6 @@ mod flag_tests {
 
         // Subcommands declare flags too, and they are held to the same rule.
         assert!(known("local") && known("live") && known("overwrite"));
+        assert!(known("raw") && valued.iter().any(|known| known == "turn"));
     }
 }

@@ -634,7 +634,11 @@ impl Rpc {
 
     async fn branch(&mut self, entry_id: &str) -> Result<usize, String> {
         let mut session = self.session.lock().await;
-        if !session.branch_from(entry_id) {
+        if !session
+            .branch_from(entry_id)
+            .await
+            .map_err(|error| error.to_string())?
+        {
             return Err(format!("there is no entry {entry_id} in this conversation"));
         }
         let messages = session.branch();

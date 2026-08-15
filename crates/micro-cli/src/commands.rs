@@ -369,10 +369,14 @@ impl CliCommands {
         if session.tree().head() == Some(entry_id) {
             return Applied::note("Already at this point");
         }
-        if !session.branch_from(entry_id) {
-            return Applied::error(format!(
-                "There is no entry {entry_id} in this conversation. Run /tree to list them."
-            ));
+        match session.branch_from(entry_id).await {
+            Ok(true) => {}
+            Ok(false) => {
+                return Applied::error(format!(
+                    "There is no entry {entry_id} in this conversation. Run /tree to list them."
+                ))
+            }
+            Err(error) => return Applied::error(format!("Cannot record the move: {error}")),
         }
 
         crate::extensions::announce(
