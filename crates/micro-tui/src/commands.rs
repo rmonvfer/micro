@@ -108,8 +108,10 @@ pub struct Listings {
 /// credentials, the session log and the conversation these outcomes change.
 #[async_trait]
 pub trait Commands: Send {
-    /// Re-read the complete session cost from the persisted ledger.
-    async fn session_cost(&mut self) -> Option<f64> {
+    /// Re-read durable cost and usage from the persisted ledger.
+    async fn session_observability(
+        &mut self,
+    ) -> Option<(Option<f64>, micro_types::Usage, micro_types::Usage)> {
         None
     }
 

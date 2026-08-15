@@ -1238,7 +1238,8 @@ async fn run_turn(
     }
     app.finish_turn(aborted);
     if let Some(commands) = commands.as_mut() {
-        app.set_session_cost(commands.session_cost().await);
+        let observed = commands.session_observability().await;
+        app.set_session_observability(observed);
     }
     report_progress(progress, false);
     Ok(())

@@ -1311,9 +1311,25 @@ impl Agent {
             // Resolve the credential before preparing the body: a subscription may use a
             // provider-specific request shape.
             let api_key = self.api_key.current().await;
-            let payload = self
+            let payload = match self
                 .provider
-                .request_payload(&self.model, &context, &api_key);
+                .request_payload(&self.model, &context, &api_key)
+            {
+                Ok(payload) => payload,
+                Err(error) => {
+                    self.record_event(LedgerEvent::RequestAttemptFailed {
+                        turn,
+                        attempt,
+                        error: error.clone(),
+                        usage_unknown: false,
+                    });
+                    let message = self.empty_assistant(StopReason::Error, Some(error));
+                    events.send(AgentEvent::MessageEnd {
+                        message: Message::Assistant(message.clone()),
+                    });
+                    return message;
+                }
+            };
             // Recorded once per attempt rather than once per turn: a request that was
             // issued is a request that was issued, whether or not the one before it came
             // back, and a reader counting what a session cost has to see both.

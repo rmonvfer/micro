@@ -762,8 +762,8 @@ async fn main() -> Result<()> {
             None => headless::run(built.agent, Message::user(prompt), cli.quiet).await,
         }
     } else {
-        let initial_session_cost =
-            micro_tui::Commands::session_cost(&mut built.commands).await;
+        let initial_observability =
+            micro_tui::Commands::session_observability(&mut built.commands).await;
         let options = micro_tui::TuiOptions {
             cwd: root.clone(),
             model: built.model.qualified_id(),
@@ -808,7 +808,8 @@ async fn main() -> Result<()> {
             subscription: built.subscription,
             auto_compact: settings.auto_compact,
             price: Some(built.model.cost.clone()),
-            session_cost: initial_session_cost,
+            session_cost: initial_observability.and_then(|observed| observed.0),
+            session_usage: initial_observability.map(|observed| (observed.1, observed.2)),
             experimental: micro_config::experimental_enabled(),
             // Named on the command line for this run, in place of whatever was settled on.
             theme: cli.theme.as_deref().and_then(micro_tui::Theme::named),

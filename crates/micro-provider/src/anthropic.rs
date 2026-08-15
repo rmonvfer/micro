@@ -67,7 +67,10 @@ impl Provider for Anthropic {
         context: Context,
         api_key: String,
     ) -> UnboundedReceiver<StreamEvent> {
-        let payload = self.request_payload(&model, &context, &api_key);
+        let payload = match self.request_payload(&model, &context, &api_key) {
+            Ok(payload) => payload,
+            Err(error) => return crate::error_stream(error),
+        };
         self.stream_prepared(model, context, api_key, payload)
     }
 
@@ -100,8 +103,13 @@ impl Provider for Anthropic {
         build_payload(model, context, false).unwrap_or(Value::Null)
     }
 
-    fn request_payload(&self, model: &Model, context: &Context, api_key: &str) -> Value {
-        build_payload(model, context, is_oauth(api_key)).unwrap_or(Value::Null)
+    fn request_payload(
+        &self,
+        model: &Model,
+        context: &Context,
+        api_key: &str,
+    ) -> Result<Value, String> {
+        build_payload(model, context, is_oauth(api_key))
     }
 }
 

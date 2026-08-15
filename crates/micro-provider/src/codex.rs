@@ -162,7 +162,10 @@ impl Provider for Codex {
         context: Context,
         api_key: String,
     ) -> UnboundedReceiver<StreamEvent> {
-        let payload = self.request_payload(&model, &context, &api_key);
+        let payload = match self.request_payload(&model, &context, &api_key) {
+            Ok(payload) => payload,
+            Err(error) => return crate::error_stream(error),
+        };
         self.stream_prepared(model, context, api_key, payload)
     }
 
@@ -194,6 +197,15 @@ impl Provider for Codex {
 
     fn payload(&self, model: &Model, context: &Context) -> Value {
         build_payload(self.backend, model, context).unwrap_or(Value::Null)
+    }
+
+    fn request_payload(
+        &self,
+        model: &Model,
+        context: &Context,
+        _api_key: &str,
+    ) -> Result<Value, String> {
+        build_payload(self.backend, model, context)
     }
 }
 

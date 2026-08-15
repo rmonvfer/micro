@@ -58,9 +58,14 @@ pub trait Provider: Send + Sync {
 
     /// Prepare the provider body for this credential. Most providers are credential-
     /// independent; Anthropic subscription requests use a different tool spelling.
-    fn request_payload(&self, model: &Model, context: &Context, api_key: &str) -> serde_json::Value {
+    fn request_payload(
+        &self,
+        model: &Model,
+        context: &Context,
+        api_key: &str,
+    ) -> Result<serde_json::Value, String> {
         let _ = api_key;
-        self.payload(model, context)
+        Ok(self.payload(model, context))
     }
 
     /// Send an already-prepared payload. Built-in providers override this so the value
@@ -87,6 +92,12 @@ pub trait Provider: Send + Sync {
     /// answered as null rather than as an error: this is a reading of the request, and the
     /// attempt to send it is where the refusal belongs.
     fn payload(&self, model: &Model, context: &Context) -> serde_json::Value;
+}
+
+pub(crate) fn error_stream(message: String) -> UnboundedReceiver<StreamEvent> {
+    let (sender, receiver) = tokio::sync::mpsc::unbounded_channel();
+    let _ = sender.send(StreamEvent::Error { message });
+    receiver
 }
 
 /// How long a request may go without producing anything before it is given up on.

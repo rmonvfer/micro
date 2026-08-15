@@ -113,6 +113,8 @@ pub struct TuiOptions {
     pub price: Option<micro_models::ModelCost>,
     /// Durable cost read from the session ledger.
     pub session_cost: Option<f64>,
+    /// Durable all-turn and latest-turn usage read from the session ledger.
+    pub session_usage: Option<(micro_types::Usage, micro_types::Usage)>,
     /// Whether this run has experimental behavior turned on, which is worth showing
     /// because it changes what micro does.
     pub experimental: bool,
@@ -157,6 +159,7 @@ impl Default for TuiOptions {
             auto_compact: true,
             price: None,
             session_cost: None,
+            session_usage: None,
             experimental: false,
             tui_mode: Default::default(),
             resources: Default::default(),
@@ -322,6 +325,7 @@ pub struct App {
     /// What a million tokens costs, for the running total. Absent when nothing is charged.
     pub price: Option<micro_models::ModelCost>,
     session_cost: Option<f64>,
+    session_usage: Option<(micro_types::Usage, micro_types::Usage)>,
     /// Images taken off the clipboard, riding with the next prompt.
     attachments: Vec<ContentBlock>,
     /// The tool result the reader has selected, as an index into the transcript.
@@ -647,6 +651,7 @@ impl App {
             provider: options.provider,
             price: options.price,
             session_cost: options.session_cost,
+            session_usage: options.session_usage,
             attachments: Vec::new(),
             focus: None,
             scroll: 0,
@@ -1124,8 +1129,26 @@ impl App {
         self.session_cost
     }
 
-    pub fn set_session_cost(&mut self, cost: Option<f64>) {
-        self.session_cost = cost;
+    pub fn set_session_observability(
+        &mut self,
+        observed: Option<(Option<f64>, micro_types::Usage, micro_types::Usage)>,
+    ) {
+        if let Some((cost, total, last)) = observed {
+            self.session_cost = cost;
+            self.session_usage = Some((total, last));
+        }
+    }
+
+    pub fn total_usage(&self) -> micro_types::Usage {
+        self.session_usage
+            .map(|(total, _)| total)
+            .unwrap_or_else(|| self.transcript.total_usage())
+    }
+
+    pub fn last_usage(&self) -> micro_types::Usage {
+        self.session_usage
+            .map(|(_, last)| last)
+            .unwrap_or_else(|| self.transcript.last_usage())
     }
 
     /// The provider to name in the footer, which is nothing when the model already says
