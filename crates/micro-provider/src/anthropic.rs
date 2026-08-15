@@ -518,7 +518,7 @@ fn scheme_for(api_key: &str) -> AuthScheme {
     }
 }
 
-/// The beta features this request needs, in the order ohm sends them.
+/// The beta features this request needs.
 ///
 /// A subscription credential names what it is being used for; everything else is asked for
 /// only when the request would otherwise be answered differently.

@@ -1,32 +1,45 @@
 # Architecture
 
-Fourteen crates, arranged so that nothing depends on a layer above it. This document is
+Twenty-two crates, arranged so that nothing depends on a layer above it. This document is
 about the seams rather than the contents: where the boundaries are, and what each one buys.
 
 ## The graph
 
 `micro-types` sits at the bottom and depends on nothing. It holds the conversation model —
-content blocks, messages, usage, stop reasons — plus the two event enums every other layer
+content blocks, messages, usage, stop reasons — the two event enums every other layer
 speaks: `StreamEvent`, what a provider emits while a response arrives, and `AgentEvent`,
-what the loop emits to whatever is driving it.
+what the loop emits to whatever is driving it — and `LedgerEvent`, the fact a run records
+about itself. Putting the ledger's vocabulary at the bottom is what lets a provider, a
+sandbox and an extension broker each describe what they did without knowing about each
+other. See [the ledger](ledger.md).
 
 `micro-dirs` sits beside it and also depends on nothing, not even `micro-types`. It answers
-one question — where micro reads and writes — so that the six crates that store something
-cannot answer it six different ways. See [configuration.md](configuration.md) for the rule
-it applies.
+one question — where micro reads and writes — so that the eight crates which keep something
+on disk cannot answer it eight different ways. See [configuration.md](configuration.md) for
+the rule it applies.
 
-Above it, four crates are independent of each other. `micro-provider` turns a `Context` into
+Above it, five crates are independent of each other. `micro-provider` turns a `Context` into
 an HTTP request and the response body into a stream of events. `micro-tools` holds the
 capabilities the model can invoke. `micro-auth` holds credentials. `micro-context` assembles
 project instructions and compacts a conversation that is outgrowing its window.
 `micro-models` is the catalog of which models exist, what they cost, and where they live.
 
+`micro-sandbox` sits under `micro-tools` alone. It answers what a command may touch and
+wraps it so the operating system is what enforces the answer, which is why no individual
+tool has to remember to ask. See [the sandbox](sandbox.md).
+
 `micro-agent` depends on the provider, the tools, and the context crates, and runs the loop
-that ties them together.
-`micro-session` writes conversations to disk. `micro-tui` draws the interface over an agent.
-`micro-cli` is the entry point that assembles all of it. `micro-testkit` provides the test
-doubles the agent loop is exercised against, and `micro-config` and `micro-commands` hold
-persisted settings and slash-command parsing.
+that ties them together. `micro-session` writes conversations and the ledger to disk.
+
+The rest are the things a session is made of, each reachable from the entry point and none
+of them from the loop. `micro-extensions` runs someone else's code in a process of its own
+and brokers everything it asks for; `micro-mcp` does the same for tools a separate program
+serves; `micro-skills` and `micro-prompts` read what a workspace and a user offer;
+`micro-mermaid` draws a diagram a response asked for; `micro-remote` carries a session to a
+phone; `micro-rpc` drives a session from a program instead of a terminal; `micro-tui` draws
+the interface over an agent; and `micro-cli` is the entry point that assembles all of it.
+`micro-testkit` provides the test doubles the agent loop is exercised against, and
+`micro-config` and `micro-commands` hold persisted settings and slash-command parsing.
 
 ## Providers know nothing about tools
 
@@ -49,13 +62,14 @@ names, descriptions, and JSON Schemas. That is a description of what the model m
 not a way to do any of it. No provider can execute a tool, and none of them knows that
 executing one is even possible.
 
-This is what keeps three wire formats from turning into three agent loops. Anthropic
-Messages, OpenAI chat completions, and Google's generative API disagree about almost
-everything — how a tool call is spelled, how a streamed response is framed, where usage is
-reported — but they agree on the shape of the problem: here is a conversation and a set of
-tools, produce the next message. Each provider translates in both directions at its own
-edge, and the loop above sees one vocabulary. Adding a provider adds a translation, never a
-branch in the agent.
+This is what keeps six wire protocols from turning into six agent loops. Anthropic Messages,
+OpenAI chat completions, OpenAI Responses, Google's generative API, Vertex and Bedrock's
+Converse Stream disagree about almost everything — how a tool call is spelled, how a
+streamed response is framed, where usage is reported, whether the answer arrives as
+server-sent events or as a binary stream — but they agree on the shape of the problem: here
+is a conversation and a set of tools, produce the next message. Each client translates in
+both directions at its own edge, and the loop above sees one vocabulary. Adding a protocol
+adds a translation, never a branch in the agent. See [providers.md](providers.md).
 
 It also means the agent decides what a tool call means. When a response stops because it hit
 the output token limit, its tool calls are failed without being executed: streamed arguments
@@ -70,8 +84,13 @@ ships, the skills and prompts it offers, the settings it sets. That decision is 
 in `main`, before anything of the project's is loaded:
 
 ```rust
-let trusted = project_trusted(&root, &settings, !cli.print && !cli.rpc).await;
-let built = runtime::build(&root, &selection, resume, &settings, trusted).await?;
+let trusted = project_trusted(&root, &settings, has_ui, told).await;
+let confined = sandbox::around(
+    sandbox::policy(cli.sandbox.as_deref(), &root, trusted, &settings)?,
+    &root,
+);
+let built =
+    runtime::build(&root, &selection, resume, &settings, trusted, has_ui, mode, confined).await?;
 ```
 
 Loading is where the gate belongs rather than at each point of use, because a skill that was
@@ -79,19 +98,36 @@ never read cannot steer a turn and an extension that was never started cannot re
 tool. Discovery takes the answer and skips the project's own directory, so nothing
 downstream needs to know a decision was made.
 
+The same answer settles the sandbox on the next line, because a project's own settings can
+widen what its sessions may touch, and reading those is exactly what the question was about.
+The policy is resolved once and the tools are built around it, so an extension asking micro
+to run something is confined by the same decision as the model asking for a shell command.
+
+An extension is where trust stops being the only answer available. What it may ask micro for
+is declared in its own manifest and enforced where the ask arrives rather than where the file
+was installed, so code can run on the strength of what it says it needs instead of on a
+decision about the whole checkout it came in. See [extensions.md](extensions.md).
+
 A project carrying none of it is not asked about at all, which is what keeps the question
 rare enough to mean something. Tool calls are not gated: `micro-tools` hands the agent a
-list, `--tools` and `--exclude-tools` decide what is on it, and everything on it runs.
+list, `--tools` and `--exclude-tools` decide what is on it, and everything on it runs — the
+sandbox rules on what a call may touch, never on whether the model may make one.
 
 ## Persistence goes through a recorder channel
 
-The agent takes an optional `UnboundedSender<Message>` and sends every finalized message the
-moment it is produced. A task on the other end appends each one to the session log:
+The agent takes an optional `UnboundedSender<Record>` and sends every fact the moment it is
+produced. A task on the other end appends each one to the session log:
 
 ```rust
 let (recorder, receiver) = tokio::sync::mpsc::unbounded_channel();
 let agent = Agent::new(provider, tools, model, api_key).with_recorder(recorder);
 ```
+
+A `Record` is one of three things: a finalized message, a compaction, or a ledger event
+along with any content it names by hash. One channel carries all of them, so what the model
+said, what a turn asked a provider for, what it was billed, what the sandbox refused and
+what an extension was told all reach disk in the order they happened. A second path would be
+a second opinion about that order.
 
 Writing after a run returns would mean a crash costs the entire conversation, and an agent
 run is exactly the kind of long operation during which crashes happen — a tool panics, the

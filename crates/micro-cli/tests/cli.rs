@@ -956,7 +956,7 @@ fn installing_something_that_is_not_there_changes_nothing() {
     );
 }
 
-/// An extension is told what the agent is doing as it happens, under the names ohm uses.
+/// An extension is told what the agent is doing as it happens, under the names pi uses.
 #[test]
 fn an_extension_hears_the_lifecycle_events() {
     if which_bun().is_none() {

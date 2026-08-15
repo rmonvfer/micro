@@ -84,13 +84,13 @@ later summarized still knows what it was billed for:
 
 `compaction` says a stretch of the conversation was replaced by a summary, naming the
 summary by hash, how many recent messages were kept, and what the request that wrote the
-summary cost — spending nobody asked for, so it is billed on a line of its own rather than
-folded into the turn that triggered it. `head_moved` says the conversation
+summary cost. `head_moved` says the conversation
 now continues from a different entry, which is what makes a branch survive being reopened.
 `tool_denied` says something watching the run refused a call; the model was told in the
 shape a failed call takes, and this is the record that it was a refusal rather than a
-failure. `sandbox_decision` says what the sandbox allowed or refused and under which policy.
-`extension_crossing` says an extension asked the host for something and what it was told.
+failure. `sandbox_decision` says what the sandbox allowed or refused and under which policy,
+as [sandbox.md](sandbox.md) describes. `extension_crossing` says an extension asked the host
+for something and what it was told, against the manifest in [extensions.md](extensions.md).
 `prefix_changed` says the cacheable head of the request changed, and why.
 `budget_stop` says a run stopped because it had spent what it was allowed to. `marker` is
 for anything that has not earned a kind of its own.
@@ -150,8 +150,8 @@ reading.
 
 A bill that comes to nothing says which kind of nothing it is. A model the catalog prices at
 zero is a subscription: the plan was billed rather than the requests, and the report says so.
-A model the catalog does not carry at all is a bill nobody could work out, and it is named
-rather than passed off as free.
+A model the catalog does not carry at all is a bill nobody could work out, and the report
+says that instead of calling it free.
 
 `--diff <turn>` answers a narrower question: what that one turn added to the running total,
 its own line items, the total on either side of it, and why it came to that — how much of
@@ -235,8 +235,8 @@ micro why-miss <id> [turn]               why a turn paid for a prompt again
 ```
 
 `--raw` rebuilds the body from what was recorded and hashes it against `request_hash`
-before printing. A mismatch is reported rather than passed off as the request, which is
-what makes the record checkable rather than merely stored. One case rebuilds differently by
+before printing. A mismatch is reported, never printed as though it were the request —
+that is what makes the record checkable rather than merely stored. One case rebuilds differently by
 design: an Anthropic subscription credential is issued to a named client and spells the
 tool names that client's way, and a reading of a request has no credential in hand, so it
 reads the request as an API key sends it.

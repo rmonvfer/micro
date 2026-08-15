@@ -1,18 +1,17 @@
-//! ohm's palette, transcribed.
+//! The colors the built-in themes are made of.
 //!
-//! The tables below mirror `dark.json` and `light.json` from ohm's interactive theme
-//! directory field for field, including the `vars` indirection: a color is either a literal
-//! `#rrggbb` or the name of a var that resolves to one. Keeping the indirection rather than
-//! flattening it means a value can be checked against the JSON by eye, and it is the same
-//! shape a user's own theme file has.
+//! There is a dark table and a light table, each carrying the `vars` indirection: a color is
+//! either a literal `#rrggbb` or the name of a var that resolves to one. Keeping the
+//! indirection rather than flattening it means a color shared across tokens is named once,
+//! and it is the same shape a user's own theme file has.
 //!
-//! Every value in both files is a hex string, so nothing is approximated on the way into
-//! ratatui. ohm's format also allows a 256-color index and an empty string meaning "the
+//! Every value in both tables is a hex string, so nothing is approximated on the way into
+//! ratatui. The format also allows a 256-color index and an empty string meaning "the
 //! terminal's own default"; neither built-in theme uses either, but a user theme may, and
 //! [`super::custom`] handles both.
 
-/// Token names, in ohm's schema order. `thinkingMax` is the only one the schema marks
-/// optional; both built-in themes define it, so it is required here too.
+/// Token names, in schema order. `thinkingMax` is the only one the schema marks optional;
+/// both built-in themes define it, so it is required here too.
 #[cfg(test)]
 pub(crate) const TOKENS: &[&str] = &[
     "accent",
@@ -69,9 +68,9 @@ pub(crate) const TOKENS: &[&str] = &[
     "bashMode",
 ];
 
-/// The three colors ohm's `export` block carries. They exist for HTML export rather than
-/// for the terminal, and micro borrows them for the two surfaces the terminal has that
-/// ohm's token set does not name; see [`super::Theme::surface`].
+/// The three colors the `export` block carries. They are declared for an HTML export rather
+/// than for the terminal, and micro borrows them for the two surfaces the token set does
+/// not name; see [`super::Theme::surface`].
 #[cfg(test)]
 pub(crate) const EXPORT_TOKENS: &[&str] = &["pageBg", "cardBg", "infoBg"];
 

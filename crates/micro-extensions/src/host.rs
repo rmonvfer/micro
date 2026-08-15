@@ -85,7 +85,7 @@ pub struct Registered {
 #[derive(Debug, Clone, Deserialize)]
 pub struct RegisteredProvider {
     pub name: String,
-    /// The provider as ohm's `registerProvider` describes it.
+    /// The provider as pi's `registerProvider` describes it.
     pub config: Value,
 }
 
@@ -983,10 +983,10 @@ impl Host {
 
     /// Tell the extensions the session is over, and let the process go.
     ///
-    /// `reason` is ohm's `session_shutdown` reason: `"quit"` for the run ending outright.
-    /// micro has no other moment to spend it on — switching, starting over, and forking
-    /// all replace the session in place, inside the same host and the same process, so
-    /// none of them ever tear this down the way ohm's own runtime replacement does.
+    /// `reason` is pi's `session_shutdown` reason: `"quit"` for the run ending outright.
+    /// micro has no other moment to spend it on — switching, starting over, and forking all
+    /// replace the session in place, inside the same host and the same process, so none of
+    /// them ever tear this down.
     pub async fn shutdown(&self, reason: &str) {
         let _ = write_line(
             &mut *self.stdin.lock().await,

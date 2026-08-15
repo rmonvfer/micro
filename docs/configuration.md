@@ -121,9 +121,9 @@ that knew more is preserved rather than dropped when the file is saved.
 }
 ```
 
-`interface_padding` is the columns and rows kept clear between the terminal's edges and
-the interface; `model` is a query the catalog resolves — an id, a qualified id, a prefix, or an alias —
-rather than an assertion that a particular model exists. `thinking` is `off`, `low`,
+`interface_padding` is the columns and rows kept clear between the terminal's edges and the
+interface; `model` is a query the catalog resolves — an id, a qualified id, a prefix, or an
+alias — rather than an assertion that a particular model exists. `thinking` is `off`, `low`,
 `medium`, or `high`; `live_models` merges live provider listings into the catalog at
 startup.
 
@@ -195,23 +195,49 @@ the network is off.
 ```
 
 A project can settle it for its own sessions in `.micro/settings.json`, once the project has
-been trusted, and `--sandbox` on the command line beats both. `docs/sandbox.md` describes
-what each policy enforces, on which platforms, and how to check it.
+been trusted, and `--sandbox` on the command line beats both. [sandbox.md](sandbox.md)
+describes what each policy enforces, on which platforms, and how to check it.
+
+## budget
+
+What one session may spend before it stops, in US dollars. Zero, which is also what leaving
+it out means, is no ceiling.
+
+```json
+{ "budget": 5.0 }
+```
+
+`--budget` says the same for one run. The ceiling is on the session rather than the run, so
+what earlier runs of the same conversation spent counts against it, and a run that reaches
+it stops at the next turn boundary and says so in the ledger. See [ledger.md](ledger.md).
+
+## cache_miss_notices
+
+Off unless it says otherwise. With it on, a turn that wrote a prompt into the provider's
+cache without reading any of it back says so on screen, which is the cheap version of the
+question [`micro why-miss`](ledger.md) answers properly after the fact.
 
 ## sessions/
 
-One conversation per session, as two files: a JSONL log with one serialized message per
-line, and a metadata sidecar carrying the id, workspace, model, and title so that listing
-sessions does not mean replaying every log.
+One conversation per session, as a JSONL log with one fact per line, a metadata sidecar
+carrying the id, workspace, model, and title so that listing sessions does not mean
+replaying every log, and a directory of the content the log names by hash.
 
-Messages are appended as they are produced rather than written when a run ends, so an
+Lines are appended as they are produced rather than written when a run ends, so an
 interrupted run keeps everything said before the interruption. The log is never rewritten,
 which means a crash costs at most the line being written, and loading skips any line it
 cannot parse instead of refusing the session.
 
+The conversation is only part of what is in there. The same log carries what each turn asked
+a provider for, what the provider said it cost, what the sandbox refused, and what an
+extension was told — see [ledger.md](ledger.md) for the format and for the readings built on
+it.
+
 `micro sessions list` shows the sessions belonging to the current workspace, `--all` shows
-every one, and `micro sessions delete <id>` removes a log and its sidecar. `--resume <ID>`
-and `--continue` reopen a conversation, seeding the agent with the messages already on disk.
+every one, `micro sessions show <id>` reads one back, `micro sessions export <id>` prints it
+whole, and `micro sessions delete <id>` removes a log with its sidecar and its blobs.
+`--resume <ID>` and `--continue` reopen a conversation, seeding the agent with the messages
+already on disk.
 
 ## Project instructions
 

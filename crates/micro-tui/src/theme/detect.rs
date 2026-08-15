@@ -1,10 +1,10 @@
-//! Deciding whether the terminal is light or dark, the way ohm decides it.
+//! Deciding whether the terminal is light or dark.
 //!
-//! ohm asks in two stages. The cheap stage reads `COLORFGBG`, which some terminals export
-//! and which needs no round trip. The expensive stage queries the terminal itself with
-//! OSC 11 and waits for a reply, which only the event loop can do. Both stages end at the
-//! same place: convert whatever was learned to an RGB background and call it light when its
-//! relative luminance reaches half.
+//! The question is asked in two stages. The cheap stage reads `COLORFGBG`, which some
+//! terminals export and which needs no round trip. The expensive stage queries the terminal
+//! itself with OSC 11 and waits for a reply, which only the event loop can do. Both stages
+//! end at the same place: convert whatever was learned to an RGB background and call it
+//! light when its relative luminance reaches half.
 
 /// A terminal background, once something has been learned about it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -26,8 +26,7 @@ pub struct Detection {
     pub confidence: Confidence,
 }
 
-/// The verdict from the environment alone. Dark when nothing says otherwise, which is what
-/// ohm falls back to.
+/// The verdict from the environment alone. Dark when nothing says otherwise.
 pub fn from_env() -> Detection {
     from_colorfgbg(std::env::var("COLORFGBG").ok().as_deref())
 }
@@ -64,7 +63,7 @@ pub fn theme_for_rgb((r, g, b): (u8, u8, u8)) -> TerminalTheme {
     }
 }
 
-/// Relative luminance, sRGB gamma undone first, per the WCAG definition ohm uses.
+/// Relative luminance, sRGB gamma undone first, per the WCAG definition.
 fn relative_luminance(r: u8, g: u8, b: u8) -> f64 {
     let linear = |channel: u8| {
         let value = channel as f64 / 255.0;
@@ -80,8 +79,8 @@ fn relative_luminance(r: u8, g: u8, b: u8) -> f64 {
 /// A 256-color palette index as RGB.
 ///
 /// The first sixteen are the terminal's own and vary by configuration; these are the
-/// conventional values, which is the same approximation ohm makes. Above them the palette
-/// is a 6×6×6 cube and then a 24-step gray ramp, both of which are exact.
+/// conventional values, which is an approximation. Above them the palette is a 6×6×6 cube
+/// and then a 24-step gray ramp, both of which are exact.
 pub fn ansi256_to_rgb(index: u8) -> (u8, u8, u8) {
     const BASIC: [(u8, u8, u8); 16] = [
         (0x00, 0x00, 0x00),
@@ -159,14 +158,14 @@ mod tests {
     fn a_reported_background_decides_by_luminance() {
         assert_eq!(theme_for_rgb((0xff, 0xff, 0xff)), TerminalTheme::Light);
         assert_eq!(theme_for_rgb((0x00, 0x00, 0x00)), TerminalTheme::Dark);
-        // ohm's own dark page background.
+        // The dark theme's own page background.
         assert_eq!(theme_for_rgb((0x18, 0x18, 0x1e)), TerminalTheme::Dark);
-        // ohm's own light page background.
+        // The light theme's own page background.
         assert_eq!(theme_for_rgb((0xf8, 0xf8, 0xf8)), TerminalTheme::Light);
     }
 
     #[test]
-    fn the_palette_matches_the_conversion_ohm_uses() {
+    fn a_palette_index_converts_to_its_rgb() {
         assert_eq!(ansi256_to_rgb(0), (0x00, 0x00, 0x00));
         assert_eq!(ansi256_to_rgb(15), (0xff, 0xff, 0xff));
         // First cube entry, then the last.

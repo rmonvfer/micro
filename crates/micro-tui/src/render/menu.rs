@@ -1,8 +1,8 @@
 //! The slash-command menu, drawn under the input.
 //!
-//! Laid out like ohm's `SelectList`: an arrow on the highlighted row, the command names in a
-//! column of their own, descriptions filling what is left, and a count when the list is
-//! longer than the window.
+//! An arrow marks the highlighted row, the command names sit in a column of their own,
+//! descriptions fill what is left, and a count appears when the list is longer than the
+//! window.
 
 use crate::menu::Menu;
 #[cfg(test)]
@@ -69,9 +69,8 @@ fn row(
         true => "→ ",
         false => "  ",
     };
-    // ohm's `getSelectListTheme` runs the whole highlighted row through `fg("accent")` —
-    // description included — and leaves the rest in the default foreground with its
-    // description in `muted`.
+    // The highlighted row runs whole through `accent` — description included — and every
+    // other row stays in the default foreground with its description in `muted`.
     let name = match selected {
         true => Style::new().fg(theme.accent),
         false => Style::new().fg(theme.text),

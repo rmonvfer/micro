@@ -751,7 +751,7 @@ async fn submit(
 /// Run a shell command on the user's behalf and put what it printed into the conversation.
 ///
 /// The model is not asked anything, but it is told: the command and its output are recorded
-/// so the next turn knows what the user just did, the same way ohm treats a `!` line.
+/// so the next turn knows what the user just did.
 async fn run_bash(
     screen: &mut Screen,
     app: &mut App,
@@ -769,8 +769,8 @@ async fn run_bash(
     screen.render(app)?;
 
     // Whatever is listening is asked first, and may decide what running this amounted to
-    // itself — ohm's `user_bash` is a moment the shell answers to, not one it is merely
-    // told about.
+    // itself — `user_bash` is a moment the shell answers to, not one it is merely told
+    // about.
     let overridden = match commands.as_deref_mut() {
         Some(commands) => {
             commands

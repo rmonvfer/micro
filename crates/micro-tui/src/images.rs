@@ -12,8 +12,8 @@ use crate::capabilities::ImageProtocol;
 const CHUNK: usize = 4096;
 
 /// A terminal cell is about this many pixels, which is what turns an image's size into a
-/// number of rows. Terminals that report their real cell size are rare enough that this is
-/// the figure ohm ships with.
+/// number of rows. Terminals that report their real cell size are rare enough that a fixed
+/// figure is what gets used.
 pub const CELL_WIDTH_PX: usize = 9;
 pub const CELL_HEIGHT_PX: usize = 18;
 

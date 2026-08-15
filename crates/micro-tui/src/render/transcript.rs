@@ -5,7 +5,7 @@
 //! lines it reports where each entry begins, which is what lets a whole entry be handed to
 //! the terminal's own scrollback without cutting one in half.
 //!
-//! ohm separates one kind of message from another by the color of the ground it sits on
+//! One kind of message is separated from another by the color of the ground it sits on
 //! rather than by a glyph in front of it: a prompt and a tool result each get a band of
 //! background, and an answer gets none, which is what makes the answer the thing on the
 //! page. [`band`] is that shape, and both callers go through it.
@@ -126,7 +126,7 @@ pub fn append(
                     !assistant_precedes_tool,
                 );
                 // An answer arriving is marked by the spinner in the status rows, not by a
-                // block on the text. ohm draws no cursor into the transcript.
+                // block on the text. No cursor is drawn into the transcript.
                 push_markdown(
                     &mut out,
                     &assistant.text,
@@ -189,12 +189,12 @@ fn assistant_leads_into_tool(entries: &[Entry], index: usize) -> bool {
     assistant_precedes_tool(entries, index.saturating_sub(1))
 }
 
-/// Wrap `rows` in the box ohm draws around a message: a blank row above and below, and
-/// every row tinted across the full width so the block reads as one card.
+/// Wrap `rows` in the box drawn around a message: a blank row above and below, and every
+/// row tinted across the full width so the block reads as one card.
 ///
 /// The transcript is already drawn a column in from each edge, and that column is the inset
-/// ohm's box applies to its own contents, so the rows go in without further padding and
-/// land in the column ohm puts them in.
+/// the box applies to its own contents, so the rows go in without further padding and land
+/// in the column they belong in.
 pub(super) fn band(
     rows: Vec<Line<'static>>,
     width: usize,
@@ -222,7 +222,7 @@ fn indented(line: Line<'static>) -> Line<'static> {
     }
 }
 
-/// A prompt sits in a band of its own color, which is how ohm marks it: no glyph in front
+/// A prompt sits in a band of its own color, which is how it is marked: no glyph in front
 /// of it and no author beside it, just the ground it is written on.
 fn push_user(out: &mut Vec<Line<'static>>, text: &str, theme: &Theme, display: &Display) {
     if text.trim().is_empty() {
@@ -285,7 +285,7 @@ fn push_thinking(
         return;
     }
     // Reasoning is italic body text in `thinkingText`, carrying no glyph of its own — it is
-    // marked out by being italic and dim, the way ohm marks it.
+    // marked out by being italic and dim.
     let style = theme.thinking();
 
     if display.show_thinking {
@@ -451,7 +451,7 @@ fn push_notice(
     }
 }
 
-/// Something an extension drew, on the band ohm gives a custom message.
+/// Something an extension drew, on the band a custom message sits in.
 ///
 /// What it says is the extension's; the label, the tint and the inset are micro's, so one
 /// extension's output cannot be mistaken for the model's or for another extension's.

@@ -120,9 +120,9 @@ pub trait Commands: Send {
     /// take over the run entirely.
     ///
     /// `None` runs the command against the shell as usual. `Some` is what running it
-    /// amounted to instead — the shell is never actually asked — which is how ohm's
-    /// `user_bash` handlers are honoured: an extension answering with its own result has
-    /// decided what happened, not merely watched it happen.
+    /// amounted to instead — the shell is never actually asked — which is how a `user_bash`
+    /// handler is honoured: an extension answering with its own result has decided what
+    /// happened, not merely watched it happen.
     async fn before_bash(
         &mut self,
         command: &str,

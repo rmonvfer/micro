@@ -124,8 +124,8 @@ pub struct TuiOptions {
     /// Where the interface asks the host something off the render path — a keystroke for a
     /// `custom()` overlay that has focus, a completion list for the menu.
     pub host_asker: Option<crate::ui::HostAsker>,
-    /// Names of tools whose `render_shell` asked for `"self"`, so their calls skip ohm's own
-    /// band and draw only what renderCall/renderResult answered. Fixed for the run, sent
+    /// Names of tools whose `render_shell` asked for `"self"`, so their calls skip micro's
+    /// own band and draw only what renderCall/renderResult answered. Fixed for the run, sent
     /// once rather than carried on every render message — see [`Transcript::set_self_framed_tools`].
     pub self_framed_tools: HashSet<String>,
     /// The commands loaded extensions registered, offered in the menu beside the built-in
@@ -546,8 +546,8 @@ struct Widget {
     placement: WidgetPlacement,
 }
 
-/// Widget lines are cut off past this many rows, the same limit ohm places on its own
-/// extension widgets — past it a widget is reading material, not a status line.
+/// Widget lines are cut off past this many rows — past that a widget is reading material,
+/// not a status line.
 const MAX_WIDGET_LINES: usize = 10;
 
 /// The zero-width marker pi's own components emit at the cursor position when they want a
@@ -691,8 +691,8 @@ impl App {
     /// Whether the two rows the spinner draws in are held open.
     ///
     /// They are not, until something has been worked on. A screen that has done nothing
-    /// yet sits close to the input the way ohm's does; once a turn has run, the rows stay
-    /// held whether or not one is running, so the input never jumps as turns come and go.
+    /// yet sits close to the input; once a turn has run, the rows stay held whether or not
+    /// one is running, so the input never jumps as turns come and go.
     pub fn reserves_activity_rows(&self) -> bool {
         match self.tui_mode {
             // Inline, the region is only as tall as the interface, and letting it shrink
@@ -734,7 +734,7 @@ impl App {
         self.thinking = level;
     }
 
-    /// The colour reasoning effort is marked in, which ohm draws on the input's rules.
+    /// The colour reasoning effort is marked in, drawn on the input's rules.
     pub fn thinking_color(&self) -> Color {
         match self.thinking {
             ThinkingLevel::Off => self.theme.thinking_off,
@@ -2080,7 +2080,7 @@ impl App {
     ///
     /// On an empty prompt with nothing running there is nothing to interrupt, so it asks
     /// before leaving: pressed again it quits, and anything else typed in between takes
-    /// the question back. ohm treats it the same way.
+    /// the question back.
     fn interrupt(&mut self) -> Outcome {
         if let Some(turn) = self.turn.as_mut() {
             turn.interrupting = true;
@@ -4368,8 +4368,7 @@ mod tests {
         assert_eq!(app.widgets_below(), vec![vec!["hello".to_string()]]);
     }
 
-    /// A widget past the line cap is cut off with a note, the same limit ohm places on its
-    /// own extension widgets.
+    /// A widget past the line cap is cut off with a note rather than shown whole.
     #[test]
     fn a_long_widget_is_cut_off_with_a_note() {
         let mut app = app();

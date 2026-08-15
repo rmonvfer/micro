@@ -41,8 +41,10 @@ flag, which `micro.getFlag` reads back. `micro.on` listens for something happeni
 For the session itself, `getModel`, `getThinkingLevel`, `getSessionName` and
 `getActiveTools` report what is in force, and `setModel`, `setThinkingLevel`,
 `setSessionName` and `setActiveTools` change it. `sendUserMessage` submits a prompt as
-though it had been typed. `exec` runs a command and reports what it printed. `appendEntry`
-puts something in the session that the model never sees.
+though it had been typed. `exec` runs a command and reports what it printed, under the same
+confinement the session's own commands run under — see [sandbox.md](sandbox.md) for what
+that allows and what a refusal looks like from here. `appendEntry` puts something in the
+session that the model never sees.
 
 A getter that pi answers immediately answers immediately here too. `getActiveTools()`
 returns an array, not a promise, because an extension written for pi calls it without
@@ -80,7 +82,10 @@ model is told about, and setting a request's headers. Reading is always allowed:
 Asking for something outside the list is refused rather than fatal. The extension gets back
 `{ error: "capability 'exec' not granted to <name>" }` — the same wording every time, so it
 can catch it and do something else — the session carries on, and the attempt is recorded in
-the session's ledger as an extension crossing. Registering is an ask too: an extension
+the session's ledger as an extension crossing. Every crossing is a line there, the answered
+ones as well as the refused, which is what makes an extension's part in a session readable
+afterwards rather than only while it is running; see [ledger.md](ledger.md). Registering is
+an ask too: an extension
 without `tools` never contributes a tool to what the model is told about, and micro says
 which tool it left out and why.
 
@@ -176,8 +181,7 @@ A package says what to load in its own `package.json`:
 }
 ```
 
-`micro`, `ohm` and `pi` are all read as the same field, so a package published for any of
-them loads here.
+`micro` and `pi` are read as the same field, so a package published for either loads here.
 
 ## Extensions written for pi
 

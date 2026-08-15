@@ -1,8 +1,10 @@
 # Testing extensions
 
-Two harnesses check that extensions work. One runs a real extension in a real micro process
-and reads what a person would see. The other drives a real terminal, because whether
-something reached the screen is not something an assertion about strings can answer.
+Three harnesses check that extensions work. One runs a real extension in a real micro
+process and reads what a person would see. Another drives a real terminal, because whether
+something reached the screen is not something an assertion about strings can answer. The
+third asks what an extension was allowed to do, and reads the answer out of the session the
+run wrote.
 
 ## The compatibility sweep
 
@@ -29,6 +31,20 @@ The extensions are ours, kept in the repository. They came from pi's own example
 makes them a fair test: real code written against pi's API by someone who was not thinking
 about micro.
 
+## What an extension was allowed to do
+
+`crates/micro-cli/tests/extension_capabilities.rs` runs the built binary against the fake
+provider with a real host under Bun, then reads back the session that run wrote. An ask
+outside the manifest has to come back as the refusal an extension can catch by name, the
+command it was made from has to finish anyway, the run has to exit on its own, and the
+attempt has to be in the ledger — read with `micro sessions export`, so what is asserted is
+the record a person would read rather than a decision rebuilt inside the test.
+
+The same file covers extensions that declare nothing: one in a trusted project runs
+unprompted, and one in a project nobody has vouched for, with nobody at a terminal to ask,
+is granted nothing and says why. [extensions.md](extensions.md) describes the manifest these
+are about.
+
 ## The terminal harness
 
 Some extensions only do anything with a person at a terminal — a widget, a custom editor,
@@ -52,10 +68,10 @@ A caveat is worth more than a green tick that means nothing.
 `crates/micro-cli/tests/inline_mode.rs` checks something the compatibility sweep cannot: not
 what micro wrote, but what ended up on the screen.
 
-The distinction is real. When the interface used to clone itself down the screen in inline
-mode, the captured output contained exactly one copy of everything — the duplicates were
-rows left behind from an earlier frame, and nothing was written for them. Counting matches
-in the captured stream would have reported success.
+The distinction is real. An interface that clones itself down the screen in inline mode
+still writes exactly one copy of everything: the duplicates are rows left behind from an
+earlier frame, and nothing is written for them. Counting matches in the captured stream
+would report success.
 
 So that test replays the escape sequences into a small grid, applying cursor moves and
 erases in order, and reads the finished screen. Any test about what the interface looks like

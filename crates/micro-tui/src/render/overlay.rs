@@ -1,10 +1,10 @@
 //! The overlays a command or an extension can open: a list to choose from, a prompt for a
 //! key or a line of words, and a multi-line editor.
 //!
-//! The list and the single-line prompt are shaped after ohm's selectors — a title, a filter
-//! you type into, an arrow on the highlighted row, a marker on what is already in use, and a
-//! count when the list scrolls. The editor is shaped after ohm's own `ExtensionEditorComponent`
-//! instead: a title, the text, and a hint naming what closes it.
+//! The list and the single-line prompt share one shape — a title, a filter you type into, an
+//! arrow on the highlighted row, a marker on what is already in use, and a count when the
+//! list scrolls. The editor is shaped differently: a title, the text, and a hint naming what
+//! closes it.
 
 use crate::app::KeyPrompt;
 use crate::editor::Editor;
@@ -173,7 +173,7 @@ fn scopes(picker: &Picker, theme: &Theme) -> Line<'static> {
 
 /// The query, prompted with `> ` and carrying a cursor.
 ///
-/// ohm marks the cursor by reversing the character under it rather than by drawing a block
+/// The cursor is marked by reversing the character under it rather than by drawing a block
 /// beside it, so at the end of the line the reversed cell is a space.
 fn filter(picker: &Picker, theme: &Theme) -> Line<'static> {
     Line::from(vec![

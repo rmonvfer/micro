@@ -2,7 +2,7 @@
 //!
 //! `COLORFGBG` answers this without a round trip, but most terminals do not set it. The
 //! other way is OSC 11: write `ESC ] 11 ; ? BEL` and the terminal writes its background back
-//! on the input stream. ohm does the same, in `packages/tui/src/terminal-colors.ts`.
+//! on the input stream.
 //!
 //! The exchange happens before the event stream is built, and that ordering is the whole
 //! trick. Crossterm has no OSC parser: it strips the escape and re-reads the rest, so a
@@ -51,7 +51,7 @@ pub enum Progress {
 /// The palette to open with, asking the terminal if that is what it takes to know.
 ///
 /// `MICRO_THEME` still decides. A name on its own settles the question without a round trip;
-/// only ohm's `light-theme/dark-theme` form, and having nothing set at all, need an answer
+/// only the `light-theme/dark-theme` form, and having nothing set at all, need an answer
 /// from the terminal. A terminal that does not answer falls back to `COLORFGBG`, and then to
 /// dark, exactly as before.
 pub fn detect_theme() -> Theme {
@@ -94,7 +94,7 @@ static ANSWER: std::sync::OnceLock<Option<(u8, u8, u8)>> = std::sync::OnceLock::
 /// Whether the terminal has to be asked at all.
 ///
 /// A setting naming one theme answers the question by itself, and asking anyway would spend
-/// the timeout on an answer nothing would read. ohm's `light-theme/dark-theme` form is the
+/// the timeout on an answer nothing would read. The `light-theme/dark-theme` form is the
 /// one that still needs to know, and so is having no setting.
 fn needs_terminal(setting: Option<&str>) -> bool {
     match setting.map(str::trim).filter(|value| !value.is_empty()) {
@@ -333,7 +333,7 @@ mod tests {
         assert!(needs_terminal(Some("   ")));
         assert!(
             needs_terminal(Some("solarized-light/solarized-dark")),
-            "ohm's automatic form picks by what the terminal looks like"
+            "the automatic form picks by what the terminal looks like"
         );
     }
 

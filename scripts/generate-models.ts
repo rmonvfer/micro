@@ -3,10 +3,8 @@
 // Builds micro's bundled model catalog.
 //
 // The catalog is assembled from models.dev and the provider APIs that publish their own
-// listings, then narrowed by the corrections below. It is a port of ohm's
-// `packages/ai/scripts/generate-models.ts`: same sources, same corrections, writing
-// `crates/micro-models/data/catalog.json` and `crates/micro-auth/data/providers.json`
-// instead of TypeScript catalogs.
+// listings, then narrowed by the corrections below. It writes
+// `crates/micro-models/data/catalog.json` and `crates/micro-auth/data/providers.json`.
 //
 // Run with: bun scripts/generate-models.ts
 
@@ -2267,9 +2265,8 @@ async function generateModels() {
 	};
 
 	/**
-	 * What each provider is called and how it is authenticated. These mirror the provider
-	 * descriptors in ohm's `packages/ai/src/providers/*.ts`, which are written by hand there
-	 * as they are here: the model listings are generated, the providers serving them are not.
+	 * What each provider is called and how it is authenticated. These descriptors are
+	 * written by hand: the model listings are generated, the providers serving them are not.
 	 */
 	const DESCRIBED: { id: string; name: string; env: string[]; oauth?: true; label?: string }[] = [
 		{ id: "anthropic", name: "Anthropic", env: ["ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_OAUTH_TOKEN", "ANTHROPIC_API_KEY"], oauth: true, label: "Anthropic API key" },

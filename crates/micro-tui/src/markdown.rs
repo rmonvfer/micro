@@ -1,14 +1,14 @@
-//! Just enough markdown for a terminal, painted the way ohm paints it.
+//! Just enough markdown for a terminal.
 //!
 //! Model output is markdown, and reading it raw is worse than reading nothing. This covers
 //! what actually shows up in an answer — fenced code, headings, lists, quotes, links, rules
 //! and inline emphasis — and leaves anything more elaborate as plain text rather than
 //! guessing.
 //!
-//! Every element takes the token ohm gives it, so the two interfaces agree on what colors a
-//! heading against what colors the fence around a code block. ohm parses markdown into a
-//! token tree and renders that; this reads the source a line at a time, which is what keeps
-//! a half-streamed response legible. Where that difference shows, it is noted at the point
+//! Every element takes its color from a theme token, so a heading and the fence around a
+//! code block are colored from one palette rather than element by element. The source is
+//! read a line at a time rather than parsed into a token tree, which is what keeps a
+//! half-streamed response legible. Where that costs something, it is noted at the point
 //! it matters.
 
 pub mod syntax;
@@ -23,10 +23,10 @@ use ratatui::text::Line;
 use ratatui::text::Span;
 use syntax::Highlighter;
 
-/// How far a fenced block's contents are indented, matching ohm's `codeBlockIndent`.
+/// How far a fenced block's contents are indented.
 const CODE_INDENT: &str = "  ";
 
-/// Widest a horizontal rule is drawn, however wide the terminal is. ohm's own cap.
+/// Widest a horizontal rule is drawn, however wide the terminal is.
 const MAX_RULE: usize = 80;
 
 /// One source line, styled and ready to wrap.
@@ -37,8 +37,8 @@ pub struct Block {
     pub image: Option<String>,
     /// Columns to indent continuation rows by when this line wraps.
     pub indent: usize,
-    /// Whether the line's background extends to the full width. ohm paints no background
-    /// behind code, so nothing sets this now; it is kept for a caller that still reads it.
+    /// Whether the line's background extends to the full width. No background is painted
+    /// behind code, so nothing sets this; it is kept for a caller that still reads it.
     pub filled: bool,
     /// Whether a blank row belongs after this block when the source does not already have
     /// one — true for a heading, a quote and a rule, which are set apart from what follows.
@@ -148,9 +148,9 @@ pub fn render_linked(
                             .next()
                             .is_some_and(|word| word.eq_ignore_ascii_case("mermaid")))
                     .then(Vec::new);
-                    // The fence line is shown with its language, as ohm shows it, rather
-                    // than being swallowed — unless what it fences is a drawing, which
-                    // stands in place of the block that described it, fence and all.
+                    // The fence line is shown with its language rather than being
+                    // swallowed — unless what it fences is a drawing, which stands in place
+                    // of the block that described it, fence and all.
                     if diagram.is_none() {
                         blocks.push(Block::plain(vec![Span::styled(
                             trimmed.to_string(),
@@ -247,8 +247,8 @@ struct Fence {
 /// One line inside a fence.
 ///
 /// A language micro can lex is painted token by token; anything else keeps the block's own
-/// color, byte for byte as it arrived. ohm makes the same split, and declines to guess at an
-/// untagged block for the same reason: guessing reads prose as code.
+/// color, byte for byte as it arrived. An untagged block is never guessed at, for the same
+/// reason: guessing reads prose as code.
 fn code_line(line: &str, fence: &mut Fence, theme: &Theme) -> Block {
     let plain = Style::new().fg(theme.md_code_block);
     let mut spans = vec![Span::styled(CODE_INDENT, plain)];
@@ -294,7 +294,7 @@ fn block_for(
     }
 
     if let Some((level, rest)) = heading(trimmed) {
-        // ohm keeps the hashes only from the third level down, where they are the only thing
+        // The hashes are kept only from the third level down, where they are the only thing
         // left to tell one heading from another.
         let style = heading_style(level, theme);
         let mut spans = Vec::new();
@@ -336,7 +336,7 @@ fn block_for(
     Block::plain(inline(line, theme.body(), theme, links))
 }
 
-/// ohm underlines a top-level heading and bolds every level.
+/// A top-level heading is underlined; every level is bolded.
 fn heading_style(level: usize, theme: &Theme) -> Style {
     let style = Style::new()
         .fg(theme.md_heading)
@@ -374,10 +374,9 @@ fn quote(trimmed: &str) -> Option<&str> {
 
 /// A list marker and the text after it.
 ///
-/// ohm normalizes an unordered marker to `- ` and an ordered one to its own number, and
-/// indents each level by four columns. Source indentation is mapped onto that grid so a
-/// nested item lines up the way ohm nests it rather than however the model happened to
-/// space it.
+/// An unordered marker is normalized to `- ` and an ordered one to its own number, and each
+/// level is indented by four columns. Source indentation is mapped onto that grid so a
+/// nested item lines up on the grid rather than however the model happened to space it.
 fn bullet<'a>(line: &'a str, ordinal: &mut Option<usize>) -> Option<(String, &'a str)> {
     let leading = line.len() - line.trim_start().len();
     let trimmed = &line[leading..];
@@ -421,7 +420,7 @@ fn bullet<'a>(line: &'a str, ordinal: &mut Option<usize>) -> Option<(String, &'a
     None
 }
 
-/// A task list checkbox, which ohm renders as part of the marker rather than the text.
+/// A task list checkbox, rendered as part of the marker rather than as part of the text.
 fn task_marker(rest: &str) -> (String, &str) {
     for (source, rendered) in [("[ ] ", "[ ] "), ("[x] ", "[x] "), ("[X] ", "[x] ")] {
         if let Some(after) = rest.strip_prefix(source) {
@@ -475,7 +474,7 @@ fn inline(text: &str, base: Style, theme: &Theme, links: &mut Links) -> Vec<Span
         }
 
         let matched = match characters[index] {
-            // ohm's inline code is a color, not a tint; no background is painted behind it.
+            // Inline code is a color, not a tint; no background is painted behind it.
             '`' => marker(&characters, index, "`")
                 .map(|(content, next)| (content, next, Style::new().fg(theme.md_code))),
             '*' if characters.get(index + 1) == Some(&'*') => marker(&characters, index, "**")
@@ -543,7 +542,7 @@ fn autolink(
 
 /// A `[text](href)` link starting at `start`, and the index past its closing paren.
 ///
-/// ohm underlines the text and prints the target after it when the two differ, so a link
+/// The text is underlined and the target printed after it when the two differ, so a link
 /// whose text already is its target does not say it twice.
 fn link(
     characters: &[char],
@@ -718,7 +717,7 @@ fn starts_table(trimmed: &str) -> Option<Table> {
 }
 
 /// Whether a line holds more than one cell. A pipe on its own in prose — `a | b` — is not
-/// a table; ohm makes the same demand of two cells before committing.
+/// a table; two cells are demanded before a table is committed to.
 fn contains_cell(trimmed: &str) -> bool {
     trimmed.contains('|') && split_cells(trimmed).len() >= 2
 }
@@ -738,8 +737,7 @@ fn split_cells(trimmed: &str) -> Vec<String> {
 /// dashes alone, with no pipe, is a rule and is left to the rule renderer.
 ///
 /// The colons that declare an alignment are read and let through, but nothing is done with
-/// them: ohm's own tables are left-aligned whatever the delimiter asks for, and a table
-/// that lined up differently in the two would be the divergence, not the parity.
+/// them: every table is left-aligned whatever the delimiter asks for.
 fn delimiter(trimmed: &str) -> Option<usize> {
     let cells = split_cells(trimmed);
     for cell in &cells {
@@ -991,7 +989,7 @@ fn column_widths(
 
 /// Inline maths, drawn as the characters it stands for, and the index past its closer.
 ///
-/// The delimiters ohm reads: `$...$`, `$$...$$` and `\(...\)`. A lone `$` before a space,
+/// The delimiters read here: `$...$`, `$$...$$` and `\(...\)`. A lone `$` before a space,
 /// or one that never closes on the same line, is a dollar sign and is left alone — a price
 /// in the middle of a sentence must not swallow the rest of it.
 fn math(characters: &[char], start: usize) -> Option<(String, usize)> {
@@ -1364,7 +1362,7 @@ mod tests {
         let theme = theme();
         let blocks = render("```\nlet x = 1;\n```", &theme);
         assert_eq!(blocks[1].spans[0].style.fg, Some(theme.md_code_block));
-        // ohm paints no background behind a code block.
+        // No background is painted behind a code block.
         assert_eq!(blocks[1].spans[0].style.bg, None);
         assert!(!blocks[1].filled);
     }
@@ -1420,7 +1418,7 @@ mod tests {
     }
 
     #[test]
-    fn a_bullet_keeps_ohms_dash_and_nests_by_four() {
+    fn a_bullet_keeps_its_dash_and_nests_by_four() {
         let blocks = render("- first\n  - nested\n    - deeper\n3. third", &theme());
         assert_eq!(
             rendered(&blocks),
@@ -1551,7 +1549,7 @@ mod tests {
     }
 
     #[test]
-    fn a_rule_spans_the_width_up_to_ohms_cap() {
+    fn a_rule_spans_the_width_up_to_the_cap() {
         let theme = theme();
         let blocks = render_linked(
             "---",
@@ -1563,7 +1561,7 @@ mod tests {
         assert_eq!(text_of(&blocks[0]), "─".repeat(20));
         assert_eq!(blocks[0].spans[0].style.fg, Some(theme.md_hr));
 
-        // Wider terminals stop at ohm's cap of 80.
+        // Wider terminals stop at the cap of 80.
         assert_eq!(
             text_of(
                 &render_linked(

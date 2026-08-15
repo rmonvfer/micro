@@ -106,7 +106,7 @@ let echoedToolsExpanded = false;
 // Themes
 // ============================================================================
 
-/** A color as ohm's theme schema carries it: a hex string, a var name, or a 256-color index. */
+/** A color as pi's theme schema carries it: a hex string, a var name, or a 256-color index. */
 type ColorValue = string | number;
 
 /** One token's resolved color, in the two forms `fg`/`bg` know how to wrap: a hex string, or
@@ -131,7 +131,7 @@ function resolveVar(value: ColorValue, vars: Record<string, ColorValue>, seen: S
 	return resolveVar(next, vars, seen);
 }
 
-/** Every token ohm's theme schema requires, transcribed from `theme/palette.rs`'s
+/** Every token pi's theme schema requires, transcribed from `theme/palette.rs`'s
  * `TOKENS` — the same 48 names both built-in themes and every valid user theme carry. */
 const THEME_TOKENS = [
 	"accent",
@@ -405,9 +405,9 @@ function bgAnsi(color: Resolved): string {
 }
 
 /** A theme as `ctx.ui.theme`, `getTheme` and `setTheme` hand it to an extension: named, and
- * carrying the two methods ohm's own `Theme` class wraps a color in. Each wraps the ANSI
- * escape a truecolor terminal reads, so a widget an extension colors with it looks the way
- * it would coming out of ohm itself. */
+ * carrying the two methods pi's `Theme` class wraps a color in. Each wraps the ANSI escape
+ * a truecolor terminal reads, so a widget an extension colors with it looks the way it
+ * would coming out of pi itself. */
 class ExtensionTheme {
 	readonly name: string;
 	private readonly colors: Record<string, Resolved>;
@@ -482,7 +482,7 @@ class ExtensionTheme {
  * Replaced the moment this extension's own `setTheme` resolves one, since resolving is
  * what deciding to switch already required. A theme switched by the reader or by another
  * extension is not reflected here — nothing today tells this process when that happens —
- * so this is closer to ohm's own `theme` singleton than a live mirror of what is on screen.
+ * so this is a remembered choice rather than a live mirror of what is on screen.
  */
 let currentTheme = new ExtensionTheme("dark", builtInColors("dark"));
 

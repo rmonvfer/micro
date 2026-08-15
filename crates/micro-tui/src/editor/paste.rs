@@ -237,7 +237,8 @@ fn parse_marker(text: &str) -> Option<(usize, usize)> {
     let id = digits.parse().ok()?;
     let after = &rest[digits.len()..];
     let close = after.find(']')?;
-    // Only the two forms ohm writes count; anything else is text that happens to look close.
+    // Only the forms a placeholder is written in count; anything else is text that happens
+    // to look close.
     let body = &after[..close];
     let valid = body.is_empty()
         || (body.starts_with(" +") && body.ends_with(" lines"))

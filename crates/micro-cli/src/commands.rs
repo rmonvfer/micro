@@ -65,15 +65,15 @@ pub struct CliCommands {
     /// Whether a phone already has this session, so a second `/remote` says so
     /// rather than opening a second connection.
     remote_started: bool,
-    /// Warn that a subscription credential bills per token here. Said once a run, as ohm
-    /// says it: repeating it every model swap would train the reader to skip it.
+    /// Warn that a subscription credential bills per token here. Said once a run: repeating
+    /// it every model swap would train the reader to skip it.
     anthropic_extra_usage: bool,
     warned_about_extra_usage: bool,
     /// The user's own prompt files, which become commands named after them.
     prompts: Vec<micro_prompts::PromptTemplate>,
     /// Whether the line just dispatched asked to step to the neighboring model rather than
     /// naming one — set in `dispatch`, read and reset in `swap_to`, since that is where
-    /// ohm's `model_select` needs to say `"cycle"` instead of `"set"`.
+    /// pi's `model_select` needs to say `"cycle"` instead of `"set"`.
     model_source: &'static str,
     /// Every tool this run actually offers the model, so `/reload` can tell which extension
     /// tools are still owed their line in the system prompt and which were left out by
@@ -252,7 +252,7 @@ impl CliCommands {
         // And remembered, so the next run starts on it. Choosing a model is a decision
         // about how to work, not about this conversation.
         let remembered = self.remember_model(model);
-        // Ohm skips this event outright when the model did not actually change; the same
+        // pi skips this event outright when the model did not actually change; the same
         // guard applies here, since reapplying the model already in use is not a selection
         // to report.
         if previous_model.qualified_id() != model.qualified_id() {
@@ -326,9 +326,9 @@ impl CliCommands {
     }
 
     /// Every branch entry on the current path, in path order — the closest micro's tree
-    /// comes to the `SessionEntry[]` ohm's compaction events carry. What compaction
+    /// comes to the `SessionEntry[]` pi's compaction events carry. What compaction
     /// actually replaces is computed well below here, inside the agent loop, so the
-    /// richer `preparation` object ohm builds ahead of time (with token counts and the
+    /// richer `preparation` object pi builds ahead of time (with token counts and the
     /// exact stretch chosen) is not available to build from at this hook.
     async fn branch_entries(&self) -> Vec<serde_json::Value> {
         let session = self.session.lock().await;
@@ -362,7 +362,7 @@ impl CliCommands {
                     "oldLeafId": old_leaf_id,
                     // `/tree` only ever moves to an entry already on the current path, so
                     // that entry is its own common ancestor with the leaf it is leaving —
-                    // unlike ohm's `navigateTree`, which can also land on an unrelated
+                    // unlike pi's `navigateTree`, which can also land on an unrelated
                     // branch, this one never needs to search for where two branches meet.
                     "commonAncestorId": entry_id,
                     "entriesToSummarize": [],
@@ -414,9 +414,9 @@ impl CliCommands {
     /// log follows: from here on, what is said is appended to the reopened conversation
     /// rather than to the one that was left.
     async fn resume(&mut self, session_id: &str) -> Applied {
-        // micro addresses a session by its id rather than by the file ohm would name here;
-        // the id is what an extension can act on regardless — asking to resume it again,
-        // say — so it stands in for `targetSessionFile`.
+        // micro addresses a session by its id rather than by the file it is written to; the
+        // id is what an extension can act on regardless — asking to resume it again, say —
+        // so it stands in for `targetSessionFile`.
         if crate::extensions::cancelled(
             self.extensions.as_ref(),
             "session_before_switch",
@@ -735,10 +735,10 @@ impl CliCommands {
     /// Copy the conversation up to a point into a session of its own, and carry on in the
     /// copy. The session it came from is left exactly as it was.
     async fn fork(&mut self, session_id: &str, through_index: usize, whole: bool) -> Applied {
-        // Ohm addresses a fork by the tree entry to fork from; micro's own `/fork` takes a
-        // position along the path instead, so the entry id ohm's event carries is looked
-        // up from that position rather than being micro's own indexing. `/fork` keeps
-        // everything up to and including that entry, which is what ohm calls "at" rather
+        // pi addresses a fork by the tree entry to fork from; micro's own `/fork` takes a
+        // position along the path instead, so the entry id pi's event carries is looked up
+        // from that position rather than being micro's own indexing. `/fork` keeps
+        // everything up to and including that entry, which is what pi calls "at" rather
         // than "before".
         let entry_id = {
             let session = self.session.lock().await;
@@ -770,7 +770,7 @@ impl CliCommands {
 
         let messages = forked.branch();
         // A fork is a fresh session file, the same as `/new` and `/resume` are — which is
-        // what ohm reports it as too: there is no separate "a fork happened" event, only
+        // what pi reports it as too: there is no separate "a fork happened" event, only
         // `session_start` with `reason: "fork"`.
         let previous_session_file = self.session.lock().await.path().display().to_string();
         self.session_id = forked.id().to_string();
@@ -800,7 +800,7 @@ impl Commands for CliCommands {
     /// What the user typed, before anything is done with it. An extension may rewrite it,
     /// or swallow it by answering that it handled it.
     ///
-    /// Ohm's three input sources are interactive typing, the RPC transport, and an
+    /// pi's three input sources are interactive typing, the RPC transport, and an
     /// extension sending itself a message; RPC input never reaches this method at all — it
     /// is answered by `micro-rpc`, a separate pump that does not go through `Commands` —
     /// so what arrives here, print-mode's one-shot prompt included, is always reported as
@@ -822,7 +822,7 @@ impl Commands for CliCommands {
                         line = text.to_string();
                     }
                 }
-                // `"continue"`, or anything else — an extension that didn't answer ohm's
+                // `"continue"`, or anything else — an extension that didn't answer pi's
                 // shape at all — changes nothing.
                 _ => {}
             }
@@ -887,7 +887,7 @@ impl Commands for CliCommands {
 
     async fn compacted(&mut self, summary: &str) {
         // `compacted` is handed only the finished summary text; the richer
-        // `CompactionEntry` ohm reports — its own id, the first entry still kept, when it
+        // `CompactionEntry` pi reports — its own id, the first entry still kept, when it
         // happened — is not, so `compactionEntry` here carries just the part that is.
         crate::extensions::announce(
             self.extensions.as_ref(),
@@ -919,8 +919,8 @@ impl Commands for CliCommands {
         )
         .await;
 
-        // The first extension to answer with anything at all decides, the same way ohm's
-        // own runner stops at the first `user_bash` handler that returns something.
+        // The first extension to answer with anything at all decides, the same way pi's own
+        // runner stops at the first `user_bash` handler that returns something.
         // `operations` — a custom execution strategy — has nowhere to plug in here: `!`
         // always shells out directly, unlike the `bash` tool, which is built around a
         // swappable executor. Only a full `result` is honoured; an answer that sets only
@@ -1003,7 +1003,7 @@ impl Commands for CliCommands {
 
     async fn dispatch(&mut self, line: &str, state: ConversationState) -> Option<CommandOutcome> {
         // `/model next|previous` steps to a neighbor rather than naming one, which is what
-        // ohm's `model_select` calls a `"cycle"` rather than a `"set"`. Read here, from the
+        // pi's `model_select` calls a `"cycle"` rather than a `"set"`. Read here, from the
         // line itself, because by the time a `CommandOutcome::SetModel` reaches `swap_to`
         // the two look identical.
         self.model_source = match command_parts(line) {
@@ -1105,7 +1105,7 @@ impl Commands for CliCommands {
 /// tokens, and they carry this prefix wherever they are stored.
 const ANTHROPIC_OAUTH_PREFIX: &str = "sk-ant-oat";
 
-/// Said when a subscription credential is used from here, in ohm's words.
+/// Said when a subscription credential is used from here.
 const ANTHROPIC_SUBSCRIPTION_AUTH_WARNING: &str =
     "Anthropic subscription auth is active. Third-party harness usage draws from extra \
      usage and is billed per token, not your Claude plan limits. Manage extra usage at \
@@ -1121,7 +1121,7 @@ fn counted(count: usize, thing: &str) -> String {
 
 /// A model the way `model_select` and `get_model` both describe one to an extension.
 ///
-/// Kept to these few fields rather than ohm's full `Model<any>` — thinking-level mapping,
+/// Kept to these few fields rather than pi's full `Model<any>` — thinking-level mapping,
 /// per-model headers, cost tiers — because that is all a `ModelDef` itself carries; an
 /// extension reading further than this is reading past what micro tracked.
 fn model_json(model: &ModelDef) -> serde_json::Value {
@@ -1753,7 +1753,7 @@ mod tests {
     /// `!` runs the shell unless an extension takes over what running it means. Tested
     /// directly against `before_bash` — a `!` line is only ever read by the interactive
     /// TUI, which these tests do not drive — with a real extension host, since what
-    /// matters is that ohm's `user_bash` shape actually reaches one.
+    /// matters is that pi's `user_bash` shape actually reaches one.
     #[tokio::test]
     async fn an_extension_can_take_over_what_a_bang_command_does() {
         if micro_extensions::which_bun().is_none() {

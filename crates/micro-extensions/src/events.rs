@@ -1,17 +1,16 @@
 //! Turning what the agent reports into what an extension listens for.
 //!
-//! ohm names its events from the session's point of view — a turn starts, a message ends,
+//! pi names its events from the session's point of view — a turn starts, a message ends,
 //! a tool finished — and an extension subscribes by that name. micro's agent reports the
 //! same moments under its own names, and in its own shapes, so both are translated here, in
 //! one place, rather than at every point that emits one.
 //!
 //! micro's own `Message`/`ContentBlock`/`Usage` are Rust-shaped: `snake_case` fields, and a
-//! tool result's role written as `tool_result`. ohm's extensions are written against
+//! tool result's role written as `tool_result`. pi's extensions are written against
 //! TypeScript's shapes: `camelCase` fields, and a tool result's role written as
 //! `toolResult`. An extension checking `message.role === "toolResult"` is not being
-//! unreasonable — that is what ohm always handed it — so the conversion here is not
-//! cosmetic: a payload that keeps micro's own field names is one an extension silently
-//! fails to read.
+//! unreasonable — that is what pi hands it — so the conversion here is not cosmetic: a
+//! payload that keeps micro's own field names is one an extension silently fails to read.
 //!
 //! An event micro has no counterpart for is not invented: it simply never fires, and an
 //! extension listening for it waits forever rather than being lied to.
@@ -48,10 +47,10 @@ pub fn name_of(event: &AgentEvent) -> Option<&'static str> {
 }
 
 /// Turns the flat stream of `AgentEvent`s micro's agent loop reports into the payload
-/// shapes ohm's handlers are written against.
+/// shapes pi's handlers are written against.
 ///
 /// A free function was enough while every event could be translated from itself alone.
-/// Two of ohm's events cannot be: `turn_end` wants only the messages produced during that
+/// Two of pi's events cannot be: `turn_end` wants only the messages produced during that
 /// turn, split into the turn's own assistant message and its tool results, while
 /// `AgentEvent::TurnEnd` carries every message the whole run has produced so far; and
 /// `message_update` wants the assistant message accumulated so far even though micro's
@@ -60,14 +59,14 @@ pub fn name_of(event: &AgentEvent) -> Option<&'static str> {
 /// `Translator` per run, fed every event in order.
 #[derive(Debug, Default)]
 pub struct Translator {
-    /// How many turns have ended so far in this run — ohm calls this `turnIndex`. Reset to
+    /// How many turns have ended so far in this run — pi calls this `turnIndex`. Reset to
     /// zero on `agent_start` and advanced once each `turn_end` is built.
     turn_index: u32,
     /// How many of `AgentEvent::TurnEnd`'s cumulative messages had already been reported
     /// as of the last turn, so this turn's own messages can be sliced out of the rest.
     reported: usize,
     /// The arguments a tool call was started with, kept by call id until the call ends.
-    /// `AgentEvent::ToolUpdate` does not carry them itself, and ohm's
+    /// `AgentEvent::ToolUpdate` does not carry them itself, and pi's
     /// `tool_execution_update` wants them anyway, so they are remembered from the call's
     /// `tool_execution_start`.
     tool_arguments: HashMap<String, Value>,
@@ -81,7 +80,7 @@ impl Translator {
         Self::default()
     }
 
-    /// What the event carries, in the shape ohm's handlers are written against.
+    /// What the event carries, in the shape pi's handlers are written against.
     pub fn payload_of(&mut self, event: &AgentEvent) -> Value {
         match event {
             AgentEvent::AgentStart => {
@@ -165,8 +164,8 @@ impl Translator {
         payload
     }
 
-    /// `message_update` carries both the raw stream event, translated to ohm's shape, and
-    /// the message being assembled so far — which for ohm is the same accumulated state
+    /// `message_update` carries both the raw stream event, translated to pi's shape, and
+    /// the message being assembled so far — which for pi is the same accumulated state
     /// the translated event's own `partial` (or, at the end, `message`/`error`) carries.
     fn message_update(&mut self, event: &StreamEvent) -> Value {
         let assistant_message_event = self.stream_event_json(event);
@@ -179,7 +178,7 @@ impl Translator {
         json!({ "message": message, "assistantMessageEvent": assistant_message_event })
     }
 
-    /// `AssistantMessageEvent`, as ohm names it: `contentIndex` rather than `index`, and a
+    /// `AssistantMessageEvent`, as pi names it: `contentIndex` rather than `index`, and a
     /// `partial` — the assistant message assembled so far — on every event but the two
     /// terminal ones, which carry the finished message instead.
     fn stream_event_json(&mut self, event: &StreamEvent) -> Value {
@@ -317,7 +316,7 @@ impl Translator {
             .or_insert_with(default)
     }
 
-    /// The assistant message assembled from the stream so far, in ohm's shape.
+    /// The assistant message assembled from the stream so far, in pi's shape.
     fn partial_message(&self) -> Value {
         match &self.partial {
             Some(partial) => json!({ "role": "assistant", "content": partial.content() }),
@@ -341,13 +340,13 @@ impl PartialAssistant {
     }
 }
 
-/// What a tool produced, in the shape ohm's tool-execution events carry it.
+/// What a tool produced, in the shape pi's tool-execution events carry it.
 ///
-/// ohm hands a handler the tool's whole result object rather than its text, so a handler
+/// pi hands a handler the tool's whole result object rather than its text, so a handler
 /// reads the output at `result.content[0].text` and reaches for `details` when a tool
 /// offers one. micro's tools return text alone, so the block list has one entry and there
 /// are no details to report — but the envelope is what an extension destructures, and one
-/// that arrives as a bare string is one every ohm-shaped handler misreads.
+/// that arrives as a bare string is one every pi-shaped handler misreads.
 fn tool_result_json(output: &str) -> Value {
     json!({
         "content": [{ "type": "text", "text": output }],
@@ -355,7 +354,7 @@ fn tool_result_json(output: &str) -> Value {
     })
 }
 
-/// A message in the shape ohm's handlers are written against: `camelCase` fields, and a
+/// A message in the shape pi's handlers are written against: `camelCase` fields, and a
 /// tool result's role spelled `toolResult` rather than micro's own `tool_result`.
 pub fn message_json(message: &Message) -> Value {
     match message {
@@ -391,10 +390,10 @@ pub fn message_json(message: &Message) -> Value {
     }
 }
 
-/// A content block in the shape ohm's handlers are written against.
+/// A content block in the shape pi's handlers are written against.
 ///
 /// micro keeps redacted thinking as its own variant, carrying only the opaque token a
-/// provider must see again; ohm folds it into `ThinkingContent` with a `redacted` flag
+/// provider must see again; pi folds it into `ThinkingContent` with a `redacted` flag
 /// instead, so that is the shape it is written as here.
 pub fn content_json(block: &ContentBlock) -> Value {
     match block {
@@ -433,7 +432,7 @@ pub fn content_json(block: &ContentBlock) -> Value {
 
 /// A message as an extension handed it back — for `context`, which may return a rewritten
 /// `messages` array, and for `tool_result`, whose `content` extensions write in this same
-/// shape. `None` for anything that does not parse as one of ohm's three message roles,
+/// shape. `None` for anything that does not parse as one of pi's three message roles,
 /// which a malformed or half-written answer is left as rather than guessed at.
 pub fn message_from_json(value: &Value) -> Option<Message> {
     let timestamp = || value.get("timestamp").and_then(Value::as_i64).unwrap_or_else(micro_types::now_ms);
@@ -531,9 +530,9 @@ fn stop_reason_from_json(value: Option<&str>) -> StopReason {
     }
 }
 
-/// Usage in ohm's shape.
+/// Usage in pi's shape.
 ///
-/// ohm's `Usage` also carries `cost`, priced from the model's per-token rates. Nothing at
+/// pi's `Usage` also carries `cost`, priced from the model's per-token rates. Nothing at
 /// this layer knows which model produced a given message — that lives in the catalog, well
 /// above where an `AgentEvent` is translated — so `cost` is left off rather than reported
 /// as zero, which would read as "this was free" instead of "this was not priced here".
@@ -562,7 +561,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_moments_an_extension_listens_for_are_named_as_ohm_names_them() {
+    fn the_moments_an_extension_listens_for_are_named_as_pi_names_them() {
         assert_eq!(name_of(&AgentEvent::AgentStart), Some("agent_start"));
         assert_eq!(name_of(&AgentEvent::TurnStart), Some("turn_start"));
         assert_eq!(
@@ -624,7 +623,7 @@ mod tests {
         assert_eq!(ended["isError"], false);
     }
 
-    /// A handler reads a tool's output off the result object ohm hands it, so the output
+    /// A handler reads a tool's output off the result object pi hands it, so the output
     /// travels inside a block list rather than as the field itself.
     #[test]
     fn a_tool_result_is_shaped_the_way_a_handler_destructures_it() {
@@ -668,10 +667,10 @@ mod tests {
         assert_eq!(payload["message"]["role"], "user");
     }
 
-    /// ohm reads a tool result's role as `toolResult`; micro's own serialization would
+    /// pi reads a tool result's role as `toolResult`; micro's own serialization would
     /// write it `tool_result`, which is silently a different string to a `===` check.
     #[test]
-    fn a_tool_results_role_is_spelled_the_way_ohm_spells_it() {
+    fn a_tool_results_role_is_spelled_the_way_pi_spells_it() {
         let message = Message::ToolResult {
             tool_call_id: "call_1".into(),
             tool_name: "read".into(),
@@ -685,7 +684,7 @@ mod tests {
         assert_eq!(json["toolName"], "read");
     }
 
-    /// An assistant message's fields are written the way ohm's `AssistantMessage` names
+    /// An assistant message's fields are written the way pi's `AssistantMessage` names
     /// them, not the way micro's own `AssistantMessage` does.
     #[test]
     fn an_assistant_messages_fields_are_camel_cased() {
@@ -856,10 +855,10 @@ mod tests {
     }
 
     /// A message survives being written out for an extension and read back from what it
-    /// answers — round-tripping through the same shape ohm itself would produce, not
+    /// answers — round-tripping through the same shape pi itself would produce, not
     /// micro's own.
     #[test]
-    fn a_message_round_trips_through_ohms_shape() {
+    fn a_message_round_trips_through_pis_shape() {
         let messages = vec![
             Message::User {
                 content: vec![ContentBlock::text("hello")],
@@ -903,10 +902,10 @@ mod tests {
         }
     }
 
-    /// Redacted thinking is folded into ohm's `ThinkingContent` shape on the way out, and
+    /// Redacted thinking is folded into pi's `ThinkingContent` shape on the way out, and
     /// unfolded back into micro's own variant on the way back in.
     #[test]
-    fn redacted_thinking_round_trips_through_ohms_shape() {
+    fn redacted_thinking_round_trips_through_pis_shape() {
         let block = ContentBlock::RedactedThinking {
             data: "opaque-token".into(),
         };

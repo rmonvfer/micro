@@ -1,12 +1,11 @@
 //! Syntax highlighting for fenced code blocks.
 //!
-//! ohm highlights with highlight.js and maps each of its scopes onto a theme color. The
-//! scope names and that mapping are reproduced here exactly — `keyword`, `built_in`,
-//! `title`, and the rest land on the same tokens ohm sends them to — but the lexing is
-//! hand-written rather than pulled from a grammar library, because the Rust equivalents of
-//! highlight.js cost megabytes of binary for what is a cosmetic feature. What that trades
-//! away is breadth: ohm knows every language highlight.js does, and this knows the handful
-//! that actually turn up in a coding agent's output.
+//! Scopes are named as highlight.js names them — `keyword`, `built_in`, `title`, and the
+//! rest — and each one lands on a theme color. The lexing is hand-written rather than pulled
+//! from a grammar library, because the Rust equivalents of highlight.js cost megabytes of
+//! binary for what is a cosmetic feature. What that trades away is breadth: this knows the
+//! handful of languages that actually turn up in a coding agent's output rather than every
+//! language a grammar library ships.
 //!
 //! Two rules hold whatever the language:
 //!
@@ -23,9 +22,9 @@ use ratatui::style::Style;
 
 /// A highlight scope, named as highlight.js names it.
 ///
-/// Only the scopes this lexer emits are listed. ohm's table maps a wider set, including
-/// several that collapse onto these: `built_in` and `class` join `Type`, `title` joins
-/// `Function`, `attr` and `params` join `Variable`, and `literal` joins `Number`.
+/// Only the scopes this lexer emits are listed. Several wider highlight.js scopes collapse
+/// onto these: `built_in` and `class` join `Type`, `title` joins `Function`, `attr` and
+/// `params` join `Variable`, and `literal` joins `Number`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Scope {
     Comment,
@@ -37,13 +36,13 @@ pub enum Scope {
     Type,
     Operator,
     Punctuation,
-    /// Attributes, decorators, preprocessor lines. ohm paints these `muted` rather than
-    /// with a syntax color, and so does this.
+    /// Attributes, decorators, preprocessor lines. These are painted `muted` rather than
+    /// with a syntax color of their own.
     Meta,
 }
 
 impl Scope {
-    /// The style ohm gives this scope.
+    /// The style this scope is painted in.
     pub fn style(self, theme: &Theme) -> Style {
         let color = match self {
             Scope::Comment => theme.syntax_comment,
@@ -1064,7 +1063,7 @@ mod tests {
             (Scope::Type, theme.syntax_type),
             (Scope::Operator, theme.syntax_operator),
             (Scope::Punctuation, theme.syntax_punctuation),
-            // ohm sends meta to `muted`, not to a syntax color.
+            // Meta goes to `muted`, not to a syntax color.
             (Scope::Meta, theme.muted),
         ] {
             assert_eq!(scope.style(&theme).fg, Some(expected), "{scope:?}");

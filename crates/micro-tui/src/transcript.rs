@@ -49,7 +49,7 @@ pub struct ToolEntry {
     pub result_component_id: Option<String>,
     pub result_lines: Option<Vec<String>>,
     /// Whether this call's extension asked, through `render_shell: "self"`, to frame its
-    /// own call rather than sit inside ohm's own band. Resolved once, from the tool's name,
+    /// own call rather than sit inside micro's band. Resolved once, from the tool's name,
     /// when the entry is created — see [`Transcript::set_self_framed_tools`].
     pub self_framed: bool,
 }
@@ -151,7 +151,7 @@ impl Transcript {
         transcript
     }
 
-    /// Say which tool names draw their own call rather than sit inside ohm's band, so every
+    /// Say which tool names draw their own call rather than sit inside micro's band, so every
     /// [`ToolEntry`] built from here on — and every one already sitting in a rebuilt history
     /// — knows without a lookup elsewhere. A run's registered tools are fixed before its
     /// first frame, which is what makes calling this once, up front, enough.
@@ -260,7 +260,7 @@ impl Transcript {
         })
     }
 
-    /// Open or close every collapsible entry, which is what ohm's `ctrl+o` does.
+    /// Open or close every collapsible entry, which is what `ctrl+o` does.
     pub fn set_all_expanded(&mut self, expanded: bool) {
         let mut changed = false;
         for entry in &mut self.entries {
@@ -836,7 +836,7 @@ mod tests {
     }
 
     /// Set before anything else runs, `render_shell: "self"` tags the calls it names as
-    /// they arrive, and leaves everything else drawing ohm's own band as it always has.
+    /// they arrive, and leaves everything else drawing micro's own band.
     #[test]
     fn a_tool_started_after_naming_it_self_framed_is_tagged_from_the_start() {
         let mut transcript = Transcript::new();

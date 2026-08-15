@@ -1,8 +1,8 @@
-//! Fuzzy matching, ported from ohm's `packages/tui/src/fuzzy.ts`.
+//! Fuzzy matching for the menus that filter as you type.
 //!
 //! A query matches when its characters appear in order, not necessarily together. The score
-//! is a penalty — lower is better — built from the same weights ohm uses, so a menu here
-//! ranks candidates the way the same menu there does.
+//! is a penalty — lower is better — and the weights reward what a deliberate query looks
+//! like: word starts, runs of adjacent characters, and an exact match most of all.
 
 /// Characters that make the position after them the start of a word.
 const WORD_SEPARATORS: [char; 6] = ['-', '_', '.', '/', ':', ' '];

@@ -5,10 +5,10 @@
 //! already found is not taken twice, so a project extension shadows a global one of the
 //! same file.
 //!
-//! Inside a directory the rules are ohm's, and they stop after one level: a `.ts` or `.js`
-//! file is an extension; a subdirectory is one when it carries an `index.ts`/`index.js` or
-//! a `package.json` that names its entry points. Anything deeper has to say so in a
-//! manifest, which keeps a directory of helpers from being loaded as extensions.
+//! Inside a directory the search stops after one level: a `.ts` or `.js` file is an
+//! extension; a subdirectory is one when it carries an `index.ts`/`index.js` or a
+//! `package.json` that names its entry points. Anything deeper has to say so in a manifest,
+//! which keeps a directory of helpers from being loaded as extensions.
 
 use serde::Deserialize;
 use std::path::Path;
@@ -19,9 +19,8 @@ pub const PROJECT_DIR: &str = ".micro/extensions";
 
 /// What a `package.json` says about the extensions it carries.
 ///
-/// A package written for ohm declares its entries under `ohm` or `pi`. Those are read as
-/// well as micro's own, so a package published for either loads here without being
-/// repackaged.
+/// Entries are declared under `micro` or `pi`. A legacy key is accepted alongside those, so
+/// a package that still writes one loads here without being repackaged.
 #[derive(Debug, Clone, Default, Deserialize)]
 struct Manifest {
     #[serde(default)]
@@ -92,7 +91,7 @@ pub fn discover(
     found
 }
 
-/// The extensions in one directory, by ohm's rules.
+/// The extensions in one directory, by the rules this module describes.
 pub fn in_directory(directory: &Path) -> Vec<PathBuf> {
     let Ok(entries) = std::fs::read_dir(directory) else {
         return Vec::new();
@@ -231,8 +230,8 @@ mod tests {
         assert!(found[0].ends_with("index.ts"));
     }
 
-    /// A package published for ohm declares its entries under its own name, and loads
-    /// here without being repackaged.
+    /// A package declaring its entries under the legacy manifest key still loads, as does
+    /// one declaring them under `pi`.
     #[test]
     fn a_package_written_for_ohm_still_loads() {
         let root = scratch("ohm-manifest");

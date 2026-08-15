@@ -129,21 +129,21 @@ An extension that runs a command through `ctx.exec` gets the same judgment as tw
 fields on the answer it already receives, `denied: true` and `policy`, so it can act on a
 refusal without reading the platform's wording out of `stderr` itself.
 
-One shape did change there. Micro used to spawn an extension's command itself, so a command
-that did not exist failed before it started and came back as an `error` field with no exit
-code. Under confinement it is the wrapper that starts, and the wrapper reports what it could
-not run: a missing binary now arrives as an ordinary result with a non-zero `code` and a
-`stderr` naming the command. An extension that checked only for `error` should check the
-exit code as well.
+One shape follows from that. What micro spawns is the wrapper rather than the command
+itself, so the wrapper is what reports a command it could not run: a binary that does not
+exist comes back as an ordinary result with a non-zero `code` and a `stderr` naming the
+command, rather than as an `error` field with no exit code. An extension deciding whether a
+command worked reads the exit code, not the absence of an error.
 
 There is no reliable signal for "the kernel refused this". A command that fails inside your
 shell profile looks much like one that was turned down, so micro reads the exit status for
 the signal seccomp raises and otherwise falls back to the wording the platforms use. It
 decides how a failure is phrased, never whether something was allowed.
 
-Every refusal becomes a `sandbox_decision` in the ledger, with the policy, the operation,
-what was being reached for, and which way it went. Ordinary work that went through is not
-recorded; the ledger is for what did not. Two allowances are worth a line all the same: a
+Every refusal becomes a `sandbox_decision` in the session's [ledger](ledger.md), with the
+policy, the operation, what was being reached for, and which way it went. Ordinary work that
+went through is not recorded; the ledger is for what did not. Two allowances are worth a
+line all the same: a
 command that looks refused while nothing was confining it, which is otherwise an afternoon
 of confusion, and the start of a session running under `full`, which is said on screen at
 the same time. Running unconfined is never quiet.

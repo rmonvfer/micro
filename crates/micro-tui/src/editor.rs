@@ -689,8 +689,8 @@ impl Editor {
         self.insert_inner("\n");
     }
 
-    /// Rows a page key moves by: ohm's `max(5, floor(rows * 0.3))`, so a taller terminal
-    /// pages further but a short one still moves a useful distance.
+    /// Rows a page key moves by: `max(5, floor(rows * 0.3))`, so a taller terminal pages
+    /// further but a short one still moves a useful distance.
     pub fn page_rows(rows: usize) -> usize {
         5.max((rows as f64 * 0.3) as usize)
     }
@@ -1496,7 +1496,7 @@ mod ring_tests {
         assert!(!editor("").escapes_submit());
     }
 
-    /// ohm pages by `max(5, floor(rows * 0.3))`, so a tall terminal pages further while a
+    /// A page is `max(5, floor(rows * 0.3))` rows, so a tall terminal pages further while a
     /// short one still moves a useful distance.
     #[test]
     fn a_page_is_a_third_of_the_screen_but_never_under_five_rows() {

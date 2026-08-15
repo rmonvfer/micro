@@ -9,7 +9,7 @@
 //! What cannot be shown is left as it was written. A reader who knows LaTeX can still read
 //! `\begin{matrix}`; a reader who does not is no worse off than with a blank.
 
-/// Symbols, as ohm maps them.
+/// Symbols, and the characters they are drawn as.
 const SYMBOLS: &[(&str, &str)] = &[
     ("alpha", "α"),
     ("beta", "β"),
@@ -230,7 +230,7 @@ const SYMBOLS: &[(&str, &str)] = &[
     ("colon", ":"),
 ];
 
-/// Superscripts, as ohm maps them.
+/// Superscripts, and the characters they are drawn as.
 const SUPERSCRIPTS: &[(&str, &str)] = &[
     ("0", "⁰"),
     ("1", "¹"),
@@ -274,7 +274,7 @@ const SUPERSCRIPTS: &[(&str, &str)] = &[
     ("z", "ᶻ"),
 ];
 
-/// Subscripts, as ohm maps them.
+/// Subscripts, and the characters they are drawn as.
 const SUBSCRIPTS: &[(&str, &str)] = &[
     ("0", "₀"),
     ("1", "₁"),
@@ -310,7 +310,7 @@ const SUBSCRIPTS: &[(&str, &str)] = &[
     ("x", "ₓ"),
 ];
 
-/// Blackboard, as ohm maps them.
+/// Blackboard letters, and the characters they are drawn as.
 const BLACKBOARD: &[(&str, &str)] = &[
     ("C", "ℂ"),
     ("H", "ℍ"),
@@ -321,7 +321,7 @@ const BLACKBOARD: &[(&str, &str)] = &[
     ("Z", "ℤ"),
 ];
 
-/// Accents, as ohm maps them.
+/// Accents, and the combining characters they are drawn with.
 const ACCENTS: &[(&str, &str)] = &[
     ("acute", "\u{0301}"),
     ("bar", "\u{0305}"),
@@ -641,7 +641,7 @@ const MARK_START: char = '\u{f0000}';
 const MARK_END: char = '\u{f0001}';
 
 /// The operators whose limits are written above and below them in display maths, rather
-/// than beside them. ohm makes the same list.
+/// than beside them.
 const BIG_OPERATORS: [&str; 10] = ["∑", "∏", "∐", "∫", "∬", "∭", "∮", "⋃", "⋂", "⨆"];
 
 /// Move every mark in `text` on by `base`, for splicing one renderer's pieces onto another's.

@@ -1,49 +1,71 @@
 # Providers and models
 
-micro speaks three wire formats across five providers, resolves a credential for each, and
-decides which models exist from a catalog assembled in three layers.
+micro speaks six wire protocols across the services in its catalog, resolves a credential
+for each, and decides which models exist from a catalog assembled in three layers.
 
 ## The providers
+
+The bundled catalog carries thirty-five services. These are the ones most people reach for:
 
 | Id | Name | Endpoint | Sign-in |
 | --- | --- | --- | --- |
 | `anthropic` | Anthropic | `api.anthropic.com` | API key |
+| `openai` | OpenAI | `api.openai.com/v1` | API key |
+| `google` | Google | `generativelanguage.googleapis.com/v1beta` | API key |
 | `openrouter` | OpenRouter | `openrouter.ai/api/v1` | API key |
 | `github-copilot` | GitHub Copilot | `api.individual.githubcopilot.com` | Device code |
-| `gemini` | Google Gemini | `generativelanguage.googleapis.com` | API key |
-| `openai` | OpenAI | `api.openai.com/v1` | API key |
 
-Three client implementations serve them. `Anthropic` speaks the Messages API, `Gemini`
-speaks Google's generative API, and `OpenAi` speaks chat completions with per-host
-adjustments for OpenRouter and Copilot. A provider micro does not recognize falls back to
-the OpenAI shape, which most gateways implement.
+The rest are of a piece with those: the platform endpoints (`amazon-bedrock`,
+`google-vertex`, `azure-openai-responses`, `openai-codex`), the inference hosts (`groq`,
+`cerebras`, `fireworks`, `together`, `nvidia`, `huggingface`), the gateways
+(`vercel-ai-gateway`, `cloudflare-ai-gateway`), and the model makers who serve their own
+(`deepseek`, `mistral`, `xai`, `moonshotai`, `zai`, `minimax`, and others). Every one of them
+is signed into with a pasted key except GitHub Copilot, which uses the device-code flow.
+
+Five clients serve the six protocols. `Anthropic` speaks the Messages API. `Gemini` speaks
+Google's generative API, with a Vertex variant addressed under a project and a location.
+`Bedrock` speaks Converse Stream, which is signed rather than keyed and answers in a binary
+event stream rather than in server-sent events. `Codex` speaks the Responses protocol, with
+variants for a subscription token and for Azure's deployment addressing. `OpenAi` speaks
+chat completions, which is also what a model from a live listing is taken to speak when the
+listing says nothing about it.
+
+A client is chosen from the model rather than from its provider, because one service often
+serves several protocols: GitHub Copilot answers Claude models over the Messages shape and
+GPT models over the Responses shape. Sending a Responses model a completion instead would
+work by accident and lose what the protocol is for — reasoning replayed between turns, which
+is how a model keeps its thread across tool calls.
 
 Common alternative spellings are folded onto the canonical id, so `claude` reaches
-`anthropic`, `google` reaches `gemini`, and `copilot` or `github` reach `github-copilot`.
-The canonical id is what the credential is filed under and what a model's `provider` field
-holds.
+`anthropic`, `gemini` reaches `google`, `copilot` or `github` reach `github-copilot`, and
+`codex` or `chatgpt` reach `openai-codex`. The canonical id is what the credential is filed
+under and what a model's `provider` field holds.
 
 ## How credentials resolve
 
 `AuthStore::resolve` prefers what is stored and falls back to the environment.
 
 A credential stored by `micro auth login` lives in `auth.json` in micro's configuration
-directory, one entry per provider, in a file only its owner can read. If the provider issues short-lived tokens, the
-stored credential is exchanged for a fresh one at resolve time rather than at login, so a
-long-idle installation still works without signing in again.
+directory, one entry per provider, in a file only its owner can read. If the provider issues
+short-lived tokens, the stored credential is exchanged for a fresh one at resolve time
+rather than at login, so a long-idle installation still works without signing in again.
 
 With nothing stored, the conventional environment variable is used instead:
 
 | Provider | Variables, in order |
 | --- | --- |
-| `anthropic` | `ANTHROPIC_API_KEY` |
-| `openrouter` | `OPENROUTER_API_KEY` |
-| `github-copilot` | `COPILOT_GITHUB_TOKEN`, `GH_TOKEN`, `GITHUB_TOKEN` |
-| `gemini` | `GEMINI_API_KEY`, `GOOGLE_API_KEY` |
+| `anthropic` | `ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_OAUTH_TOKEN`, `ANTHROPIC_API_KEY` |
 | `openai` | `OPENAI_API_KEY` |
+| `google` | `GEMINI_API_KEY` |
+| `openrouter` | `OPENROUTER_API_KEY` |
+| `github-copilot` | `COPILOT_GITHUB_TOKEN` |
 
-`micro auth status` reports each provider's state and which of the two it came from, so a
-key that is being shadowed by a stored credential is visible rather than mysterious.
+A provider the table does not name falls back to the conventional `<PROVIDER>_API_KEY` —
+`GROQ_API_KEY`, `DEEPSEEK_API_KEY`, and so on — which is also what an extension declaring a
+provider of its own relies on.
+
+`micro auth status` reports each provider's state and which of the two it came from, so a key
+that is being shadowed by a stored credential is visible rather than mysterious.
 
 ## The model catalog
 
@@ -55,13 +77,13 @@ cache reads, and cache writes. The prices are what the interface bases a running
 The catalog is assembled in three layers, each overlaying the last.
 
 **The bundled catalog** is compiled into the binary, so micro works offline with no setup.
-It covers the current models on all four of the providers that publish them.
+It carries every service above along with the models each of them serves, prices included.
 
-**A user catalog** at `models.json` in micro's configuration directory is applied over it. An entry naming a model
-that already exists patches only the fields it mentions; an entry naming a new one registers
-it. Provider-level settings re-point every model under that provider at once, which is how a
-whole provider moves behind a proxy. See [configuration.md](configuration.md) for the file's
-shape.
+**A user catalog** at `models.json` in micro's configuration directory is applied over it.
+An entry naming a model that already exists patches only the fields it mentions; an entry
+naming a new one registers it. Provider-level settings re-point every model under that
+provider at once, which is how a whole provider moves behind a proxy. See
+[configuration.md](configuration.md) for the file's shape.
 
 **Live listings** are merged last, so a model released since the build appears without one.
 `micro models --live` fetches OpenRouter's public model list and, when a Copilot credential
@@ -81,17 +103,19 @@ OpenRouter serves, and both stay reachable.
 
 ## Adding a provider
 
-Implement `Provider`, which is one method: turn a `Model`, a `Context`, and an API key into
-a receiver of `StreamEvent`s. The work is the translation at both edges — the request body
-the endpoint expects, and its response framing back into events. `Anthropic`, `OpenAi`, and
-`Gemini` are the three worked examples; an endpoint that already speaks one of those shapes
-needs no new client at all.
+A service speaking a protocol micro already has needs no new code, which is most of them.
+Give it an entry in the bundled catalog with its endpoint, the protocol it declares, and its
+models, and give `micro-auth` its id, display name and environment variables so a credential
+can be stored and resolved. A provider block naming no environment variable still resolves
+one, from its own id.
 
-Register it in `micro-provider`'s registry with its canonical id, display name, default
-endpoint, sign-in method, and a conservative output cap for models whose real one is
-unknown, then add the id and its environment variables to `micro-auth` so a credential can
-be stored and resolved. Add its models to the bundled catalog, or leave that to a live
-listing if the provider publishes one.
+A protocol micro does not have means implementing `Provider`: turn a `Model`, a `Context`,
+and a key into a receiver of `StreamEvent`s, and answer separately with the body that
+request would carry. The work is the translation at both edges — the request body the
+endpoint expects, and its response framing back into events — and the two must agree, since
+a session records a request by the hash of that body and rebuilds it from the same
+assembly. `Anthropic`, `OpenAi`, `Codex`, `Gemini` and `Bedrock` are the worked examples,
+and the registry picks between them from the model's declared protocol and its provider.
 
 Nothing above needs to change. The agent loop and the tools never learn
 that a provider was added, and a user reaches the new models through the same resolution

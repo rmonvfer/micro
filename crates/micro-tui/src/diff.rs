@@ -190,7 +190,7 @@ pub enum LineKind {
 /// One line of a diff as it is shown: a marker, a line number, and the text.
 ///
 /// The number is the new file's for an added line and the old file's for a removed or
-/// unchanged one, which is what ohm shows.
+/// unchanged one.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DiffLine {
     pub kind: LineKind,
@@ -198,14 +198,14 @@ pub struct DiffLine {
     pub text: String,
 }
 
-/// How many unchanged lines ohm keeps either side of a change.
+/// How many unchanged lines are kept either side of a change.
 pub const DEFAULT_CONTEXT: usize = 4;
 
-/// A tab is this many spaces, matching ohm, so a diff of indented code lines up.
+/// A tab is this many spaces, so a diff of indented code lines up.
 const TAB: &str = "   ";
 
-/// Lay a change out the way ohm lays it out: numbered lines, context trimmed to `context`
-/// either side of each change, and everything further away replaced by one elision.
+/// Lay a change out: numbered lines, context trimmed to `context` either side of each
+/// change, and everything further away replaced by one elision.
 pub fn format(old: &str, new: &str, context: usize) -> Vec<DiffLine> {
     let parts = parts(&diff_lines(old, new));
     let mut lines = Vec::new();
@@ -320,7 +320,7 @@ fn elision() -> DiffLine {
     }
 }
 
-/// Consecutive changes of one kind, which is the unit ohm's context rules work on.
+/// Consecutive changes of one kind, which is the unit the context rules work on.
 enum Part {
     Equal(Vec<String>),
     Added(Vec<String>),
@@ -342,7 +342,7 @@ fn parts(changes: &[Change]) -> Vec<Part> {
     parts
 }
 
-/// The width the line-number column needs, counted as ohm counts it.
+/// The width the line-number column needs, from the longer of the two files.
 pub fn number_width(old: &str, new: &str) -> usize {
     let count = |text: &str| text.split('\n').count();
     count(old).max(count(new)).to_string().len()
@@ -366,8 +366,8 @@ pub fn gutter(line: &DiffLine, width: usize) -> String {
 /// Paint a laid-out diff, one styled line per input line.
 ///
 /// A line that replaced exactly one other is compared word by word and the words that
-/// actually differ are shown in inverse video, which is how ohm draws a small edit inside a
-/// long line. Anything larger is a block rewrite, where marking words is noise, so the lines
+/// actually differ are shown in inverse video, which is how a small edit inside a long line
+/// is drawn. Anything larger is a block rewrite, where marking words is noise, so the lines
 /// are shown whole.
 pub fn paint(lines: &[DiffLine], width: usize, theme: &Theme) -> Vec<Vec<Span<'static>>> {
     let mut painted = Vec::new();
