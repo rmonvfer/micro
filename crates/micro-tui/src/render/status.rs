@@ -797,6 +797,36 @@ mod added_fields {
             .unwrap_or_default()
     }
 
+    /// Three readings are meant to be on screen for the length of an ordinary session:
+    /// how full the context window is, what the session has cost, and how much of the last
+    /// prompt came out of cache. Each is tested on its own elsewhere; this is the one that
+    /// says an ordinary session gets all three at once, without being asked for any of
+    /// them.
+    #[test]
+    fn an_ordinary_session_shows_context_cost_and_cache_hits_together() {
+        let footer = Footer {
+            cost: Some(0.4210),
+            total: Usage {
+                input: 1_000,
+                output: 500,
+                cache_read: 8_000,
+                cache_write: 2_000,
+            },
+            last: Usage {
+                input: 1_000,
+                output: 120,
+                cache_read: 3_000,
+                cache_write: 0,
+            },
+            ..base()
+        };
+
+        let line = row(&footer, 1);
+        assert!(line.contains("/200k"), "the context reading: {line}");
+        assert!(line.contains("$0.421"), "what it has cost: {line}");
+        assert!(line.contains("CH75.0%"), "the cache hit rate: {line}");
+    }
+
     #[test]
     fn a_metered_session_shows_what_it_has_cost() {
         let footer = Footer {

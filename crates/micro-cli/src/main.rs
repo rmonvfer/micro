@@ -1,6 +1,7 @@
 //! Entry point. With no subcommand it opens the interface; `--print` runs one prompt and
 //! exits.
 
+mod capabilities;
 mod commands;
 mod extensions;
 mod headless;
@@ -119,6 +120,10 @@ struct Cli {
     #[arg(long = "sandbox", value_name = "POLICY")]
     sandbox: Option<String>,
 
+    /// Stop this session once it has spent this many dollars. Zero is no ceiling.
+    #[arg(long = "budget", value_name = "AMOUNT")]
+    budget: Option<f64>,
+
     /// Set one config value for this run: `-c theme=dracula`, `-c show_images=false`.
     ///
     /// The key is a dotted path into the config file. Repeat the flag for more than one.
@@ -169,6 +174,14 @@ enum Command {
     Sessions {
         #[command(subcommand)]
         action: Option<SessionAction>,
+    },
+    /// Itemize what a session cost.
+    Bill {
+        /// The session to bill, rather than the latest one from this workspace.
+        session: Option<String>,
+        /// Show what one turn added to the bill, and why.
+        #[arg(long = "diff", value_name = "TURN")]
+        diff: Option<u64>,
     },
     /// Say why a turn paid for a prompt the provider already had.
     WhyMiss {
@@ -378,7 +391,7 @@ fn own_flags() -> (Vec<String>, Vec<String>) {
 /// What a user settled once and left alone. A command-line argument still wins, which is
 /// what `resolve_from_env` layers for us.
 fn settled(cli: &Cli) -> micro_config::Settings {
-    micro_config::Config::load_with(&cli.config_override)
+    let mut settings = micro_config::Config::load_with(&cli.config_override)
         .and_then(|config| {
             config.resolve_from_env(&micro_config::Overrides {
                 model: cli.model.clone(),
@@ -396,7 +409,14 @@ fn settled(cli: &Cli) -> micro_config::Settings {
             }
             eprintln!("note: {error}; using defaults");
             micro_config::Settings::default()
-        })
+        });
+    // A ceiling named on the command line stands for this run alone and is not written
+    // down, the same way trust said outright is: a scripted run says what it is willing to
+    // spend every time rather than leaving a limit behind on the machine it ran on.
+    if let Some(budget) = cli.budget {
+        settings.budget = budget.max(0.0);
+    }
+    settings
 }
 
 #[tokio::main]
@@ -461,6 +481,14 @@ async fn main() -> Result<()> {
                 Some(SessionAction::Delete { id }) => subcommands::sessions_delete(id).await,
                 None => subcommands::sessions_list(&root, false).await,
             };
+        }
+        Some(Command::Bill { session, diff }) => {
+            let root = runtime::workspace(&cli.cwd)?;
+            let id = match session {
+                Some(id) => id.clone(),
+                None => subcommands::latest_session(&root).await?,
+            };
+            return subcommands::bill(&id, *diff).await;
         }
         Some(Command::WhyMiss { session, turn }) => {
             return subcommands::why_miss(session, *turn).await
@@ -644,6 +672,7 @@ async fn main() -> Result<()> {
             std::sync::Arc::clone(host),
             root.clone(),
             confined.clone(),
+            built.broker.take().unwrap_or_else(extensions::Broker::open),
             asker.clone(),
             state,
             std::sync::Arc::clone(&built.session),
@@ -806,7 +835,9 @@ async fn main() -> Result<()> {
     };
 
     // The agent has been dropped by now, which closes the recorder and ends the writer.
-    // Waiting for it guarantees every message reached the log before the process exits.
+    // Waiting for it guarantees every message reached the log before the process exits —
+    // and, because the extensions are watching the same run, that everything the agent
+    // reported has reached them too before the host holding them is let go.
     let _ = writer.await;
     shut_down_extensions(extensions).await;
     result
@@ -930,13 +961,22 @@ mod flag_tests {
             "no-context-files",
             "theme",
             "sandbox",
+            "budget",
         ] {
             assert!(known(flag), "`--{flag}` is not recognised as micro's own");
         }
 
         // A flag that carries a value has to be in the other list, or the value after it
         // is read as the prompt.
-        for flag in ["model", "cwd", "skill", "extension", "theme", "tui-mode"] {
+        for flag in [
+            "model",
+            "cwd",
+            "skill",
+            "extension",
+            "theme",
+            "tui-mode",
+            "budget",
+        ] {
             assert!(
                 valued.iter().any(|known| known == flag),
                 "`--{flag}` takes a value"
@@ -952,5 +992,6 @@ mod flag_tests {
         // Subcommands declare flags too, and they are held to the same rule.
         assert!(known("local") && known("live") && known("overwrite"));
         assert!(known("raw") && valued.iter().any(|known| known == "turn"));
+        assert!(valued.iter().any(|known| known == "diff"));
     }
 }

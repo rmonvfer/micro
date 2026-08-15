@@ -10,6 +10,7 @@ use micro_session::SessionStore;
 use std::io::BufRead as _;
 use std::io::Write as _;
 use std::path::Path;
+use std::path::PathBuf;
 
 pub async fn auth_status() -> Result<()> {
     let store = AuthStore::open()?;
@@ -254,6 +255,28 @@ pub async fn sessions_export(id: &str) -> Result<()> {
     if skipped > 0 {
         eprintln!("note: skipped {skipped} unreadable line(s) in session {id}");
     }
+    Ok(())
+}
+
+/// `micro bill [session] [--diff <turn>]` — what a session cost, and what it went on.
+///
+/// The reading of the ledger is [`micro_commands::bill`], the same one `/bill` shows.
+/// Priced against the catalog as it stands, which is what makes an old session billable at
+/// all: the ledger recorded what was used, not what it was worth at the time.
+pub async fn bill(id: &str, diff: Option<u64>) -> Result<()> {
+    let store = SessionStore::from_env()?;
+    let catalog = Catalog::load().unwrap_or_else(|_| Catalog::bundled());
+    let billed = micro_commands::bill(&store, &catalog, id)
+        .await
+        .map_err(|reason| anyhow::anyhow!(reason))?;
+
+    let report = match diff {
+        Some(turn) => billed
+            .added_by(turn)
+            .map_err(|reason| anyhow::anyhow!(reason))?,
+        None => billed.report(),
+    };
+    println!("{report}");
     Ok(())
 }
 
@@ -502,10 +525,15 @@ pub async fn install(source: &str, local: bool, workspace: &Path) -> Result<()> 
 }
 
 /// `micro remove <source>` — take a package away and forget it.
+///
+/// Its own `deactivate` runs first, while its files are still there to run: an extension
+/// that started something, wrote something, or registered something outside micro is given
+/// the chance to put it back, which is the only chance it will get.
 pub async fn remove(source: &str, local: bool, workspace: &Path) -> Result<()> {
     let parsed = micro_extensions::Source::parse(source).map_err(anyhow::Error::msg)?;
     let home = micro_context::micro_home()?;
 
+    deactivate(&parsed.install_path(&home, workspace, local), &home, workspace).await;
     micro_extensions::remove(&parsed, &home, workspace, local).map_err(anyhow::Error::msg)?;
     let forgotten = remember(&parsed.canonical(), false)?;
 
@@ -514,6 +542,37 @@ pub async fn remove(source: &str, local: bool, workspace: &Path) -> Result<()> {
         false => println!("{} was not installed.", parsed.canonical()),
     }
     Ok(())
+}
+
+/// Let a package's extensions go before its files do.
+///
+/// Nothing here is fatal, and nothing here is required to succeed: an extension that will
+/// not load cannot be deactivated either, and one that throws on the way out is still being
+/// removed. What this buys is the one moment an extension has to undo what it did outside
+/// micro, which no amount of deleting files afterwards can give it.
+async fn deactivate(path: &Path, home: &Path, workspace: &Path) {
+    if !path.exists() {
+        return;
+    }
+    let entries = match path.is_dir() {
+        true => micro_extensions::entries_of(path)
+            .unwrap_or_else(|| micro_extensions::in_directory(path)),
+        false => vec![path.to_path_buf()],
+    };
+    if entries.is_empty() {
+        return;
+    }
+    let Ok(host) = micro_extensions::Host::start(home, &entries, workspace, false, false, "print")
+        .await
+    else {
+        return;
+    };
+    for extension in &host.loaded().extensions {
+        if let Err(error) = host.deactivate(&extension.path).await {
+            println!("  note     {} did not deactivate cleanly: {error}", extension.path);
+        }
+    }
+    host.shutdown("quit").await;
 }
 
 /// `micro list` — what is installed, and whether it is still there.
@@ -529,16 +588,95 @@ pub async fn list_packages() -> Result<()> {
 
     let home = micro_context::micro_home()?;
     let workspace = std::env::current_dir().unwrap_or_default();
-    for source in sources {
-        let parsed = micro_extensions::Source::parse(&source).map_err(anyhow::Error::msg)?;
-        let path = parsed.install_path(&home, &workspace, false);
+
+    // What each package's own extensions may do. Worked out for the whole listing at once,
+    // in one host: a capability set an extension declared is read from its manifest, but a
+    // legacy one's has to be derived from what it registers, and that means loading it.
+    let installed: Vec<(String, PathBuf)> = sources
+        .iter()
+        .map(|source| {
+            let parsed = micro_extensions::Source::parse(source).map_err(anyhow::Error::msg)?;
+            Ok((source.clone(), parsed.install_path(&home, &workspace, false)))
+        })
+        .collect::<Result<_>>()?;
+    let capabilities = capabilities_of(&home, &workspace, &installed).await;
+
+    for (source, path) in installed {
         let state = match path.exists() {
             true => "installed",
             false => "missing",
         };
         println!("{source:<40} {state:<10} {}", path.display());
+        if let Some(described) = capabilities.get(&source) {
+            for line in described {
+                println!("{:<40} {line}", "");
+            }
+        }
     }
     Ok(())
+}
+
+/// What each installed package's extensions may do, by the source they were installed from.
+///
+/// One host for the whole listing rather than one per package: a legacy extension's set is
+/// derived from what it registers, so it has to be loaded to be described, and loading them
+/// separately would pay for a Bun process apiece. Without a runtime to load them there is
+/// nothing to derive from, and the listing simply says less rather than failing.
+async fn capabilities_of(
+    home: &Path,
+    workspace: &Path,
+    installed: &[(String, PathBuf)],
+) -> std::collections::BTreeMap<String, Vec<String>> {
+    let mut entries: Vec<PathBuf> = Vec::new();
+    let mut owners: Vec<(String, PathBuf)> = Vec::new();
+    for (source, path) in installed {
+        let found = match path.is_dir() {
+            true => micro_extensions::entries_of(path)
+                .unwrap_or_else(|| micro_extensions::in_directory(path)),
+            false => vec![path.clone()],
+        };
+        for entry in found {
+            owners.push((source.clone(), entry.clone()));
+            entries.push(entry);
+        }
+    }
+    if entries.is_empty() {
+        return Default::default();
+    }
+
+    let loaded = match micro_extensions::Host::start(home, &entries, workspace, false, false, "print")
+        .await
+    {
+        Ok(host) => {
+            let loaded = host.loaded().clone();
+            host.shutdown("quit").await;
+            loaded
+        }
+        Err(_) => return Default::default(),
+    };
+
+    let roots: Vec<(PathBuf, String)> = installed
+        .iter()
+        .filter_map(|(_, path)| {
+            micro_extensions::package_name(path).map(|named| (path.clone(), named))
+        })
+        .collect();
+    let resolved = crate::capabilities::resolve(&loaded, &roots, true, false).await;
+
+    let mut described: std::collections::BTreeMap<String, Vec<String>> = Default::default();
+    for grant in resolved.grants.all() {
+        let Some((source, _)) = owners
+            .iter()
+            .find(|(_, entry)| entry.display().to_string() == grant.path)
+        else {
+            continue;
+        };
+        described
+            .entry(source.clone())
+            .or_default()
+            .push(format!("{}  {}", grant.name, crate::capabilities::describe(grant)));
+    }
+    described
 }
 
 /// Add a source to the settings, or take it out. Says whether anything changed.

@@ -73,6 +73,12 @@ pub struct Registered {
     /// The custom types this extension draws itself.
     #[serde(default)]
     pub renderers: Vec<String>,
+    /// What the extension itself says it may do, when it says anything: a `capabilities`
+    /// export beside its default one. Absent — rather than empty — for an extension that
+    /// declares nothing, which is what tells a manifest naming no capabilities apart from
+    /// no manifest at all.
+    #[serde(default)]
+    pub capabilities: Option<Vec<String>>,
 }
 
 /// A provider an extension declared, or one it changed.
@@ -83,7 +89,7 @@ pub struct RegisteredProvider {
     pub config: Value,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize)]
 pub struct RegisteredTool {
     pub name: String,
     #[serde(default)]
@@ -161,18 +167,32 @@ pub struct LoadFailure {
 }
 
 /// Something the host wants micro to do, or to answer.
+///
+/// The three an extension originates carry `extension`: the file whose registration made
+/// the ask, as the host knows it. Without it every ask would arrive anonymously and there
+/// would be nothing to hold to a manifest — see [`crate::Grants`]. It is optional because
+/// a message can also come from the host itself rather than from any one extension.
 #[derive(Debug, Clone, PartialEq)]
 pub enum FromHost {
     /// An extension asked micro to do something. Nothing comes back.
-    Action { action: String, payload: Value },
+    Action {
+        action: String,
+        extension: Option<String>,
+        payload: Value,
+    },
     /// An extension asked micro something and is waiting.
     Request {
         id: String,
         request: String,
+        extension: Option<String>,
         payload: Value,
     },
     /// An extension wants the user asked something.
-    Ui { id: Option<String>, payload: Value },
+    Ui {
+        id: Option<String>,
+        extension: Option<String>,
+        payload: Value,
+    },
     /// A registered component says its lines are stale, on its own schedule rather than in
     /// answer to a `render` this side sent. Nothing is waited for — the interface asking
     /// for fresh lines, on its own time, is the point of this arriving unprompted at all.
@@ -356,6 +376,77 @@ impl Host {
         &self.loaded
     }
 
+    /// Drop every registration an extension was not granted, and say what was refused.
+    ///
+    /// Registering is itself an ask — for a tool the model may call, a command a reader may
+    /// type — so it is held to the manifest like any other, and refused here rather than at
+    /// the moment the tool is called. That way an extension without the capability never
+    /// contributes a name to the model's tool list, instead of contributing one that
+    /// refuses when reached for.
+    ///
+    /// Done while the host is still the caller's own, before anything else can have read
+    /// what it registered: this is the only thing that changes the load report, and
+    /// everything downstream reads it through an `Arc` afterwards.
+    pub fn retain_granted(&mut self, grants: &crate::Grants) -> Vec<String> {
+        let mut refused = Vec::new();
+        for extension in &mut self.loaded.extensions {
+            let Some(grant) = grants.grant(Some(&extension.path)) else {
+                continue;
+            };
+            let mut refuse = |kind: &str, named: Vec<String>| {
+                if !named.is_empty() {
+                    refused.push(format!(
+                        "{} registered {kind} without asking for the `{kind}` capability, so {} left out: {}",
+                        grant.name,
+                        match named.len() {
+                            1 => "it was",
+                            _ => "they were",
+                        },
+                        named.join(", "),
+                    ));
+                }
+            };
+
+            if !grant.allows(crate::Capability::Tools) {
+                refuse(
+                    "tools",
+                    extension
+                        .tools
+                        .drain(..)
+                        .map(|tool| tool.name)
+                        .collect(),
+                );
+            }
+            if !grant.allows(crate::Capability::Commands) {
+                refuse(
+                    "commands",
+                    extension
+                        .commands
+                        .drain(..)
+                        .map(|command| command.name)
+                        .collect(),
+                );
+            }
+            if !grant.allows(crate::Capability::Flags) {
+                refuse(
+                    "flags",
+                    extension.flags.drain(..).map(|flag| flag.name).collect(),
+                );
+            }
+            if !grant.allows(crate::Capability::Providers) {
+                refuse(
+                    "providers",
+                    extension
+                        .providers
+                        .drain(..)
+                        .map(|provider| provider.name)
+                        .collect(),
+                );
+            }
+        }
+        refused
+    }
+
     /// Every tool the extensions registered, as the model will see them.
     pub fn tools(&self) -> Vec<RegisteredTool> {
         self.loaded
@@ -471,6 +562,25 @@ impl Host {
     /// answer, and what every handler answered comes back. Used where an extension is
     /// allowed to change what happens rather than only to watch it.
     pub async fn ask_event(&self, event: &str, payload: Value) -> Result<Vec<Value>, String> {
+        Ok(self
+            .ask_event_attributed(event, payload)
+            .await?
+            .into_iter()
+            .map(|(_, answer)| answer)
+            .collect())
+    }
+
+    /// The same question, with each answer paired to the extension that gave it.
+    ///
+    /// An event reaches every handler that registered for it, and one of them answering is
+    /// the extension changing what micro does — replacing the conversation on its way to a
+    /// request, say. Which one answered is what makes that change attributable, and what
+    /// makes it something a manifest can be held against.
+    pub async fn ask_event_attributed(
+        &self,
+        event: &str,
+        payload: Value,
+    ) -> Result<Vec<(Option<String>, Value)>, String> {
         let id = self.claim_id();
         let (sender, receiver) = oneshot::channel();
         self.pending.lock().await.insert(id.clone(), sender);
@@ -491,11 +601,61 @@ impl Host {
             .map_err(|_| format!("nothing answered {event} in time"))?
             .map_err(|_| format!("the extension host stopped during {event}"))?;
 
-        Ok(answer
+        let results = answer
             .get("results")
             .and_then(Value::as_array)
             .cloned()
-            .unwrap_or_default())
+            .unwrap_or_default();
+        // Sent alongside the answers rather than folded into them, so an answer is exactly
+        // the object the handler returned. An older host, or one answering an event nothing
+        // extension-owned handled, sends no sources at all, and every answer is then simply
+        // unattributed.
+        let sources = answer
+            .get("sources")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        Ok(results
+            .into_iter()
+            .enumerate()
+            .map(|(index, result)| {
+                let source = sources
+                    .get(index)
+                    .and_then(Value::as_str)
+                    .filter(|path| !path.is_empty())
+                    .map(str::to_string);
+                (source, result)
+            })
+            .collect())
+    }
+
+    /// Tell one extension it is being let go, and wait for it to say it is done.
+    ///
+    /// The extension's own `deactivate` export runs first, so it can put back whatever it
+    /// changed outside micro; then the host drops its registrations, so nothing it added
+    /// can be reached again. What micro itself granted — the tools it offered the model,
+    /// the commands it dispatched, what it drew — is taken back by the caller regardless of
+    /// how this answered: an extension that throws on the way out still stops being loaded.
+    pub async fn deactivate(&self, path: &str) -> Result<(), String> {
+        let id = self.claim_id();
+        let (sender, receiver) = oneshot::channel();
+        self.pending.lock().await.insert(id.clone(), sender);
+
+        write_line(
+            &mut *self.stdin.lock().await,
+            &serde_json::json!({ "type": "deactivate", "id": id, "path": path }),
+        )
+        .await?;
+
+        let answer = tokio::time::timeout(TOOL_TIMEOUT, receiver)
+            .await
+            .map_err(|_| format!("{path} did not finish deactivating in time"))?
+            .map_err(|_| "the extension host stopped while deactivating".to_string())?;
+
+        match answer.get("error").and_then(Value::as_str) {
+            Some(error) => Err(error.to_string()),
+            None => Ok(()),
+        }
     }
 
     /// Run one of their tools, forwarding what it reports while it works, and wait for what
@@ -877,7 +1037,8 @@ async fn read_host(
                 }
             }
             "tool_result" | "command_result" | "event_result" | "render_result"
-            | "transform_markdown_result" | "component_result" | "render_tool_result" => {
+            | "transform_markdown_result" | "component_result" | "render_tool_result"
+            | "deactivated" => {
                 let Some(id) = message.get("id").and_then(Value::as_str) else {
                     continue;
                 };
@@ -915,8 +1076,10 @@ async fn read_host(
                     .and_then(Value::as_str)
                     .unwrap_or_default()
                     .to_string();
+                let extension = asker(&message);
                 let _ = outgoing.send(FromHost::Action {
                     action,
+                    extension,
                     payload: message,
                 });
             }
@@ -929,9 +1092,11 @@ async fn read_host(
                     .and_then(Value::as_str)
                     .unwrap_or_default()
                     .to_string();
+                let extension = asker(&message);
                 let _ = outgoing.send(FromHost::Request {
                     id: id.to_string(),
                     request,
+                    extension,
                     payload: message,
                 });
             }
@@ -940,8 +1105,10 @@ async fn read_host(
                     .get("id")
                     .and_then(Value::as_str)
                     .map(str::to_string);
+                let extension = asker(&message);
                 let _ = outgoing.send(FromHost::Ui {
                     id,
+                    extension,
                     payload: message,
                 });
             }
@@ -955,6 +1122,19 @@ async fn read_host(
             _ => {}
         }
     }
+}
+
+/// Which extension made this ask, when the host said.
+///
+/// An empty name is read as no name rather than as an extension called nothing: the host
+/// tags an ask with the registration that made it, and anything it sends on its own behalf
+/// carries no tag at all.
+fn asker(message: &Value) -> Option<String> {
+    message
+        .get("extension")
+        .and_then(Value::as_str)
+        .filter(|path| !path.is_empty())
+        .map(str::to_string)
 }
 
 fn text(value: &Value, name: &str) -> String {
@@ -1230,6 +1410,115 @@ export default (micro) => {
             .await
             .expect("the command runs");
         assert_eq!(command, serde_json::json!("waved"));
+
+        host.shutdown("quit").await;
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// What an extension exports beside its default function is read and reported: the
+    /// capabilities it says it needs, and the fact that it has something to run when it is
+    /// let go. An extension exporting neither says nothing about either, which is what
+    /// tells a manifest declaring nothing apart from no manifest at all.
+    #[tokio::test]
+    async fn what_an_extension_declares_about_itself_reaches_micro() {
+        if which_bun().is_none() {
+            return;
+        }
+        let root = scratch("declared");
+        let declaring = root.join("declaring.ts");
+        std::fs::write(
+            &declaring,
+            r#"
+export const capabilities = ["tools", "exec"];
+export default (micro) => {
+    micro.registerTool({
+        name: "thing",
+        description: "does a thing",
+        parameters: { type: "object", properties: {} },
+        execute: async () => "done",
+    });
+};
+"#,
+        )
+        .unwrap();
+        let silent = root.join("silent.ts");
+        std::fs::write(&silent, "export default () => {};").unwrap();
+
+        let host = Host::start(
+            &root,
+            &[declaring.clone(), silent.clone()],
+            &root,
+            false,
+            false,
+            "tui",
+        )
+        .await
+        .expect("the host starts");
+
+        let loaded = host.loaded();
+        assert_eq!(
+            loaded.extensions[0].capabilities,
+            Some(vec!["tools".to_string(), "exec".to_string()])
+        );
+        assert_eq!(loaded.extensions[1].capabilities, None);
+
+        host.shutdown("quit").await;
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Letting an extension go runs its own `deactivate` — its one chance to put back
+    /// whatever it changed outside micro — and then drops what it registered, so a command
+    /// it added is no longer there to be called.
+    #[tokio::test]
+    async fn deactivating_an_extension_runs_its_own_teardown_and_drops_its_registrations() {
+        if which_bun().is_none() {
+            return;
+        }
+        let root = scratch("deactivate");
+        let extension = root.join("leaving.ts");
+        let marker = root.join("left.txt");
+        std::fs::write(
+            &extension,
+            format!(
+                r#"
+import {{ writeFileSync }} from "node:fs";
+export const deactivate = () => {{
+    writeFileSync({marker:?}, "put back");
+}};
+export default (micro) => {{
+    micro.registerCommand("probe", {{ handler: async () => "here" }});
+}};
+"#,
+                marker = marker.display().to_string()
+            ),
+        )
+        .unwrap();
+
+        let host = Arc::new(
+            Host::start(&root, std::slice::from_ref(&extension), &root, false, false, "tui")
+                .await
+                .expect("the host starts"),
+        );
+        answer_context_requests(Arc::clone(&host));
+
+        assert_eq!(
+            host.call_command("probe", "").await.expect("the command runs"),
+            serde_json::json!("here")
+        );
+
+        host.deactivate(&extension.display().to_string())
+            .await
+            .expect("it is let go");
+        assert_eq!(
+            std::fs::read_to_string(&marker).expect("its own teardown ran"),
+            "put back"
+        );
+
+        let gone = host.call_command("probe", "").await;
+        assert!(
+            gone.is_err_and(|error| error.contains("probe")),
+            "the command it registered is still there"
+        );
 
         host.shutdown("quit").await;
         let _ = std::fs::remove_dir_all(&root);
@@ -1932,7 +2221,7 @@ export default (micro) => {
                         // real completion, which arrives as its own event below.
                         let _ = watching.answer(&id, serde_json::json!({ "cancelled": false })).await;
                     }
-                    FromHost::Action { action, payload } if action == "send_user_message" => {
+                    FromHost::Action { action, payload, .. } if action == "send_user_message" => {
                         return payload
                             .get("content")
                             .and_then(serde_json::Value::as_str)

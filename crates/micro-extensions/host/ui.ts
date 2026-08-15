@@ -53,7 +53,7 @@ import { join } from "node:path";
 // answers a `CustomEditor`'s own `super.handleInput` checks correctly instead of throwing.
 import { getKeybindings, type KeybindingsManager } from "@earendil-works/pi-tui";
 import { type Component, dispose as disposeComponent, pushChanged, registerComponent } from "./host-components.ts";
-import { ask, type Json, send } from "./host-wire.ts";
+import { type Json, wireFor } from "./host-wire.ts";
 
 /** A handler `ctx.ui.onTerminalInput` registered, and what it asked to do with a key. */
 type TerminalInputHandler = (data: string) => { consume?: boolean; data?: string } | undefined;
@@ -632,8 +632,15 @@ export async function dispatchApplyCompletion(
 	return provider.applyCompletion(lines, cursorLine, cursorCol, item, prefix);
 }
 
-/** The interface as an extension sees it. */
-export function uiFor(): Json {
+/** The interface as an extension sees it.
+ *
+ * Built per extension rather than once, so every request below carries the path of whoever
+ * made it: micro decides what an ask is allowed to do by looking at who asked, and one
+ * shared interface object would leave every one of them anonymous. The pair taken here
+ * shadows the module's own `ask`/`send` for the whole of this function, which is why
+ * nothing inside it has to mention the extension itself. */
+export function uiFor(extension: string): Json {
+	const { ask, send } = wireFor(extension);
 	return {
 		async select(title: string, options: string[], opts?: Json): Promise<string | undefined> {
 			const answer = await ask({ type: "ui_request", method: "select", title, options, opts });
@@ -729,7 +736,7 @@ export function uiFor(): Json {
 				tuiHandle(id),
 				currentTheme,
 			);
-			const registered = registerComponent(component);
+			const registered = registerComponent(component, extension);
 			id.current = registered.id;
 			widgetComponentIds.set(key, registered.id);
 			send({ type: "ui_request", method: "setWidget", key, componentId: registered.id, placement });
@@ -755,7 +762,7 @@ export function uiFor(): Json {
 				currentTheme,
 				{},
 			);
-			const registered = registerComponent(component);
+			const registered = registerComponent(component, extension);
 			id.current = registered.id;
 			footerComponentId = registered.id;
 			send({ type: "ui_request", method: "setFooter", componentId: registered.id });
@@ -773,7 +780,7 @@ export function uiFor(): Json {
 			}
 			const id: { current?: string } = {};
 			const component = (factory as (tui: unknown, theme: ExtensionTheme) => Component)(tuiHandle(id), currentTheme);
-			const registered = registerComponent(component);
+			const registered = registerComponent(component, extension);
 			id.current = registered.id;
 			headerComponentId = registered.id;
 			send({ type: "ui_request", method: "setHeader", componentId: registered.id });
@@ -807,7 +814,7 @@ export function uiFor(): Json {
 			let finish: (result: unknown) => void = () => {};
 			const idBox: { current?: string } = {};
 			const component = await factory(tuiHandle(idBox), currentTheme, getKeybindings(), (result) => finish(result));
-			const { id } = registerComponent(component);
+			const { id } = registerComponent(component, extension);
 			idBox.current = id;
 
 			return new Promise((resolve) => {
@@ -892,7 +899,7 @@ export function uiFor(): Json {
 			}
 			const id: { current?: string } = {};
 			const component = factory(tuiHandle(id), currentTheme, getKeybindings());
-			const registered = registerComponent(component);
+			const registered = registerComponent(component, extension);
 			id.current = registered.id;
 			editorComponentId = registered.id;
 			send({ type: "ui_request", method: "setEditorComponent", componentId: registered.id });

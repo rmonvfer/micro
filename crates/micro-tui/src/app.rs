@@ -388,6 +388,15 @@ pub struct App {
     /// The component `setEditorComponent` replaced the built-in editor with, and what it
     /// last looked like. `None` is the built-in editor.
     editor_component: Option<ComponentOverlay>,
+    /// Which extension put each lasting thing on the screen — see [`Drawn`].
+    drawn: Drawn,
+    /// Tools a deactivated extension provided, waiting to be taken off the agent.
+    ///
+    /// Noted here rather than removed on the spot because the agent is not this type's to
+    /// hold, and a deactivation can arrive while a turn is running and holding it. Taken by
+    /// the event loop at the top of its next pass — see `answer_question` in `lib.rs` —
+    /// which is before the next turn asks what tools there are.
+    retired_tools: Vec<String>,
     /// Names of tools whose `render_shell` asked for `"self"`, kept so a conversation
     /// rebuilt mid-run — see [`App::apply_result`] — can be tagged the same way the first
     /// one was, without asking the host again for something that never changes.
@@ -458,6 +467,47 @@ enum ComponentSlot {
     Header,
     Footer,
     Widget(String),
+}
+
+/// Which extension put each lasting thing on the screen.
+///
+/// An extension that draws is asking for something that outlives the call it asked in — a
+/// widget stays until it is replaced, a status line until it is cleared. Letting an
+/// extension go has to take those back, and nothing about a widget's key or a status line's
+/// text says whose it was, so it is recorded when it arrives rather than worked out later.
+#[derive(Debug, Default)]
+struct Drawn {
+    /// The extension behind each widget key, and each status key.
+    widgets: std::collections::BTreeMap<String, String>,
+    status: std::collections::BTreeMap<String, String>,
+    header: Option<String>,
+    footer: Option<String>,
+    editor: Option<String>,
+}
+
+impl Drawn {
+    /// Note that this extension is now behind this key, and forget whoever was before.
+    fn by(map: &mut std::collections::BTreeMap<String, String>, key: &str, owner: Option<&String>) {
+        match owner {
+            Some(owner) => {
+                map.insert(key.to_string(), owner.clone());
+            }
+            None => {
+                map.remove(key);
+            }
+        }
+    }
+
+    /// Every key this extension is behind, so what it drew can be taken back by key.
+    fn keys_of(
+        map: &std::collections::BTreeMap<String, String>,
+        extension: &str,
+    ) -> Vec<String> {
+        map.iter()
+            .filter(|(_, owner)| owner.as_str() == extension)
+            .map(|(key, _)| key.clone())
+            .collect()
+    }
 }
 
 /// A slot as `register_component_slot`'s detail names it: `"header"`, `"footer"`, or
@@ -614,6 +664,8 @@ impl App {
             header_override: None,
             footer_override: None,
             component_slots: Default::default(),
+            drawn: Drawn::default(),
+            retired_tools: Vec::new(),
             component_overlay: None,
             editor_component: None,
             self_framed_tools,
@@ -661,6 +713,12 @@ impl App {
 
     pub fn set_model_label(&mut self, model: String) {
         self.model = model;
+    }
+
+    /// Price the session against a different model's rates, which is what the footer's
+    /// running total is worked out from once a session has switched models.
+    pub fn set_price(&mut self, price: micro_models::ModelCost) {
+        self.price = Some(price);
     }
 
     pub fn set_tui_mode(&mut self, mode: crate::TuiMode) {
@@ -1065,6 +1123,45 @@ impl App {
         (!provider.is_empty()).then_some(provider)
     }
 
+    /// The tools a deactivated extension provided, taken once so they are removed once.
+    pub fn take_retired_tools(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.retired_tools)
+    }
+
+    /// Take back everything one extension drew.
+    ///
+    /// Only what it is still behind: a widget it set and another extension has since
+    /// replaced belongs to the other one now, and taking it away would be taking away
+    /// something still being asked for.
+    fn drop_drawings_of(&mut self, extension: &str) {
+        for key in Drawn::keys_of(&self.drawn.widgets, extension) {
+            self.widgets.remove(&key);
+            self.drawn.widgets.remove(&key);
+            self.component_slots
+                .retain(|_, slot| *slot != ComponentSlot::Widget(key.clone()));
+        }
+        for key in Drawn::keys_of(&self.drawn.status, extension) {
+            self.extension_status.remove(&key);
+            self.drawn.status.remove(&key);
+        }
+        if self.drawn.header.as_deref() == Some(extension) {
+            self.header_override = None;
+            self.drawn.header = None;
+            self.component_slots
+                .retain(|_, slot| *slot != ComponentSlot::Header);
+        }
+        if self.drawn.footer.as_deref() == Some(extension) {
+            self.footer_override = None;
+            self.drawn.footer = None;
+            self.component_slots
+                .retain(|_, slot| *slot != ComponentSlot::Footer);
+        }
+        if self.drawn.editor.as_deref() == Some(extension) {
+            self.editor_component = None;
+            self.drawn.editor = None;
+        }
+    }
+
     /// Show a question an extension asked, in whatever suits it.
     ///
     /// The question is held until it is answered or closed, so however the overlay ends,
@@ -1147,6 +1244,18 @@ impl App {
                 request.answer(serde_json::json!({}));
                 return;
             }
+            // An extension has been let go. Everything it left on the screen goes with it:
+            // the widgets it drew, the status lines it kept, the header, the footer, the
+            // editor it replaced. What it registered with the agent is taken back before
+            // this arrives — see `answer_question` in `lib.rs`, which holds the agent this
+            // does not.
+            "deactivate_extension" => {
+                let mut request = request;
+                self.drop_drawings_of(&request.title);
+                self.retired_tools.extend(request.options.clone());
+                request.answer(serde_json::json!({ "ok": true }));
+                return;
+            }
             // Not a question: a line an extension keeps in the footer until it changes
             // it. Text it does not give takes the line away again.
             "set_status" => {
@@ -1154,9 +1263,15 @@ impl App {
                 match request.detail.clone() {
                     Some(text) if !text.trim().is_empty() => {
                         self.extension_status.insert(request.title.clone(), text);
+                        Drawn::by(
+                            &mut self.drawn.status,
+                            &request.title,
+                            request.extension.as_ref(),
+                        );
                     }
                     _ => {
                         self.extension_status.remove(&request.title);
+                        Drawn::by(&mut self.drawn.status, &request.title, None);
                     }
                 }
                 request.answer(serde_json::json!({ "ok": true }));
@@ -1281,6 +1396,7 @@ impl App {
                 match request.options.is_empty() {
                     true => {
                         self.widgets.remove(&request.title);
+                        Drawn::by(&mut self.drawn.widgets, &request.title, None);
                     }
                     false => {
                         let placement = match request.detail.as_deref() {
@@ -1294,6 +1410,11 @@ impl App {
                                 placement,
                             },
                         );
+                        Drawn::by(
+                            &mut self.drawn.widgets,
+                            &request.title,
+                            request.extension.as_ref(),
+                        );
                     }
                 }
                 request.answer(serde_json::json!({}));
@@ -1305,6 +1426,11 @@ impl App {
                 let mut request = request;
                 self.header_override =
                     (!request.options.is_empty()).then(|| request.options.clone());
+                self.drawn.header = self
+                    .header_override
+                    .is_some()
+                    .then(|| request.extension.clone())
+                    .flatten();
                 request.answer(serde_json::json!({}));
                 return;
             }
@@ -1312,6 +1438,11 @@ impl App {
                 let mut request = request;
                 self.footer_override =
                     (!request.options.is_empty()).then(|| request.options.clone());
+                self.drawn.footer = self
+                    .footer_override
+                    .is_some()
+                    .then(|| request.extension.clone())
+                    .flatten();
                 request.answer(serde_json::json!({}));
                 return;
             }
@@ -1356,6 +1487,11 @@ impl App {
                     component_id: request.title.clone(),
                     lines: strip_cursor_marker(request.options.clone()).0,
                 });
+                self.drawn.editor = self
+                    .editor_component
+                    .is_some()
+                    .then(|| request.extension.clone())
+                    .flatten();
                 request.answer(serde_json::json!({}));
                 return;
             }
@@ -3874,6 +4010,67 @@ mod tests {
         );
         app.ask_question(request);
         answered.try_recv().expect("ask_question answers at once")
+    }
+
+    /// The same, from a named extension, so what it leaves behind can be attributed to it.
+    fn ask_from(
+        app: &mut App,
+        extension: &str,
+        method: &str,
+        title: &str,
+        detail: Option<&str>,
+        options: Vec<&str>,
+    ) -> serde_json::Value {
+        let (request, mut answered) = crate::ui::UiRequest::for_test_from(
+            Some(extension.to_string()),
+            method,
+            title,
+            detail.map(str::to_string),
+            options.into_iter().map(str::to_string).collect(),
+        );
+        app.ask_question(request);
+        answered.try_recv().expect("ask_question answers at once")
+    }
+
+    /// Letting an extension go takes back everything it drew — its widget, its status line,
+    /// the header and the footer it replaced — and leaves what another extension drew
+    /// exactly where it was. The tools it provided are noted for the event loop to remove,
+    /// since the agent they are on is not this type's to hold.
+    #[test]
+    fn deactivating_an_extension_takes_back_only_what_it_drew() {
+        let mut app = app();
+        ask_from(&mut app, "/x/leaving.ts", "set_widget", "mine", None, vec!["a line"]);
+        ask_from(&mut app, "/x/leaving.ts", "set_status", "mine", Some("busy"), Vec::new());
+        ask_from(&mut app, "/x/leaving.ts", "set_header", "", None, vec!["a header"]);
+        ask_from(&mut app, "/x/leaving.ts", "set_footer", "", None, vec!["a footer"]);
+        ask_from(&mut app, "/x/staying.ts", "set_widget", "theirs", None, vec!["still here"]);
+        ask_from(&mut app, "/x/staying.ts", "set_status", "theirs", Some("fine"), Vec::new());
+
+        assert_eq!(app.widgets.len(), 2);
+        assert_eq!(app.extension_status.len(), 2);
+        assert!(app.header_override().is_some());
+        assert!(app.footer_override().is_some());
+
+        ask_from(
+            &mut app,
+            "/x/leaving.ts",
+            "deactivate_extension",
+            "/x/leaving.ts",
+            None,
+            vec!["gone-tool"],
+        );
+
+        assert!(!app.widgets.contains_key("mine"));
+        assert!(app.widgets.contains_key("theirs"), "another extension's widget stays");
+        assert!(!app.extension_status.contains_key("mine"));
+        assert_eq!(app.extension_status.get("theirs").map(String::as_str), Some("fine"));
+        assert!(app.header_override().is_none());
+        assert!(app.footer_override().is_none());
+        assert_eq!(app.take_retired_tools(), vec!["gone-tool".to_string()]);
+        assert!(
+            app.take_retired_tools().is_empty(),
+            "taken once, so they are removed once"
+        );
     }
 
     /// An "abort" question interrupts a running turn the same way Ctrl+C does, and says

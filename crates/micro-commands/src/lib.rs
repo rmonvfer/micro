@@ -17,12 +17,19 @@
 //! ```
 
 mod auth;
+mod bill;
 mod model;
 mod outcome;
 mod parse;
 mod session;
 mod why_miss;
 
+pub use bill::bill;
+pub use bill::Bill;
+pub use bill::BillLine;
+pub use bill::CompactionBill;
+pub use bill::Side;
+pub use bill::TurnBill;
 pub use outcome::CommandOutcome;
 pub use outcome::MessageKind;
 pub use outcome::RemoteAction;
@@ -210,6 +217,11 @@ static COMMANDS: &[Command] = &[
         description: "show what micro knows about this session",
     },
     Command {
+        name: "bill",
+        argument: Some("[turn]"),
+        description: "itemize what this session has cost, turn by turn",
+    },
+    Command {
         name: "why-miss",
         argument: Some("[turn]"),
         description: "say why a turn did not reuse the cached prompt",
@@ -359,6 +371,7 @@ pub async fn run(
         // Clearing is what starting over means when the conversation is the only state.
         "new" => CommandOutcome::Clear,
         "debug" => debug(context),
+        "bill" => bill::command(argument, context).await,
         "why-miss" => why_miss::command(argument, context).await,
         "thinking" => thinking(argument),
         "theme" => theme(argument),
@@ -720,6 +733,7 @@ fn settings(context: &CommandContext<'_>) -> CommandOutcome {
             "/set clear_on_shrink",
         ),
         PickerItem::new("Sandbox", policy_name(&now), "/set sandbox"),
+        PickerItem::new("Budget", spending_limit(now.budget), "/set budget"),
         PickerItem::new(
             "Where everything is kept",
             home.display().to_string(),
@@ -742,6 +756,15 @@ fn policy_name(settings: &micro_config::Settings) -> &str {
         .as_str()
         .or_else(|| written.get("mode").and_then(serde_json::Value::as_str))
         .unwrap_or("workspace-write")
+}
+
+/// What a session may spend, as an amount to show. Nothing at all is written as such
+/// rather than as `$0.00`, which would read as a session that may spend nothing.
+fn spending_limit(budget: f64) -> String {
+    match budget > 0.0 {
+        true => format!("${budget:.2}"),
+        false => "no ceiling".to_string(),
+    }
 }
 
 /// `/set <name> [value]` changes one setting and remembers it. Without a value it says
@@ -918,6 +941,14 @@ fn settable(config: &micro_config::Config, name: &str) -> Option<Vec<PickerItem>
             ]
         }
         "transport" => vec![("sse", "how the Codex backend answers", true)],
+        "budget" => vec![
+            ("0", "no ceiling", now.budget <= 0.0),
+            ("1", "dollars a session", now.budget == 1.0),
+            ("5", "dollars a session", now.budget == 5.0),
+            ("10", "dollars a session", now.budget == 10.0),
+            ("25", "dollars a session", now.budget == 25.0),
+            ("100", "dollars a session", now.budget == 100.0),
+        ],
         "sandbox" => {
             let now = policy_name(&now).to_string();
             vec![
@@ -1055,6 +1086,10 @@ fn describe(config: &micro_config::Config, name: &str) -> Option<String> {
             "sandbox is {} (read-only, workspace-write or full)",
             policy_name(&now)
         ),
+        "budget" => format!(
+            "budget is {} (US dollars one session may spend; 0 is no ceiling)",
+            spending_limit(now.budget)
+        ),
         "scoped_models" => format!(
             "scoped_models is {} (a comma-separated list, or `all`)",
             match now.scoped_models.is_empty() {
@@ -1147,6 +1182,18 @@ fn assign(config: &mut micro_config::Config, name: &str, value: &str) -> Result<
                 ));
             }
             config.sandbox = Some(policy.into())
+        }
+        "budget" => {
+            // Written with the currency sign as often as without it, and the sign carries
+            // no information this has to keep.
+            let amount: f64 = value
+                .trim_start_matches('$')
+                .parse()
+                .map_err(|_| format!("`{value}` is not an amount"))?;
+            if !amount.is_finite() || amount < 0.0 {
+                return Err(format!("`{value}` is not an amount a session could spend"));
+            }
+            config.budget = Some(amount)
         }
         "steering_mode" => {
             config.steering_mode = Some(match value.to_ascii_lowercase().as_str() {

@@ -47,6 +47,70 @@ A getter that pi answers immediately answers immediately here too. `getActiveToo
 returns an array, not a promise, because an extension written for pi calls it without
 `await` and expects to be able to filter the result.
 
+## Capabilities
+
+An extension says what it needs, and micro holds it to that. The list goes in the package's
+own `package.json`, beside the entry points:
+
+```json
+{
+  "name": "@scope/name",
+  "micro": { "extensions": ["./src/index.ts"], "capabilities": ["tools", "exec"] }
+}
+```
+
+A single file says the same thing by exporting it:
+
+```ts
+export const capabilities = ["commands", "exec"];
+
+export default (micro) => { /* ... */ };
+```
+
+The names are `tools`, `commands`, `events`, `exec`, `builtin_tools`, `provider_stream`,
+`send_user_message`, `send_message`, `session_write`, `session_control`, `context`, `ui`,
+`providers` and `flags`. `session_write` covers keeping an entry, labelling one and naming
+the session; `session_control` covers changing the model or the thinking level, compacting,
+forking, switching, reloading, interrupting and quitting; `context` covers replacing the
+system prompt, rewriting the conversation on its way to a request, choosing which tools the
+model is told about, and setting a request's headers. Reading is always allowed: every
+`get_*` is answered whatever the manifest says.
+
+Asking for something outside the list is refused rather than fatal. The extension gets back
+`{ error: "capability 'exec' not granted to <name>" }` — the same wording every time, so it
+can catch it and do something else — the session carries on, and the attempt is recorded in
+the session's ledger as an extension crossing. Registering is an ask too: an extension
+without `tools` never contributes a tool to what the model is told about, and micro says
+which tool it left out and why.
+
+An extension that declares nothing is one written before any of this existed. micro works
+out what it would need from what it registers, plus everything code written for pi expects
+to reach, and asks once whether to allow that set — the same question, in the same place, as
+the one about trusting a project. The answer is kept in `capabilities.json` beside
+`trust.json`. In a project you have already trusted there is no question at all: trusting a
+project is already the decision to run what it ships. Headless in a project nobody has
+vouched for there is nobody to ask, so such an extension is granted nothing and micro says
+so.
+
+`micro list` shows what each installed package may do, and marks a set micro derived rather
+than one the extension declared.
+
+## Letting one go
+
+An extension may export a `deactivate` function. micro calls it while removing the package it
+came from, which is its one chance to put back anything it changed outside micro — a process
+it started, a file it was watching.
+
+```ts
+export const deactivate = () => watcher.close();
+```
+
+What micro granted is taken back regardless of how that went, and taken back whenever an
+extension stops running at all — including a host that died mid-session: the tools it
+registered stop being offered, its commands stop being dispatched, and whatever it drew — a
+widget, a status line, a header, a footer, a replaced editor — comes off the screen. An
+extension that throws on the way out is still let go.
+
 ## Events
 
 `micro.on(name, handler)` runs a handler when something happens. A handler that throws is

@@ -218,6 +218,14 @@ async fn run_loop(
             return Ok(());
         }
 
+        // An extension let go while the last pass was running took its tools with it. Done
+        // here, between turns, because this is where the agent is this loop's to change and
+        // the next turn has not yet asked what tools there are.
+        let retired = app.take_retired_tools();
+        if !retired.is_empty() {
+            agent.remove_tools(&retired);
+        }
+
         // A credential finishes collecting the moment the user presses enter on it.
         if let Some((provider, key)) = app.take_key_prompt() {
             if let Some(commands) = commands.as_mut() {
@@ -976,10 +984,12 @@ fn apply_applied(app: &mut App, agent: &mut Agent, applied: Applied) {
             }
         }
         Applied::Model { swap, note } => {
-            // Everything the footer says about the model changes with it: the name, and
-            // how much room there is, which is what the context share is measured against.
+            // Everything the footer says about the model changes with it: the name, how
+            // much room there is, which is what the context share is measured against, and
+            // what a token costs, which is what the running total is worked out from.
             app.set_model_label(swap.model.id.clone());
             app.context_window = swap.context_window as u32;
+            app.set_price(swap.cost.clone());
             app.set_thinking(swap.model.thinking);
             agent.set_model(*swap);
             if let Some(note) = note {

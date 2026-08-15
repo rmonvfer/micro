@@ -374,7 +374,7 @@ impl Counts {
 }
 
 /// `1234567` as `1,234,567`, which is how a count this long is read.
-fn thousands(count: u64) -> String {
+pub(crate) fn thousands(count: u64) -> String {
     let digits = count.to_string();
     let mut out = String::with_capacity(digits.len() + digits.len() / 3);
     for (position, digit) in digits.chars().enumerate() {

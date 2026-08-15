@@ -9,7 +9,9 @@ use micro_agent::Hooks;
 use micro_agent::ToolDecision;
 use micro_extensions::message_from_json;
 use micro_extensions::message_json;
+use micro_extensions::Capability;
 use micro_extensions::FromHost;
+use micro_extensions::Grants;
 use micro_extensions::Host;
 use micro_extensions::Translator;
 use serde_json::json;
@@ -18,6 +20,174 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::Mutex;
+
+/// Where a fact about what an extension asked for goes.
+///
+/// The same channel the tools report a refused command on, so an extension crossing the
+/// broker and a program the sandbox stopped are written to the session log in the order
+/// they happened rather than by two paths that could interleave.
+///
+/// Held weakly. The log is finished by every way into it being let go, and the pump that
+/// answers the extensions outlives the run — it stops only when the host it is answering
+/// for is gone, which is after the log has been closed. A strong hold here would keep the
+/// log waiting on a pump that is waiting on a host that nothing has told to leave yet.
+pub type Crossings = tokio::sync::mpsc::WeakUnboundedSender<micro_types::LedgerEvent>;
+
+/// Everything an ask is decided against: who may do what, and where the fact that it was
+/// asked for is written down.
+///
+/// Carried together because they are always needed together — deciding without recording
+/// would leave a refusal nobody could find afterwards, which is the opposite of the point.
+#[derive(Clone)]
+pub struct Broker {
+    pub grants: Arc<Grants>,
+    pub crossings: Option<Crossings>,
+}
+
+impl Broker {
+    /// A broker that permits everything and records nothing, for a caller with no
+    /// extensions loaded — and for the tests that are about what a request reaches rather
+    /// than about who may reach it.
+    pub fn open() -> Broker {
+        Broker {
+            grants: Arc::new(Grants::default()),
+            crossings: None,
+        }
+    }
+
+    /// Whether this ask may go ahead, recording either way what was asked for.
+    ///
+    /// `needs` is the capability the ask falls under, `name` what was asked for within it —
+    /// the program for an `exec`, the method for a question put to the reader. What the
+    /// ledger carries is the pair, so a bill can attribute a turn's spending to the
+    /// extension that caused it and an audit can find what was refused.
+    fn allows(&self, extension: Option<&str>, needs: Capability, name: &str) -> bool {
+        let allowed = self.grants.allows(extension, needs);
+        // Drawing and asking the reader questions happen many times a second while an
+        // extension animates a widget, and a log of them would bury everything else in the
+        // session. A refusal is still worth a line: it happens once, and it is the reason
+        // something the reader expected to see is not there.
+        if allowed && matches!(needs, Capability::Ui) {
+            return true;
+        }
+        self.record(extension, needs.as_str(), name, allowed, None);
+        allowed
+    }
+
+    /// Write down that an extension crossed the broker, whether or not it was let through.
+    fn record(
+        &self,
+        extension: Option<&str>,
+        kind: &str,
+        name: &str,
+        allowed: bool,
+        detail: Option<Value>,
+    ) {
+        // Nothing to write to once the run's own log has been closed, which is what a
+        // crossing arriving during teardown finds. The run is over; there is nothing left
+        // to account for.
+        let Some(crossings) = self.crossings.as_ref().and_then(|crossings| crossings.upgrade())
+        else {
+            return;
+        };
+        // Nothing to attribute is nothing to record: an ask that arrived without an
+        // extension on it did not come from one.
+        let Some(extension) = extension else {
+            return;
+        };
+        let _ = crossings.send(micro_types::LedgerEvent::ExtensionCrossing {
+            extension: self.grants.name_of(Some(extension)),
+            kind: kind.to_string(),
+            name: name.to_string(),
+            allowed,
+            detail,
+        });
+    }
+
+    /// What an extension is told when it asked for something it may not do.
+    ///
+    /// Named rather than generic, and the same wording wherever it is said, so an extension
+    /// can catch it and do something else instead of failing at whatever it tried next.
+    fn refusal(&self, extension: Option<&str>, needs: Capability) -> String {
+        format!(
+            "capability '{}' not granted to {}",
+            needs,
+            self.grants.name_of(extension)
+        )
+    }
+
+    /// Which of an event's answers may change what micro does.
+    ///
+    /// An extension answers an event by returning something from its handler, and that
+    /// answer is how it rewrites a tool call, replaces the conversation or sets a header.
+    /// Without the capability the handler still runs — it is running inside its own
+    /// process, where nothing here reaches — but what it said is not acted on, and the fact
+    /// that it tried is recorded.
+    fn heeded(&self, answers: Vec<(Option<String>, Value)>, needs: Capability, name: &str) -> Vec<Value> {
+        self.heeded_from(answers, needs, name)
+            .into_iter()
+            .map(|(_, answer)| answer)
+            .collect()
+    }
+
+    /// The same, keeping who said what — for an answer whose being acted on is itself worth
+    /// recording against the extension that gave it.
+    fn heeded_from(
+        &self,
+        answers: Vec<(Option<String>, Value)>,
+        needs: Capability,
+        name: &str,
+    ) -> Vec<(Option<String>, Value)> {
+        answers
+            .into_iter()
+            .filter(|(source, _)| {
+                let allowed = self.grants.allows(source.as_deref(), needs);
+                if !allowed {
+                    self.record(source.as_deref(), needs.as_str(), name, false, None);
+                }
+                allowed
+            })
+            .collect()
+    }
+}
+
+/// The capability a request needs, or nothing when it only reads.
+///
+/// Every `get_*` is answered for anyone: reading what model is running or what the session
+/// is called tells an extension about the run it is already part of, and refusing it would
+/// break every extension without protecting anything.
+fn request_needs(request: &str) -> Option<Capability> {
+    match request {
+        "exec" => Some(Capability::Exec),
+        "run_builtin_tool" => Some(Capability::BuiltinTools),
+        "provider_stream" => Some(Capability::ProviderStream),
+        "append_entry" | "set_label" | "set_session_name" => Some(Capability::SessionWrite),
+        "reload" | "new_session" | "switch_session" | "navigate_tree" | "fork" => {
+            Some(Capability::SessionControl)
+        }
+        _ => None,
+    }
+}
+
+/// The capability an action needs, or nothing when micro does not know the action at all —
+/// which is answered by saying so rather than by refusing it.
+fn action_needs(action: &str) -> Option<Capability> {
+    match action {
+        "send_user_message" => Some(Capability::SendUserMessage),
+        "send_message" => Some(Capability::SendMessage),
+        // Which tools the model is told about is part of the request's own cacheable head,
+        // so narrowing it is changing what the model is told rather than moving the
+        // conversation — the same capability that covers rewriting the prompt.
+        "set_active_tools" => Some(Capability::Context),
+        "set_thinking_level" | "set_model" | "shutdown" | "compact" | "abort" => {
+            Some(Capability::SessionControl)
+        }
+        "watch_terminal_input" | "unwatch_terminal_input" | "watch_autocomplete" => {
+            Some(Capability::Ui)
+        }
+        _ => None,
+    }
+}
 
 /// Answer whatever the extensions ask for, for as long as the host is running.
 ///
@@ -30,6 +200,9 @@ pub async fn serve(
     // run is assembled, and a task that had to go and find it could be handed a different
     // answer than the tools were built around.
     sandbox: micro_sandbox::Sandbox,
+    // Who may ask for what, and where the fact that they asked is written down. Settled the
+    // same way and at the same moment as the policy above, and for the same reason.
+    broker: Broker,
     asker: Option<micro_tui::UiAsker>,
     state: Arc<tokio::sync::RwLock<State>>,
     session: Arc<tokio::sync::Mutex<micro_session::Session>>,
@@ -43,25 +216,41 @@ pub async fn serve(
             FromHost::Request {
                 id,
                 request,
+                extension,
                 payload,
             } => {
                 let answer = answer(
                     &request,
                     &payload,
+                    extension.as_deref(),
                     &workspace,
                     &sandbox,
+                    &broker,
                     &state,
                     &session,
                     asker.as_ref(),
                 )
                 .await;
                 if host.answer(&id, answer).await.is_err() {
-                    return;
+                    break;
                 }
             }
             // An action is carried out where it belongs; nothing goes back.
-            FromHost::Action { action, payload } => {
-                carry_out(&action, &payload, asker.as_ref(), Some(&host), Some(&state)).await
+            FromHost::Action {
+                action,
+                extension,
+                payload,
+            } => {
+                carry_out(
+                    &action,
+                    &payload,
+                    extension.as_deref(),
+                    &broker,
+                    asker.as_ref(),
+                    Some(&host),
+                    Some(&state),
+                )
+                .await
             }
             // `select`/`confirm`/`input`/`custom`/`editor` are questions: they stay open
             // until the reader answers them, which can be an arbitrarily long wait, and
@@ -74,23 +263,30 @@ pub async fn serve(
             // back are still handled in the order they arrived: nothing here needs the
             // concurrency, and losing the order would mean the second could be overtaken by
             // the first.
-            FromHost::Ui { id, payload } => {
+            FromHost::Ui {
+                id,
+                extension,
+                payload,
+            } => {
                 let method = payload.get("method").and_then(Value::as_str).unwrap_or_default();
                 let waits_on_a_reader = matches!(method, "select" | "confirm" | "input" | "custom" | "editor");
                 if waits_on_a_reader {
                     let asker = asker.clone();
                     let host = Arc::clone(&host);
+                    let broker = broker.clone();
                     tokio::spawn(async move {
-                        let answer = show(&payload, asker.as_ref(), Some(&host)).await;
+                        let answer =
+                            show(&payload, extension.as_deref(), &broker, asker.as_ref(), Some(&host)).await;
                         if let Some(id) = id {
                             let _ = host.answer(&id, answer).await;
                         }
                     });
                 } else {
-                    let answer = show(&payload, asker.as_ref(), Some(&host)).await;
+                    let answer =
+                        show(&payload, extension.as_deref(), &broker, asker.as_ref(), Some(&host)).await;
                     if let Some(id) = id {
                         if host.answer(&id, answer).await.is_err() {
-                            return;
+                            break;
                         }
                     }
                 }
@@ -114,6 +310,40 @@ pub async fn serve(
                 eprintln!("note: {path} failed handling {event}: {error}");
             }
         }
+    }
+
+    // Nothing is asking anymore, which means the host is gone: it exited, it was killed, or
+    // it stopped answering. Whatever it left in the interface and on the agent would
+    // outlive it — a widget nothing can redraw, a tool nothing can run — so it is taken
+    // back here, the same way a deliberate deactivation takes it back.
+    reclaim(&host, &broker, asker.as_ref()).await;
+}
+
+/// Take back everything the extensions were granted, and say so in the ledger.
+///
+/// Only what micro itself gave out: the tools it offered the model and what the interface
+/// is drawing. What the extension did out in the world is its own to undo, which is what
+/// the `deactivate` message it is sent beforehand is for.
+async fn reclaim(host: &Arc<Host>, broker: &Broker, asker: Option<&micro_tui::UiAsker>) {
+    for extension in &host.loaded().extensions {
+        broker.record(
+            Some(&extension.path),
+            "deactivate",
+            "host",
+            true,
+            Some(json!({ "tools": extension.tools.len() })),
+        );
+        let Some(asker) = asker else {
+            continue;
+        };
+        let tools: Vec<String> = extension
+            .tools
+            .iter()
+            .map(|tool| tool.name.clone())
+            .collect();
+        asker
+            .ask("deactivate_extension", extension.path.clone(), None, tools)
+            .await;
     }
 }
 
@@ -189,15 +419,35 @@ pub async fn serve_host_asks(host: Arc<Host>, mut asks: micro_tui::HostAsks) {
 }
 
 /// What an extension gets back for a question.
+///
+/// A question outside what the extension was granted is answered by name — the same wording
+/// every time, so an extension can catch it — and the run carries on. Refusing is not an
+/// error in micro; it is the answer.
+#[allow(clippy::too_many_arguments)]
 async fn answer(
     request: &str,
     payload: &Value,
+    extension: Option<&str>,
     workspace: &PathBuf,
     sandbox: &micro_sandbox::Sandbox,
+    broker: &Broker,
     state: &Arc<tokio::sync::RwLock<State>>,
     session: &Arc<tokio::sync::Mutex<micro_session::Session>>,
     asker: Option<&micro_tui::UiAsker>,
 ) -> Value {
+    if let Some(needs) = request_needs(request) {
+        // Named for the ledger by what was actually asked for, not only by the request:
+        // "exec git" says more after the fact than "exec" does.
+        let named = match request {
+            "exec" => payload.get("command").and_then(Value::as_str).unwrap_or(request),
+            "run_builtin_tool" => payload.get("tool").and_then(Value::as_str).unwrap_or(request),
+            other => other,
+        };
+        if !broker.allows(extension, needs, named) {
+            return json!({ "error": broker.refusal(extension, needs) });
+        }
+    }
+
     match request {
         "exec" => exec(payload, workspace, sandbox).await,
         "run_builtin_tool" => run_builtin_tool(payload, workspace, sandbox).await,
@@ -900,10 +1150,21 @@ fn model_catalog(payload: &Value) -> Value {
 async fn carry_out(
     action: &str,
     payload: &Value,
+    extension: Option<&str>,
+    broker: &Broker,
     asker: Option<&micro_tui::UiAsker>,
     host: Option<&Arc<Host>>,
     state: Option<&Arc<tokio::sync::RwLock<State>>>,
 ) {
+    // Nothing goes back to an action, so a refusal is said where a person will find it and
+    // written where an audit will: the extension is not waiting to be told.
+    if let Some(needs) = action_needs(action) {
+        if !broker.allows(extension, needs, action) {
+            eprintln!("note: {}", broker.refusal(extension, needs));
+            return;
+        }
+    }
+
     match action {
         "send_user_message" => {
             let content = payload
@@ -1111,11 +1372,26 @@ async fn component_slot(asker: &micro_tui::UiAsker, component_id: &str, slot: &s
 ///
 /// With no interface to ask through — a headless run — a question is cancelled rather than
 /// answered with something nobody chose.
-async fn show(payload: &Value, asker: Option<&micro_tui::UiAsker>, host: Option<&Arc<Host>>) -> Value {
+async fn show(
+    payload: &Value,
+    extension: Option<&str>,
+    broker: &Broker,
+    asker: Option<&micro_tui::UiAsker>,
+    host: Option<&Arc<Host>>,
+) -> Value {
     let method = payload
         .get("method")
         .and_then(Value::as_str)
         .unwrap_or_default();
+    // Refused the same way a question nobody is there to answer is: an extension drawing
+    // without the capability is told the same thing as one drawing with nobody watching,
+    // which is a case every one of them already handles.
+    if !broker.allows(extension, Capability::Ui, method) {
+        return json!({
+            "cancelled": true,
+            "error": broker.refusal(extension, Capability::Ui),
+        });
+    }
     let text = |name: &str| {
         payload
             .get(name)
@@ -1193,7 +1469,8 @@ async fn show(payload: &Value, asker: Option<&micro_tui::UiAsker>, host: Option<
         // it with no text.
         "setStatus" => {
             asker
-                .ask(
+                .ask_from(
+                    extension.map(str::to_string),
                     "set_status",
                     text("statusKey").unwrap_or_default(),
                     text("statusText"),
@@ -1252,12 +1529,13 @@ async fn show(payload: &Value, asker: Option<&micro_tui::UiAsker>, host: Option<
         // `component_slot` and `component_lines`.
         "setWidget" => {
             let key = text("key").unwrap_or_default();
+            let owner = extension.map(str::to_string);
             match text("componentId") {
                 Some(component_id) => {
                     component_slot(asker, &component_id, &format!("widget:{key}")).await;
                     let lines = component_lines(host, &component_id).await;
                     asker
-                        .ask("set_widget", key, text("placement"), lines)
+                        .ask_from(owner, "set_widget", key, text("placement"), lines)
                         .await
                 }
                 None => {
@@ -1272,7 +1550,9 @@ async fn show(payload: &Value, asker: Option<&micro_tui::UiAsker>, host: Option<
                                 .collect()
                         })
                         .unwrap_or_default();
-                    asker.ask("set_widget", key, text("placement"), lines).await
+                    asker
+                        .ask_from(owner, "set_widget", key, text("placement"), lines)
+                        .await
                 }
             }
         }
@@ -1283,7 +1563,9 @@ async fn show(payload: &Value, asker: Option<&micro_tui::UiAsker>, host: Option<
             Some(component_id) => {
                 component_slot(asker, &component_id, "header").await;
                 let lines = component_lines(host, &component_id).await;
-                asker.ask("set_header", "", None, lines).await
+                asker
+                    .ask_from(extension.map(str::to_string), "set_header", "", None, lines)
+                    .await
             }
             None => asker.ask("set_header", "", None, Vec::new()).await,
         },
@@ -1291,7 +1573,9 @@ async fn show(payload: &Value, asker: Option<&micro_tui::UiAsker>, host: Option<
             Some(component_id) => {
                 component_slot(asker, &component_id, "footer").await;
                 let lines = component_lines(host, &component_id).await;
-                asker.ask("set_footer", "", None, lines).await
+                asker
+                    .ask_from(extension.map(str::to_string), "set_footer", "", None, lines)
+                    .await
             }
             None => asker.ask("set_footer", "", None, Vec::new()).await,
         },
@@ -1360,7 +1644,15 @@ async fn show(payload: &Value, asker: Option<&micro_tui::UiAsker>, host: Option<
         "setEditorComponent" => match text("componentId") {
             Some(component_id) => {
                 let lines = component_lines(host, &component_id).await;
-                asker.ask("set_editor_component", component_id, None, lines).await
+                asker
+                    .ask_from(
+                        extension.map(str::to_string),
+                        "set_editor_component",
+                        component_id,
+                        None,
+                        lines,
+                    )
+                    .await
             }
             None => asker.ask("set_editor_component", "", None, Vec::new()).await,
         },
@@ -1458,6 +1750,10 @@ pub async fn cancelled(host: Option<&Arc<Host>>, event: &str, payload: Value) ->
 /// changes nothing, which is what keeps a listener from accidentally intercepting.
 pub struct ExtensionHooks {
     host: Arc<Host>,
+    /// Who may change what, and where the fact that they did is written down. An answer
+    /// that rewrites the prompt or the conversation is the broadest thing an extension can
+    /// do without asking for anything, so it is held to the same manifest as an `exec`.
+    broker: Broker,
     /// What the model is told before the conversation, as the agent holds it.
     ///
     /// A handle rather than a copy: an extension replacing the prompt is asking the agent
@@ -1475,9 +1771,15 @@ pub struct ExtensionHooks {
 }
 
 impl ExtensionHooks {
-    pub fn new(host: Arc<Host>, prefix: micro_agent::PrefixControl, cwd: String) -> Self {
+    pub fn new(
+        host: Arc<Host>,
+        broker: Broker,
+        prefix: micro_agent::PrefixControl,
+        cwd: String,
+    ) -> Self {
         ExtensionHooks {
             host,
+            broker,
             prefix,
             cwd,
             call_arguments: Mutex::new(HashMap::new()),
@@ -1501,7 +1803,7 @@ impl Hooks for ExtensionHooks {
 
         let Ok(answers) = self
             .host
-            .ask_event(
+            .ask_event_attributed(
                 "tool_call",
                 json!({ "toolCallId": id, "toolName": name, "input": arguments }),
             )
@@ -1509,6 +1811,10 @@ impl Hooks for ExtensionHooks {
         else {
             return ToolDecision::Proceed;
         };
+        // An answer is how an extension changes what a call does; listening without the
+        // capability leaves it watching, which is what an extension that never declared it
+        // asked for.
+        let answers = self.broker.heeded(answers, Capability::Events, "tool_call");
 
         // A refusal wins over a rewrite wherever both are said: the extension that wants
         // the call not to happen is not answered by another one changing it.
@@ -1557,7 +1863,7 @@ impl Hooks for ExtensionHooks {
 
         let asked = self
             .host
-            .ask_event(
+            .ask_event_attributed(
                 "tool_result",
                 json!({
                     "toolCallId": id,
@@ -1572,6 +1878,7 @@ impl Hooks for ExtensionHooks {
         let Ok(answers) = asked else {
             return (output, is_error);
         };
+        let answers = self.broker.heeded(answers, Capability::Events, "tool_result");
 
         // Each answer is applied in turn, so a later extension sees what an earlier one
         // wrote rather than what the tool originally said. `Hooks::after_tool` can only
@@ -1623,9 +1930,19 @@ impl Hooks for ExtensionHooks {
             payload["images"] = json!(images);
         }
 
-        let Ok(answers) = self.host.ask_event("before_agent_start", payload).await else {
+        let Ok(answers) = self
+            .host
+            .ask_event_attributed("before_agent_start", payload)
+            .await
+        else {
             return None;
         };
+        // Replacing the system prompt is changing what every turn of this run is told, and
+        // is charged for — the broadest thing on this side of the broker, and the one an
+        // extension has to have said it would do.
+        let answers = self
+            .broker
+            .heeded_from(answers, Capability::Context, "system_prompt");
 
         // Ohm's own result appends `message` alongside the prompt rather than replacing
         // it; `Hooks::before_agent_start` can only replace the prompt outright, so that
@@ -1633,13 +1950,22 @@ impl Hooks for ExtensionHooks {
         // each answer is applied in turn, so the last extension to set it has the final
         // say — and this runs before the first turn of the run, so the request that turn
         // sends already reflects it.
-        for answer in &answers {
+        for (source, answer) in &answers {
             if let Some(replacement) = answer.get("systemPrompt").and_then(Value::as_str) {
+                self.broker.record(
+                    source.as_deref(),
+                    Capability::Context.as_str(),
+                    "system_prompt",
+                    true,
+                    None,
+                );
                 // A replaced prompt is no longer the one the run assembled, so the spans
                 // describing that one would be describing something else. What is true of
                 // this prompt is that an extension wrote all of it.
                 let span = micro_types::PrefixSpan {
-                    source: micro_types::EventSource::Extension(String::new()),
+                    source: micro_types::EventSource::Extension(
+                        self.broker.grants.name_of(source.as_deref()),
+                    ),
                     bytes: replacement.len() as u64,
                     hash: micro_types::content_hash(replacement.as_bytes()),
                 };
@@ -1658,7 +1984,7 @@ impl Hooks for ExtensionHooks {
 
         let asked = self
             .host
-            .ask_event(
+            .ask_event_attributed(
                 "context",
                 json!({
                     "messages": context.messages.iter().map(micro_extensions::message_json).collect::<Vec<_>>(),
@@ -1671,13 +1997,23 @@ impl Hooks for ExtensionHooks {
             // one changed rather than what the agent originally assembled. An answer
             // whose messages do not parse as ohm's shape changes nothing, rather than
             // clearing the conversation.
-            for answer in answers {
+            for (source, answer) in self
+                .broker
+                .heeded_from(answers, Capability::Context, "messages")
+            {
                 let Some(messages) = answer.get("messages").and_then(Value::as_array) else {
                     continue;
                 };
                 let replaced: Vec<micro_types::Message> =
                     messages.iter().filter_map(micro_extensions::message_from_json).collect();
                 if replaced.len() == messages.len() {
+                    self.broker.record(
+                        source.as_deref(),
+                        Capability::Context.as_str(),
+                        "messages",
+                        true,
+                        Some(json!({ "messages": replaced.len() })),
+                    );
                     context.messages = replaced;
                 }
             }
@@ -1704,10 +2040,13 @@ impl Hooks for ExtensionHooks {
         // the request, replacing anything the provider would have set itself.
         if let Ok(answers) = self
             .host
-            .ask_event("before_provider_headers", json!({ "headers": {} }))
+            .ask_event_attributed("before_provider_headers", json!({ "headers": {} }))
             .await
         {
-            for answer in answers {
+            for (source, answer) in self
+                .broker
+                .heeded_from(answers, Capability::Context, "headers")
+            {
                 let Some(headers) = answer.get("headers").and_then(Value::as_object) else {
                     continue;
                 };
@@ -1715,6 +2054,13 @@ impl Hooks for ExtensionHooks {
                     let Some(value) = value.as_str() else {
                         continue;
                     };
+                    self.broker.record(
+                        source.as_deref(),
+                        Capability::Context.as_str(),
+                        "headers",
+                        true,
+                        Some(json!({ "header": name })),
+                    );
                     context.headers.retain(|(held, _)| held != name);
                     context.headers.push((name.clone(), value.to_string()));
                 }
@@ -1881,8 +2227,10 @@ mod tests {
         let response = answer(
             "run_builtin_tool",
             &json!({ "tool": "write", "arguments": { "path": "from-answer.txt", "content": "written" } }),
+            None,
             &workspace,
             &unconfined(),
+            &Broker::open(),
             &state,
             &scratch_session().await,
             None,
@@ -1916,8 +2264,10 @@ mod tests {
         let answer = answer(
             "fly",
             &json!({}),
+            None,
             &std::env::temp_dir(),
             &unconfined(),
+            &Broker::open(),
             &state,
             &scratch_session().await,
             None,
@@ -1955,8 +2305,10 @@ mod tests {
         let level = answer(
             "get_thinking_level",
             &json!({}),
+            None,
             &workspace,
             &unconfined(),
+            &Broker::open(),
             &state,
             &session,
             None,
@@ -1967,8 +2319,10 @@ mod tests {
         let tools = answer(
             "get_active_tools",
             &json!({}),
+            None,
             &workspace,
             &unconfined(),
+            &Broker::open(),
             &state,
             &session,
             None,
@@ -1976,7 +2330,7 @@ mod tests {
         .await;
         assert_eq!(tools["tools"][0], "read");
 
-        let model = answer("get_model", &json!({}), &workspace, &unconfined(), &state, &session, None).await;
+        let model = answer("get_model", &json!({}), None, &workspace, &unconfined(), &Broker::open(), &state, &session, None).await;
         assert_eq!(model["model"]["id"], "gemini-3-pro");
         assert_eq!(model["model"]["name"], "Gemini 3 Pro");
         assert_eq!(model["model"]["provider"], "openrouter");
@@ -1987,8 +2341,10 @@ mod tests {
         let commands = answer(
             "get_commands",
             &json!({}),
+            None,
             &workspace,
             &unconfined(),
+            &Broker::open(),
             &state,
             &session,
             None,
@@ -1999,8 +2355,10 @@ mod tests {
         let prompt = answer(
             "get_system_prompt",
             &json!({}),
+            None,
             &workspace,
             &unconfined(),
+            &Broker::open(),
             &state,
             &session,
             None,
@@ -2031,8 +2389,10 @@ mod tests {
         let context = answer(
             "get_context",
             &json!({}),
+            None,
             &workspace,
             &unconfined(),
+            &Broker::open(),
             &state,
             &session,
             None,
@@ -2120,8 +2480,10 @@ mod tests {
         let context = answer(
             "get_context",
             &json!({}),
+            None,
             &workspace,
             &unconfined(),
+            &Broker::open(),
             &state,
             &session,
             None,
@@ -2256,8 +2618,10 @@ mod tests {
         let plain = answer(
             "get_context",
             &json!({}),
+            None,
             &workspace,
             &unconfined(),
+            &Broker::open(),
             &state,
             &session,
             None,
@@ -2268,8 +2632,10 @@ mod tests {
         let for_a_command = answer(
             "get_context",
             &json!({ "commandContext": true }),
+            None,
             &workspace,
             &unconfined(),
+            &Broker::open(),
             &state,
             &session,
             None,
@@ -2300,8 +2666,10 @@ mod tests {
         let unnamed = answer(
             "get_session_name",
             &json!({}),
+            None,
             &workspace,
             &unconfined(),
+            &Broker::open(),
             &state,
             &session,
             None,
@@ -2312,8 +2680,10 @@ mod tests {
         let set = answer(
             "set_session_name",
             &json!({ "name": "the good one" }),
+            None,
             &workspace,
             &unconfined(),
+            &Broker::open(),
             &state,
             &session,
             None,
@@ -2324,8 +2694,10 @@ mod tests {
         let named = answer(
             "get_session_name",
             &json!({}),
+            None,
             &workspace,
             &unconfined(),
+            &Broker::open(),
             &state,
             &session,
             None,
@@ -2347,8 +2719,10 @@ mod tests {
             answer(
                 "reload",
                 &json!({}),
+                None,
                 &workspace,
                 &unconfined(),
+                &Broker::open(),
                 &state,
                 &session,
                 Some(&asker),
@@ -2373,7 +2747,7 @@ mod tests {
         let workspace = std::env::temp_dir();
 
         for request in ["reload", "new_session"] {
-            let answered = answer(request, &json!({}), &workspace, &unconfined(), &state, &session, None).await;
+            let answered = answer(request, &json!({}), None, &workspace, &unconfined(), &Broker::open(), &state, &session, None).await;
             assert_eq!(answered["cancelled"], true, "{request}");
         }
     }
@@ -2395,8 +2769,10 @@ mod tests {
                 answer(
                     "switch_session",
                     &json!({ "sessionPath": "abc123" }),
+                    None,
                     &workspace,
                     &unconfined(),
+                    &Broker::open(),
                     &state,
                     &session,
                     Some(&asker),
@@ -2415,8 +2791,10 @@ mod tests {
                 answer(
                     "navigate_tree",
                     &json!({ "targetId": "7" }),
+                    None,
                     &workspace,
                     &unconfined(),
+                    &Broker::open(),
                     &state,
                     &session,
                     Some(&asker),
@@ -2452,8 +2830,10 @@ mod tests {
             answer(
                 "fork",
                 &json!({ "entryId": "2", "position": "before" }),
+                None,
                 &workspace,
                 &unconfined(),
+                &Broker::open(),
                 &state,
                 &session,
                 Some(&asker),
@@ -2477,8 +2857,10 @@ mod tests {
         let answered = answer(
             "fork",
             &json!({ "entryId": "not-real" }),
+            None,
             &workspace,
             &unconfined(),
+            &Broker::open(),
             &state,
             &session,
             None,
@@ -2494,7 +2876,7 @@ mod tests {
     async fn shutdown_and_compact_are_typed_as_slash_commands() {
         let (asker, mut requests) = micro_tui::ui_channel();
         let quitting = tokio::spawn(async move {
-            carry_out("shutdown", &json!({}), Some(&asker), None, None).await
+            carry_out("shutdown", &json!({}), None, &Broker::open(), Some(&asker), None, None).await
         });
         let mut request = requests.recv().await.expect("a quit");
         assert_eq!(request.title, "/quit");
@@ -2503,7 +2885,7 @@ mod tests {
 
         let (asker, mut requests) = micro_tui::ui_channel();
         let compacting = tokio::spawn(async move {
-            carry_out("compact", &json!({}), Some(&asker), None, None).await
+            carry_out("compact", &json!({}), None, &Broker::open(), Some(&asker), None, None).await
         });
         let mut request = requests.recv().await.expect("a compact");
         assert_eq!(request.title, "/compact");
@@ -2517,7 +2899,7 @@ mod tests {
     async fn abort_reaches_the_interface_as_its_own_method() {
         let (asker, mut requests) = micro_tui::ui_channel();
         let aborting =
-            tokio::spawn(async move { carry_out("abort", &json!({}), Some(&asker), None, None).await });
+            tokio::spawn(async move { carry_out("abort", &json!({}), None, &Broker::open(), Some(&asker), None, None).await });
         let mut request = requests.recv().await.expect("an abort");
         assert_eq!(request.method, "abort");
         request.answer(json!({ "interrupted": true }));
@@ -2532,6 +2914,8 @@ mod tests {
             carry_out(
                 "send_user_message",
                 &json!({ "content": "look at the tests" }),
+                None,
+                &Broker::open(),
                 Some(&asker),
                 None,
                 None,
@@ -2551,6 +2935,8 @@ mod tests {
         carry_out(
             "send_user_message",
             &json!({ "content": "   " }),
+            None,
+            &Broker::open(),
             Some(&asker),
             None,
             None,
@@ -2563,6 +2949,8 @@ mod tests {
     async fn a_question_with_no_interface_comes_back_cancelled() {
         let answer = show(
             &json!({ "method": "select", "title": "pick", "options": ["a"] }),
+            None,
+            &Broker::open(),
             None,
             None,
         )
@@ -2577,6 +2965,8 @@ mod tests {
         let showing = tokio::spawn(async move {
             show(
                 &json!({ "method": "select", "title": "pick one", "options": ["a", "b"] }),
+                None,
+                &Broker::open(),
                 Some(&asker),
                 None,
             )
@@ -2598,7 +2988,7 @@ mod tests {
     async fn set_title_reaches_the_interface_by_its_title() {
         let (asker, mut requests) = micro_tui::ui_channel();
         let showing = tokio::spawn(async move {
-            show(&json!({ "method": "setTitle", "title": "a new title" }), Some(&asker), None).await
+            show(&json!({ "method": "setTitle", "title": "a new title" }), None, &Broker::open(), Some(&asker), None).await
         });
         let mut request = requests.recv().await.expect("a title");
         assert_eq!(request.method, "set_title");
@@ -2620,6 +3010,8 @@ mod tests {
                     "lines": ["one", "two"],
                     "placement": "belowEditor",
                 }),
+                None,
+                &Broker::open(),
                 Some(&asker),
                 None,
             )
@@ -2641,7 +3033,7 @@ mod tests {
     async fn a_reset_working_indicator_is_told_apart_from_an_empty_one() {
         let (asker, mut requests) = micro_tui::ui_channel();
         let showing = tokio::spawn(async move {
-            show(&json!({ "method": "setWorkingIndicator", "reset": true }), Some(&asker), None).await
+            show(&json!({ "method": "setWorkingIndicator", "reset": true }), None, &Broker::open(), Some(&asker), None).await
         });
         let mut request = requests.recv().await.expect("an indicator");
         assert_eq!(request.title, "reset");
@@ -2652,6 +3044,8 @@ mod tests {
         let showing = tokio::spawn(async move {
             show(
                 &json!({ "method": "setWorkingIndicator", "frames": [], "intervalMs": 150 }),
+                None,
+                &Broker::open(),
                 Some(&asker),
                 None,
             )
@@ -2673,6 +3067,8 @@ mod tests {
         let showing = tokio::spawn(async move {
             show(
                 &json!({ "method": "setTheme", "name": "custom", "colors": { "accent": "#123456" } }),
+                None,
+                &Broker::open(),
                 Some(&asker),
                 None,
             )
@@ -2693,7 +3089,7 @@ mod tests {
     async fn watching_and_unwatching_terminal_input_reach_the_interface() {
         let (asker, mut requests) = micro_tui::ui_channel();
         let watching =
-            tokio::spawn(async move { carry_out("watch_terminal_input", &json!({}), Some(&asker), None, None).await });
+            tokio::spawn(async move { carry_out("watch_terminal_input", &json!({}), None, &Broker::open(), Some(&asker), None, None).await });
         let mut request = requests.recv().await.expect("a watch");
         assert_eq!(request.method, "watch_terminal_input");
         request.answer(json!({}));
@@ -2701,7 +3097,7 @@ mod tests {
 
         let (asker, mut requests) = micro_tui::ui_channel();
         let unwatching = tokio::spawn(async move {
-            carry_out("unwatch_terminal_input", &json!({}), Some(&asker), None, None).await
+            carry_out("unwatch_terminal_input", &json!({}), None, &Broker::open(), Some(&asker), None, None).await
         });
         let mut request = requests.recv().await.expect("an unwatch");
         assert_eq!(request.method, "unwatch_terminal_input");
@@ -2779,7 +3175,7 @@ export default (micro) => {
         tokio::spawn({
             let host = Arc::clone(&host);
             let root = root.clone();
-            async move { serve(host, root, unconfined(), Some(asker), state, session).await }
+            async move { serve(host, root, unconfined(), Broker::open(), Some(asker), state, session).await }
         });
 
         let running = {
@@ -2871,7 +3267,7 @@ export default (micro) => {
         tokio::spawn({
             let host = Arc::clone(&host);
             let root = root.clone();
-            async move { serve(host, root, unconfined(), Some(asker), state, session).await }
+            async move { serve(host, root, unconfined(), Broker::open(), Some(asker), state, session).await }
         });
 
         let running = {
@@ -2951,7 +3347,7 @@ export default (micro) => {
         tokio::spawn({
             let host = Arc::clone(&host);
             let root = root.clone();
-            async move { serve(host, root, unconfined(), Some(asker), state, session).await }
+            async move { serve(host, root, unconfined(), Broker::open(), Some(asker), state, session).await }
         });
 
         let running = {
@@ -3019,7 +3415,7 @@ export default (micro) => {
         tokio::spawn({
             let host = Arc::clone(&host);
             let root = root.clone();
-            async move { serve(host, root, unconfined(), Some(asker), state, session).await }
+            async move { serve(host, root, unconfined(), Broker::open(), Some(asker), state, session).await }
         });
 
         host.call_command("probe", "").await.unwrap();

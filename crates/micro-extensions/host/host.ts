@@ -15,10 +15,12 @@ import * as components from "./host-components.ts";
 import {
 	activeTools,
 	contextFor,
+	contextFrom,
 	located,
 	noteActiveTools,
 	noted,
 	sessionName,
+	snapshot,
 	thinkingLevel,
 	where,
 } from "./host-context.ts";
@@ -39,7 +41,7 @@ import {
 	noteEditorText,
 	uiFor,
 } from "./host-ui.ts";
-import { answered, ask, type Json, send } from "./host-wire.ts";
+import { answered, type Json, send, wireFor } from "./host-wire.ts";
 
 interface RegisteredCommand {
 	description?: string;
@@ -48,6 +50,12 @@ interface RegisteredCommand {
 
 interface Registration {
 	path: string;
+	/** What the extension itself said it may do, when it exported a `capabilities` list.
+	 *  Undefined for one that declared nothing, which micro treats differently from one
+	 *  that declared an empty list. */
+	capabilities?: string[];
+	/** What to call when this extension is let go, when it exported one. */
+	deactivate?: () => unknown | Promise<unknown>;
 	tools: Map<string, ToolDefinition>;
 	commands: Map<string, RegisteredCommand>;
 	handlers: Map<string, Array<(event: Json, ctx: unknown) => unknown>>;
@@ -101,8 +109,13 @@ const loaded: Registration[] = [];
 const failures: Array<{ path: string; error: string }> = [];
 const flagValues = new Map<string, boolean | string>();
 
-/** The API an extension is handed. Every entry either records something or asks micro. */
+/** The API an extension is handed. Every entry either records something or asks micro.
+ *
+ * The wire pair taken here carries this registration's own path on everything it sends, so
+ * micro can hold an ask to what this extension declared. It shadows the module's own `send`
+ * for the whole function, which is why nothing below has to name the extension itself. */
 function apiFor(registration: Registration) {
+	const { ask, send } = wireFor(registration.path);
 	return {
 		events,
 
@@ -302,6 +315,15 @@ async function load(path: string): Promise<void> {
 			failures.push({ path, error: "the file has no default export to call" });
 			return;
 		}
+		// Read before the factory runs, because both are declarations about the file rather
+		// than things it does: what it may ask micro for, and what to call when it is let
+		// go. An extension that exports neither is one written before either existed.
+		if (Array.isArray(module.capabilities)) {
+			registration.capabilities = module.capabilities.map((capability: unknown) => String(capability));
+		}
+		if (typeof module.deactivate === "function") {
+			registration.deactivate = module.deactivate;
+		}
 		await factory(apiFor(registration));
 		loaded.push(registration);
 	} catch (error) {
@@ -354,6 +376,10 @@ function describe(): Json {
 		type: "loaded",
 		extensions: loaded.map((registration) => ({
 			path: registration.path,
+			// Null rather than an empty list for an extension that declared nothing: micro
+			// tells "this extension says it needs nothing" apart from "this extension has
+			// never heard of capabilities", and only the second is asked about.
+			capabilities: registration.capabilities ?? null,
 			tools: [...registration.tools.values()].map((tool) => ({
 				name: tool.name,
 				label: tool.label ?? null,
@@ -387,15 +413,22 @@ function describe(): Json {
 	};
 }
 
-/** Find a tool by name across every extension that loaded, in load order. */
-function findTool(name: string): ToolDefinition | undefined {
+/** Find a tool by name across every extension that loaded, in load order, along with the
+ *  extension that registered it — what a tool call is attributed to when it asks micro for
+ *  something while it runs. */
+function findRegistered(name: string): { registration: Registration; tool: ToolDefinition } | undefined {
 	for (const registration of loaded) {
 		const tool = registration.tools.get(name);
 		if (tool) {
-			return tool;
+			return { registration, tool };
 		}
 	}
 	return undefined;
+}
+
+/** The tool itself, for the callers that only draw with it. */
+function findTool(name: string): ToolDefinition | undefined {
+	return findRegistered(name)?.tool;
 }
 
 /** How wide a tool's own renderCall/renderResult are told the screen is when nothing asked
@@ -498,7 +531,10 @@ async function runCommand(id: string, name: string, args: string): Promise<void>
 			// the conversation somewhere else — the same restriction pi places on
 			// `ExtensionCommandContext` versus the plain `ExtensionContext` a tool or an
 			// event handler is given.
-			const output = await command.handler(args, await contextFor(uiFor(), true));
+			const output = await command.handler(
+				args,
+				await contextFor(uiFor(registration.path), registration.path, true),
+			);
 			send({ type: "command_result", id, output: output === undefined ? null : output });
 		} catch (error) {
 			send({
@@ -515,21 +551,31 @@ async function runCommand(id: string, name: string, args: string): Promise<void>
 /** Hand an event to every extension listening for it, and report what they changed. */
 async function dispatchEvent(id: string | undefined, event: string, payload: Json): Promise<void> {
 	const results: unknown[] = [];
+	// Which extension gave each answer, in the same order: an answer is how an extension
+	// changes what micro does, and micro decides whether it may by looking at who gave it.
+	const sources: string[] = [];
 	// `isIdle`/`signal`/`waitForIdle`, and a `newSession`/`fork`/`switchSession` waiting
 	// on this session's own `session_start`, are answered from this, not from a round
 	// trip, so it has to run before anything asks for a context built off it — including
 	// this event's own handlers, if it is `agent_start` or `agent_settled` itself.
 	noted(event, payload);
-	// Built once for every handler this event reaches, not once per handler: they are
+	// One snapshot for every handler this event reaches, not one per handler: they are
 	// watching the same moment, and asking micro for it again for each one would answer
-	// a question already answered.
-	const ctx = await contextFor(uiFor());
+	// a question already answered. The context built from it is still per extension, since
+	// what an extension asks through it has to name the extension that asked.
+	const now = await snapshot(false);
 	for (const registration of loaded) {
-		for (const handler of registration.handlers.get(event) ?? []) {
+		const handlers = registration.handlers.get(event) ?? [];
+		if (handlers.length === 0) {
+			continue;
+		}
+		const ctx = contextFrom(now, uiFor(registration.path), registration.path);
+		for (const handler of handlers) {
 			try {
 				const result = await handler(payload, ctx);
 				if (result !== undefined && result !== null) {
 					results.push(result);
+					sources.push(registration.path);
 				}
 			} catch (error) {
 				send({
@@ -542,7 +588,7 @@ async function dispatchEvent(id: string | undefined, event: string, payload: Jso
 		}
 	}
 	if (id) {
-		send({ type: "event_result", id, results });
+		send({ type: "event_result", id, results, sources });
 	}
 }
 
@@ -568,12 +614,13 @@ async function handle(line: string): Promise<void> {
 		case "tool_call": {
 			const id = message.id as string;
 			const name = message.name as string;
-			const tool = findTool(name);
-			if (!tool) {
+			const found = findRegistered(name);
+			if (!found) {
 				send({ type: "tool_result", id, error: `no extension registered a tool called ${name}` });
 				return;
 			}
-			await runTool(id, tool, (message.arguments as Json) ?? {}, await contextFor(uiFor()));
+			const owner = found.registration.path;
+			await runTool(id, found.tool, (message.arguments as Json) ?? {}, await contextFor(uiFor(owner), owner));
 			return;
 		}
 		case "abort_tool":
@@ -710,7 +757,9 @@ async function handle(line: string): Promise<void> {
 					const shortcut = registration.shortcuts.get(key);
 					if (shortcut) {
 						try {
-							await shortcut.handler(await contextFor(uiFor()));
+							await shortcut.handler(
+								await contextFor(uiFor(registration.path), registration.path),
+							);
 						} catch (error) {
 							send({
 								type: "extension_error",
@@ -771,6 +820,30 @@ async function handle(line: string): Promise<void> {
 					error: error instanceof Error ? error.message : String(error),
 				});
 			}
+			return;
+		}
+		case "deactivate": {
+			// The extension's own `deactivate` runs first, so it can put back whatever it
+			// changed out here — a file it watched, a process it started — and then its
+			// registrations go, so nothing it added can be reached again. A `deactivate`
+			// that throws is reported and the dropping still happens: an extension refusing
+			// to leave is not a reason to keep offering what it registered.
+			const id = message.id as string;
+			const path = message.path as string;
+			const registration = loaded.find((held) => held.path === path);
+			if (!registration) {
+				send({ type: "deactivated", id, error: `${path} is not loaded` });
+				return;
+			}
+			let failure: string | undefined;
+			try {
+				await registration.deactivate?.();
+			} catch (error) {
+				failure = error instanceof Error ? error.message : String(error);
+			}
+			const retired = components.disposeOwnedBy(path);
+			loaded.splice(loaded.indexOf(registration), 1);
+			send({ type: "deactivated", id, path, components: retired, error: failure });
 			return;
 		}
 		case "answer":
