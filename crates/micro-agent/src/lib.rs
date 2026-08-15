@@ -865,15 +865,14 @@ impl Agent {
     /// The exact serialized body is retained beside the prompt, tools, and model that
     /// explain it. Every blob is named by its hash and carried only the first time it is
     /// seen, so repeated prefixes do not multiply storage.
-    fn record_request(&mut self, context: &Context, attempt: u32) {
+    fn record_request(&mut self, context: &Context, attempt: u32, payload: &serde_json::Value) {
         if self.recorder.is_none() {
             return;
         }
 
         let tools = serde_json::to_vec(&context.tools).unwrap_or_default();
         let described = serde_json::to_vec(&self.model).unwrap_or_default();
-        let body =
-            serde_json::to_vec(&self.provider.payload(&self.model, context)).unwrap_or_default();
+        let body = serde_json::to_vec(payload).unwrap_or_default();
 
         // Hashed from the request as it is about to go out rather than from the prefix the
         // agent holds, because those are the same thing only as long as nothing rewrote the
@@ -1309,17 +1308,19 @@ impl Agent {
 
         loop {
             attempt += 1;
+            // Resolve the credential before preparing the body: a subscription may use a
+            // provider-specific request shape.
+            let api_key = self.api_key.current().await;
+            let payload = self
+                .provider
+                .request_payload(&self.model, &context, &api_key);
             // Recorded once per attempt rather than once per turn: a request that was
             // issued is a request that was issued, whether or not the one before it came
             // back, and a reader counting what a session cost has to see both.
-            self.record_request(&context, attempt);
-            // Asked for once per attempt rather than held: a credential that expires is
-            // exchanged by whoever owns it, and a request made an hour into a session
-            // must carry the token that is current then, not the one it started with.
-            let api_key = self.api_key.current().await;
+            self.record_request(&context, attempt, &payload);
             let mut stream = self
                 .provider
-                .stream(self.model.clone(), context.clone(), api_key);
+                .stream_prepared(self.model.clone(), context.clone(), api_key, payload);
 
             let mut emitted_content = false;
             let mut outcome: Option<Result<AssistantMessage, String>> = None;

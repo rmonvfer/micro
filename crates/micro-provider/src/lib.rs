@@ -56,6 +56,27 @@ pub trait Provider: Send + Sync {
         api_key: String,
     ) -> UnboundedReceiver<StreamEvent>;
 
+    /// Prepare the provider body for this credential. Most providers are credential-
+    /// independent; Anthropic subscription requests use a different tool spelling.
+    fn request_payload(&self, model: &Model, context: &Context, api_key: &str) -> serde_json::Value {
+        let _ = api_key;
+        self.payload(model, context)
+    }
+
+    /// Send an already-prepared payload. Built-in providers override this so the value
+    /// retained by the ledger is the value passed to the HTTP client. Test providers may
+    /// keep using `stream` and the default fallback.
+    fn stream_prepared(
+        &self,
+        model: Model,
+        context: Context,
+        api_key: String,
+        payload: serde_json::Value,
+    ) -> UnboundedReceiver<StreamEvent> {
+        let _ = payload;
+        self.stream(model, context, api_key)
+    }
+
     /// The body [`Provider::stream`] would send for this model and this context.
     ///
     /// The same assembly the request itself goes through, so what comes back is what the

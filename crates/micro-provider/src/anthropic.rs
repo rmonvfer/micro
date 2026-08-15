@@ -67,11 +67,22 @@ impl Provider for Anthropic {
         context: Context,
         api_key: String,
     ) -> UnboundedReceiver<StreamEvent> {
+        let payload = self.request_payload(&model, &context, &api_key);
+        self.stream_prepared(model, context, api_key, payload)
+    }
+
+    fn stream_prepared(
+        &self,
+        model: Model,
+        context: Context,
+        api_key: String,
+        payload: Value,
+    ) -> UnboundedReceiver<StreamEvent> {
         let (sender, receiver) = mpsc::unbounded_channel();
         let client = self.client.clone();
 
         tokio::spawn(async move {
-            if let Err(message) = run(client, model, context, api_key, &sender).await {
+            if let Err(message) = run(client, model, context, api_key, payload, &sender).await {
                 let _ = sender.send(StreamEvent::Error { message });
             }
         });
@@ -87,6 +98,10 @@ impl Provider for Anthropic {
     /// reads the request as it stands without one.
     fn payload(&self, model: &Model, context: &Context) -> Value {
         build_payload(model, context, false).unwrap_or(Value::Null)
+    }
+
+    fn request_payload(&self, model: &Model, context: &Context, api_key: &str) -> Value {
+        build_payload(model, context, is_oauth(api_key)).unwrap_or(Value::Null)
     }
 }
 
@@ -141,10 +156,10 @@ async fn run(
     model: Model,
     context: Context,
     api_key: String,
+    payload: Value,
     sender: &UnboundedSender<StreamEvent>,
 ) -> Result<(), String> {
     let subscription = is_oauth(&api_key);
-    let payload = build_payload(&model, &context, subscription)?;
     let request = client
         .post(endpoint(&model.base_url))
         .header("anthropic-version", API_VERSION)

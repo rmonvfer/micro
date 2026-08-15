@@ -89,12 +89,25 @@ impl Provider for OpenAi {
         context: Context,
         api_key: String,
     ) -> UnboundedReceiver<StreamEvent> {
+        let payload = self.request_payload(&model, &context, &api_key);
+        self.stream_prepared(model, context, api_key, payload)
+    }
+
+    fn stream_prepared(
+        &self,
+        model: Model,
+        context: Context,
+        api_key: String,
+        payload: Value,
+    ) -> UnboundedReceiver<StreamEvent> {
         let (sender, receiver) = mpsc::unbounded_channel();
         let client = self.client.clone();
         let provider = self.provider.clone();
 
         tokio::spawn(async move {
-            if let Err(message) = run(client, provider, model, context, api_key, &sender).await {
+            if let Err(message) =
+                run(client, provider, model, context, api_key, payload, &sender).await
+            {
                 let _ = sender.send(StreamEvent::Error { message });
             }
         });
@@ -113,9 +126,9 @@ async fn run(
     model: Model,
     context: Context,
     api_key: String,
+    payload: Value,
     sender: &UnboundedSender<StreamEvent>,
 ) -> Result<(), String> {
-    let payload = build_payload(&model, &context)?;
     let mut request = client
         .post(endpoint(&model.base_url))
         .bearer_auth(api_key)
