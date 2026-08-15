@@ -5,8 +5,8 @@
 //!
 //! 1. a catalog compiled into the binary, so the agent works offline with no
 //!    setup ([`Catalog::bundled`]);
-//! 2. the user's own catalog at `~/.micro/models.json`, which patches known
-//!    models and registers new ones ([`Catalog::load`]);
+//! 2. the user's own catalog, `models.json` in micro's configuration directory,
+//!    which patches known models and registers new ones ([`Catalog::load`]);
 //! 3. live provider listings, so models released since this build show up
 //!    without one ([`Catalog::merge_live_listings`]).
 //!

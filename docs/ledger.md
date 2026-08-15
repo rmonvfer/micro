@@ -10,10 +10,13 @@ what this document describes is what you get.
 
 ## Where it lives
 
+Under `sessions/` in micro's data directory — `~/.micro`, or the XDG directories on a fresh
+install; see [configuration.md](configuration.md):
+
 ```
-$MICRO_DIR/sessions/1786754321.jsonl        the log: conversation and ledger together
-$MICRO_DIR/sessions/1786754321.meta.json    the sidecar a listing reads
-$MICRO_DIR/sessions/1786754321.blobs/       content the log names by hash
+sessions/1786754321.jsonl        the log: conversation and ledger together
+sessions/1786754321.meta.json    the sidecar a listing reads
+sessions/1786754321.blobs/       content the log names by hash
 ```
 
 ## The envelope

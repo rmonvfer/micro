@@ -1,9 +1,9 @@
 //! Credentials for the providers micro talks to.
 //!
-//! Credentials live in `~/.micro/auth.json` — one entry per provider, in a file only the
-//! owner can read. Resolving a provider prefers the stored credential, exchanges it for a
-//! fresh token when the provider issues short-lived ones, and falls back to the
-//! conventional environment variable when nothing is stored.
+//! Credentials live in `auth.json`, under micro's configuration directory — one entry per
+//! provider, in a file only the owner can read. Resolving a provider prefers the stored
+//! credential, exchanges it for a fresh token when the provider issues short-lived ones,
+//! and falls back to the conventional environment variable when nothing is stored.
 
 pub mod copilot;
 mod import;
@@ -605,25 +605,13 @@ fn expand(raw: &str, get: impl Fn(&str) -> Option<String>) -> String {
     }
 }
 
-/// `$MICRO_DIR/auth.json`, falling back to `~/.micro/auth.json`.
+/// `auth.json`, under whichever directory holds micro's configuration.
 pub fn default_path() -> Result<PathBuf> {
-    let home = std::env::var("HOME")
-        .ok()
-        .or_else(|| std::env::var("USERPROFILE").ok());
-    auth_path_from(std::env::var("MICRO_DIR").ok().as_deref(), home.as_deref()).ok_or_else(|| {
-        AuthError::Storage {
-            path: "~/.micro".into(),
-            message: "no home directory; set MICRO_DIR".into(),
-        }
-    })
-}
-
-fn auth_path_from(micro_dir: Option<&str>, home: Option<&str>) -> Option<PathBuf> {
-    if let Some(dir) = micro_dir.filter(|dir| !dir.is_empty()) {
-        return Some(PathBuf::from(dir).join(FILE_NAME));
-    }
-    home.filter(|home| !home.is_empty())
-        .map(|home| PathBuf::from(home).join(".micro").join(FILE_NAME))
+    let directory = micro_dirs::config_dir().ok_or_else(|| AuthError::Storage {
+        path: "micro's configuration directory".into(),
+        message: format!("no home directory; set {}", micro_dirs::MICRO_DIR_ENV),
+    })?;
+    Ok(directory.join(FILE_NAME))
 }
 
 /// Read the store. A missing file is an empty store; an entry that does not parse is
@@ -792,20 +780,13 @@ mod tests {
         );
     }
 
+    /// A credential is something the user put there, so it travels with the settings and
+    /// not with what micro produced.
     #[test]
-    fn micro_dir_overrides_the_home_directory() {
+    fn credentials_sit_in_the_configuration_directory() {
         assert_eq!(
-            auth_path_from(Some("/tmp/micro"), Some("/home/x")),
-            Some(PathBuf::from("/tmp/micro/auth.json"))
-        );
-        assert_eq!(
-            auth_path_from(None, Some("/home/x")),
-            Some(PathBuf::from("/home/x/.micro/auth.json"))
-        );
-        assert_eq!(auth_path_from(None, None), None);
-        assert_eq!(
-            auth_path_from(Some(""), Some("/home/x")),
-            Some(PathBuf::from("/home/x/.micro/auth.json"))
+            default_path().unwrap(),
+            micro_dirs::config_dir().unwrap().join(FILE_NAME)
         );
     }
 

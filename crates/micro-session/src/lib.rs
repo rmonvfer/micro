@@ -45,9 +45,8 @@ use tokio::fs::File;
 use tokio::fs::OpenOptions;
 use tokio::io::AsyncWriteExt;
 
-/// Environment variable naming micro's home directory. Sessions live in its
-/// `sessions` subdirectory.
-pub const MICRO_DIR_ENV: &str = "MICRO_DIR";
+/// The directory sessions live in, under whichever directory holds micro's data.
+pub const SESSIONS_DIR: &str = "sessions";
 
 /// How many ids to try when several sessions are created within one millisecond.
 const MAX_ID_ATTEMPTS: u32 = 1000;
@@ -64,7 +63,7 @@ impl SessionStore {
         SessionStore { root: root.into() }
     }
 
-    /// A store under `$MICRO_DIR/sessions`, falling back to `~/.micro/sessions`.
+    /// A store under the `sessions` directory of micro's data directory.
     pub fn from_env() -> Result<Self> {
         Ok(SessionStore::new(default_root()?))
     }
@@ -883,24 +882,15 @@ pub struct LoadedSession {
     pub skipped_lines: usize,
 }
 
-/// `$MICRO_DIR/sessions`, or `~/.micro/sessions` when the variable is unset.
+/// Where sessions are written: the `sessions` directory under micro's data directory.
+///
+/// A session is something micro produced rather than something the user wrote, which is
+/// why it goes with the data rather than with the settings.
 pub fn default_root() -> Result<PathBuf> {
-    let micro_dir = std::env::var(MICRO_DIR_ENV).ok();
-    let home = std::env::var("HOME")
-        .ok()
-        .or_else(|| std::env::var("USERPROFILE").ok());
-    root_from(micro_dir.as_deref(), home.as_deref())
-}
-
-fn root_from(micro_dir: Option<&str>, home: Option<&str>) -> Result<PathBuf> {
-    if let Some(dir) = micro_dir.map(str::trim).filter(|dir| !dir.is_empty()) {
-        return Ok(PathBuf::from(dir).join("sessions"));
-    }
-    let home = home
-        .map(str::trim)
-        .filter(|home| !home.is_empty())
-        .ok_or(SessionError::NoHome { env: MICRO_DIR_ENV })?;
-    Ok(PathBuf::from(home).join(".micro").join("sessions"))
+    let data = micro_dirs::data_dir().ok_or(SessionError::NoHome {
+        env: micro_dirs::MICRO_DIR_ENV,
+    })?;
+    Ok(data.join(SESSIONS_DIR))
 }
 
 /// Parses a log, returning the messages it yields and how many lines were unreadable.
@@ -1648,23 +1638,13 @@ mod tests {
         );
     }
 
+    /// Logs are written rather than authored, so they follow the data directory wherever
+    /// it goes rather than sitting with the settings.
     #[test]
-    fn the_root_follows_the_environment() {
+    fn the_root_sits_under_the_data_directory() {
         assert_eq!(
-            root_from(Some("/opt/micro"), Some("/home/ramon")).unwrap(),
-            PathBuf::from("/opt/micro/sessions")
+            default_root().unwrap(),
+            micro_dirs::data_dir().unwrap().join(SESSIONS_DIR)
         );
-        assert_eq!(
-            root_from(None, Some("/home/ramon")).unwrap(),
-            PathBuf::from("/home/ramon/.micro/sessions")
-        );
-        assert_eq!(
-            root_from(Some("  "), Some("/home/ramon")).unwrap(),
-            PathBuf::from("/home/ramon/.micro/sessions")
-        );
-        assert!(matches!(
-            root_from(None, None).unwrap_err(),
-            SessionError::NoHome { .. }
-        ));
     }
 }

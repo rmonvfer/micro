@@ -9,6 +9,7 @@ micro-auth = { workspace = true }
 micro-models = { workspace = true }
 micro-provider = { workspace = true }
 micro-config = { workspace = true }
+micro-dirs = { workspace = true }
 micro-session = { workspace = true }
 micro-skills = { workspace = true }
 micro-context = { workspace = true }

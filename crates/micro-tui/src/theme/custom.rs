@@ -1,31 +1,23 @@
 //! Reading a theme written by the user.
 //!
 //! ohm lets a user drop a JSON theme into its config directory and name it in settings, so
-//! micro reads the same shape from `$MICRO_DIR/themes`, or `~/.micro/themes` when that is
-//! unset. The file is ohm's: a `name`, an optional `vars` block of reusable colors, and a
-//! `colors` block naming every token, where a value is a hex string, a 256-color index, an
-//! empty string meaning the terminal's own default, or the name of a var.
+//! micro reads the same shape from the `themes` directory of its own configuration
+//! directory. The file is ohm's: a `name`, an optional `vars` block of reusable colors, and
+//! a `colors` block naming every token, where a value is a hex string, a 256-color index,
+//! an empty string meaning the terminal's own default, or the name of a var.
 
 use ratatui::style::Color;
 use serde_json::Value;
 use std::collections::HashSet;
 use std::path::PathBuf;
 
-/// Where a user's own themes live: `$MICRO_DIR/themes`, else `~/.micro/themes`.
+/// What the directory of user themes is called.
+pub const THEMES_DIR: &str = "themes";
+
+/// Where a user's own themes live: the `themes` directory of micro's configuration
+/// directory, since a theme is something they wrote.
 pub fn themes_dir() -> Option<PathBuf> {
-    if let Some(dir) = std::env::var("MICRO_DIR")
-        .ok()
-        .map(|dir| dir.trim().to_string())
-        .filter(|dir| !dir.is_empty())
-    {
-        return Some(PathBuf::from(dir).join("themes"));
-    }
-    std::env::var("HOME")
-        .ok()
-        .or_else(|| std::env::var("USERPROFILE").ok())
-        .map(|home| home.trim().to_string())
-        .filter(|home| !home.is_empty())
-        .map(|home| PathBuf::from(home).join(".micro").join("themes"))
+    micro_dirs::config_dir().map(|dir| dir.join(THEMES_DIR))
 }
 
 /// The path a named user theme would live at.

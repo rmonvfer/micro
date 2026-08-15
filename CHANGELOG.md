@@ -16,5 +16,5 @@ A project is vouched for once with `/trust` rather than every time, and that one
 is what settles whether micro will run the code the project ships. Tool calls themselves
 are not gated after that: once micro is running, it acts.
 
-Skills are read from the workspace and from `~/.micro/skills`, announced to the model by
-name so it reaches for one only when it applies.
+Skills are read from the workspace and from micro's own directory, announced to the model
+by name so it reaches for one only when it applies.

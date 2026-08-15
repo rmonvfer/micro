@@ -510,7 +510,7 @@ fn theme(argument: Option<&str>) -> CommandOutcome {
 
 /// What skills were found, and anything that stopped one loading.
 async fn skills(context: &CommandContext<'_>) -> CommandOutcome {
-    let home = micro_context::micro_home().unwrap_or_default();
+    let home = micro_dirs::config_dir().unwrap_or_default();
     // Listing what is on offer answers with what this run is actually offering, which is
     // the project's own only when the project has been trusted.
     let trusted = !micro_config::requires_decision(context.workspace)
@@ -527,10 +527,13 @@ async fn skills(context: &CommandContext<'_>) -> CommandOutcome {
     .await;
 
     if found.skills.is_empty() && found.diagnostics.is_empty() {
-        return CommandOutcome::info(
-            "No skills. Put a SKILL.md in .micro/skills/, ~/.micro/skills/, or ~/.agents/skills/."
-                .to_string(),
-        );
+        // The user's own directory is named as it resolved rather than as a default
+        // spelling, since where it lands depends on whether this install predates the
+        // split between configuration and data.
+        return CommandOutcome::info(format!(
+            "No skills. Put a SKILL.md in .micro/skills/, {}, or ~/.agents/skills/.",
+            home.join("skills").display()
+        ));
     }
 
     let mut out = String::new();
@@ -569,8 +572,7 @@ fn kebab(name: &str) -> String {
 }
 
 fn settings(context: &CommandContext<'_>) -> CommandOutcome {
-    let home = micro_context::micro_home().unwrap_or_default();
-    let file = home.join(micro_config::FILE_NAME);
+    let file = micro_config::default_path().unwrap_or_default();
     let saved = micro_config::Config::load_from(&file).unwrap_or_default();
     let now = saved
         .resolve(&micro_config::Overrides::default(), |_| None)
@@ -734,13 +736,23 @@ fn settings(context: &CommandContext<'_>) -> CommandOutcome {
         ),
         PickerItem::new("Sandbox", policy_name(&now), "/set sandbox"),
         PickerItem::new("Budget", spending_limit(now.budget), "/set budget"),
-        PickerItem::new(
-            "Where everything is kept",
-            home.display().to_string(),
-            "/debug",
-        ),
+        PickerItem::new("Where everything is kept", kept_in(), "/debug"),
     ];
     CommandOutcome::Choose(Picker::new("Settings", items))
+}
+
+/// The directories micro reads and writes, named as one where they are one.
+///
+/// An install that keeps everything together should be told so in a single path; one that
+/// keeps what the user wrote apart from what micro produced needs both halves named, since
+/// either is somewhere a reader might be going to look.
+fn kept_in() -> String {
+    let config = micro_dirs::config_dir().unwrap_or_default();
+    let data = micro_dirs::data_dir().unwrap_or_default();
+    match config == data {
+        true => config.display().to_string(),
+        false => format!("{} and {}", config.display(), data.display()),
+    }
 }
 
 /// The sandbox policy in force, as a name to show.

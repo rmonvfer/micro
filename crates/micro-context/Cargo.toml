@@ -5,6 +5,7 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+micro-dirs = { workspace = true }
 micro-types = { workspace = true }
 
 async-trait = { workspace = true }

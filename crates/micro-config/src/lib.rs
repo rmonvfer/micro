@@ -1,8 +1,9 @@
 //! Persisted settings: what micro does when nothing is said on the command line.
 //!
-//! Settings live in `~/.micro/config.json`. Every field is optional, so a missing file is
-//! the same as an empty one, and a key this version does not know is carried through a
-//! save untouched rather than dropped.
+//! Settings live in `config.json`, under micro's configuration directory — `~/.micro`, or
+//! the XDG directories on a fresh install, as `micro_dirs` settles it. Every field is
+//! optional, so a missing file is the same as an empty one, and a key this version does
+//! not know is carried through a save untouched rather than dropped.
 //!
 //! Three layers decide what is in force, each beating the one below it: an explicit
 //! command-line argument, then an environment variable, then the config file.
@@ -31,7 +32,6 @@ use std::path::PathBuf;
 use std::str::FromStr;
 
 pub const FILE_NAME: &str = "config.json";
-pub const MICRO_DIR_ENV: &str = "MICRO_DIR";
 
 pub mod assignments;
 mod capabilities;
@@ -750,38 +750,17 @@ fn from_env<T: FromStr<Err = String>>(variable: &str, value: Option<String>) -> 
         .transpose()
 }
 
-/// The directory micro keeps everything the user has settled in: `$MICRO_DIR`, and
-/// `~/.micro` when nothing names one.
+/// The directory micro keeps everything the user has settled in.
 pub fn config_dir() -> Result<PathBuf> {
-    default_path().map(|path| {
-        path.parent()
-            .map(Path::to_path_buf)
-            .unwrap_or_else(|| PathBuf::from("."))
+    micro_dirs::config_dir().ok_or_else(|| ConfigError::Io {
+        path: "micro's configuration directory".into(),
+        message: format!("no home directory; set {}", micro_dirs::MICRO_DIR_ENV),
     })
 }
 
-/// `$MICRO_DIR/config.json`, falling back to `~/.micro/config.json`.
+/// The settings file, under whichever directory holds the configuration.
 pub fn default_path() -> Result<PathBuf> {
-    let home = std::env::var("HOME")
-        .ok()
-        .or_else(|| std::env::var("USERPROFILE").ok());
-    path_from(
-        std::env::var(MICRO_DIR_ENV).ok().as_deref(),
-        home.as_deref(),
-    )
-    .ok_or_else(|| ConfigError::Io {
-        path: "~/.micro".into(),
-        message: format!("no home directory; set {MICRO_DIR_ENV}"),
-    })
-}
-
-fn path_from(micro_dir: Option<&str>, home: Option<&str>) -> Option<PathBuf> {
-    if let Some(dir) = micro_dir.map(str::trim).filter(|dir| !dir.is_empty()) {
-        return Some(PathBuf::from(dir).join(FILE_NAME));
-    }
-    home.map(str::trim)
-        .filter(|home| !home.is_empty())
-        .map(|home| PathBuf::from(home).join(".micro").join(FILE_NAME))
+    Ok(config_dir()?.join(FILE_NAME))
 }
 
 /// Read one field, naming it if it does not fit. An explicit `null` is read as "unset",
@@ -900,21 +879,12 @@ mod tests {
         None
     }
 
+    /// Where the settings go is not decided here: the file sits beside the trust and
+    /// capability decisions, in whichever directory holds the configuration.
     #[test]
-    fn micro_dir_overrides_the_home_directory() {
-        assert_eq!(
-            path_from(Some("/tmp/micro"), Some("/home/x")),
-            Some(PathBuf::from("/tmp/micro/config.json"))
-        );
-        assert_eq!(
-            path_from(None, Some("/home/x")),
-            Some(PathBuf::from("/home/x/.micro/config.json"))
-        );
-        assert_eq!(
-            path_from(Some("  "), Some("/home/x")),
-            Some(PathBuf::from("/home/x/.micro/config.json"))
-        );
-        assert_eq!(path_from(None, None), None);
+    fn the_settings_file_sits_in_the_configuration_directory() {
+        let directory = config_dir().expect("a home directory");
+        assert_eq!(default_path().unwrap(), directory.join(FILE_NAME));
     }
 
     #[test]

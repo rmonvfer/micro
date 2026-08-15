@@ -28,8 +28,9 @@ Drop that in `.micro/extensions/hello.ts` in your project and run `micro`. Typin
 runs it. There is no build step and no install step for a single file — micro reads it
 where it lies.
 
-A project's own extensions load only once you have trusted the project. Extensions in
-`~/.micro/extensions` are yours and load everywhere.
+A project's own extensions load only once you have trusted the project. Extensions in the
+`extensions` directory of micro's own — see [configuration.md](configuration.md) for where
+that is — are yours and load everywhere.
 
 ## What the API offers
 

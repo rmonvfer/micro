@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
     "crates/micro-types",
+    "crates/micro-dirs",
     "crates/micro-config",
     "crates/micro-auth",
     "crates/micro-provider",
@@ -31,6 +32,7 @@ license = "MIT"
 
 [workspace.dependencies]
 micro-types = { path = "crates/micro-types" }
+micro-dirs = { path = "crates/micro-dirs" }
 micro-auth = { path = "crates/micro-auth" }
 micro-config = { path = "crates/micro-config" }
 micro-provider = { path = "crates/micro-provider" }

@@ -1,5 +1,3 @@
-use std::env;
-use std::ffi::OsString;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -10,9 +8,9 @@ use crate::error::{Error, Result};
 /// The user catalog file, read from the micro configuration directory.
 pub const USER_CATALOG_FILE: &str = "models.json";
 
-/// The micro configuration directory: `$MICRO_DIR` when set, else `~/.micro`.
+/// The micro configuration directory, which is where the user's own catalog lives.
 pub fn config_dir() -> Result<PathBuf> {
-    resolve_config_dir(env::var_os("MICRO_DIR"), home_dir())
+    micro_dirs::config_dir().ok_or(Error::NoHomeDir)
 }
 
 /// The path the user catalog is read from.
@@ -39,19 +37,6 @@ impl Catalog {
     }
 }
 
-fn resolve_config_dir(micro_dir: Option<OsString>, home: Option<OsString>) -> Result<PathBuf> {
-    if let Some(dir) = micro_dir.filter(|d| !d.is_empty()) {
-        return Ok(PathBuf::from(dir));
-    }
-    home.filter(|h| !h.is_empty())
-        .map(|home| PathBuf::from(home).join(".micro"))
-        .ok_or(Error::NoHomeDir)
-}
-
-fn home_dir() -> Option<OsString> {
-    env::var_os("HOME").or_else(|| env::var_os("USERPROFILE"))
-}
-
 fn read_optional(path: &Path) -> Result<Option<String>> {
     match fs::read_to_string(path) {
         Ok(text) => Ok(Some(text)),
@@ -67,6 +52,7 @@ fn read_optional(path: &Path) -> Result<Option<String>> {
 mod tests {
     use super::*;
     use crate::catalog::WireApi;
+    use std::env;
     use std::sync::atomic::{AtomicU32, Ordering};
 
     /// A scratch directory that removes itself, so tests never read or write
@@ -103,31 +89,13 @@ mod tests {
         }
     }
 
+    /// The user's catalog is one of the things they wrote, so it sits with the settings
+    /// wherever those are.
     #[test]
-    fn micro_dir_overrides_the_default_location() {
-        let dir =
-            resolve_config_dir(Some("/custom/micro".into()), Some("/home/ramon".into())).unwrap();
-        assert_eq!(dir, PathBuf::from("/custom/micro"));
-    }
-
-    #[test]
-    fn the_default_location_sits_under_the_home_directory() {
-        let dir = resolve_config_dir(None, Some("/home/ramon".into())).unwrap();
-        assert_eq!(dir, PathBuf::from("/home/ramon/.micro"));
-    }
-
-    #[test]
-    fn an_empty_micro_dir_falls_back_to_the_home_directory() {
-        let dir = resolve_config_dir(Some(OsString::new()), Some("/home/ramon".into())).unwrap();
-        assert_eq!(dir, PathBuf::from("/home/ramon/.micro"));
-    }
-
-    #[test]
-    fn without_a_home_directory_the_location_is_an_error() {
-        let error = resolve_config_dir(None, None).unwrap_err();
-        assert!(
-            matches!(error, Error::NoHomeDir),
-            "unexpected error: {error}"
+    fn the_user_catalog_sits_in_the_configuration_directory() {
+        assert_eq!(
+            user_catalog_path().unwrap(),
+            micro_dirs::config_dir().unwrap().join(USER_CATALOG_FILE)
         );
     }
 

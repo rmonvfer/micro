@@ -1,19 +1,35 @@
 # Configuration
 
-Everything micro keeps lives in one directory. `MICRO_DIR` names it; when that variable is
-unset the directory is `~/.micro`. Every crate that stores anything resolves the location
-the same way, so pointing `MICRO_DIR` at a scratch directory moves credentials, models,
-trust, and sessions together — which is how a test run or a second profile stays clear of
-your real setup.
+Where micro keeps things is settled by one rule, applied by every crate that stores
+anything. `MICRO_DIR` names a single directory and everything goes in it, which is how a
+test run or a second profile stays clear of your real setup. Otherwise an existing
+`~/.micro` keeps holding everything, so an installation made before this rule existed never
+moves. Otherwise micro is new to the machine, and what you wrote is kept apart from what
+micro produced, where the XDG base directory specification says each belongs.
 
 ```
-~/.micro/
-├── auth.json      credentials, one entry per provider
-├── models.json    additions and overrides for the model catalog
-├── trust.json     which projects may run the code they ship
-├── config.json    remembered settings
-└── sessions/      one JSONL log and metadata sidecar per conversation
+~/.config/micro/          what you wrote          ($XDG_CONFIG_HOME/micro)
+├── auth.json             credentials, one entry per provider
+├── models.json           additions and overrides for the model catalog
+├── trust.json            which projects may run the code they ship
+├── capabilities.json     what each extension was allowed to do
+├── config.json           remembered settings
+├── SYSTEM.md             a system prompt replacing micro's own
+├── APPEND_SYSTEM.md      text added to the end of it
+├── themes/               your own colour schemes
+├── prompts/              prompt files, each becoming a slash command
+└── skills/               a SKILL.md per directory
+
+~/.local/share/micro/     what micro produced     ($XDG_DATA_HOME/micro)
+├── sessions/             one JSONL log, metadata sidecar and blob directory per conversation
+├── npm/, git/            extension packages `micro install` fetched
+├── extensions/           extensions of your own that load everywhere
+└── remote-control.json   the phone this machine is paired with
 ```
+
+The split is about authorship, not importance: what you wrote is worth carrying to another
+machine, and what micro produced could be produced again. Under `MICRO_DIR` or an existing
+`~/.micro` both columns land in the one directory, exactly as before.
 
 Nothing here has to exist. A missing file means the defaults, not an error.
 

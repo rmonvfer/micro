@@ -2145,6 +2145,7 @@ dependencies = [
 name = "micro-auth"
 version = "0.1.0"
 dependencies = [
+ "micro-dirs",
  "reqwest",
  "serde",
  "serde_json",
@@ -2165,6 +2166,7 @@ dependencies = [
  "micro-commands",
  "micro-config",
  "micro-context",
+ "micro-dirs",
  "micro-extensions",
  "micro-mcp",
  "micro-models",
@@ -2190,6 +2192,7 @@ dependencies = [
  "micro-auth",
  "micro-config",
  "micro-context",
+ "micro-dirs",
  "micro-models",
  "micro-provider",
  "micro-session",
@@ -2205,6 +2208,7 @@ dependencies = [
 name = "micro-config"
 version = "0.1.0"
 dependencies = [
+ "micro-dirs",
  "serde",
  "serde_json",
  "thiserror 2.0.20",
@@ -2216,12 +2220,17 @@ name = "micro-context"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "micro-dirs",
  "micro-types",
  "serde",
  "serde_json",
  "thiserror 2.0.20",
  "tokio",
 ]
+
+[[package]]
+name = "micro-dirs"
+version = "0.1.0"
 
 [[package]]
 name = "micro-extensions"
@@ -2261,6 +2270,7 @@ dependencies = [
 name = "micro-models"
 version = "0.1.0"
 dependencies = [
+ "micro-dirs",
  "micro-types",
  "reqwest",
  "serde",
@@ -2349,6 +2359,7 @@ name = "micro-session"
 version = "0.1.0"
 dependencies = [
  "micro-context",
+ "micro-dirs",
  "micro-types",
  "serde",
  "serde_json",
@@ -2411,6 +2422,7 @@ dependencies = [
  "micro-commands",
  "micro-config",
  "micro-context",
+ "micro-dirs",
  "micro-mermaid",
  "micro-models",
  "micro-session",

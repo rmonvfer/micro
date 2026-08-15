@@ -10,6 +10,7 @@ micro-auth = { workspace = true }
 micro-commands = { workspace = true }
 micro-models = { workspace = true }
 micro-config = { workspace = true }
+micro-dirs = { workspace = true }
 micro-session = { workspace = true }
 micro-context = { workspace = true }
 micro-types = { workspace = true }
