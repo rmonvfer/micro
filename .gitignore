@@ -1,1 +1,7 @@
 target/
+
+# Reference checkouts kept beside the workspace, never part of it.
+/codex/
+/pi/
+/.pi/
+micro-conversation-*.md
