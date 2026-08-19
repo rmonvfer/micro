@@ -156,9 +156,13 @@ impl<S: Summarizer> Compactor<S> {
         estimate_context_tokens(messages) > self.config.trigger_tokens(context_window)
     }
 
-    /// Summarizes everything before the cut point and returns the conversation to continue with.
-    pub async fn compact(&self, messages: &[Message], context_window: usize) -> Result<Compacted> {
-        let cut = find_cut(messages, self.config.keep_recent_tokens(context_window));
+    /// Summarizes everything before a safe cut that leaves `keep_recent_tokens` in place.
+    pub async fn compact_with_keep_recent_tokens(
+        &self,
+        messages: &[Message],
+        keep_recent_tokens: usize,
+    ) -> Result<Compacted> {
+        let cut = find_cut(messages, keep_recent_tokens);
         if cut == 0 {
             return Err(ContextError::NothingToCompact);
         }
@@ -178,6 +182,15 @@ impl<S: Summarizer> Compactor<S> {
             replaced: cut,
             tokens_before,
         })
+    }
+
+    /// Summarizes everything before the automatic policy's recent-context budget.
+    pub async fn compact(&self, messages: &[Message], context_window: usize) -> Result<Compacted> {
+        self.compact_with_keep_recent_tokens(
+            messages,
+            self.config.keep_recent_tokens(context_window),
+        )
+        .await
     }
 
     /// Compacts only when the conversation has grown past the trigger.

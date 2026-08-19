@@ -48,6 +48,10 @@ const RETRYABLE_STATUSES: [u16; 8] = [408, 409, 425, 429, 500, 502, 503, 504];
 /// The context window assumed when the caller does not supply the model's own.
 pub const DEFAULT_CONTEXT_WINDOW: usize = 200_000;
 
+/// Manual compaction keeps the newest safe message boundary, so it remains useful well below the
+/// model's context limit.
+const MANUAL_COMPACTION_KEEP_RECENT_TOKENS: usize = 0;
+
 /// A model to run from now on, and everything needed to reach it.
 #[derive(Clone)]
 pub struct ModelSwap {
@@ -512,7 +516,7 @@ impl Agent {
         let config = self.compaction.unwrap_or_default();
         let compactor = Compactor::new(self.summarizer.clone(), config);
         let compacted = compactor
-            .compact(&self.messages, self.context_window)
+            .compact_with_keep_recent_tokens(&self.messages, MANUAL_COMPACTION_KEEP_RECENT_TOKENS)
             .await
             .map_err(|error| match error {
                 micro_context::ContextError::NothingToCompact => CompactionRefusal::TooSmall,

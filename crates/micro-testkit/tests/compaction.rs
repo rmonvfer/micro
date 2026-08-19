@@ -266,7 +266,27 @@ async fn a_tool_result_produced_this_run_is_never_split_from_its_call() {
     );
 }
 
-/// Summarizing is a request like any other: it is made on behalf of this conversation.
+/// Manual compaction is available below the automatic trigger and preserves the latest safe
+/// message boundary.
+#[tokio::test]
+async fn manual_compaction_does_not_depend_on_the_context_window_fraction() {
+    let summarizer = FakeSummarizer::new("earlier work");
+    let mut agent = Agent::new(
+        Arc::new(FakeProvider::once(Turn::text("unused"))),
+        Vec::new(),
+        model(),
+        "test-key",
+    )
+    .with_history(conversation(2, 20))
+    .with_context_window(200_000)
+    .with_summarizer(Arc::new(summarizer.clone()));
+
+    let summary = agent.compact_now().await.expect("manual compaction");
+    assert_eq!(summary_text(&summary), Some("earlier work"));
+    assert_eq!(summarizer.call_count(), 1);
+    assert!(agent.messages().len() < 8, "history was reduced");
+}
+
 #[tokio::test]
 async fn what_summarizing_cost_is_recorded_with_the_compaction_it_paid_for() {
     let provider = FakeProvider::builder()
