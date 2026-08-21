@@ -1156,6 +1156,14 @@ impl Commands for CliCommands {
     }
 
     async fn dispatch(&mut self, line: &str, state: ConversationState) -> Option<CommandOutcome> {
+        let state = match command_parts(line) {
+            Some(("fork", _)) => ConversationState {
+                message_count: self.session.lock().await.branch().len(),
+                ..state
+            },
+            _ => state,
+        };
+
         self.model_source = match command_parts(line) {
             Some(("model", argument))
                 if matches!(argument.trim(), "next" | "previous" | "prev") =>
@@ -1723,7 +1731,22 @@ mod tests {
         );
     }
 
-    /// Cloning copies the whole conversation as it stands, which is a fork through its last
+    #[tokio::test]
+    async fn forking_uses_the_persisted_branch_length_over_the_transcript_entry_count() {
+        let (mut host, _root) = host("fork-transcript-count").await;
+        {
+            let mut session = host.session.lock().await;
+            session.append(&Message::user("first")).await.unwrap();
+            session.append(&Message::user("second")).await.unwrap();
+        }
+
+        let outcome = host.dispatch("/fork", state(10)).await.expect("a command");
+        match host.apply(outcome).await {
+            Applied::Conversation { messages, .. } => assert_eq!(messages.len(), 2),
+            other => panic!("expected a conversation, got {other:?}"),
+        }
+    }
+
     /// message.
     #[tokio::test]
     async fn cloning_copies_the_conversation_as_it_stands() {
