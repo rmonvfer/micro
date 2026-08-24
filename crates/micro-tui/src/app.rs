@@ -2728,7 +2728,8 @@ fn collect_workspace_paths(
         .git_ignore(use_git_ignores)
         .git_exclude(use_git_ignores)
         .git_global(false)
-        .require_git(false);
+        .require_git(false)
+        .filter_entry(|entry| entry.file_name() != ".git");
 
     for entry in builder.build().flatten() {
         if !entry.file_type().is_some_and(|kind| kind.is_file()) {
@@ -4758,6 +4759,28 @@ mod tests {
         assert!(walk_workspace(&workspace)
             .iter()
             .any(|path| path == "private/brief.md"));
+
+        std::fs::remove_dir_all(workspace).expect("remove workspace");
+    }
+
+    #[test]
+    fn file_completion_ignores_git_directory() {
+        let workspace = std::env::temp_dir().join(format!(
+            "micro-tui-git-completion-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos()
+        ));
+        let git_dir = workspace.join(".git");
+        std::fs::create_dir_all(&git_dir).expect("workspace git dir");
+        std::fs::write(git_dir.join("HEAD"), "ref: refs/heads/main\n").expect("git file");
+        std::fs::write(workspace.join("main.rs"), "fn main() {}\n").expect("source file");
+
+        let files = walk_workspace(&workspace);
+        assert!(files.iter().any(|path| path == "main.rs"));
+        assert!(!files.iter().any(|path| path.starts_with(".git")));
 
         std::fs::remove_dir_all(workspace).expect("remove workspace");
     }
