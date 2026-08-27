@@ -4,8 +4,10 @@ micro is a terminal coding agent with local, inspectable session logs.
 
 It supports multiple model providers, runs commands in an operating-system sandbox, and records requests, usage, tool calls, and policy decisions as the session runs.
 
+Install the latest release with an authenticated GitHub CLI, then connect a provider:
+
 ```bash
-curl --fail --silent --show-error --location https://raw.githubusercontent.com/rmonvfer/micro/main/scripts/install.sh | bash
+gh api -H "Accept: application/vnd.github.raw+json" repos/rmonvfer/micro/contents/scripts/install.sh | bash
 micro auth login anthropic
 micro "explain this repository"
 ```
