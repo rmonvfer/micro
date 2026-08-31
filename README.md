@@ -4,20 +4,36 @@ micro is a terminal coding agent with local, inspectable session logs.
 
 It supports multiple model providers, runs commands in an operating-system sandbox, and records requests, usage, tool calls, and policy decisions as the session runs.
 
-Install the latest release with an authenticated GitHub CLI, then connect a provider:
+## Installation
+
+The release installer supports macOS on Apple Silicon and Linux on x86-64 or ARM64. Windows is not currently supported. Because this repository is private, authenticate the GitHub CLI before downloading the installer:
 
 ```bash
+gh auth login
 gh api -H "Accept: application/vnd.github.raw+json" repos/rmonvfer/micro/contents/scripts/install.sh | bash
-micro auth login anthropic
-micro "explain this repository"
 ```
 
-Read the [documentation](https://rmonvfer.github.io/micro/) for installation, configuration, security details, and extension development.
+The installer verifies the release checksum, installs versioned distributions under `~/.local/share/micro/dist`, and links `micro` from `~/.local/bin`. It prints the required shell configuration when that directory is not already on `PATH`. Set `MICRO_INSTALL_DIR` or `MICRO_DIST_DIR` to override those locations, and set `MICRO_VERSION` to a release tag to install a specific version.
 
-Run it directly from a checkout with:
+Managed installations check for updates once every 24 hours when starting an interactive session. Run `micro update` to update immediately, set `auto_update` to `false` in the configuration, or set `MICRO_NO_AUTO_UPDATE=1` for one launch.
+
+To install from a source checkout instead:
+
+```bash
+cargo install --path crates/micro-cli
+```
+
+Source installations are not managed by the release updater. Run the checkout without installing it with:
 
 ```bash
 cargo run --bin micro -- "explain this repository"
+```
+
+After installation, connect a provider and start a session:
+
+```bash
+micro auth login anthropic
+micro "explain this repository"
 ```
 
 ## What it does
