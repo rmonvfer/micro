@@ -788,16 +788,11 @@ impl CliCommands {
     }
 
     /// Read the instruction files and skills again, and tell the model what they say now.
-    async fn reload(&self) -> Applied {
-        let trusted = !micro_config::requires_decision(&self.workspace)
-            || micro_config::TrustStore::load_from(&self.config_home)
-                .await
-                .unwrap_or_default()
-                .is_trusted(&self.workspace);
+    async fn reload(&mut self) -> Applied {
         let context = crate::runtime::load_context(
             &self.workspace,
             self.skills_enabled,
-            trusted,
+            self.project_trusted,
             &self.resources,
             self.extensions.as_deref(),
             &self.tool_names,
@@ -820,6 +815,7 @@ impl CliCommands {
             context.prefix_spans,
             "reload",
         );
+        self.skills = context.skills;
 
         Applied::SystemPrompt {
             prompt: context.system_prompt,
@@ -1826,6 +1822,57 @@ mod tests {
             }
             other => panic!("expected a system prompt, got {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn reload_keeps_run_only_project_trust() {
+        let (mut host, root) = host("reload-run-trust").await;
+        host.project_trusted = true;
+        let prompt_dir = root.join("workspace/.micro");
+        std::fs::create_dir_all(&prompt_dir).unwrap();
+        std::fs::write(prompt_dir.join("SYSTEM.md"), "Run-only trusted prompt.").unwrap();
+
+        match host.apply(CommandOutcome::Reload).await {
+            Applied::SystemPrompt { prompt, .. } => {
+                assert!(prompt.starts_with("Run-only trusted prompt."), "{prompt}");
+            }
+            other => panic!("expected a system prompt, got {other:?}"),
+        }
+        let trust = micro_config::TrustStore::load_from(root.join("home"))
+            .await
+            .unwrap_or_default();
+        assert!(!trust.is_trusted(&host.workspace));
+    }
+
+    #[tokio::test]
+    async fn reload_replaces_the_skill_command_registry() {
+        let (mut host, root) = host("reload-skills").await;
+        host.project_trusted = true;
+        let skill = root.join("workspace/.micro/skills/check/SKILL.md");
+        std::fs::create_dir_all(skill.parent().unwrap()).unwrap();
+        std::fs::write(
+            &skill,
+            "---\nname: check-release\ndescription: Check a release.\n---\nCheck the release.",
+        )
+        .unwrap();
+
+        host.apply(CommandOutcome::Reload).await;
+        let added = host
+            .dispatch("/check-release candidate", state(0))
+            .await
+            .expect("a skill command");
+        let CommandOutcome::Send { prompt } = added else {
+            panic!("expected skill instructions to be sent");
+        };
+        assert_eq!(prompt, "Check the release.\n\ncandidate");
+
+        std::fs::remove_file(skill).unwrap();
+        host.apply(CommandOutcome::Reload).await;
+        let removed = host
+            .dispatch("/check-release candidate", state(0))
+            .await
+            .expect("an unknown command response");
+        assert!(removed.is_error());
     }
 
     #[tokio::test]

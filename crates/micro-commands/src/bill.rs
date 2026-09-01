@@ -13,6 +13,7 @@ use micro_types::ContentBlock;
 use micro_types::EventSource;
 use micro_types::LedgerEvent;
 use micro_types::Message;
+use micro_types::ModelPricing;
 use micro_types::ToolDefinition;
 use micro_types::Usage;
 use std::collections::HashMap;
@@ -101,6 +102,7 @@ pub struct CompactionBill {
     pub usage: Usage,
     pub cost: RequestCost,
     pub on_current_branch: bool,
+    pricing: Option<ModelPricing>,
 }
 
 /// What a session cost, read out of its ledger and priced against the catalog.
@@ -132,6 +134,7 @@ pub async fn bill(
         match &recorded.event {
             LedgerEvent::TurnRequest {
                 turn,
+                pricing,
                 tools_blob,
                 prefix_spans,
                 message_entry_ids,
@@ -140,6 +143,7 @@ pub async fn bill(
                 reached = reached.max(*turn);
 
                 let described = Requested {
+                    pricing: pricing.clone(),
                     tools_blob: tools_blob.clone(),
                     prefix_spans: prefix_spans
                         .iter()
@@ -175,6 +179,7 @@ pub async fn bill(
                     cost: RequestCost::default(),
                     on_current_branch: message_entry_ids.len() <= current_path.len()
                         && current_path[..message_entry_ids.len()] == message_entry_ids[..],
+                    pricing: cost.pricing.clone(),
                 });
             }
             LedgerEvent::RequestAttemptFailed {
@@ -197,9 +202,18 @@ pub async fn bill(
     let mut turns: Vec<TurnBill> = Vec::new();
 
     for (turn, usage, provider, model) in usages {
-        let priced = rates(catalog, &provider, &model, &mut noted);
-        let cost = priced.price(counted(usage));
-        let lines = match requests.iter().find(|(at, _)| *at == turn) {
+        let requested = requests.iter().find(|(at, _)| *at == turn);
+        let cost = match requested.and_then(|(_, requested)| requested.pricing.as_ref()) {
+            Some(pricing) => {
+                let priced = ModelCost::from(pricing);
+                if priced.is_free() {
+                    Noted::name(&mut noted.unmetered, &provider, &model);
+                }
+                priced.price(counted(usage))
+            }
+            None => rates(catalog, &provider, &model, &mut noted).price(counted(usage)),
+        };
+        let lines = match requested {
             Some((_, requested)) => {
                 let defined = match tools.get(&requested.tools_blob) {
                     Some(known) => known.clone(),
@@ -213,7 +227,7 @@ pub async fn bill(
             }
             None => Vec::new(),
         };
-        let on_current_branch = match requests.iter().find(|(at, _)| *at == turn) {
+        let on_current_branch = match requested {
             Some((_, requested)) => {
                 requested.message_entry_ids.len() <= current_path.len()
                     && current_path[..requested.message_entry_ids.len()]
@@ -254,14 +268,26 @@ pub async fn bill(
     }
 
     for summarized in &mut compactions {
-        let priced = rates(catalog, &summarized.provider, &summarized.model, &mut noted);
-        summarized.cost = priced.price(counted(summarized.usage));
+        summarized.cost = match summarized.pricing.as_ref() {
+            Some(pricing) => {
+                let priced = ModelCost::from(pricing);
+                if priced.is_free() {
+                    Noted::name(
+                        &mut noted.unmetered,
+                        &summarized.provider,
+                        &summarized.model,
+                    );
+                }
+                priced.price(counted(summarized.usage))
+            }
+            None => rates(catalog, &summarized.provider, &summarized.model, &mut noted)
+                .price(counted(summarized.usage)),
+        };
     }
 
     let total = turns.iter().map(TurnBill::total).sum::<f64>()
         + compactions
             .iter()
-            .filter(|summarized| summarized.on_current_branch)
             .map(|summarized| summarized.cost.total())
             .sum::<f64>();
     let current_branch_total = turns
@@ -271,6 +297,7 @@ pub async fn bill(
         .sum::<f64>()
         + compactions
             .iter()
+            .filter(|summarized| summarized.on_current_branch)
             .map(|summarized| summarized.cost.total())
             .sum::<f64>();
 
@@ -289,6 +316,7 @@ pub async fn bill(
 
 /// What one turn's request was built from, as far as pricing it cares.
 struct Requested {
+    pricing: Option<ModelPricing>,
     tools_blob: String,
     prefix_spans: Vec<(EventSource, u64)>,
     message_entry_ids: Vec<String>,
@@ -846,6 +874,7 @@ mod tests {
     use micro_session::Session;
     use micro_types::AssistantMessage;
     use micro_types::CompactionCost;
+    use micro_types::ModelPricing;
     use micro_types::PrefixSpan;
     use micro_types::StopReason;
 
@@ -888,6 +917,15 @@ mod tests {
 
     /// Record one turn: what the request was built from, what came back, and what it cost.
     async fn record_turn(session: &mut Session, turn: u64, reported: Usage) {
+        record_turn_with_pricing(session, turn, reported, None).await;
+    }
+
+    async fn record_turn_with_pricing(
+        session: &mut Session,
+        turn: u64,
+        reported: Usage,
+        pricing: Option<ModelPricing>,
+    ) {
         let defined = vec![ToolDefinition {
             name: "read".into(),
             description: "read a file".into(),
@@ -905,6 +943,7 @@ mod tests {
                 turn,
                 provider: "openai".into(),
                 model: "test-model".into(),
+                pricing,
                 prefix_hash: "aa".into(),
                 request_hash: "bb".into(),
                 request_body_blob: None,
@@ -988,6 +1027,53 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn recorded_prices_survive_catalog_changes() {
+        let harness = Harness::new("bill-recorded-prices");
+        let mut session = harness
+            .sessions
+            .create(&harness.workspace, "openai/test-model")
+            .await
+            .unwrap();
+        let pricing = ModelPricing {
+            input: 1.25,
+            output: 4.5,
+            cache_read: 0.25,
+            cache_write: 0.0,
+            tiers: Vec::new(),
+        };
+        let turn = usage(1_000, 200, 300);
+        record_turn_with_pricing(&mut session, 1, turn, Some(pricing.clone())).await;
+        let summary = usage(500, 100, 0);
+        session
+            .compacted(
+                "summary",
+                1,
+                CompactionCost {
+                    usage: summary,
+                    provider: "openai".into(),
+                    model: "test-model".into(),
+                    pricing: Some(pricing.clone()),
+                },
+            )
+            .await
+            .unwrap();
+        let id = session.id().to_string();
+        drop(session);
+
+        let billed = bill(&harness.sessions, &Catalog::from_models(Vec::new()), &id)
+            .await
+            .unwrap();
+        let expected = |usage: Usage| {
+            (usage.input as f64 * pricing.input
+                + usage.output as f64 * pricing.output
+                + usage.cache_read as f64 * pricing.cache_read)
+                / 1e6
+        };
+        assert!((billed.total - (expected(turn) + expected(summary))).abs() < 1e-12);
+        assert!(billed.unpriced.is_empty());
+    }
+
+    #[tokio::test]
     async fn abandoned_branch_spend_stays_in_the_total() {
         let harness = Harness::new("bill-branches");
         let mut session = harness
@@ -1068,6 +1154,7 @@ mod tests {
                     usage: summary,
                     provider: "openai".into(),
                     model: "test-model".into(),
+                    pricing: None,
                 },
             )
             .await
@@ -1086,6 +1173,42 @@ mod tests {
             "{}",
             billed.report()
         );
+    }
+
+    #[tokio::test]
+    async fn an_abandoned_branch_compaction_stays_out_of_the_current_branch_total() {
+        let harness = Harness::new("bill-compaction-branches");
+        let mut session = harness
+            .sessions
+            .create(&harness.workspace, "openai/test-model")
+            .await
+            .unwrap();
+        let turn = usage(1_000, 200, 0);
+        let summary = usage(900, 120, 0);
+        record_turn(&mut session, 1, turn).await;
+        let fork = session.tree().entries().last().unwrap().id.clone();
+        session.append(&Message::user("abandoned")).await.unwrap();
+        session
+            .compacted(
+                "abandoned summary",
+                1,
+                CompactionCost {
+                    usage: summary,
+                    provider: "openai".into(),
+                    model: "test-model".into(),
+                    pricing: None,
+                },
+            )
+            .await
+            .unwrap();
+        session.branch_from(&fork).await.unwrap();
+        let id = session.id().to_string();
+        drop(session);
+
+        let billed = bill(&harness.sessions, &catalog(), &id).await.unwrap();
+        assert!(!billed.compactions[0].on_current_branch);
+        assert!((billed.total - (spent(turn) + spent(summary))).abs() < 1e-12);
+        assert!((billed.current_branch_total - spent(turn)).abs() < 1e-12);
     }
 
     /// A session written before the ledger existed still has a bill, read out of the answers
@@ -1235,6 +1358,7 @@ mod tests {
 
     fn spans(pairs: &[(EventSource, u64)]) -> Requested {
         Requested {
+            pricing: None,
             tools_blob: String::new(),
             prefix_spans: pairs.to_vec(),
             message_entry_ids: Vec::new(),

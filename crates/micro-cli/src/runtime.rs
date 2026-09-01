@@ -151,9 +151,8 @@ pub fn pick_model(catalog: &Catalog, selection: &Selection) -> Result<ModelDef> 
 
 /// Fold what the providers themselves are serving today into `catalog`.
 ///
-/// A model released since this build shipped is in nobody's bundled catalog, so a session asked for
-/// one by name would be turned away for a model the provider is perfectly willing to serve. Asking
-/// costs a request, so it is only done once the catalog on hand has already come up short.
+/// A model released since this build shipped is in nobody's bundled catalog, so provider listings
+/// can refresh the catalog before a model is selected.
 pub async fn merge_live_listings(catalog: &mut Catalog, store: &AuthStore) {
     let client = reqwest::Client::new();
     let copilot = match store.resolve(micro_auth::GITHUB_COPILOT).await {
@@ -246,6 +245,9 @@ pub async fn build(
     .await;
     let grants = Arc::new(grants);
     let declared = apply_declared_providers(&mut catalog, extensions.as_deref(), settings);
+    if settings.live_models {
+        merge_live_listings(&mut catalog, &store).await;
+    }
 
     // A model is looked up so that what it costs and how much it holds are known, not for permission
     // to use it. When neither the catalog on hand nor the provider's own listing has heard of the
@@ -255,7 +257,9 @@ pub async fn build(
         Ok(model) => model,
 
         Err(unknown) => {
-            merge_live_listings(&mut catalog, &store).await;
+            if !settings.live_models {
+                merge_live_listings(&mut catalog, &store).await;
+            }
             match pick_model(&catalog, selection) {
                 Ok(model) => model,
                 Err(_) => match assumed_model(&catalog, selection) {
@@ -278,6 +282,7 @@ pub async fn build(
         .provider
         .clone()
         .unwrap_or_else(|| model.provider.clone());
+    let recorded_model_cost = taken_at_its_word.is_none().then(|| model.cost.clone());
 
     let mut resolved = match micro_provider::resolve(&store, &model).await {
         Ok(resolved) => Resolved {
@@ -491,6 +496,11 @@ pub async fn build(
     .with_recorder(recorder)
     .with_observer(watching)
     .with_cache_key(session.id());
+
+    let agent = match recorded_model_cost {
+        Some(cost) => agent.with_model_cost(cost),
+        None => agent,
+    };
 
     let prefix = agent.prefix_control();
 

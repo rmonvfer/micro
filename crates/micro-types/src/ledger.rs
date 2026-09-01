@@ -29,6 +29,9 @@ pub enum LedgerEvent {
         turn: u64,
         provider: String,
         model: String,
+        /// The rates in force when this request was issued.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pricing: Option<ModelPricing>,
         /// The hash of the system prompt and the tool definitions together, which is the part of a
         /// request a provider can cache.
         prefix_hash: String,
@@ -129,6 +132,34 @@ pub struct CompactionCost {
     pub provider: String,
     #[serde(default)]
     pub model: String,
+    /// The rates in force when the summary was written.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pricing: Option<ModelPricing>,
+}
+
+/// Model rates captured when work was billed, in US dollars per million tokens.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct ModelPricing {
+    #[serde(default)]
+    pub input: f64,
+    #[serde(default)]
+    pub output: f64,
+    #[serde(default)]
+    pub cache_read: f64,
+    #[serde(default)]
+    pub cache_write: f64,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tiers: Vec<ModelPricingTier>,
+}
+
+/// Rates that replace the standard prices past an input-token threshold.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct ModelPricingTier {
+    pub input_tokens_above: u64,
+    pub input: f64,
+    pub output: f64,
+    pub cache_read: f64,
+    pub cache_write: f64,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -271,6 +302,11 @@ mod tests {
             turn: 2,
             provider: "openai".into(),
             model: "test-model".into(),
+            pricing: Some(ModelPricing {
+                input: 1.25,
+                output: 5.0,
+                ..Default::default()
+            }),
             prefix_hash: "aa".into(),
             request_hash: "bb".into(),
             request_body_blob: Some("body".into()),
@@ -287,8 +323,41 @@ mod tests {
         };
         let encoded = serde_json::to_string(&event).unwrap();
         assert!(encoded.contains("\"type\":\"turn_request\""));
+        assert!(encoded.contains("\"pricing\""));
         assert!(encoded.contains("\"source\":\"project_instructions\""));
         assert_eq!(event, serde_json::from_str(&encoded).unwrap());
+    }
+
+    #[test]
+    fn ledger_pricing_is_optional_for_sessions_written_before_it_was_recorded() {
+        let event: LedgerEvent = serde_json::from_str(
+            r#"{
+                "type": "turn_request",
+                "turn": 1,
+                "provider": "anthropic",
+                "model": "claude",
+                "prefix_hash": "aa",
+                "request_hash": "bb",
+                "tools_blob": "cc",
+                "model_blob": "dd",
+                "attempt": 1
+            }"#,
+        )
+        .unwrap();
+        let LedgerEvent::TurnRequest { pricing, .. } = event else {
+            panic!("expected a turn request");
+        };
+        assert_eq!(pricing, None);
+
+        let cost: CompactionCost = serde_json::from_str(
+            r#"{
+                "usage": { "input": 10, "output": 2, "cache_read": 0, "cache_write": 0 },
+                "provider": "anthropic",
+                "model": "claude"
+            }"#,
+        )
+        .unwrap();
+        assert_eq!(cost.pricing, None);
     }
 
     #[test]
@@ -319,6 +388,7 @@ mod tests {
                     },
                     provider: "anthropic".into(),
                     model: "claude-opus-5".into(),
+                    pricing: None,
                 },
             },
             LedgerEvent::HeadMoved {

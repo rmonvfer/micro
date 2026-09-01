@@ -12,6 +12,7 @@ use micro_types::CompactionCost;
 use micro_types::Context;
 use micro_types::Message;
 use micro_types::Model;
+use micro_types::ModelPricing;
 use micro_types::StreamEvent;
 use micro_types::ThinkingLevel;
 use std::sync::Arc;
@@ -21,6 +22,7 @@ pub struct ProviderSummarizer {
     provider: Arc<dyn Provider>,
     model: Model,
     api_key: ApiKey,
+    pricing: Option<ModelPricing>,
     /// What the conversation being summarized is called.
     cache_key: Option<String>,
 }
@@ -31,8 +33,15 @@ impl ProviderSummarizer {
             provider,
             model,
             api_key: api_key.into(),
+            pricing: None,
             cache_key: None,
         }
+    }
+
+    /// Record the rates used to price the summary this model writes.
+    pub fn with_pricing(mut self, pricing: ModelPricing) -> Self {
+        self.pricing = Some(pricing);
+        self
     }
 
     /// Summarize as part of a named conversation.
@@ -80,6 +89,7 @@ impl Summarizer for ProviderSummarizer {
                             usage: message.usage,
                             provider: message.provider,
                             model: message.model,
+                            pricing: self.pricing.clone(),
                         },
                     });
                 }

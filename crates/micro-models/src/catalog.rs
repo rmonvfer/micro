@@ -77,6 +77,52 @@ pub struct ModelCost {
     pub tiers: Vec<ModelCostTier>,
 }
 
+impl From<&ModelCost> for micro_types::ModelPricing {
+    fn from(cost: &ModelCost) -> Self {
+        micro_types::ModelPricing {
+            input: cost.input,
+            output: cost.output,
+            cache_read: cost.cache_read,
+            cache_write: cost.cache_write,
+            tiers: cost
+                .tiers
+                .iter()
+                .map(|tier| micro_types::ModelPricingTier {
+                    input_tokens_above: tier.input_tokens_above,
+                    input: tier.rates.input,
+                    output: tier.rates.output,
+                    cache_read: tier.rates.cache_read,
+                    cache_write: tier.rates.cache_write,
+                })
+                .collect(),
+        }
+    }
+}
+
+impl From<&micro_types::ModelPricing> for ModelCost {
+    fn from(pricing: &micro_types::ModelPricing) -> Self {
+        ModelCost {
+            input: pricing.input,
+            output: pricing.output,
+            cache_read: pricing.cache_read,
+            cache_write: pricing.cache_write,
+            tiers: pricing
+                .tiers
+                .iter()
+                .map(|tier| ModelCostTier {
+                    input_tokens_above: tier.input_tokens_above,
+                    rates: Rates {
+                        input: tier.input,
+                        output: tier.output,
+                        cache_read: tier.cache_read,
+                        cache_write: tier.cache_write,
+                    },
+                })
+                .collect(),
+        }
+    }
+}
+
 impl ModelCost {
     /// The standard rates, before any tier applies.
     fn rates(&self) -> Rates {
@@ -556,6 +602,29 @@ struct ModelEntry {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn model_costs_round_trip_through_recorded_pricing() {
+        let cost = ModelCost {
+            input: 1.25,
+            output: 5.0,
+            cache_read: 0.1,
+            cache_write: 1.5,
+            tiers: vec![ModelCostTier {
+                input_tokens_above: 200_000,
+                rates: Rates {
+                    input: 2.5,
+                    output: 7.5,
+                    cache_read: 0.2,
+                    cache_write: 2.0,
+                },
+            }],
+        };
+
+        let recorded = micro_types::ModelPricing::from(&cost);
+
+        assert_eq!(ModelCost::from(&recorded), cost);
+    }
 
     #[test]
     fn bundled_catalog_parses() {

@@ -12,7 +12,10 @@ pub use protocol::SessionState;
 pub use protocol::SlashCommand;
 
 use micro_agent::Agent;
+use micro_agent::ModelSwap;
+use micro_auth::AuthStore;
 use micro_models::Catalog;
+use micro_models::ModelDef;
 use micro_session::Session;
 use micro_types::AgentEvent;
 use micro_types::ContentBlock;
@@ -29,12 +32,12 @@ use tokio::sync::Mutex;
 /// Everything the mode needs to answer a command.
 pub struct Rpc {
     agent: Agent,
+    auth: Result<Arc<AuthStore>, String>,
     session: Arc<Mutex<Session>>,
     catalog: Catalog,
     /// Prompts waiting behind the turn in flight.
     pending: Vec<Message>,
     auto_compaction: bool,
-    workspace: std::path::PathBuf,
 }
 
 impl Rpc {
@@ -42,16 +45,24 @@ impl Rpc {
         agent: Agent,
         session: Arc<Mutex<Session>>,
         catalog: Catalog,
-        workspace: impl Into<std::path::PathBuf>,
+        _workspace: impl Into<std::path::PathBuf>,
     ) -> Self {
         Rpc {
             agent,
+            auth: AuthStore::open()
+                .map(Arc::new)
+                .map_err(|error| error.to_string()),
             session,
             catalog,
             pending: Vec::new(),
             auto_compaction: true,
-            workspace: workspace.into(),
         }
+    }
+
+    /// Use a specific credential store when the caller already has one open.
+    pub fn with_auth_store(mut self, auth: Arc<AuthStore>) -> Self {
+        self.auth = Ok(auth);
+        self
     }
 
     /// Read commands until the stream ends.
@@ -166,16 +177,12 @@ impl Rpc {
             Command::SetModel {
                 provider, model_id, ..
             } => {
-                let answer = match self.catalog.get(&provider, &model_id) {
-                    Some(model) => {
-                        let runtime = model.to_runtime(self.agent.model().thinking);
-                        self.agent.set_runtime_model(runtime);
-                        Response::with(
-                            id,
-                            name,
-                            json!({ "provider": provider, "model_id": model_id }),
-                        )
-                    }
+                let model = self.catalog.get(&provider, &model_id).cloned();
+                let answer = match model {
+                    Some(model) => match self.select_model(&model).await {
+                        Ok(model) => Response::with(id, name, model),
+                        Err(error) => Response::failed(id, name, error),
+                    },
                     None => Response::failed(
                         id,
                         name,
@@ -186,9 +193,10 @@ impl Rpc {
             }
 
             Command::CycleModel { .. } => {
-                let answer = match self.cycle_model() {
-                    Some(model) => Response::with(id, name, model),
-                    None => Response::failed(id, name, "the catalog is empty"),
+                let answer = match self.cycle_model().await {
+                    Ok(Some(model)) => Response::with(id, name, model),
+                    Ok(None) => Response::failed(id, name, "the catalog is empty"),
+                    Err(error) => Response::failed(id, name, error),
                 };
                 self.answer(answer, output).await?;
             }
@@ -538,21 +546,61 @@ impl Rpc {
     }
 
     /// The next model in the catalog, wrapping at the end.
-    fn cycle_model(&mut self) -> Option<Value> {
+    async fn cycle_model(&mut self) -> Result<Option<Value>, String> {
         let models = self.catalog.models();
         if models.is_empty() {
-            return None;
+            return Ok(None);
         }
-        let current = self.agent.model().id.clone();
-        let position = models.iter().position(|model| model.id == current);
+        let current_provider = self.agent.model().provider.clone();
+        let current_model = self.agent.model().id.clone();
+        let position = models
+            .iter()
+            .position(|model| model.provider == current_provider && model.id == current_model);
         let next = match position {
-            Some(position) => &models[(position + 1) % models.len()],
-            None => &models[0],
+            Some(position) => models[(position + 1) % models.len()].clone(),
+            None => models[0].clone(),
         };
-        let runtime = next.to_runtime(self.agent.model().thinking);
-        let described = json!({ "provider": next.provider, "model_id": next.id });
-        self.agent.set_runtime_model(runtime);
-        Some(described)
+        self.select_model(&next).await.map(Some)
+    }
+
+    /// Replace every model-dependent part of the running agent.
+    async fn select_model(&mut self, model: &ModelDef) -> Result<Value, String> {
+        let auth = self
+            .auth
+            .as_ref()
+            .map_err(|error| format!("cannot open the credential store: {error}"))?;
+        let resolved = micro_provider::resolve(auth, model)
+            .await
+            .map_err(|error| format!("cannot use {}: {error}", model.qualified_id()))?;
+        if resolved.api_key.is_blank() {
+            return Err(format!(
+                "no credential for {}; run `micro auth login {}`",
+                model.provider, model.provider
+            ));
+        }
+
+        let mut runtime = model.to_runtime(self.agent.model().thinking);
+        if let Some(base_url) = resolved.base_url.filter(|url| !url.trim().is_empty()) {
+            runtime.base_url = base_url;
+        }
+
+        let qualified = model.qualified_id();
+        self.session
+            .lock()
+            .await
+            .set_model_id(qualified)
+            .await
+            .map_err(|error| format!("cannot update the session model: {error}"))?;
+
+        self.agent.set_model(ModelSwap {
+            provider: resolved.client,
+            model: runtime,
+            api_key: resolved.api_key,
+            context_window: model.context_window as usize,
+            cost: model.cost.clone(),
+        });
+
+        Ok(json!({ "provider": model.provider, "model_id": model.id }))
     }
 
     async fn new_session(&mut self) -> Result<String, String> {
@@ -654,35 +702,21 @@ impl Rpc {
     }
 
     async fn bash(&self, command: &str) -> BashResult {
-        let finished = tokio::process::Command::new("sh")
-            .arg("-c")
-            .arg(command)
-            .current_dir(&self.workspace)
-            .stdin(std::process::Stdio::null())
-            .output()
-            .await;
-
-        match finished {
-            Ok(result) => {
-                let mut text = String::from_utf8_lossy(&result.stdout).into_owned();
-                let errors = String::from_utf8_lossy(&result.stderr);
-                if !errors.is_empty() {
-                    if !text.is_empty() && !text.ends_with('\n') {
-                        text.push('\n');
-                    }
-                    text.push_str(&errors);
-                }
-                BashResult {
-                    output: text.trim_end().to_string(),
-                    code: result.status.code().unwrap_or(-1),
-                    failed: !result.status.success(),
-                }
-            }
-            Err(error) => BashResult {
-                output: format!("cannot run the command: {error}"),
-                code: -1,
-                failed: true,
+        match self.agent.execute_bash(command).await {
+            Ok(content) => BashResult {
+                output: match content
+                    .iter()
+                    .map(ContentBlock::as_text)
+                    .collect::<Vec<_>>()
+                    .join("")
+                {
+                    output if output == "(no output)" => String::new(),
+                    output => output,
+                },
+                code: 0,
+                failed: false,
             },
+            Err(error) => BashResult::failed(error),
         }
     }
 }
@@ -691,6 +725,33 @@ struct BashResult {
     output: String,
     code: i32,
     failed: bool,
+}
+
+impl BashResult {
+    fn failed(error: String) -> Self {
+        let code = error
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .windows(3)
+            .find_map(|words| match words {
+                ["exit", "code", code] => code.parse().ok(),
+                _ => None,
+            })
+            .unwrap_or(-1);
+        let output = error
+            .strip_prefix("exit code ")
+            .and_then(|failure| {
+                failure
+                    .split_once('\n')
+                    .map(|(_, output)| output.to_string())
+            })
+            .unwrap_or(error);
+        BashResult {
+            output,
+            code,
+            failed: true,
+        }
+    }
 }
 
 /// Every command a caller may invoke through a prompt.
@@ -736,5 +797,187 @@ fn next_level(level: ThinkingLevel) -> ThinkingLevel {
         ThinkingLevel::High => ThinkingLevel::XHigh,
         ThinkingLevel::XHigh => ThinkingLevel::Max,
         ThinkingLevel::Max => ThinkingLevel::Off,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use micro_agent::Budget;
+    use micro_testkit::FakeProvider;
+    #[cfg(target_os = "macos")]
+    use micro_tools::Guard;
+    use serde_json::json;
+    use std::sync::atomic::AtomicUsize;
+    use std::sync::atomic::Ordering;
+
+    static NEXT_ROOT: AtomicUsize = AtomicUsize::new(0);
+
+    fn scratch(label: &str) -> std::path::PathBuf {
+        let root = std::env::temp_dir().join(format!(
+            "micro-rpc-{label}-{}-{}",
+            std::process::id(),
+            NEXT_ROOT.fetch_add(1, Ordering::Relaxed)
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        root.canonicalize().unwrap()
+    }
+
+    fn catalog() -> Catalog {
+        Catalog::from_json(
+            r#"{
+                "providers": {
+                    "anthropic": {
+                        "base_url": "https://anthropic.invalid",
+                        "api": "anthropic-messages",
+                        "models": [{
+                            "id": "shared",
+                            "context_window": 1000,
+                            "cost": { "input": 1.0, "output": 2.0 }
+                        }]
+                    },
+                    "openrouter": {
+                        "base_url": "https://openrouter.invalid",
+                        "api": "openai-completions",
+                        "models": [{
+                            "id": "shared",
+                            "context_window": 64000,
+                            "max_output_tokens": 8000,
+                            "cost": { "input": 9.0, "output": 3.0 }
+                        }]
+                    }
+                }
+            }"#,
+        )
+        .unwrap()
+    }
+
+    async fn rpc_with(
+        root: &std::path::Path,
+        catalog: Catalog,
+        tools: Vec<Arc<dyn micro_tools::Tool>>,
+    ) -> Rpc {
+        let current = catalog.get("anthropic", "shared").unwrap();
+        let sessions = micro_session::SessionStore::new(root.join("sessions"));
+        let session = sessions.create(root, current.qualified_id()).await.unwrap();
+        let agent = Agent::new(
+            Arc::new(FakeProvider::builder().name("anthropic").build()),
+            tools,
+            current.to_runtime(ThinkingLevel::Low),
+            "anthropic-key",
+        )
+        .with_context_window(current.context_window as usize)
+        .with_model_cost(current.cost.clone())
+        .with_budget(Budget::new(100.0, current.cost.clone()));
+        Rpc::new(agent, Arc::new(Mutex::new(session)), catalog, root)
+    }
+
+    #[tokio::test]
+    async fn a_cross_provider_switch_replaces_the_client_limits_pricing_and_session_model() {
+        let root = scratch("provider-swap");
+        let catalog = catalog();
+        let auth = Arc::new(AuthStore::open_at(root.join("auth.json")).unwrap());
+        auth.store_api_key("anthropic", "anthropic-key").unwrap();
+        auth.store_api_key("openrouter", "openrouter-key").unwrap();
+        let selected = catalog.get("openrouter", "shared").unwrap().clone();
+        let mut rpc = rpc_with(&root, catalog, Vec::new())
+            .await
+            .with_auth_store(auth);
+
+        let response = rpc.select_model(&selected).await.unwrap();
+
+        assert_eq!(response["provider"], "openrouter");
+        assert_eq!(rpc.agent.provider_name(), "openrouter");
+        assert_eq!(rpc.agent.model().provider, "openrouter");
+        assert_eq!(rpc.agent.model().id, "shared");
+        assert_eq!(rpc.agent.model().max_tokens, 8_000);
+        assert_eq!(rpc.agent.context_window(), 64_000);
+        assert_eq!(rpc.agent.model_cost(), Some(&selected.cost));
+        assert_eq!(
+            rpc.session.lock().await.meta().model_id,
+            "openrouter/shared"
+        );
+    }
+
+    #[tokio::test]
+    async fn cycling_models_matches_the_provider_as_well_as_the_model_id() {
+        let root = scratch("cycle-qualified");
+        let catalog = catalog();
+        let auth = Arc::new(AuthStore::open_at(root.join("auth.json")).unwrap());
+        auth.store_api_key("anthropic", "anthropic-key").unwrap();
+        auth.store_api_key("openrouter", "openrouter-key").unwrap();
+        let mut rpc = rpc_with(&root, catalog, Vec::new())
+            .await
+            .with_auth_store(auth);
+
+        let cycled = rpc.cycle_model().await.unwrap().unwrap();
+
+        assert_eq!(cycled["provider"], "openrouter");
+        assert_eq!(rpc.agent.provider_name(), "openrouter");
+    }
+
+    struct RefusingBash;
+
+    #[async_trait::async_trait]
+    impl micro_tools::Tool for RefusingBash {
+        fn definition(&self) -> micro_types::ToolDefinition {
+            micro_types::ToolDefinition {
+                name: "bash".into(),
+                description: String::new(),
+                parameters: json!({ "type": "object" }),
+                constrained_sampling: None,
+            }
+        }
+
+        async fn execute(&self, _arguments: &Value) -> Result<String, String> {
+            Err("denied by policy workspace-write: exit code 1\noperation not permitted".into())
+        }
+    }
+
+    #[tokio::test]
+    async fn rpc_bash_uses_the_agents_guarded_tool() {
+        let root = scratch("guarded-tool");
+        let rpc = rpc_with(&root, catalog(), vec![Arc::new(RefusingBash)]).await;
+
+        let result = rpc.bash("echo escaped").await;
+
+        assert!(result.failed);
+        assert_eq!(result.code, 1);
+        assert!(result.output.contains("denied by policy workspace-write"));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn rpc_bash_denies_outside_writes_and_network_under_workspace_write() {
+        let root = scratch("sandbox-confinement");
+        let workspace = root.join("workspace");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let outside = root.join("outside.txt");
+        let guard = Guard::new(micro_sandbox::Sandbox::new(
+            micro_sandbox::SandboxPolicy::workspace_write(),
+            &workspace,
+        ));
+        let tools = micro_tools::builtin_tools(workspace.clone(), guard);
+        let rpc = rpc_with(&workspace, catalog(), tools).await;
+
+        let write = rpc
+            .bash(&format!("echo escaped > {}", outside.display()))
+            .await;
+        assert!(write.failed, "{}", write.output);
+        assert!(!outside.exists());
+        assert!(
+            write.output.contains("denied by policy workspace-write"),
+            "{}",
+            write.output
+        );
+
+        let network = rpc.bash("exec 3<>/dev/tcp/1.1.1.1/80").await;
+        assert!(network.failed, "{}", network.output);
+        assert!(
+            network.output.contains("denied by policy workspace-write"),
+            "{}",
+            network.output
+        );
     }
 }

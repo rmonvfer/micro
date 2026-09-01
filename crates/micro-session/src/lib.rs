@@ -26,6 +26,8 @@ use micro_types::ToolDefinition;
 use micro_types::Usage;
 use micro_types::SCHEMA_VERSION;
 use std::io::ErrorKind;
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt as _;
 use std::path::Path;
 use std::path::PathBuf;
 use std::time::SystemTime;
@@ -67,9 +69,7 @@ impl SessionStore {
         workspace: impl AsRef<Path>,
         model_id: impl Into<String>,
     ) -> Result<Session> {
-        tokio::fs::create_dir_all(&self.root)
-            .await
-            .map_err(|source| SessionError::io(&self.root, source))?;
+        create_private_dir(&self.root).await?;
 
         let (id, log) = self.claim_id().await?;
         let meta = SessionMeta::new(
@@ -270,25 +270,35 @@ impl SessionStore {
         self.collect(Some(workspace)).await
     }
 
-    /// Removes a session's log and metadata.
+    /// Removes a session's blobs, metadata, and log.
     pub async fn delete(&self, id: &str) -> Result<()> {
         validate_id(id)?;
         let log_path = self.log_path(id);
-        match tokio::fs::remove_file(&log_path).await {
-            Ok(()) => {}
-            Err(error) if error.kind() == ErrorKind::NotFound => {
-                return Err(SessionError::NotFound(id.to_string()))
-            }
-            Err(source) => return Err(SessionError::io(log_path, source)),
+        let meta_path = self.meta_path(id);
+        let blobs_path = self.blobs_path(id);
+        let exists = path_exists(&log_path).await?
+            || path_exists(&meta_path).await?
+            || path_exists(&blobs_path).await?;
+        if !exists {
+            return Err(SessionError::NotFound(id.to_string()));
         }
 
-        let _ = tokio::fs::remove_dir_all(self.blobs_path(id)).await;
+        match tokio::fs::remove_dir_all(&blobs_path).await {
+            Ok(()) => {}
+            Err(error) if error.kind() == ErrorKind::NotFound => {}
+            Err(source) => return Err(SessionError::io(blobs_path, source)),
+        }
 
-        let meta_path = self.meta_path(id);
         match tokio::fs::remove_file(&meta_path).await {
+            Ok(()) => {}
+            Err(error) if error.kind() == ErrorKind::NotFound => {}
+            Err(source) => return Err(SessionError::io(meta_path, source)),
+        }
+
+        match tokio::fs::remove_file(&log_path).await {
             Ok(()) => Ok(()),
             Err(error) if error.kind() == ErrorKind::NotFound => Ok(()),
-            Err(source) => Err(SessionError::io(meta_path, source)),
+            Err(source) => Err(SessionError::io(log_path, source)),
         }
     }
 
@@ -485,11 +495,10 @@ impl SessionStore {
 
     async fn open_log(&self, id: &str) -> Result<File> {
         let path = self.log_path(id);
-        OpenOptions::new()
-            .append(true)
-            .open(&path)
-            .await
-            .map_err(|source| SessionError::io(path, source))
+        open_private_file(&path, |options| {
+            options.append(true);
+        })
+        .await
     }
 
     /// Takes the first free id at the current millisecond.
@@ -502,15 +511,18 @@ impl SessionStore {
                 _ => format!("{stamp}-{attempt:03}"),
             };
             let path = self.log_path(&id);
-            match OpenOptions::new()
-                .create_new(true)
-                .append(true)
-                .open(&path)
-                .await
+            match open_private_file(&path, |options| {
+                options.create_new(true).append(true);
+            })
+            .await
             {
                 Ok(log) => return Ok((id, log)),
-                Err(error) if error.kind() == ErrorKind::AlreadyExists => continue,
-                Err(source) => return Err(SessionError::io(path, source)),
+                Err(SessionError::Io { source, .. })
+                    if source.kind() == ErrorKind::AlreadyExists =>
+                {
+                    continue
+                }
+                Err(error) => return Err(error),
             }
         }
         Err(SessionError::io(
@@ -699,13 +711,9 @@ impl Session {
             return Ok(hash);
         }
 
-        tokio::fs::create_dir_all(&self.blobs_path)
-            .await
-            .map_err(|source| SessionError::io(&self.blobs_path, source))?;
+        create_private_dir(&self.blobs_path).await?;
         let temporary = path.with_extension("tmp");
-        tokio::fs::write(&temporary, content)
-            .await
-            .map_err(|source| SessionError::io(&temporary, source))?;
+        write_private_file(&temporary, content).await?;
         tokio::fs::rename(&temporary, &path)
             .await
             .map_err(|source| SessionError::io(&path, source))?;
@@ -853,12 +861,58 @@ fn parse_log(raw: &str) -> (Vec<tree::Line>, usize) {
 async fn write_meta(path: &Path, meta: &SessionMeta) -> Result<()> {
     let encoded = serde_json::to_vec(meta).map_err(|source| SessionError::json(path, source))?;
     let temporary = path.with_extension("tmp");
-    tokio::fs::write(&temporary, &encoded)
-        .await
-        .map_err(|source| SessionError::io(&temporary, source))?;
+    write_private_file(&temporary, &encoded).await?;
     tokio::fs::rename(&temporary, path)
         .await
         .map_err(|source| SessionError::io(path, source))
+}
+
+async fn create_private_dir(path: &Path) -> Result<()> {
+    tokio::fs::create_dir_all(path)
+        .await
+        .map_err(|source| SessionError::io(path, source))?;
+    #[cfg(unix)]
+    tokio::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))
+        .await
+        .map_err(|source| SessionError::io(path, source))?;
+    Ok(())
+}
+
+async fn open_private_file(path: &Path, configure: impl FnOnce(&mut OpenOptions)) -> Result<File> {
+    let mut options = OpenOptions::new();
+    configure(&mut options);
+    #[cfg(unix)]
+    options.mode(0o600);
+    let file = options
+        .open(path)
+        .await
+        .map_err(|source| SessionError::io(path, source))?;
+    #[cfg(unix)]
+    file.set_permissions(std::fs::Permissions::from_mode(0o600))
+        .await
+        .map_err(|source| SessionError::io(path, source))?;
+    Ok(file)
+}
+
+async fn write_private_file(path: &Path, content: &[u8]) -> Result<()> {
+    let mut file = open_private_file(path, |options| {
+        options.create(true).truncate(true).write(true);
+    })
+    .await?;
+    file.write_all(content)
+        .await
+        .map_err(|source| SessionError::io(path, source))?;
+    file.flush()
+        .await
+        .map_err(|source| SessionError::io(path, source))
+}
+
+async fn path_exists(path: &Path) -> Result<bool> {
+    match tokio::fs::metadata(path).await {
+        Ok(_) => Ok(true),
+        Err(error) if error.kind() == ErrorKind::NotFound => Ok(false),
+        Err(source) => Err(SessionError::io(path, source)),
+    }
 }
 
 /// Ids become file names, so only characters that cannot leave the store are accepted.
@@ -1320,6 +1374,43 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn deleting_keeps_the_session_retryable_when_blob_cleanup_fails() {
+        let store = SessionStore::new(scratch("delete-blob-error"));
+        let session = store.create("/work", "opus").await.unwrap();
+        let id = session.id().to_string();
+        let log_path = session.path().to_path_buf();
+        let meta_path = store.meta_path(&id);
+        let blobs_path = store.blobs_path(&id);
+        std::fs::write(&blobs_path, "not a directory").unwrap();
+
+        assert!(store.delete(&id).await.is_err());
+        assert!(log_path.exists());
+        assert!(meta_path.exists());
+
+        std::fs::remove_file(blobs_path).unwrap();
+        store.delete(&id).await.unwrap();
+        assert!(!log_path.exists());
+        assert!(!meta_path.exists());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn session_files_are_private() {
+        let root = scratch("private-permissions").join("sessions");
+        let store = SessionStore::new(&root);
+        let session = store.create("/work", "opus").await.unwrap();
+        session.store_blob(b"secret").await.unwrap();
+
+        let mode = |path: &Path| std::fs::metadata(path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode(&root), 0o700);
+        assert_eq!(mode(session.path()), 0o600);
+        assert_eq!(mode(&store.meta_path(session.id())), 0o600);
+        assert_eq!(mode(&store.blobs_path(session.id())), 0o700);
+        let blob = store.blobs_path(session.id()).join(content_hash(b"secret"));
+        assert_eq!(mode(&blob), 0o600);
+    }
+
+    #[tokio::test]
     async fn an_unknown_session_is_reported_as_missing() {
         let store = SessionStore::new(scratch("missing"));
         assert!(matches!(
@@ -1484,6 +1575,7 @@ mod tests {
                 turn: 1,
                 provider: "anthropic".into(),
                 model: "claude-opus-5".into(),
+                pricing: None,
                 prefix_hash: "aa".into(),
                 request_hash: "bb".into(),
                 request_body_blob: Some(request_body_blob),

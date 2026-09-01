@@ -293,6 +293,8 @@ pub struct Agent {
     summarizer: Arc<dyn Summarizer>,
     compaction: Option<CompactionConfig>,
     context_window: usize,
+    /// The rates in force for requests made with the current model.
+    model_cost: Option<ModelCost>,
     /// What has been said to the run while it was running.
     steering: Steering,
     /// Which tools the model may see and the agent may execute, when something has narrowed them.
@@ -338,6 +340,7 @@ impl Agent {
             summarizer,
             compaction: Some(CompactionConfig::default()),
             context_window: DEFAULT_CONTEXT_WINDOW,
+            model_cost: None,
             steering: Steering::default(),
             offered: None,
             turn: 0,
@@ -377,6 +380,7 @@ impl Agent {
         self.model = swap.model;
         self.api_key = swap.api_key;
         self.context_window = swap.context_window;
+        self.model_cost = Some(swap.cost.clone());
 
         if let Some(budget) = &mut self.budget {
             budget.cost = swap.cost;
@@ -385,18 +389,35 @@ impl Agent {
     }
 
     fn provider_summarizer(&self) -> Arc<dyn Summarizer> {
-        Arc::new(
-            ProviderSummarizer::new(
-                self.provider.clone(),
-                self.model.clone(),
-                self.api_key.clone(),
-            )
-            .for_conversation(self.cache_key.clone()),
+        let mut summarizer = ProviderSummarizer::new(
+            self.provider.clone(),
+            self.model.clone(),
+            self.api_key.clone(),
         )
+        .for_conversation(self.cache_key.clone());
+        if let Some(cost) = &self.model_cost {
+            summarizer = summarizer.with_pricing(cost.into());
+        }
+        Arc::new(summarizer)
     }
 
     pub fn model(&self) -> &Model {
         &self.model
+    }
+
+    /// The provider client serving the current model.
+    pub fn provider_name(&self) -> &str {
+        self.provider.name()
+    }
+
+    /// The current model's compaction limit.
+    pub fn context_window(&self) -> usize {
+        self.context_window
+    }
+
+    /// The rates captured when the current model was selected.
+    pub fn model_cost(&self) -> Option<&ModelCost> {
+        self.model_cost.as_ref()
     }
 
     /// Reason this hard from the next turn on.
@@ -407,6 +428,16 @@ impl Agent {
     /// The model's context window in tokens, which decides when compaction fires.
     pub fn with_context_window(mut self, tokens: usize) -> Self {
         self.context_window = tokens;
+        self
+    }
+
+    /// Record the rates selected with the model so ledger entries keep their original price.
+    pub fn with_model_cost(mut self, cost: ModelCost) -> Self {
+        self.model_cost = Some(cost.clone());
+        if let Some(budget) = &mut self.budget {
+            budget.cost = cost;
+        }
+        self.summarizer = self.provider_summarizer();
         self
     }
 
@@ -429,12 +460,6 @@ impl Agent {
         };
     }
 
-    /// Run a different model through the provider already in hand.
-    pub fn set_runtime_model(&mut self, model: Model) {
-        self.model = model;
-        self.summarizer = self.provider_summarizer();
-    }
-
     /// Summarize with something other than the model the agent is running, which is how a caller
     /// routes summaries to a cheaper model.
     pub fn with_summarizer(mut self, summarizer: Arc<dyn Summarizer>) -> Self {
@@ -450,6 +475,10 @@ impl Agent {
 
     /// Stop this session once it has spent what `budget` allows.
     pub fn with_budget(mut self, budget: Budget) -> Self {
+        if self.model_cost.is_none() {
+            self.model_cost = Some(budget.cost.clone());
+            self.summarizer = self.provider_summarizer();
+        }
         self.budget = Some(budget);
         self
     }
@@ -508,6 +537,21 @@ impl Agent {
 
     pub fn messages(&self) -> &[Message] {
         &self.messages
+    }
+
+    /// Run the agent's shell tool under the same policy as model-requested shell calls.
+    pub async fn execute_bash(&self, command: &str) -> Result<Vec<ContentBlock>, String> {
+        let tool = self
+            .tools
+            .iter()
+            .find(|tool| tool.definition().name == "bash")
+            .cloned()
+            .ok_or_else(|| "tool `bash` is not available in this run".to_string())?;
+        tool.execute_content(
+            &serde_json::json!({ "command": command }),
+            &micro_tools::Progress::default(),
+        )
+        .await
     }
 
     /// Summarize the conversation now, whether or not it has grown enough to trigger on its own,
@@ -743,6 +787,7 @@ impl Agent {
             turn: self.turn,
             provider: self.model.provider.clone(),
             model: self.model.id.clone(),
+            pricing: self.model_cost.as_ref().map(Into::into),
             prefix_hash: sent.hash().to_string(),
             request_hash: content_hash(&body),
             request_body_blob,
@@ -1354,6 +1399,60 @@ fn retry_delay_ms(attempt: u32) -> u64 {
 mod tests {
     use super::*;
 
+    #[derive(Clone)]
+    struct RecordingProvider {
+        name: &'static str,
+        calls: Arc<std::sync::Mutex<Vec<(Model, String)>>>,
+    }
+
+    impl RecordingProvider {
+        fn new(name: &'static str) -> Self {
+            RecordingProvider {
+                name,
+                calls: Arc::new(std::sync::Mutex::new(Vec::new())),
+            }
+        }
+
+        fn calls(&self) -> Vec<(Model, String)> {
+            self.calls.lock().expect("calls lock").clone()
+        }
+    }
+
+    impl Provider for RecordingProvider {
+        fn name(&self) -> &str {
+            self.name
+        }
+
+        fn stream(
+            &self,
+            model: Model,
+            _context: Context,
+            api_key: String,
+        ) -> tokio::sync::mpsc::UnboundedReceiver<StreamEvent> {
+            self.calls
+                .lock()
+                .expect("calls lock")
+                .push((model.clone(), api_key));
+            let (sender, receiver) = tokio::sync::mpsc::unbounded_channel();
+            let _ = sender.send(StreamEvent::Done {
+                message: AssistantMessage {
+                    content: vec![ContentBlock::text("earlier work")],
+                    provider: self.name.to_string(),
+                    model: model.id,
+                    usage: Usage::default(),
+                    stop_reason: StopReason::Stop,
+                    error: None,
+                    timestamp: 0,
+                },
+            });
+            receiver
+        }
+
+        fn payload(&self, _model: &Model, _context: &Context) -> Value {
+            Value::Null
+        }
+    }
+
     fn assistant_calling(calls: &[(&str, &str)]) -> Message {
         Message::Assistant(AssistantMessage {
             content: calls
@@ -1370,6 +1469,18 @@ mod tests {
             model: "test".into(),
             usage: Usage::default(),
             stop_reason: StopReason::ToolUse,
+            error: None,
+            timestamp: 0,
+        })
+    }
+
+    fn assistant_text(text: &str) -> Message {
+        Message::Assistant(AssistantMessage {
+            content: vec![ContentBlock::text(text)],
+            provider: "old".into(),
+            model: "old-model".into(),
+            usage: Usage::default(),
+            stop_reason: StopReason::Stop,
             error: None,
             timestamp: 0,
         })
@@ -1557,6 +1668,131 @@ mod tests {
             written.try_recv().unwrap(),
             Record::Message(agent.messages()[0].clone())
         );
+    }
+
+    #[tokio::test]
+    async fn a_model_swap_replaces_every_model_dependent_part() {
+        let old_provider = RecordingProvider::new("old");
+        let new_provider = RecordingProvider::new("new");
+        let old_cost = ModelCost {
+            input: 1.0,
+            ..Default::default()
+        };
+        let new_cost = ModelCost {
+            input: 9.0,
+            output: 3.0,
+            ..Default::default()
+        };
+        let old_model = Model {
+            id: "old-model".into(),
+            provider: "old".into(),
+            base_url: "https://old.invalid".into(),
+            max_tokens: 1_000,
+            thinking: ThinkingLevel::Low,
+            reasoning: false,
+            compat: Default::default(),
+            headers: Default::default(),
+        };
+        let new_model = Model {
+            id: "new-model".into(),
+            provider: "new".into(),
+            base_url: "https://new.invalid".into(),
+            max_tokens: 8_000,
+            thinking: ThinkingLevel::High,
+            reasoning: true,
+            compat: Default::default(),
+            headers: Default::default(),
+        };
+        let mut history = Vec::new();
+        for index in 0..4 {
+            history.push(Message::user(format!("question {index}")));
+            history.push(assistant_text(&format!("answer {index}")));
+        }
+
+        let (recorder, mut recorded) = tokio::sync::mpsc::unbounded_channel();
+        let mut agent = Agent::new(
+            Arc::new(old_provider.clone()),
+            Vec::new(),
+            old_model,
+            "old-key",
+        )
+        .with_history(history)
+        .with_context_window(1_000)
+        .with_budget(Budget::new(100.0, old_cost))
+        .with_recorder(recorder);
+
+        agent.set_model(ModelSwap {
+            provider: Arc::new(new_provider.clone()),
+            model: new_model.clone(),
+            api_key: "new-key".into(),
+            context_window: 64_000,
+            cost: new_cost.clone(),
+        });
+
+        assert_eq!(agent.provider.name(), "new");
+        assert_eq!(agent.model, new_model);
+        assert_eq!(agent.api_key.as_str(), "new-key");
+        assert_eq!(agent.context_window, 64_000);
+        assert_eq!(
+            agent.budget.as_ref().map(|budget| &budget.cost),
+            Some(&new_cost)
+        );
+
+        agent.compact_now().await.expect("the new summarizer runs");
+        assert!(old_provider.calls().is_empty());
+        let calls = new_provider.calls();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].0.id, "new-model");
+        assert_eq!(calls[0].1, "new-key");
+        let compaction = std::iter::from_fn(|| recorded.try_recv().ok())
+            .find_map(|record| match record {
+                Record::Compacted { cost, .. } => Some(cost),
+                _ => None,
+            })
+            .expect("the compaction was recorded");
+        assert_eq!(
+            compaction.pricing,
+            Some(micro_types::ModelPricing::from(&new_cost))
+        );
+    }
+
+    #[tokio::test]
+    async fn a_request_records_the_rates_in_force_when_it_was_sent() {
+        let provider = RecordingProvider::new("priced");
+        let cost = ModelCost {
+            input: 4.0,
+            output: 12.0,
+            ..Default::default()
+        };
+        let model = Model {
+            id: "priced-model".into(),
+            provider: "priced".into(),
+            base_url: "https://priced.invalid".into(),
+            max_tokens: 1_000,
+            thinking: ThinkingLevel::Off,
+            reasoning: false,
+            compat: Default::default(),
+            headers: Default::default(),
+        };
+        let (recorder, mut recorded) = tokio::sync::mpsc::unbounded_channel();
+        let mut agent = Agent::new(Arc::new(provider), Vec::new(), model, "key")
+            .with_model_cost(cost.clone())
+            .with_recorder(recorder);
+        let (events, _received) = tokio::sync::mpsc::unbounded_channel();
+
+        agent.run(Message::user("hello"), &events).await;
+
+        let pricing = std::iter::from_fn(|| recorded.try_recv().ok()).find_map(|record| {
+            let Record::Event {
+                event: LedgerEvent::TurnRequest { pricing, .. },
+                ..
+            } = record
+            else {
+                return None;
+            };
+            Some(pricing)
+        });
+        assert_eq!(pricing, Some(Some(micro_types::ModelPricing::from(&cost))));
     }
 
     #[test]

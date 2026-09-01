@@ -17,6 +17,8 @@ pub use ledger::content_hash;
 pub use ledger::CompactionCost;
 pub use ledger::EventSource;
 pub use ledger::LedgerEvent;
+pub use ledger::ModelPricing;
+pub use ledger::ModelPricingTier;
 pub use ledger::PrefixSpan;
 pub use ledger::SCHEMA_VERSION;
 pub use model::Model;
