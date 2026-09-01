@@ -1,5 +1,8 @@
 target/
 book/
+/.DS_Store
+/.tmp/
+/.micro/node_modules/
 
 # Reference checkouts kept beside the workspace, never part of it.
 /codex/
