@@ -64,14 +64,14 @@ When a sandbox denial blocks the agent, it may request either network access or 
 
 When command confinement is unavailable, micro reports that commands are running unconfined. File tools still apply path checks.
 
-Built-in file tools are always limited to the workspace, for reads as well as writes. They resolve symlinks before checking the target, so a link inside the workspace does not grant access to a path outside it. The selected policy still decides whether an in-workspace write is allowed.
+Built-in file tools reject absolute paths and lexical `..` traversal outside the workspace. They canonicalize existing path components before opening a file, so a workspace symlink cannot redirect a read or write outside the workspace. The selected policy still decides whether an in-workspace write is allowed.
 
 ## What is covered
 
 The policy applies to:
 
 - the built-in command and file tools;
-- commands an extension runs through `ctx.exec`;
+- commands an extension runs through `micro.exec`;
 - commands run through micro's other built-in agent tools.
 
 It does not wrap configured extension-host or MCP-server processes, manual `!` commands, or micro's provider connections. See [Security model](security.md).
@@ -93,7 +93,7 @@ cannot write /etc/hosts: workspace-write allows writes under /home/you/project o
 
 The model receives the refusal and can choose another approach. A `sandbox_decision` event is appended to the session ledger.
 
-Extension calls through `ctx.exec` receive `denied: true` and the policy name in addition to the command result.
+Extension calls through `micro.exec` receive `denied: true` and the policy name in addition to the command result.
 
 ## Test a command
 

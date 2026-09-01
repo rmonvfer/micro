@@ -35,7 +35,7 @@ The default command policy is `workspace-write`:
 - shell commands may read outside the workspace but may write only inside it;
 - built-in file tools keep `.git`, `.micro`, and micro's own data directories read-only; macOS shell commands inherit the same protection, while Linux shell commands are confined to the workspace boundary;
 - network access is blocked;
-- built-in file tools cannot read or write outside the workspace.
+- built-in file tools reject absolute paths, lexical traversal, and symlinks that resolve outside the workspace;
 
 Extension commands sent through micro use the same command policy. The extension host has a separate, stricter process sandbox. Configured MCP servers remain outside the command sandbox.
 
@@ -60,9 +60,9 @@ The extension host rejects requests outside that set. The extension receives a n
 
 Legacy extensions without a manifest may require a one-time capability decision. A trusted project does not prompt again for capabilities of the extensions it ships because project trust already covers loading that code.
 
-The Bun host also runs with an empty inherited environment, no network or write access, and a filesystem read allowlist limited to micro's host files and the loaded extension packages. It is disabled on platforms where micro cannot enforce that sandbox.
+The Bun host runs with an empty inherited environment, no network access, and read-only access to the active workspace and loaded package roots. It is disabled on platforms where micro cannot enforce that sandbox.
 
-The two checks are independent. Capabilities decide which host operations an extension may request. The process sandbox prevents extension code from gaining ambient machine access through Bun's own APIs. A brokered `exec` request still enters the active command sandbox, so the extension capability can narrow authority but cannot widen the session policy.
+Capabilities decide which host operations an extension may request. Direct filesystem writes from the Bun process are denied. A brokered `exec` request enters the active command sandbox, so the extension cannot widen the session policy through `micro.exec`.
 
 ## What the sandbox does not cover
 
@@ -86,6 +86,6 @@ The ledger is an audit record, not a prevention mechanism. The sandbox and capab
 
 ## Data and privacy
 
-micro does not send telemetry, crash reports, analytics, or installation identifiers. Session logs remain in the local data directory unless you export, copy, or share them.
+micro does not send telemetry, crash reports, analytics, or installation identifiers. Session directories use owner-only permissions on Unix; logs, metadata, and retained provider request bodies are owner-readable and owner-writable. The files remain local unless you export, copy, or share them.
 
-Model requests are sent to the provider selected for the session. Remote-control messages pass through the configured relay as encrypted payloads. `/share` is an explicit exception: it uploads the conversation to a secret GitHub gist using the token you configured.
+Model requests are sent to the provider selected for the session. Remote-control payloads are encrypted, but pairing assumes a relay that does not substitute keys. Relay connections require HTTPS, and authenticated frames cannot be replayed after reconnect. Read the [remote-control threat model](remote-control.md#encryption-and-relay). `/share` uploads the conversation to a secret GitHub gist using the token you configured.

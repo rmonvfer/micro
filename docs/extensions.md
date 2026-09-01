@@ -66,7 +66,7 @@ Read-only getters do not require a capability. Host operations outside the decla
 
 Extensions without a manifest use a compatibility path. micro determines the capabilities they request and may ask for a one-time decision. The answer is saved in `capabilities.json`.
 
-Capabilities control access to micro's host API. Bun itself runs in a separate process sandbox with no inherited environment, network, or write access and with reads limited to the host and loaded extension packages. See [Security model](security.md).
+Capabilities control access to micro's host API. Bun runs in a separate process sandbox with no inherited environment, no network access, and read-only access to the active workspace and loaded packages. See [Security model](security.md).
 
 ## Register a tool
 
@@ -97,15 +97,15 @@ Registered tools are offered to the model unless the active tool allowlist exclu
 
 ## Run commands
 
-`ctx.exec` runs a command through micro's command sandbox:
+`micro.exec` runs a command through micro's command sandbox:
 
 ```ts
-const result = await ctx.exec("git", ["status", "--short"]);
+const result = await micro.exec("git", ["status", "--short"]);
 ```
 
 The result includes stdout, stderr, exit status, and sandbox-denial fields. The extension needs the `exec` capability.
 
-The Bun host has its own read-allowlisted sandbox. `ctx.exec` is separate: it requires the `exec` capability and the requested command still runs under the session's command policy. If the session is `workspace-write`, an extension cannot use `ctx.exec` to write outside the workspace or use the network.
+The Bun host has its own process sandbox and cannot write files directly. Use brokered APIs such as `micro.exec` or session methods when an extension needs to change state. `micro.exec` requires the `exec` capability, and the requested command runs under the session's command policy. Under `workspace-write`, it cannot write outside the workspace or use the network.
 
 On a platform where micro cannot enforce the Bun-host sandbox, extensions do not run.
 
@@ -168,7 +168,7 @@ micro calls it when the package is removed. Registered tools, commands, and UI c
 
 micro accepts `micro.extensions` and `pi.extensions` entries in `package.json`. Extensions may import the `@earendil-works/pi-*` and older `@mariozechner/*` package names supplied by the host compatibility layer.
 
-The compatibility suite runs the examples under `examples/extensions` against the real micro binary. APIs tied to pi's own agent loop, session runtime, interactive mode, or terminal image protocols do not have micro equivalents and return named runtime errors.
+The compatibility suite checks how the examples under `examples/extensions` load against the real micro binary and fails if any example cannot complete a plain turn. APIs tied to pi's own agent loop, session runtime, interactive mode, or terminal image protocols do not have micro equivalents and return named runtime errors.
 
 See the [extension examples on GitHub](https://github.com/rmonvfer/micro/tree/main/examples/extensions) and [Testing extensions](extension-testing.md).
 

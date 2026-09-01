@@ -45,7 +45,6 @@ Every key is optional. A small configuration may look like:
   "provider": "anthropic",
   "thinking": "medium",
   "theme": "dark",
-  "live_models": true,
   "sandbox": "workspace-write",
   "budget": 5.0
 }
@@ -63,15 +62,65 @@ The value is parsed as JSON when possible. Unquoted text is stored as a string. 
 
 The main environment overrides are:
 
-| Variable            | Setting       |
-| ------------------- | ------------- |
-| `MICRO_MODEL`       | `model`       |
-| `MICRO_PROVIDER`    | `provider`    |
-| `MICRO_THINKING`    | `thinking`    |
-| `MICRO_THEME`       | `theme`       |
-| `MICRO_LIVE_MODELS` | `live_models` |
+| Variable         | Setting    |
+| ---------------- | ---------- |
+| `MICRO_MODEL`    | `model`    |
+| `MICRO_PROVIDER` | `provider` |
+| `MICRO_THINKING` | `thinking` |
+| `MICRO_THEME`    | `theme`    |
 
 Command-line options take precedence over environment variables, which take precedence over `config.json`.
+
+## Settings reference
+
+`config.json` accepts these keys. `/settings` shows the effective value and source.
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `model` | unset | Model query resolved at startup. |
+| `provider` | unset | Provider used when the model query does not choose one. |
+| `thinking` | `off` | `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, or `max`. |
+| `theme` | `dark` | Terminal theme name. |
+| `tui_mode` | `fullscreen` | `regular` or `fullscreen`. |
+| `live_models` | `false` | Refresh provider model listings at startup before selecting a model. |
+| `auto_compact` | `true` | Compact when context approaches the model limit. |
+| `auto_update` | `true` | Check managed installations for updates. |
+| `update_check_interval_hours` | `24` | Minimum hours between automatic update checks. |
+| `hide_thinking` | `true` | Hide reasoning content in the transcript. |
+| `show_images` | `true` | Render supported images in capable terminals. |
+| `image_width_cells` | `60` | Maximum rendered image width in terminal cells. |
+| `auto_resize_images` | `true` | Shrink images to the available terminal width. |
+| `block_images` | `false` | Reject image attachments. |
+| `skill_commands` | `true` | Advertise discovered skills to the model. |
+| `content_padding` | `1` | Horizontal padding around prompt and lower UI content. |
+| `interface_padding` | `0` | Padding between the interface and terminal edges. |
+| `steering_mode` | `one-at-a-time` | `one-at-a-time` or `all` for queued steering messages. |
+| `tree_filter_mode` | `default` | `default`, `no-tools`, `user-only`, `labeled-only`, or `all`. |
+| `fullscreen_exit_output` | `transcript` | `transcript` or `resume-hint`. |
+| `fullscreen_scrollbar` | `auto` | `auto`, `always`, or `hidden`. |
+| `clear_on_shrink` | `false` | Clear stale terminal rows when the interface becomes shorter. |
+| `mermaid` | `streaming` | `off`, `final`, or `streaming`. |
+| `autocomplete_max_items` | `5` | Maximum command-completion rows. |
+| `show_hardware_cursor` | `false` | Keep the terminal's hardware cursor visible. |
+| `terminal_progress` | `true` | Show progress while a turn runs. |
+| `quiet_startup` | `false` | Suppress the startup introduction. |
+| `collapse_changelog` | `false` | Collapse changelog display. |
+| `warnings` | `true` | Show runtime warnings. |
+| `cache_miss_notices` | `false` | Report cache writes that did not record a cache read. |
+| `double_escape` | `tree` | `tree`, `fork`, or `none` when Escape is pressed twice on an empty prompt. |
+| `follow_up_mode` | `queue` | `queue` or `interrupt` for input submitted during a turn. |
+| `default_project_trust` | `ask` | `ask`, `always`, or `never`. |
+| `http_idle_timeout` | `120` | Seconds without provider output before a request fails. |
+| `scoped_models` | `[]` | Model queries allowed in the workspace. Empty permits the full catalog. |
+| `mcp_servers` | `{}` | Named MCP server definitions. |
+| `tool_search_threshold` | `15` | Number of non-built-in tools included directly before `tool_search` is used. |
+| `anthropic_extra_usage` | `true` | Warn about per-token use of Anthropic subscription credentials in a third-party client. |
+| `transport` | `sse` | `sse` or `auto` for the ChatGPT Codex backend. |
+| `sandbox` | unset | Command policy; runtime default is `workspace-write`. |
+| `budget` | `0` | Session cost limit in USD. Zero disables it. |
+| `extensions` | `[]` | Additional extension paths or package sources. |
+
+Unknown keys are preserved when micro rewrites the file but have no effect in a version that does not recognize them.
 
 ## Common settings
 
@@ -96,7 +145,9 @@ Release-installer installations check GitHub for a newer release before an inter
 
 Set `auto_update` to `false` to disable checks, or use `MICRO_NO_AUTO_UPDATE=1` for one run. `micro update` checks and installs a release immediately.
 
-Private release checks read `MICRO_GITHUB_TOKEN`, `GITHUB_TOKEN`, or `GH_TOKEN`. If none is set, micro reuses the current `gh auth` token. The credential must be able to read releases from the repository.
+Public release checks do not require a token. For a private repository or authenticated API access, micro reads `MICRO_GITHUB_TOKEN`, `GITHUB_TOKEN`, or `GH_TOKEN`. If none is set, it reuses the current `gh auth` token. The credential must be able to read the repository's releases.
+
+The installer also reads `MICRO_REPOSITORY`, `MICRO_VERSION`, `MICRO_INSTALL_DIR`, and `MICRO_DIST_DIR`. They select the GitHub repository, release tag, executable link directory, and versioned distribution directory. `MICRO_GITHUB_TOKEN`, `GITHUB_TOKEN`, and `GH_TOKEN` provide release-download authentication.
 
 ### sandbox
 
@@ -136,11 +187,11 @@ Sets a per-session cost ceiling in US dollars. `0` disables the ceiling. The tot
 
 ### tool_search_threshold
 
-When MCP servers add more tools than this threshold, micro exposes them through `tool_search` instead of sending every tool definition on every request. The default is `15`. Set it to `0` to describe every tool directly.
+When extensions and MCP servers add more tools than this threshold, micro exposes them through `tool_search` instead of sending every tool definition on every request. The default is `15`. Set it to `0` to describe every tool directly.
 
 ### cache_miss_notices
 
-When enabled, micro reports turns that write a prompt cache without reading from it. Use `micro why-miss` for a detailed comparison after the run.
+When enabled, micro reports turns that write a prompt cache without reading from it. Use `micro why-miss` for a local prefix and conversation diagnostic after the run.
 
 ## auth.json
 
@@ -212,7 +263,7 @@ MCP servers are configured programs and are not launched inside the command sand
 
 ## Project configuration
 
-A trusted project may provide `.micro/settings.json`, extensions, skills, prompts, themes, `SYSTEM.md`, and `APPEND_SYSTEM.md`.
+A trusted project may provide `.micro/settings.json`, extensions, skills, prompts, themes, `SYSTEM.md`, and `APPEND_SYSTEM.md`. Project `settings.json` accepts only `sandbox`; other user settings remain controlled by `config.json`, environment variables, and command-line options.
 
 `--approve` and `--no-approve` override trust for one run. `/trust on` and `/trust off` save a decision for later runs.
 

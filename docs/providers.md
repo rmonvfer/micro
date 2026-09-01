@@ -71,15 +71,15 @@ openrouter/anthropic/claude-sonnet-5
 
 ## Live model listings
 
-The bundled catalog works offline. Fetch current listings from configured providers with:
+The bundled catalog works offline. Fetch current OpenRouter listings and, when authenticated, GitHub Copilot listings with:
 
 ```bash
 micro models --live
 ```
 
-Live data is merged over the bundled catalog. Fields omitted by the provider, such as aliases or prices, retain their catalog values. A provider that cannot be reached is reported without removing its bundled models.
+Live data is merged over the bundled catalog. Fields omitted by the provider, such as aliases or prices, retain their catalog values. A listing that cannot be reached is reported without removing bundled models. Other providers do not implement live listing refresh.
 
-Set `live_models` in `config.json` to perform this merge at startup.
+If `live_models` or `MICRO_LIVE_MODELS` is enabled, micro refreshes provider listings before selecting a model at startup. If startup cannot resolve a model query from the local catalog, micro also tries the live listings before accepting an unknown model with unknown limits and pricing. Use `micro models --live` for an explicit refresh.
 
 ## Add a local or compatible endpoint
 
@@ -114,7 +114,7 @@ Model entries can also provide prices for input, output, cache reads, and cache 
 
 ## Supported protocols
 
-The provider layer currently handles Anthropic Messages, OpenAI-compatible chat completions, OpenAI Responses, Google Generative AI, Vertex, and Amazon Bedrock Converse Stream.
+The provider layer handles Anthropic Messages, OpenAI-compatible chat completions, OpenAI Responses, Google Generative AI, Vertex, and Amazon Bedrock Converse Stream.
 
 The selected model determines the protocol. This matters for providers such as GitHub Copilot that expose different model families through different APIs.
 

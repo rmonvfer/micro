@@ -52,7 +52,7 @@ Providers receive a `Model`, a `Context`, and a credential. `Context` contains t
 
 That boundary keeps provider differences out of the agent loop. Anthropic Messages, OpenAI-compatible completions, OpenAI Responses, Google APIs, Vertex, and Bedrock each implement request assembly and stream parsing. The agent consumes one event vocabulary.
 
-The provider prepares one serialized request value. The agent hashes and stores that exact body before network I/O, then passes the same value to the provider transport. Request inspection reads the retained body and verifies its hash. Reconstruction is the fallback for older sessions that did not retain it.
+The provider prepares one serialized request value. The agent hashes and enqueues that body for persistence before network I/O, then passes the same value to the provider transport. Request inspection reads the retained body and verifies its hash. A process crash can lose queued records that have not reached disk; reconstruction is the fallback for sessions that did not retain the body.
 
 ## Agent loop
 
@@ -97,7 +97,7 @@ The CLI decides project trust before loading `.micro/` resources. It then resolv
 
 This keeps untrusted extensions, settings, prompts, and skills out of the runtime rather than adding checks at each later use.
 
-Extension capabilities are enforced separately at the host boundary. The Bun host has an empty inherited environment, no network or write access, and a read allowlist for the host and loaded extension packages. Commands requested through the broker still pass through the same session sandbox policy as commands requested by the model.
+Extension capabilities are enforced separately at the host boundary. The Bun host has an empty inherited environment, no network access, and read-only access to the active workspace and loaded packages. State changes use brokered APIs. Commands requested through the broker still pass through the session sandbox policy.
 
 ## Tests
 

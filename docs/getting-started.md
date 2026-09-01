@@ -1,18 +1,26 @@
 # Getting started
 
-The release installer downloads the native binary for macOS on Apple Silicon and Linux on x86_64 or ARM64. Bun is optional and only required for TypeScript extensions.
+The release installer downloads the native binary for macOS on Apple Silicon and Linux on x86_64 or ARM64. Linux binaries require glibc 2.35 or later; musl builds are not provided. Bun is optional and only required for TypeScript extensions.
 
 ## Install
 
-Install the latest release from this private repository with an authenticated GitHub CLI:
+Install the latest public release with:
 
 ```bash
+curl --proto '=https' --tlsv1.2 --fail --silent --show-error --location \
+  https://raw.githubusercontent.com/rmonvfer/micro/main/scripts/install.sh | bash
+```
+
+If GitHub requires authentication for the repository, authenticate the GitHub CLI and fetch the same script through the API:
+
+```bash
+gh auth login
 gh api -H "Accept: application/vnd.github.raw+json" repos/rmonvfer/micro/contents/scripts/install.sh | bash
 ```
 
 The installer verifies the release checksum, keeps versioned copies under `~/.local/share/micro/dist`, and links `micro` from `~/.local/bin`. Packaged interactive installations check for updates automatically once every 24 hours. Set `auto_update` to `false`, set `MICRO_NO_AUTO_UPDATE=1`, or run `micro update` when you want explicit control.
 
-Private release checks use `MICRO_GITHUB_TOKEN`, then `GITHUB_TOKEN`, then `GH_TOKEN`, and otherwise reuse the token from `gh auth login`. The token must be able to read releases from the repository.
+Public release checks do not require a token. For a private repository or authenticated API access, micro reads `MICRO_GITHUB_TOKEN`, then `GITHUB_TOKEN`, then `GH_TOKEN`, and otherwise reuses the token from `gh auth login`. The token must be able to read the repository's releases.
 
 To build from a source checkout instead:
 

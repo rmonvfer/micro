@@ -6,7 +6,7 @@ RPC mode runs micro without a terminal interface. It reads JSON objects from sta
 micro --rpc -C /path/to/project -m opus
 ```
 
-The process keeps one session open until standard input closes. It uses the same provider, tools, sandbox, session storage, and agent loop as interactive mode.
+The process keeps one active session until standard input closes. Session commands can replace it. Model turns and RPC shell commands use the same provider, tools, sandbox, session storage, and agent loop as interactive mode.
 
 ## Framing
 
@@ -92,25 +92,31 @@ Other commands received during a turn are held until that turn finishes.
 | `cycle_thinking_level`    | none                   | Select the next reasoning level.                                    |
 | `compact`                 | none                   | Compact the conversation immediately.                               |
 | `set_auto_compaction`     | `enabled`              | Enable or disable automatic compaction.                             |
-| `bash`                    | `command`              | Run a shell command under the session sandbox.                      |
+| `bash`                    | `command`              | Run `sh -c` under the active session sandbox.                       |
 | `abort_bash`              | none                   | Acknowledge the request; RPC bash commands are not background jobs. |
 | `get_session_stats`       | none                   | Return session metadata and message count.                          |
-| `switch_session`          | `session_path`         | Open another session file.                                          |
+| `switch_session`          | `session_path`         | Load the path stem as an ID from micro's configured session store.  |
 | `navigate_tree`           | `entry_id`             | Move the current session head to an earlier entry.                  |
 | `fork`                    | `entry_id`             | Copy a branch into a new session.                                   |
 | `clone`                   | none                   | Duplicate the current session at its current head.                  |
-| `get_entries`             | none                   | Return conversation entries; optional `since` limits the result.    |
+| `get_entries`             | none                   | Return entries; optional `since` starts inclusively at a known ID.  |
 | `get_tree`                | none                   | Return the branch outline.                                          |
 | `get_last_assistant_text` | none                   | Return the latest non-empty assistant text.                         |
 | `set_session_name`        | `name`                 | Rename the session.                                                 |
 | `get_messages`            | none                   | Return the current agent messages.                                  |
-| `get_commands`            | none                   | Return available slash commands and their sources.                  |
+| `get_commands`            | none                   | Return built-in slash commands with source `builtin`.               |
 
 The `bash` command accepts `exclude_from_context: true` when its output should not be added to the model conversation.
 
+RPC `bash` uses the active session sandbox. Under the default `workspace-write` policy, it cannot write outside the workspace or use the network.
+
+`set_model` and `cycle_model` rebuild the provider client, credentials, context limits, summarizer, and budget pricing. A session can switch between providers without restarting the RPC process.
+
+If `get_entries.since` is unknown, the command returns an empty list. `get_commands` does not include commands supplied by skills, prompt templates, or extensions.
+
 ## Project trust
 
-RPC mode cannot ask an interactive trust question. Use a saved decision, `--approve`, or `--no-approve` when the project contains `.micro/` resources. The command sandbox still applies.
+RPC mode cannot ask an interactive trust question. Use a saved decision, `--approve`, or `--no-approve` when the project contains `.micro/` resources. The command sandbox applies to model-invoked tools, brokered extension commands, and RPC `bash`.
 
 ## Minimal client
 

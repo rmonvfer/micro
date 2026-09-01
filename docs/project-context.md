@@ -1,21 +1,21 @@
 # Project context
 
-micro can add instructions, skills, prompt templates, and system-prompt changes to a session. Project-provided resources load only after the project is trusted.
+micro can add instructions, skills, prompt templates, and system-prompt changes to a session. Resources under `.micro/` and project skill directories require project trust. Ordinary `AGENTS.md` and `CLAUDE.md` discovery is independent and can be disabled with `--no-context-files`.
 
 ## Instruction files
 
 micro reads `AGENTS.md` and `CLAUDE.md` from:
 
-1. the user home directory;
+1. micro's configuration directory;
 2. each parent directory from the filesystem root to the workspace;
 3. the workspace itself.
 
 Files closer to the workspace are appended later. Use parent-directory files for rules shared by several repositories and a workspace file for project-specific instructions.
 
-An instruction file may include another file:
+An instruction file may include another file with an `@path` line:
 
 ```text
-@import ./docs/conventions.md
+@./docs/conventions.md
 ```
 
 Imports are resolved relative to the importing file and followed up to five levels deep.
@@ -26,7 +26,7 @@ Disable instruction discovery for one run with:
 micro --no-context-files
 ```
 
-`/reload` reads instruction files and skills again. The resulting prompt-prefix change is recorded in the session ledger.
+`/reload` reads instruction files and skill metadata again using the saved project-trust decision. Run-only approval from `--approve` is not retained for reload, and skill slash commands remain the set registered at startup. Restart micro after adding or removing a slash-invokable skill. The resulting prompt-prefix change is recorded in the session ledger.
 
 ## System prompts
 
@@ -60,7 +60,7 @@ Skills are discovered in:
 ~/.agents/skills/         shared user skills
 ```
 
-A directory containing `SKILL.md` defines one skill and may keep supporting files beside it. A directory without `SKILL.md` is searched recursively for Markdown skill files.
+A skill root may contain loose Markdown skill files. A nested skill is a directory containing `SKILL.md`; directories without it are traversed only to locate child directories that do contain `SKILL.md`.
 
 Project skills win name conflicts over user skills. Skill names use lowercase letters, digits, and single hyphens, with a maximum of 64 characters. Descriptions may be up to 1,024 characters.
 

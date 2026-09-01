@@ -40,9 +40,9 @@ To see the provider request for one turn:
 micro sessions show <SESSION_ID> --turn 4 --raw
 ```
 
-New sessions retain the exact serialized provider body in a content-addressed blob. Before `--raw` prints it, micro checks the blob against the request hash recorded when the request was sent.
+Sessions enqueue the exact serialized provider body for storage in a content-addressed blob. Before `--raw` prints a retained body, micro checks it against the request hash recorded when the request was sent. A process crash can lose records that were still queued for disk.
 
-For an older session without a retained body, micro rebuilds the request from the recorded context. It prints that reconstruction only when its hash matches. A mismatch is an error.
+For a session without a retained body, micro rebuilds the request from the recorded context. It prints that reconstruction only when its hash matches. A mismatch is an error.
 
 Export the underlying JSONL file with:
 
@@ -69,9 +69,9 @@ micro bill <SESSION_ID>
 micro bill <SESSION_ID> --diff 4
 ```
 
-The turn total is calculated from provider-reported token usage and the prices in the model catalog. The split between prompt sources is an estimate based on the number of bytes each source contributed. The estimated lines are adjusted to add up to the turn total.
+The turn total is calculated from provider-reported token usage and the pricing snapshot recorded with the request. Older sessions without a snapshot use the current model catalog. The split between prompt sources is an estimate based on the number of bytes each source contributed. The estimated lines are adjusted to add up to the turn total.
 
-Billing counts every provider turn recorded under the session ID, including spend on branches that are no longer active. When that differs from the current branch, the report shows the current-branch and other-branch subtotals.
+Billing counts provider turns and compaction usage recorded under the session ID. The session total includes all branches; the current-branch subtotal includes only requests and compactions whose recorded path is an ancestor of the current head.
 
 Output cost is attributed to the model. Compaction requests appear separately.
 
@@ -93,15 +93,15 @@ Set a default with the `budget` key in `config.json`. A value of `0` disables th
 
 ## Prompt-cache misses
 
-Explain why a turn did not reuse its parent turn's cached prompt:
+Inspect local evidence for why a turn did not reuse its parent turn's cached prompt:
 
 ```bash
 micro why-miss <SESSION_ID> 4
 ```
 
-If the recorded prefix hash changed, micro identifies the changed prompt span and shows a line diff when the source content is available. It also reports the event that caused the change, such as a reload, tool-list update, or extension hook.
+If the recorded prefix hash changed, micro identifies the changed prompt span and shows a line diff when the source content is available. It also reports a nearby local event, such as a reload, tool-list update, or extension hook.
 
-If the prefix did not change, the report checks conversation-side causes such as compaction or a branch change.
+If the prefix did not change, the report checks conversation-side changes such as compaction or branching. It cannot observe provider eviction, cache lifetime, eligibility, or the provider's cache-read decision, so its output is diagnostic rather than proof of the provider-side cause.
 
 `/why-miss 4` runs the same analysis inside an interactive session. Without a turn, `/why-miss` selects the latest completed turn on the current branch whose prefix differs from its parent.
 
@@ -111,7 +111,7 @@ If the prefix did not change, the report checks conversation-side causes such as
 micro sessions delete <SESSION_ID>
 ```
 
-This removes the session log, metadata sidecar, and content-addressed blobs associated with it.
+This removes the content-addressed blob directory and metadata before removing the log. Cleanup errors are reported, and the log remains available so deletion can be retried.
 
 ## Storage
 
@@ -124,3 +124,5 @@ sessions/<id>.blobs/
 ```
 
 The exact base path depends on `MICRO_DIR`, an existing `~/.micro`, or the XDG data directory. See [Configuration](configuration.md).
+
+Session logs, metadata, and retained provider bodies are plaintext. On Unix, session directories use mode `0700` and files use mode `0600`.

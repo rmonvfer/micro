@@ -6,7 +6,14 @@ It supports multiple model providers, runs commands in an operating-system sandb
 
 ## Installation
 
-The release installer supports macOS on Apple Silicon and Linux on x86-64 or ARM64. Windows is not currently supported. Because this repository is private, authenticate the GitHub CLI before downloading the installer:
+The release installer supports macOS on Apple Silicon and Linux on x86-64 or ARM64. Linux release binaries require glibc 2.35 or later; musl builds are not provided. Windows is not supported. Install the latest public release with:
+
+```bash
+curl --proto '=https' --tlsv1.2 --fail --silent --show-error --location \
+  https://raw.githubusercontent.com/rmonvfer/micro/main/scripts/install.sh | bash
+```
+
+If GitHub requires authentication for the repository, use:
 
 ```bash
 gh auth login
@@ -42,7 +49,7 @@ micro "explain this repository"
 - Works with Anthropic, OpenAI, Google, OpenRouter, GitHub Copilot, and other compatible providers.
 - Saves conversations as append-only JSONL logs on your machine.
 - Reports provider usage and estimated cost by turn with `micro bill`.
-- Explains prompt-cache misses with `micro why-miss`.
+- Provides a local prompt-prefix diagnostic for cache misses with `micro why-miss`.
 - Uses Seatbelt on macOS and Landlock with seccomp on Linux to restrict commands.
 - Loads TypeScript extensions in a confined Bun process with explicit host capabilities.
 
@@ -95,13 +102,13 @@ micro bill <SESSION_ID>
 micro why-miss <SESSION_ID> 4
 ```
 
-New sessions retain the serialized provider request as a content-addressed blob. `--raw` verifies that body against the recorded hash before printing it. Older sessions are reconstructed and printed only when reconstruction produces the same hash.
+Sessions enqueue the serialized provider request for storage as a content-addressed blob. `--raw` verifies a retained body against the recorded hash before printing it. A process crash can lose queued records that have not reached disk. Sessions without a retained body are reconstructed and printed only when reconstruction produces the same hash.
 
 Inside the TUI, `/bill`, `/why-miss [turn]`, and `/request <turn> [--raw]` open local inspection views. In `/bill`, select a model turn and press Enter for its prompt-source and usage breakdown. These views do not add messages to the conversation.
 
 ## Command sandbox
 
-The default policy is `workspace-write`: commands may write inside the workspace, cannot write to `.git` or `.micro`, and cannot use the network.
+The default policy is `workspace-write`: commands may write inside the workspace and cannot use the network. Built-in file tools keep `.git` and `.micro` read-only. macOS applies the same protected-path rule to shell commands; Linux confines shell writes to the workspace but cannot exclude those descendants from a writable workspace.
 
 ```bash
 micro --sandbox read-only
@@ -114,7 +121,7 @@ See [Security model](docs/security.md) and [Command sandbox](docs/sandbox.md) be
 
 ## Extension host
 
-TypeScript extensions run in a Bun process with an empty inherited environment, no network or write access, and a filesystem read allowlist limited to the host and loaded extension packages. Host API calls still pass through the capability broker, and brokered command execution still uses the session sandbox. On a platform where micro cannot enforce the host sandbox, extensions do not run.
+TypeScript extensions run in a Bun process with an empty inherited environment, no network access, and read-only access to the workspace and loaded packages. Host API calls pass through the capability broker, and brokered command execution still uses the session sandbox. On a platform where micro cannot enforce the host sandbox, extensions do not run.
 
 ## Documentation
 
@@ -134,4 +141,10 @@ Read the [documentation site](https://rmonvfer.github.io/micro/) or browse the M
 - [Ledger format](docs/ledger.md)
 - [Architecture](docs/architecture.md)
 
-micro does not collect telemetry or upload session logs. Model requests go to the provider selected for the session. Remote-control traffic goes through the configured relay as encrypted payloads.
+See [Contributing](CONTRIBUTING.md) for development setup and required checks.
+
+micro does not collect telemetry or upload session logs automatically. Model requests go to the provider selected for the session, and `/share` explicitly uploads a transcript as a secret GitHub gist. Remote-control payloads are encrypted before they pass through the configured relay; see the [remote-control threat model](docs/remote-control.md#encryption-and-relay) before using a custom relay.
+
+## License
+
+micro is licensed under the [MIT License](LICENSE). The `micro-sandbox` crate contains code derived from OpenAI Codex and is licensed under Apache-2.0; see its [license](crates/micro-sandbox/LICENSE) and [notice](crates/micro-sandbox/NOTICE).

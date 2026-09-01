@@ -8,7 +8,7 @@ Use:
 micro sessions export <SESSION_ID>
 ```
 
-to print the file without transforming it.
+to print valid JSONL records from the file. Blank and unreadable lines are omitted, and a note on stderr reports how many unreadable lines were skipped.
 
 ## Files
 
@@ -42,7 +42,7 @@ Conversation entries, labels, and compaction markers retain their existing line 
 
 ## Turn requests
 
-`turn_request` is written after context hooks run and immediately before the provider call.
+`turn_request` is serialized, hashed, and enqueued after context hooks run and before the provider call. The recorder writes it asynchronously.
 
 ```json
 {
@@ -50,6 +50,12 @@ Conversation entries, labels, and compaction markers retain their existing line 
   "turn": 2,
   "provider": "anthropic",
   "model": "claude-opus-5",
+  "pricing": {
+    "input": 5.0,
+    "output": 25.0,
+    "cache_read": 0.5,
+    "cache_write": 6.25
+  },
   "prefix_hash": "9f2a...",
   "request_hash": "3c81...",
   "request_body_blob": "3c81...",
@@ -65,7 +71,7 @@ Conversation entries, labels, and compaction markers retain their existing line 
 }
 ```
 
-`request_hash` is the SHA-256 hash of the serialized provider body. `request_body_blob` points to the exact body passed to the provider transport. Older events may omit it; their readers must reconstruct and verify the body before presenting it as exact.
+`request_hash` is the SHA-256 hash of the serialized provider body. `request_body_blob` points to the exact body passed to the provider transport. Events may omit it; their readers must reconstruct and verify the body before presenting it as exact.
 
 `prefix_hash` covers the cacheable prompt head. `prefix_spans` attribute byte ranges to sources such as the system prompt, project instructions, skills, extensions, tools, users, model messages, compaction, sandbox output, and subagents.
 
@@ -93,7 +99,7 @@ Retries keep the same turn number and increment `attempt`. A failed attempt that
 }
 ```
 
-`micro bill` combines these counts with catalog prices. Prompt-source attribution uses the spans from the matching request and is an estimate. See [Sessions](sessions.md).
+`micro bill` combines these counts with the pricing snapshot in the matching request. Sessions recorded without a snapshot fall back to the current catalog. Prompt-source attribution uses the spans from the matching request and is an estimate. See [Sessions](sessions.md).
 
 ## Other event types
 
@@ -124,13 +130,13 @@ Changes requested by reloads, tool selection, or extensions are applied at turn 
 }
 ```
 
-`micro why-miss` compares a request with its parent request on the same branch, resolves changed spans from blobs, and reports the event between them. Compaction changes conversation context rather than the prefix and has its own event.
+`micro why-miss` compares a request with its parent request on the same branch, resolves changed spans from blobs, and reports nearby local events. It cannot observe provider-side cache decisions. Compaction changes conversation context rather than the prefix and has its own event.
 
 ## Blobs
 
 Large or repeated content is stored by SHA-256 below the session's blob directory. A stable system prompt referenced by many turns is written once.
 
-Blob writes use a temporary file followed by a rename. Deleting the session also deletes its blob directory.
+Blob writes use a temporary file followed by a rename. Session deletion reports blob cleanup errors and leaves the log available so deletion can be retried.
 
 ## Append and recovery guarantees
 
@@ -149,9 +155,9 @@ Sessions created before ledger events existed still open. Commands that require 
 micro sessions show <SESSION_ID> --turn 2 --raw
 ```
 
-For current sessions, the command loads `request_body_blob` and compares it with `request_hash` before printing the exact bytes.
+When `request_body_blob` is present, the command compares it with `request_hash` before printing the exact bytes.
 
-For a legacy session without that blob, the command rebuilds the request and compares its hash with `request_hash`. It does not print a mismatched reconstruction as verified.
+Without that blob, the command rebuilds the request and compares its hash with `request_hash`. It does not print a mismatched reconstruction as verified.
 
 Anthropic subscription credentials are a special case: the request format may use client-specific tool names. Reconstruction without that credential uses the API-key spelling and reports the limitation.
 
