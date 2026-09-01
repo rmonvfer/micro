@@ -10,10 +10,10 @@
  * via `tool_call` input mutation without replacing the tool.
  *
  * Config files (merged, project takes precedence):
- * - ~/.pi/agent/extensions/sandbox.json (global)
- * - <cwd>/.pi/sandbox.json (project-local)
+ * - <micro config>/extensions/sandbox.json (global)
+ * - <cwd>/.micro/sandbox.json (project-local)
  *
- * Example .pi/sandbox.json:
+ * Example .micro/sandbox.json:
  * ```json
  * {
  *   "enabled": true,
@@ -29,14 +29,8 @@
  * }
  * ```
  *
- * Usage:
- * - `pi -e ./sandbox` - sandbox enabled with default/config settings
- * - `pi -e ./sandbox --no-sandbox` - disable sandboxing
- * - `/sandbox` - show current sandbox configuration
- *
- * Setup:
- * 1. Copy sandbox/ directory to ~/.pi/agent/extensions/
- * 2. Run `npm install` in ~/.pi/agent/extensions/sandbox/
+ * Compatibility status:
+ * The installed package does not resolve the compatibility coding-agent module.
  *
  * Linux also requires: bubblewrap, socat, ripgrep
  */

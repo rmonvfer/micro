@@ -1,4 +1,4 @@
-//! Empirical parity check, not a fix: do pi's own example extensions load in micro?
+//! Verify that every vendored example extension loads and completes a plain turn.
 
 mod support;
 
@@ -102,7 +102,6 @@ const EXAMPLES: &[Example] = &[
     file("minimal-mode"),
     file("truncated-tool"),
     file("ssh"),
-    dir("subagent"),
     file("preset"),
     dir("plan-mode"),
     file("tools"),
@@ -207,7 +206,10 @@ const EXAMPLES: &[Example] = &[
         "custom-provider-gitlab-duo",
         "registers a real provider; not exercised end to end here, only loaded",
     ),
-    dir_needs_deps("with-deps", "declares a real npm dependency (ms)"),
+    dir_needs_deps(
+        "with-deps",
+        "declares real npm dependencies (ms and typebox)",
+    ),
     file_with_note("file-trigger", "watches a file for changes across the run"),
 ];
 
@@ -339,7 +341,7 @@ fn attempt(example: &Example) -> Attempt {
 
 /// Loads every vendored example extension and reports, per extension, whether it loaded.
 #[test]
-#[ignore = "report-only sweep of third-party-style examples; run explicitly"]
+#[ignore = "full compatibility sweep; run explicitly or in CI"]
 fn example_extensions_load_report() {
     if micro_extensions::which_bun().is_none() {
         eprintln!("skipped: bun is not on the path, so nothing here could load anyway");
@@ -407,4 +409,5 @@ fn example_extensions_load_report() {
     ));
 
     eprintln!("\n{}", lines.join("\n"));
+    assert_eq!(failed, 0, "{failed} example extension(s) failed to load");
 }

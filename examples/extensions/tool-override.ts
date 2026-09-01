@@ -3,13 +3,13 @@
  *
  * Extensions can register tools with the same name as built-in tools to replace them.
  * This is useful for:
- * - Adding logging or auditing to tool calls
+ * - Adding audit records to tool calls
  * - Implementing access control or sandboxing
  * - Routing tool calls to remote systems (e.g., pi-ssh-remote)
  * - Modifying tool behavior for specific workflows
  *
  * This example overrides the `read` tool to:
- * 1. Log all file access to a log file
+ * 1. Record file access in the session ledger
  * 2. Block access to sensitive paths (e.g., .env files)
  * 3. Delegate to the original read implementation for allowed files
  *
@@ -17,17 +17,17 @@
  * is used automatically (syntax highlighting, line numbers, truncation warnings).
  *
  * Usage:
- *   pi -e ./tool-override.ts
+ *   micro --extension ./examples/extensions/tool-override.ts
  */
 
 import type { TextContent } from "@earendil-works/pi-ai";
-import { type ExtensionAPI, getAgentDir, withFileMutationQueue } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { constants, readFileSync } from "fs";
-import { access, appendFile, readFile } from "fs/promises";
-import { join, resolve } from "path";
+import { access, readFile } from "fs/promises";
+import { resolve } from "path";
 import { Type } from "typebox";
 
-const LOG_FILE = join(getAgentDir(), "read-access.log");
+export const capabilities = ["tools", "session_write"];
 
 // Paths that are blocked from reading
 const BLOCKED_PATTERNS = [
@@ -44,19 +44,13 @@ function isBlockedPath(path: string): boolean {
 	return BLOCKED_PATTERNS.some((pattern) => pattern.test(path));
 }
 
-async function logAccess(path: string, allowed: boolean, reason?: string) {
-	const timestamp = new Date().toISOString();
-	const status = allowed ? "ALLOWED" : "BLOCKED";
-	const msg = reason ? ` (${reason})` : "";
-	const line = `[${timestamp}] ${status}: ${path}${msg}\n`;
-
-	try {
-		await withFileMutationQueue(LOG_FILE, async () => {
-			await appendFile(LOG_FILE, line);
-		});
-	} catch {
-		// Ignore logging errors
-	}
+function logAccess(pi: ExtensionAPI, path: string, allowed: boolean, reason?: string) {
+	pi.appendEntry("read-access", {
+		timestamp: new Date().toISOString(),
+		path,
+		allowed,
+		reason,
+	});
 }
 
 const readSchema = Type.Object({
@@ -79,7 +73,7 @@ export default function (pi: ExtensionAPI) {
 
 			// Check if path is blocked
 			if (isBlockedPath(absolutePath)) {
-				await logAccess(absolutePath, false, "matches blocked pattern");
+				logAccess(pi, absolutePath, false, "matches blocked pattern");
 				return {
 					content: [
 						{
@@ -92,7 +86,7 @@ export default function (pi: ExtensionAPI) {
 			}
 
 			// Log allowed access
-			await logAccess(absolutePath, true);
+			logAccess(pi, absolutePath, true);
 
 			// Perform the actual read (simplified implementation)
 			try {

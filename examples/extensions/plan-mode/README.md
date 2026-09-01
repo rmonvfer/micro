@@ -1,11 +1,13 @@
 # Plan Mode Extension
 
-Read-only exploration mode for safe code analysis.
+Planning UI with an advisory command filter for code analysis.
+
+This extension disables built-in write tools, but its Bash filter is not a sandbox. Shell composition and commands with side effects can bypass the prefix-based allowlist. Use micro's `read-only` command sandbox when writes must be prevented.
 
 ## Features
 
 - **Built-in write tools disabled**: Disables edit/write while preserving other active tools
-- **Bash allowlist**: Only read-only bash commands are allowed
+- **Bash filter**: Screens common write commands as a convenience
 - **Plan extraction**: Extracts numbered steps from `Plan:` sections
 - **Progress tracking**: Widget shows completion status during execution
 - **[DONE:n] markers**: Explicit step completion tracking
@@ -36,10 +38,10 @@ Plan:
 
 ## How It Works
 
-### Plan Mode (Read-Only)
+### Plan Mode
 - Built-in edit/write tools disabled
 - Other active tools remain available
-- Bash commands filtered through allowlist
+- Bash commands filtered through an advisory allowlist
 - Agent creates a plan without making changes
 
 ### Execution Mode
@@ -50,17 +52,15 @@ Plan:
 
 ### Command Allowlist
 
-Safe commands (allowed):
+The filter recognizes common inspection commands:
 - File inspection: `cat`, `head`, `tail`, `less`, `more`
 - Search: `grep`, `find`, `rg`, `fd`
 - Directory: `ls`, `pwd`, `tree`
 - Git read: `git status`, `git log`, `git diff`, `git branch`
-- Package info: `npm list`, `npm outdated`, `yarn info`
 - System info: `uname`, `whoami`, `date`, `uptime`
 
-Blocked commands:
+It rejects common modifying commands, including:
 - File modification: `rm`, `mv`, `cp`, `mkdir`, `touch`
 - Git write: `git add`, `git commit`, `git push`
-- Package install: `npm install`, `yarn add`, `pip install`
 - System: `sudo`, `kill`, `reboot`
 - Editors: `vim`, `nano`, `code`

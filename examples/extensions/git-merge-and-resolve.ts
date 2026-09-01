@@ -9,7 +9,7 @@
  * Also re-sends unresolved conflicts from a previous incomplete merge.
  *
  * Start pi with this extension:
- *   pi -e ./examples/extensions/git-merge-and-resolve.ts
+ *   micro --extension ./examples/extensions/git-merge-and-resolve.ts
  */
 import { createReadStream } from "node:fs";
 import { join } from "node:path";

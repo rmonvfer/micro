@@ -1,7 +1,7 @@
 /**
  * DOOM Overlay Demo - Play DOOM as an overlay
  *
- * Usage: pi --extension ./examples/extensions/doom-overlay
+ * Usage: micro --extension ./examples/extensions/doom-overlay
  *
  * Commands:
  *   /doom-overlay - Play DOOM in an overlay (Q to pause/exit)
@@ -13,6 +13,8 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { DoomOverlayComponent } from "./doom-component.ts";
 import { DoomEngine } from "./doom-engine.ts";
 import { ensureWadFile } from "./wad-finder.ts";
+
+export const capabilities = ["commands", "ui"];
 
 // Persistent engine instance - survives between invocations
 let activeEngine: DoomEngine | null = null;
@@ -28,12 +30,11 @@ export default function (pi: ExtensionAPI) {
 				return;
 			}
 
-			// Auto-download WAD if not present
 			ctx.ui.notify("Loading DOOM...", "info");
 			const wad = args?.trim() ? args.trim() : await ensureWadFile();
 
 			if (!wad) {
-				ctx.ui.notify("Failed to download DOOM WAD file. Check your internet connection.", "error");
+				ctx.ui.notify("No DOOM WAD found. Pass its path to /doom-overlay.", "error");
 				return;
 			}
 

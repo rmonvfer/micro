@@ -1,12 +1,12 @@
 /**
  * Plan Mode Extension
  *
- * Read-only exploration mode for safe code analysis.
- * When enabled, built-in write tools are disabled.
+ * Planning mode with built-in write tools disabled.
+ * Its Bash filter is advisory; the session sandbox remains the security boundary.
  *
  * Features:
  * - /plan command or Ctrl+Alt+P to toggle
- * - Bash restricted to allowlisted read-only commands
+ * - Bash screened by a prefix-based command filter
  * - Extracts numbered plan steps from "Plan:" sections
  * - [DONE:n] markers to complete steps during execution
  * - Progress tracking widget during execution
@@ -51,7 +51,7 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 	let toolsBeforePlanMode: string[] | undefined;
 
 	pi.registerFlag("plan", {
-		description: "Start in plan mode (read-only exploration)",
+		description: "Start in planning mode with built-in write tools disabled",
 		type: "boolean",
 		default: false,
 	});
@@ -139,7 +139,7 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 	}
 
 	pi.registerCommand("plan", {
-		description: "Toggle plan mode (read-only exploration)",
+		description: "Toggle planning mode",
 		handler: async (_args, ctx) => togglePlanMode(ctx),
 	});
 
@@ -160,7 +160,7 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 		handler: async (ctx) => togglePlanMode(ctx),
 	});
 
-	// Block destructive bash commands in plan mode
+	// Screen common modifying commands in plan mode; the session sandbox enforces access.
 	pi.on("tool_call", async (event) => {
 		if (!planModeEnabled || event.toolName !== "bash") return;
 
@@ -204,12 +204,12 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 				message: {
 					customType: "plan-mode-context",
 					content: `[PLAN MODE ACTIVE]
-You are in plan mode - a read-only exploration mode for safe code analysis.
+You are in plan mode. Analyze the code and prepare a plan without making changes.
 
 Restrictions:
 - Built-in edit and write tools are disabled
 - Other currently active tools remain available
-- Bash is restricted to an allowlist of read-only commands
+- Bash commands pass through an advisory filter and the session sandbox
 
 Ask clarifying questions using the questionnaire tool.
 Use brave-search skill via bash for web research.

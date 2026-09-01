@@ -6,15 +6,13 @@
  *
  * This example shows how to:
  * 1. Use the built-in truncation utilities
- * 2. Write full output to a temp file when truncated
- * 3. Inform the LLM where to find the complete output
- * 4. Custom rendering of tool calls and results
+ * 2. Report how much output was omitted
+ * 3. Custom rendering of tool calls and results
  *
  * The `rg` tool here wraps ripgrep with proper truncation. Compare this to the
  * built-in `grep` tool in src/core/tools/grep.ts for a more complete implementation.
  */
 
-import { mkdtemp, writeFile } from "node:fs/promises";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import {
 	DEFAULT_MAX_BYTES,
@@ -22,13 +20,11 @@ import {
 	formatSize,
 	type TruncationResult,
 	truncateHead,
-	withFileMutationQueue,
 } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
-import { execSync } from "child_process";
-import { tmpdir } from "os";
-import { join } from "path";
 import { Type } from "typebox";
+
+export const capabilities = ["tools", "exec"];
 
 const RgParams = Type.Object({
 	pattern: Type.String({ description: "Search pattern (regex)" }),
@@ -42,7 +38,6 @@ interface RgDetails {
 	glob?: string;
 	matchCount: number;
 	truncation?: TruncationResult;
-	fullOutputPath?: string;
 }
 
 export default function (pi: ExtensionAPI) {
@@ -50,10 +45,10 @@ export default function (pi: ExtensionAPI) {
 		name: "rg",
 		label: "ripgrep",
 		// Document the truncation limits in the tool description so the LLM knows
-		description: `Search file contents using ripgrep. Output is truncated to ${DEFAULT_MAX_LINES} lines or ${formatSize(DEFAULT_MAX_BYTES)} (whichever is hit first). If truncated, full output is saved to a temp file.`,
+		description: `Search file contents using ripgrep. Output is truncated to ${DEFAULT_MAX_LINES} lines or ${formatSize(DEFAULT_MAX_BYTES)}, whichever is hit first.`,
 		parameters: RgParams,
 
-		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+		async execute(_toolCallId, params, signal, _onUpdate, ctx) {
 			const { pattern, path: searchPath, glob } = params;
 
 			// Build the ripgrep command
@@ -62,23 +57,15 @@ export default function (pi: ExtensionAPI) {
 			args.push(pattern);
 			args.push(searchPath || ".");
 
-			let output: string;
-			try {
-				output = execSync(args.join(" "), {
-					cwd: ctx.cwd,
-					encoding: "utf-8",
-					maxBuffer: 100 * 1024 * 1024, // 100MB buffer to capture full output
-				});
-			} catch (err: any) {
-				// ripgrep exits with 1 when no matches found
-				if (err.status === 1) {
-					return {
-						content: [{ type: "text", text: "No matches found" }],
-						details: { pattern, path: searchPath, glob, matchCount: 0 } as RgDetails,
-					};
-				}
-				throw new Error(`ripgrep failed: ${err.message}`);
+			const result = await pi.exec("rg", args, { cwd: ctx.cwd, signal });
+			if (result.code === 1) {
+				return {
+					content: [{ type: "text", text: "No matches found" }],
+					details: { pattern, path: searchPath, glob, matchCount: 0 } as RgDetails,
+				};
 			}
+			if (result.code !== 0) throw new Error(`ripgrep failed: ${result.stderr}`);
+			const output = result.stdout;
 
 			if (!output.trim()) {
 				return {
@@ -108,15 +95,7 @@ export default function (pi: ExtensionAPI) {
 			let resultText = truncation.content;
 
 			if (truncation.truncated) {
-				// Save full output to a temp file so LLM can access it if needed
-				const tempDir = await mkdtemp(join(tmpdir(), "pi-rg-"));
-				const tempFile = join(tempDir, "output.txt");
-				await withFileMutationQueue(tempFile, async () => {
-					await writeFile(tempFile, output, "utf8");
-				});
-
 				details.truncation = truncation;
-				details.fullOutputPath = tempFile;
 
 				// Add truncation notice - this helps the LLM understand the output is incomplete
 				const truncatedLines = truncation.totalLines - truncation.outputLines;
@@ -125,7 +104,7 @@ export default function (pi: ExtensionAPI) {
 				resultText += `\n\n[Output truncated: showing ${truncation.outputLines} of ${truncation.totalLines} lines`;
 				resultText += ` (${formatSize(truncation.outputBytes)} of ${formatSize(truncation.totalBytes)}).`;
 				resultText += ` ${truncatedLines} lines (${formatSize(truncatedBytes)}) omitted.`;
-				resultText += ` Full output saved to: ${tempFile}]`;
+				resultText += "]";
 			}
 
 			return {

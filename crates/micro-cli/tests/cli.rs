@@ -3,6 +3,10 @@
 
 mod support;
 
+use std::io::BufRead as _;
+use std::io::BufReader;
+use std::io::Write as _;
+
 use micro_extensions::which_bun;
 use serde_json::json;
 use support::offered_tools;
@@ -13,6 +17,30 @@ use support::FakeApi;
 use support::Fixture;
 use support::Output;
 use support::Reply;
+
+fn stdout_json(output: &Output) -> serde_json::Value {
+    serde_json::from_str(output.stdout.trim())
+        .unwrap_or_else(|error| panic!("stdout is not JSON: {error}: {:?}", output.stdout))
+}
+
+fn nested_object_with<'a>(
+    value: &'a serde_json::Value,
+    key: &str,
+    expected: &serde_json::Value,
+) -> Option<&'a serde_json::Value> {
+    if value.get(key) == Some(expected) {
+        return Some(value);
+    }
+    match value {
+        serde_json::Value::Array(values) => values
+            .iter()
+            .find_map(|value| nested_object_with(value, key, expected)),
+        serde_json::Value::Object(values) => values
+            .values()
+            .find_map(|value| nested_object_with(value, key, expected)),
+        _ => None,
+    }
+}
 
 #[test]
 fn print_streams_the_answer_to_stdout() {
@@ -944,14 +972,10 @@ fn an_extension_hears_the_lifecycle_events() {
     let fixture = Fixture::new(&api);
     fixture.write("notes.txt", "the file's contents");
 
-    let log = fixture.workspace().join("events.log");
     fixture.write(
         ".micro/extensions/listener.ts",
-        &format!(
-            r#"
-import {{ appendFileSync }} from "node:fs";
-const log = {log:?};
-export default (micro) => {{
+        r#"
+export default (micro) => {
     for (const event of [
         "session_start",
         "agent_start",
@@ -961,21 +985,24 @@ export default (micro) => {{
         "tool_execution_start",
         "tool_execution_end",
         "agent_end",
-    ]) {{
-        micro.on(event, (payload) => {{
-            appendFileSync(log, `${{event}} ${{JSON.stringify(payload).slice(0, 120)}}\n`);
-        }});
-    }}
-}};
+    ]) {
+        micro.on(event, async (payload) => {
+            await micro.appendEntry("heard-event", { event, payload });
+        });
+    }
+    micro.registerCommand("heard-events", {
+        handler: async () => JSON.stringify(await micro.getEntries()),
+    });
+};
 "#,
-            log = log.display().to_string()
-        ),
     );
 
     let output = fixture.print(&["-m", "test", "read the notes"]);
     assert!(output.status.success(), "{}", output.stderr);
 
-    let heard = std::fs::read_to_string(&log).unwrap_or_default();
+    let report = fixture.print(&["-m", "test", "--continue", "/heard-events"]);
+    assert!(report.status.success(), "{}", report.stderr);
+    let heard = report.stdout;
     for event in [
         "session_start",
         "agent_start",
@@ -1038,32 +1065,30 @@ fn an_extension_can_run_a_command_and_read_its_output() {
     }
     let api = FakeApi::start([]);
     let fixture = Fixture::new(&api);
-    let log = fixture.workspace().join("exec.log");
     fixture.write(
         ".micro/extensions/runner.ts",
-        &format!(
-            r#"
-import {{ writeFileSync }} from "node:fs";
-export default (micro) => {{
-    micro.registerCommand("probe", {{
-        handler: async () => {{
+        r#"
+export default (micro) => {
+    micro.registerCommand("probe", {
+        handler: async () => {
             const result = await micro.exec("echo", ["from an extension"]);
-            writeFileSync({log:?}, JSON.stringify(result));
-            return `exit ${{result.code}}`;
-        }},
-    }});
-}};
+            return JSON.stringify(result);
+        },
+    });
+};
 "#,
-            log = log.display().to_string()
-        ),
     );
 
     let output = fixture.print(&["-m", "test", "/probe"]);
     assert!(output.status.success(), "{}", output.stderr);
-    assert!(output.stdout.contains("exit 0"), "{}", output.stdout);
-
-    let ran = std::fs::read_to_string(&log).expect("the extension wrote what it got");
-    assert!(ran.contains("from an extension"), "{ran}");
+    let ran = stdout_json(&output);
+    assert_eq!(ran["code"], 0, "{ran}");
+    assert!(
+        ran["stdout"]
+            .as_str()
+            .is_some_and(|stdout| stdout.contains("from an extension")),
+        "{ran}"
+    );
 }
 
 /// An extension can declare a provider, and a model it declared is one micro will run.
@@ -1279,28 +1304,28 @@ fn an_extension_hears_the_moments_the_host_owns() {
     }
     let api = FakeApi::start([]);
     let fixture = Fixture::new(&api);
-    let log = fixture.workspace().join("host-events.log");
     fixture.write(
         ".micro/extensions/hostwatch.ts",
-        &format!(
-            r#"
-import {{ appendFileSync }} from "node:fs";
-export default (micro) => {{
-    for (const event of ["session_start", "session_info_changed", "user_bash"]) {{
-        micro.on(event, (payload) => {{
-            appendFileSync({log:?}, `${{event}} ${{JSON.stringify(payload)}}\n`);
-        }});
-    }}
-}};
+        r#"
+export default (micro) => {
+    for (const event of ["session_start", "session_info_changed", "user_bash"]) {
+        micro.on(event, async (payload) => {
+            await micro.appendEntry("heard-host-event", { event, payload });
+        });
+    }
+    micro.registerCommand("heard-host-events", {
+        handler: async () => JSON.stringify(await micro.getEntries()),
+    });
+};
 "#,
-            log = log.display().to_string()
-        ),
     );
 
     let output = fixture.print(&["-m", "test", "/name the renamed one"]);
     assert!(output.status.success(), "{}", output.stderr);
 
-    let heard = std::fs::read_to_string(&log).unwrap_or_default();
+    let report = fixture.print(&["-m", "test", "--continue", "/heard-host-events"]);
+    assert!(report.status.success(), "{}", report.stderr);
+    let heard = report.stdout;
     assert!(heard.contains("session_start"), "{heard}");
     assert!(heard.contains("session_info_changed"), "{heard}");
     assert!(heard.contains("the renamed one"), "{heard}");
@@ -1344,29 +1369,27 @@ fn an_extension_can_rewrite_the_messages_the_model_is_sent() {
     }
     let api = FakeApi::start([Reply::text("answered")]);
     let fixture = Fixture::new(&api);
-    let log = fixture.workspace().join("provider.log");
     fixture.write(
         ".micro/extensions/context.ts",
-        &format!(
-            r#"
-import {{ appendFileSync }} from "node:fs";
-export default (micro) => {{
-    micro.on("context", (event) => {{
-        return {{
+        r#"
+export default (micro) => {
+    micro.on("context", (event) => {
+        return {
             messages: event.messages.map((message) =>
                 message.role === "user"
-                    ? {{ ...message, content: [{{ type: "text", text: "a rewritten question" }}] }}
+                    ? { ...message, content: [{ type: "text", text: "a rewritten question" }] }
                     : message,
             ),
-        }};
-    }});
-    micro.on("before_provider_request", (event) => {{
-        appendFileSync({log:?}, `request ${{event.payload.messages.length}}\n`);
-    }});
-}};
+        };
+    });
+    micro.on("before_provider_request", async (event) => {
+        await micro.appendEntry("provider-request", { messageCount: event.payload.messages.length });
+    });
+    micro.registerCommand("provider-events", {
+        handler: async () => JSON.stringify(await micro.getEntries()),
+    });
+};
 "#,
-            log = log.display().to_string()
-        ),
     );
 
     let output = fixture.print(&["-m", "test", "the original question"]);
@@ -1376,8 +1399,10 @@ export default (micro) => {{
     assert!(sent.contains("a rewritten question"), "{sent}");
     assert!(!sent.contains("the original question"), "{sent}");
 
-    let seen = std::fs::read_to_string(&log).unwrap_or_default();
-    assert!(seen.contains("request 1"), "{seen}");
+    let report = fixture.print(&["-m", "test", "--continue", "/provider-events"]);
+    assert!(report.status.success(), "{}", report.stderr);
+    assert!(report.stdout.contains("messageCount"), "{}", report.stdout);
+    assert!(report.stdout.contains('1'), "{}", report.stdout);
 }
 
 /// An extension can put a header on the request the provider makes.
@@ -1418,33 +1443,24 @@ fn an_extension_can_keep_state_the_model_never_sees() {
     }
     let api = FakeApi::start([Reply::text("answered")]);
     let fixture = Fixture::new(&api);
-    let log = fixture.workspace().join("kept.log");
     fixture.write(
         ".micro/extensions/keeper.ts",
-        &format!(
-            r#"
-import {{ writeFileSync }} from "node:fs";
-export default (micro) => {{
-    micro.registerCommand("keep", {{
-        handler: async () => {{
-            await micro.appendEntry("a-note", {{ secretly: "kept aside" }});
+        r#"
+export default (micro) => {
+    micro.registerCommand("keep", {
+        handler: async () => {
+            await micro.appendEntry("a-note", { secretly: "kept aside" });
             const kept = await micro.getEntries();
-            writeFileSync({log:?}, JSON.stringify(kept));
-            return `kept ${{kept.length}}`;
-        }},
-    }});
-}};
+            return JSON.stringify(kept);
+        },
+    });
+};
 "#,
-            log = log.display().to_string()
-        ),
     );
 
     let kept = fixture.print(&["-m", "test", "/keep"]);
     assert!(kept.status.success(), "{}", kept.stderr);
-    assert!(kept.stdout.contains("kept 1"), "{}", kept.stdout);
-
-    let read_back = std::fs::read_to_string(&log).expect("the extension read it back");
-    assert!(read_back.contains("kept aside"), "{read_back}");
+    assert!(kept.stdout.contains("kept aside"), "{}", kept.stdout);
 
     let output = fixture.print(&["-m", "test", "say something"]);
     assert!(output.status.success(), "{}", output.stderr);
@@ -1494,34 +1510,28 @@ fn an_extension_flag_is_read_from_the_command_line() {
     }
     let api = FakeApi::start([]);
     let fixture = Fixture::new(&api);
-    let log = fixture.workspace().join("flag.log");
     fixture.write(
         ".micro/extensions/flagged.ts",
-        &format!(
-            r#"
-import {{ writeFileSync }} from "node:fs";
-export default (micro) => {{
-    micro.registerFlag("env", {{ description: "which environment", type: "string", default: "dev" }});
-    micro.registerFlag("loud", {{ description: "shout", type: "boolean" }});
-    micro.registerCommand("show", {{
-        handler: async () => {{
-            const seen = {{ env: micro.getFlag("env"), loud: micro.getFlag("loud") }};
-            writeFileSync({log:?}, JSON.stringify(seen));
+        r#"
+export default (micro) => {
+    micro.registerFlag("env", { description: "which environment", type: "string", default: "dev" });
+    micro.registerFlag("loud", { description: "shout", type: "boolean" });
+    micro.registerCommand("show", {
+        handler: async () => {
+            const seen = { env: micro.getFlag("env"), loud: micro.getFlag("loud") };
             return JSON.stringify(seen);
-        }},
-    }});
-}};
+        },
+    });
+};
 "#,
-            log = log.display().to_string()
-        ),
     );
 
     let output = fixture.print(&["-m", "test", "--env=staging", "--loud", "/show"]);
     assert!(output.status.success(), "{}", output.stderr);
 
-    let seen = std::fs::read_to_string(&log).expect("the extension read its flags");
-    assert!(seen.contains("\"env\":\"staging\""), "{seen}");
-    assert!(seen.contains("\"loud\":true"), "{seen}");
+    let seen = stdout_json(&output);
+    assert_eq!(seen["env"], "staging", "{seen}");
+    assert_eq!(seen["loud"], true, "{seen}");
 }
 
 #[test]
@@ -1737,16 +1747,12 @@ fn an_extension_command_reads_the_extension_context() {
     }
     let api = FakeApi::start([]);
     let fixture = Fixture::new(&api);
-    let log = fixture.workspace().join("context.log");
     fixture.write(
         ".micro/extensions/context-probe.ts",
-        &format!(
-            r#"
-import {{ writeFileSync }} from "node:fs";
-export default (micro) => {{
-    micro.registerCommand("probe-context", {{
-        handler: async (args, ctx) => {{
-            writeFileSync({log:?}, JSON.stringify({{
+        r#"
+export default (micro) => {
+    micro.registerCommand("probe-context", {
+        handler: async (args, ctx) => JSON.stringify({
                 cwd: ctx.cwd,
                 mode: ctx.mode,
                 hasUI: ctx.hasUI,
@@ -1760,23 +1766,15 @@ export default (micro) => {{
                 hasNavigateTree: typeof ctx.navigateTree === "function",
                 hasSwitchSession: typeof ctx.switchSession === "function",
                 hasReload: typeof ctx.reload === "function",
-            }}));
-            return "probed";
-        }},
-    }});
-}};
+            }),
+    });
+};
 "#,
-            log = log.display().to_string()
-        ),
     );
 
     let output = fixture.print(&["-m", "test", "/probe-context"]);
     assert!(output.status.success(), "{}", output.stderr);
-    assert!(output.stdout.contains("probed"), "{}", output.stdout);
-
-    let read: serde_json::Value =
-        serde_json::from_str(&std::fs::read_to_string(&log).expect("the extension wrote a log"))
-            .expect("the log is JSON");
+    let read = stdout_json(&output);
 
     assert_eq!(read["mode"], "print");
     assert_eq!(read["hasUI"], false);
@@ -1812,18 +1810,15 @@ fn an_extension_reads_the_conversation_through_session_manager() {
     }
     let api = FakeApi::start([Reply::text("Nice to meet you.")]);
     let fixture = Fixture::new(&api);
-    let log = fixture.workspace().join("session-manager.log");
     fixture.write(
         ".micro/extensions/session-probe.ts",
-        &format!(
-            r#"
-import {{ writeFileSync }} from "node:fs";
-export default (micro) => {{
-    micro.registerCommand("probe-session", {{
-        handler: async (args, ctx) => {{
+        r#"
+export default (micro) => {
+    micro.registerCommand("probe-session", {
+        handler: async (args, ctx) => {
             const manager = ctx.sessionManager;
             const leafId = manager.getLeafId();
-            writeFileSync({log:?}, JSON.stringify({{
+            return JSON.stringify({
                 cwd: manager.getCwd(),
                 sessionId: manager.getSessionId(),
                 sessionFile: manager.getSessionFile(),
@@ -1835,14 +1830,11 @@ export default (micro) => {{
                 sameAsLeafEntry: manager.getEntry(leafId),
                 header: manager.getHeader(),
                 tree: manager.getTree(),
-            }}));
-            return "read";
-        }},
-    }});
-}};
+            });
+        },
+    });
+};
 "#,
-            log = log.display().to_string()
-        ),
     );
 
     fixture
@@ -1850,11 +1842,7 @@ export default (micro) => {{
         .expect_success("the first run");
     let probed = fixture.print(&["-m", "test", "--continue", "/probe-session"]);
     assert!(probed.status.success(), "{}", probed.stderr);
-    assert!(probed.stdout.contains("read"), "{}", probed.stdout);
-
-    let read: serde_json::Value =
-        serde_json::from_str(&std::fs::read_to_string(&log).expect("the extension wrote a log"))
-            .expect("the log is JSON");
+    let read = stdout_json(&probed);
 
     assert!(read["sessionFile"].as_str().unwrap().ends_with(".jsonl"));
     assert!(!read["sessionId"].as_str().unwrap().is_empty());
@@ -1891,40 +1879,34 @@ fn is_idle_and_signal_track_a_turn_through_its_lifecycle_events() {
     }
     let api = FakeApi::start([Reply::text("done")]);
     let fixture = Fixture::new(&api);
-    let log = fixture.workspace().join("idle.log");
     fixture.write(
         ".micro/extensions/idle-probe.ts",
-        &format!(
-            r#"
-import {{ appendFileSync }} from "node:fs";
-const log = {log:?};
-export default (micro) => {{
-    micro.on("agent_start", (payload, ctx) => {{
-        appendFileSync(log, JSON.stringify({{
+        r#"
+export default (micro) => {
+    micro.on("agent_start", async (payload, ctx) => {
+        await micro.appendEntry("idle-observation", {
             event: "agent_start",
             idle: ctx.isIdle(),
             hasSignal: ctx.signal !== undefined,
-        }}) + "\n");
-    }});
-    micro.on("agent_settled", (payload, ctx) => {{
-        appendFileSync(log, JSON.stringify({{
+        });
+    });
+    micro.on("agent_settled", async (payload, ctx) => {
+        await micro.appendEntry("idle-observation", {
             event: "agent_settled",
             idle: ctx.isIdle(),
             hasSignal: ctx.signal !== undefined,
-        }}) + "\n");
-    }});
-    micro.registerCommand("probe-wait", {{
-        handler: async (args, ctx) => {{
+        });
+    });
+    micro.registerCommand("probe-wait", {
+        handler: async (args, ctx) => {
             // Already idle by the time a command runs, so this resolves at once.
             await ctx.waitForIdle();
-            appendFileSync(log, JSON.stringify({{ event: "waited", idle: ctx.isIdle() }}) + "\n");
-            return "waited";
-        }},
-    }});
-}};
+            await micro.appendEntry("idle-observation", { event: "waited", idle: ctx.isIdle() });
+            return JSON.stringify(await micro.getEntries());
+        },
+    });
+};
 "#,
-            log = log.display().to_string()
-        ),
     );
 
     fixture
@@ -1932,32 +1914,19 @@ export default (micro) => {{
         .expect_success("micro --print");
     let probed = fixture.print(&["-m", "test", "--continue", "/probe-wait"]);
     assert!(probed.status.success(), "{}", probed.stderr);
-    assert!(probed.stdout.contains("waited"), "{}", probed.stdout);
-
-    let read = std::fs::read_to_string(&log).expect("the extension logged something");
-    let entries: Vec<serde_json::Value> = read
-        .lines()
-        .map(|line| serde_json::from_str(line).expect("each line is JSON"))
-        .collect();
-
-    let started = entries
-        .iter()
-        .find(|entry| entry["event"] == "agent_start")
-        .expect("agent_start was heard");
+    let read = stdout_json(&probed);
+    let started =
+        nested_object_with(&read, "event", &json!("agent_start")).expect("agent_start was heard");
     assert_eq!(started["idle"], false, "{started}");
     assert_eq!(started["hasSignal"], true, "{started}");
 
-    let settled = entries
-        .iter()
-        .find(|entry| entry["event"] == "agent_settled")
+    let settled = nested_object_with(&read, "event", &json!("agent_settled"))
         .expect("agent_settled was heard");
     assert_eq!(settled["idle"], true, "{settled}");
     assert_eq!(settled["hasSignal"], false, "{settled}");
 
-    let waited = entries
-        .iter()
-        .find(|entry| entry["event"] == "waited")
-        .expect("waitForIdle resolved");
+    let waited =
+        nested_object_with(&read, "event", &json!("waited")).expect("waitForIdle resolved");
     assert_eq!(waited["idle"], true, "{waited}");
 }
 
@@ -1977,39 +1946,27 @@ fn get_system_prompt_options_reports_what_actually_built_the_prompt() {
         "---\nname: deploy\ndescription: Ships the app.\n---\n\nRun the steps.\n",
     );
 
-    let log = fixture.workspace().join("options.log");
     fixture.write(
         ".micro/extensions/prompt-probe.ts",
-        &format!(
-            r#"
-import {{ writeFileSync }} from "node:fs";
-export default (micro) => {{
-    micro.registerTool({{
+        r#"
+export default (micro) => {
+    micro.registerTool({
         name: "deploy_tool",
         description: "deploys the app",
         promptSnippet: "use this to deploy",
         promptGuidelines: ["always confirm first"],
         execute: async () => "deployed",
-    }});
-    micro.registerCommand("probe-prompt", {{
-        handler: async (args, ctx) => {{
-            writeFileSync({log:?}, JSON.stringify(ctx.getSystemPromptOptions()));
-            return "probed";
-        }},
-    }});
-}};
+    });
+    micro.registerCommand("probe-prompt", {
+        handler: async (args, ctx) => JSON.stringify(ctx.getSystemPromptOptions()),
+    });
+};
 "#,
-            log = log.display().to_string()
-        ),
     );
 
     let output = fixture.print(&["-m", "test", "-t", "deploy_tool", "/probe-prompt"]);
     assert!(output.status.success(), "{}", output.stderr);
-    assert!(output.stdout.contains("probed"), "{}", output.stdout);
-
-    let read: serde_json::Value =
-        serde_json::from_str(&std::fs::read_to_string(&log).expect("the extension wrote a log"))
-            .expect("the log is JSON");
+    let read = stdout_json(&output);
 
     assert_eq!(read["cwd"], fixture.workspace().display().to_string());
     assert_eq!(read["customPrompt"], "You are a pirate.");
@@ -2057,23 +2014,15 @@ fn scoped_models_reach_the_extension_context_resolved() {
     }
     let api = FakeApi::start([]);
     let fixture = Fixture::new(&api);
-    let log = fixture.workspace().join("scoped.log");
     fixture.write(
         ".micro/extensions/scope-probe.ts",
-        &format!(
-            r#"
-import {{ writeFileSync }} from "node:fs";
-export default (micro) => {{
-    micro.registerCommand("probe-scope", {{
-        handler: async (args, ctx) => {{
-            writeFileSync({log:?}, JSON.stringify(ctx.scopedModels));
-            return "scoped";
-        }},
-    }});
-}};
+        r#"
+export default (micro) => {
+    micro.registerCommand("probe-scope", {
+        handler: async (args, ctx) => JSON.stringify(ctx.scopedModels),
+    });
+};
 "#,
-            log = log.display().to_string()
-        ),
     );
 
     let scoped = fixture.print(&[
@@ -2085,9 +2034,7 @@ export default (micro) => {{
     ]);
     assert!(scoped.status.success(), "{}", scoped.stderr);
 
-    let read: serde_json::Value =
-        serde_json::from_str(&std::fs::read_to_string(&log).expect("the extension wrote a log"))
-            .expect("the log is JSON");
+    let read = stdout_json(&scoped);
     let matches = read.as_array().expect("a list");
     assert!(
         matches
@@ -2106,30 +2053,20 @@ fn unscoped_models_reach_the_extension_context_as_empty() {
     }
     let api = FakeApi::start([]);
     let fixture = Fixture::new(&api);
-    let log = fixture.workspace().join("unscoped.log");
     fixture.write(
         ".micro/extensions/unscoped-probe.ts",
-        &format!(
-            r#"
-import {{ writeFileSync }} from "node:fs";
-export default (micro) => {{
-    micro.registerCommand("probe-unscoped", {{
-        handler: async (args, ctx) => {{
-            writeFileSync({log:?}, JSON.stringify(ctx.scopedModels));
-            return "unscoped";
-        }},
-    }});
-}};
+        r#"
+export default (micro) => {
+    micro.registerCommand("probe-unscoped", {
+        handler: async (args, ctx) => JSON.stringify(ctx.scopedModels),
+    });
+};
 "#,
-            log = log.display().to_string()
-        ),
     );
 
     let output = fixture.print(&["-m", "test", "/probe-unscoped"]);
     assert!(output.status.success(), "{}", output.stderr);
-    let read: serde_json::Value =
-        serde_json::from_str(&std::fs::read_to_string(&log).expect("the extension wrote a log"))
-            .expect("the log is JSON");
+    let read = stdout_json(&output);
     assert_eq!(read, serde_json::json!([]));
 }
 
@@ -2143,40 +2080,36 @@ fn session_navigation_is_absent_from_a_tool_calls_context() {
         Reply::text("done"),
     ]);
     let fixture = Fixture::new(&api);
-    let log = fixture.workspace().join("tool-context.log");
     fixture.write(
         ".micro/extensions/tool-probe.ts",
-        &format!(
-            r#"
-import {{ writeFileSync }} from "node:fs";
-export default (micro) => {{
-    micro.registerTool({{
+        r#"
+export default (micro) => {
+    micro.registerTool({
         name: "check",
         description: "reports what its context carries",
-        execute: async (toolCallId, args, signal, onUpdate, ctx) => {{
-            writeFileSync({log:?}, JSON.stringify({{
+        execute: async (toolCallId, args, signal, onUpdate, ctx) => JSON.stringify({
                 hasModel: ctx.model !== undefined,
                 hasNewSession: typeof ctx.newSession === "function",
                 hasFork: typeof ctx.fork === "function",
                 hasNavigateTree: typeof ctx.navigateTree === "function",
                 hasSwitchSession: typeof ctx.switchSession === "function",
                 hasReload: typeof ctx.reload === "function",
-            }}));
-            return "checked";
-        }},
-    }});
-}};
+            }),
+    });
+};
 "#,
-            log = log.display().to_string()
-        ),
     );
 
     let output = fixture.print(&["-m", "test", "run the check"]);
     assert!(output.status.success(), "{}", output.stderr);
 
-    let read: serde_json::Value =
-        serde_json::from_str(&std::fs::read_to_string(&log).expect("the tool wrote a log"))
-            .expect("the log is JSON");
+    let results = tool_results(&api.request(1));
+    let read: serde_json::Value = serde_json::from_str(
+        results[0]["content"]
+            .as_str()
+            .expect("the tool result is text"),
+    )
+    .expect("the tool result is JSON");
 
     assert_eq!(read["hasModel"], true, "{read}");
     for member in [
@@ -2249,35 +2182,27 @@ fn an_extension_tool_is_stopped_when_the_turn_is_aborted() {
     }
     let api = FakeApi::start([Reply::tool_call("call_1", "wait_forever", json!({}))]);
     let fixture = Fixture::new(&api);
-    let started = fixture.workspace().join("started.txt");
-    let marker = fixture.workspace().join("aborted.txt");
     fixture.write(
         ".micro/extensions/waits.ts",
-        &format!(
-            r#"
-import {{ writeFileSync }} from "node:fs";
-export default (micro) => {{
-    micro.registerTool({{
+        r#"
+export default (micro) => {
+    micro.registerTool({
         name: "wait_forever",
         description: "never resolves unless the turn is aborted",
-        execute: async (toolCallId, args, signal) => {{
-            writeFileSync({started:?}, "started");
-            return new Promise((resolve, reject) => {{
-                signal?.addEventListener("abort", () => {{
-                    writeFileSync({marker:?}, "aborted");
+        execute: async (toolCallId, args, signal, onUpdate) => {
+            onUpdate?.({ content: [{ type: "text", text: "tool started" }] });
+            return new Promise((resolve, reject) => {
+                signal?.addEventListener("abort", () => {
+                    void micro.appendEntry("abort-observation", { signal: "received" });
                     reject(new Error("aborted"));
-                }});
-            }});
-        }},
-    }});
-}};
+                });
+            });
+        },
+    });
+};
 "#,
-            started = started.display().to_string(),
-            marker = marker.display().to_string()
-        ),
     );
 
-    use std::io::Write as _;
     let mut command = fixture.micro();
     command.arg("--rpc");
     command.args(["-m", "test"]);
@@ -2285,6 +2210,17 @@ export default (micro) => {{
     command.stdout(std::process::Stdio::piped());
     command.stderr(std::process::Stdio::piped());
     let mut child = command.spawn().expect("micro --rpc starts");
+    let stdout = child.stdout.take().expect("stdout is piped");
+    let (lines_tx, lines_rx) = std::sync::mpsc::channel();
+    let reader = std::thread::spawn(move || {
+        let mut lines = Vec::new();
+        for line in BufReader::new(stdout).lines() {
+            let line = line.expect("RPC output is readable");
+            lines_tx.send(line.clone()).expect("the receiver is alive");
+            lines.push(line);
+        }
+        lines
+    });
 
     writeln!(
         child.stdin.as_mut().expect("stdin is piped"),
@@ -2293,13 +2229,24 @@ export default (micro) => {{
     .expect("the prompt is written");
 
     let running_deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-    while !started.exists() && std::time::Instant::now() < running_deadline {
-        std::thread::sleep(std::time::Duration::from_millis(20));
+    loop {
+        let remaining = running_deadline.saturating_duration_since(std::time::Instant::now());
+        assert!(
+            !remaining.is_zero(),
+            "the tool call should have started running"
+        );
+        let line = lines_rx
+            .recv_timeout(remaining)
+            .expect("the tool call should produce RPC output");
+        let event: serde_json::Value = serde_json::from_str(&line).expect("RPC output is JSON");
+        if event["type"] == "tool_update"
+            && event["output"]
+                .as_str()
+                .is_some_and(|output| output.contains("tool started"))
+        {
+            break;
+        }
     }
-    assert!(
-        started.exists(),
-        "the tool call should have started running"
-    );
 
     writeln!(
         child.stdin.as_mut().expect("stdin is piped"),
@@ -2307,16 +2254,50 @@ export default (micro) => {{
     )
     .expect("the abort is written");
 
+    let settled_deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        let remaining = settled_deadline.saturating_duration_since(std::time::Instant::now());
+        assert!(
+            !remaining.is_zero(),
+            "the agent should settle after the abort"
+        );
+        let line = lines_rx
+            .recv_timeout(remaining)
+            .expect("the abort should produce RPC output");
+        let event: serde_json::Value = serde_json::from_str(&line).expect("RPC output is JSON");
+        if event["type"] == "agent_settled" {
+            break;
+        }
+    }
+
     drop(child.stdin.take());
     let _ = child.wait_with_output().expect("micro --rpc finishes");
-
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-    while !marker.exists() && std::time::Instant::now() < deadline {
-        std::thread::sleep(std::time::Duration::from_millis(20));
-    }
+    let lines = reader.join().expect("the RPC output reader finishes");
+    let events: Vec<serde_json::Value> = lines
+        .iter()
+        .map(|line| serde_json::from_str(line).expect("RPC output is JSON"))
+        .collect();
+    let abort_index = events
+        .iter()
+        .position(|event| event["type"] == "response" && event["id"] == "2")
+        .expect("the abort command was answered");
+    assert_eq!(events[abort_index]["success"], true, "{events:#?}");
+    let settled_index = events
+        .iter()
+        .position(|event| event["type"] == "agent_settled")
+        .expect("the agent settled after the abort");
     assert!(
-        marker.exists(),
-        "the extension's tool call was told to stop when the turn was aborted"
+        abort_index < settled_index,
+        "the turn settled before its abort was acknowledged: {events:#?}"
+    );
+    assert!(
+        !events.iter().any(|event| event["type"] == "tool_end"),
+        "the pending extension tool must not complete after the abort: {events:#?}"
+    );
+    let session_log = fixture.session_logs().join("\n");
+    assert!(
+        session_log.contains("abort-observation") && session_log.contains("received"),
+        "the extension recorded the tool's abort signal in the session ledger: {session_log}"
     );
 }
 
@@ -2340,15 +2321,12 @@ fn an_extension_can_read_and_switch_to_a_custom_theme() {
     )
     .expect("write a custom theme");
 
-    let log = fixture.workspace().join("theme.log");
     fixture.write(
         ".micro/extensions/theme-probe.ts",
-        &format!(
-            r#"
-import {{ writeFileSync }} from "node:fs";
-export default (micro) => {{
-    micro.registerCommand("probe", {{
-        handler: async (args, ctx) => {{
+        r#"
+export default (micro) => {
+    micro.registerCommand("probe", {
+        handler: async (args, ctx) => {
             const all = ctx.ui.getAllThemes();
             const looked_up = ctx.ui.getTheme("mine");
             const missing = ctx.ui.getTheme("nocturne");
@@ -2356,7 +2334,7 @@ export default (micro) => {{
             const switched = ctx.ui.setTheme("mine");
             const after = ctx.ui.theme.name;
             const colored = ctx.ui.theme.fg("accent", "hi");
-            writeFileSync({log:?}, JSON.stringify({{
+            return JSON.stringify({
                 names: all.map((t) => t.name),
                 lookedUpName: looked_up?.name,
                 lookedUpAccent: looked_up?.fg("accent", "x"),
@@ -2365,21 +2343,17 @@ export default (micro) => {{
                 switched,
                 after,
                 colored,
-            }}));
-            return "done";
-        }},
-    }});
-}};
+            });
+        },
+    });
+};
 "#,
-            log = log.display().to_string()
-        ),
     );
 
     let output = fixture.print(&["-m", "test", "/probe"]);
     assert!(output.status.success(), "{}", output.stderr);
 
-    let written = std::fs::read_to_string(&log).expect("the extension wrote its findings");
-    let result: serde_json::Value = serde_json::from_str(&written).expect("valid JSON");
+    let result = stdout_json(&output);
     let names = result["names"].as_array().expect("a list of themes");
     assert!(names.iter().any(|name| name == "dark"), "{result}");
     assert!(names.iter().any(|name| name == "light"), "{result}");
@@ -2401,15 +2375,12 @@ fn an_extension_reads_back_what_it_set_in_the_editor_and_in_tools_expansion() {
     }
     let api = FakeApi::start([]);
     let fixture = Fixture::new(&api);
-    let log = fixture.workspace().join("echo.log");
     fixture.write(
         ".micro/extensions/echo-probe.ts",
-        &format!(
-            r#"
-import {{ writeFileSync }} from "node:fs";
-export default (micro) => {{
-    micro.registerCommand("probe", {{
-        handler: async (args, ctx) => {{
+        r#"
+export default (micro) => {
+    micro.registerCommand("probe", {
+        handler: async (args, ctx) => {
             const beforeText = ctx.ui.getEditorText();
             ctx.ui.setEditorText("hello");
             const afterSet = ctx.ui.getEditorText();
@@ -2420,23 +2391,19 @@ export default (micro) => {{
             ctx.ui.setToolsExpanded(true);
             const afterExpanded = ctx.ui.getToolsExpanded();
 
-            writeFileSync({log:?}, JSON.stringify({{
+            return JSON.stringify({
                 beforeText, afterSet, afterPaste, beforeExpanded, afterExpanded,
-            }}));
-            return "done";
-        }},
-    }});
-}};
+            });
+        },
+    });
+};
 "#,
-            log = log.display().to_string()
-        ),
     );
 
     let output = fixture.print(&["-m", "test", "/probe"]);
     assert!(output.status.success(), "{}", output.stderr);
 
-    let written = std::fs::read_to_string(&log).expect("the extension wrote its findings");
-    let result: serde_json::Value = serde_json::from_str(&written).expect("valid JSON");
+    let result = stdout_json(&output);
     assert_eq!(result["beforeText"], "");
     assert_eq!(result["afterSet"], "hello");
     assert_eq!(result["afterPaste"], "hello world");
@@ -2452,20 +2419,17 @@ fn an_extension_asking_for_a_live_component_runs_the_factory_it_is_given() {
     }
     let api = FakeApi::start([]);
     let fixture = Fixture::new(&api);
-    let log = fixture.workspace().join("components.log");
     fixture.write(
         ".micro/extensions/components-probe.ts",
-        &format!(
-            r#"
-import {{ writeFileSync }} from "node:fs";
-const component = () => ({{ render: (width) => [`hi ${{width}}`] }});
-export default (micro) => {{
-    micro.registerCommand("probe", {{
-        handler: async (args, ctx) => {{
-            const customResult = await ctx.ui.custom(() => ({{
+        r#"
+const component = () => ({ render: (width) => [`hi ${width}`] });
+export default (micro) => {
+    micro.registerCommand("probe", {
+        handler: async (args, ctx) => {
+            const customResult = await ctx.ui.custom(() => ({
                 render: () => ["overlay"],
-                handleInput: () => {{}},
-            }}));
+                handleInput: () => {},
+            }));
             ctx.ui.setHeader(component);
             ctx.ui.setFooter(component);
             ctx.ui.addAutocompleteProvider((current) => current);
@@ -2474,25 +2438,21 @@ export default (micro) => {{
             const editorComponent = ctx.ui.getEditorComponent();
             ctx.ui.setWidget("factory-widget", component);
 
-            writeFileSync({log:?}, JSON.stringify({{
+            return JSON.stringify({
                 customResult: customResult === undefined,
                 editorComponentIsTheSameFactory: editorComponent === editorFactory,
                 ranWithoutThrowing: true,
-            }}));
-            return "done";
-        }},
-    }});
-}};
+            });
+        },
+    });
+};
 "#,
-            log = log.display().to_string()
-        ),
     );
 
     let output = fixture.print(&["-m", "test", "/probe"]);
     assert!(output.status.success(), "{}", output.stderr);
 
-    let written = std::fs::read_to_string(&log).expect("the extension wrote its findings");
-    let result: serde_json::Value = serde_json::from_str(&written).expect("valid JSON");
+    let result = stdout_json(&output);
     assert_eq!(result["customResult"], true);
     assert_eq!(result["editorComponentIsTheSameFactory"], true);
     assert_eq!(result["ranWithoutThrowing"], true);
@@ -2505,32 +2465,26 @@ fn setting_a_widget_component_never_throws_even_headless() {
     }
     let api = FakeApi::start([]);
     let fixture = Fixture::new(&api);
-    let log = fixture.workspace().join("widget-component.log");
     fixture.write(
         ".micro/extensions/widget-component-probe.ts",
-        &format!(
-            r#"
-import {{ writeFileSync }} from "node:fs";
-export default (micro) => {{
-    micro.registerCommand("probe", {{
-        handler: async (args, ctx) => {{
-            ctx.ui.setWidget("status", (tui) => ({{
-                render: (width) => [`status at ${{width}}`],
-                invalidate: () => {{}},
-            }}));
-            writeFileSync({log:?}, "ok");
-            return "done";
-        }},
-    }});
-}};
+        r#"
+export default (micro) => {
+    micro.registerCommand("probe", {
+        handler: async (args, ctx) => {
+            ctx.ui.setWidget("status", (tui) => ({
+                render: (width) => [`status at ${width}`],
+                invalidate: () => {},
+            }));
+            return "ok";
+        },
+    });
+};
 "#,
-            log = log.display().to_string()
-        ),
     );
 
     let output = fixture.print(&["-m", "test", "/probe"]);
     assert!(output.status.success(), "{}", output.stderr);
-    assert_eq!(std::fs::read_to_string(&log).unwrap(), "ok");
+    assert_eq!(output.stdout.trim(), "ok");
 }
 
 #[test]
@@ -2540,33 +2494,26 @@ fn an_extension_can_register_and_unregister_a_terminal_input_listener() {
     }
     let api = FakeApi::start([]);
     let fixture = Fixture::new(&api);
-    let log = fixture.workspace().join("listener.log");
     fixture.write(
         ".micro/extensions/listener-probe.ts",
-        &format!(
-            r#"
-import {{ writeFileSync }} from "node:fs";
-export default (micro) => {{
-    micro.registerCommand("probe", {{
-        handler: async (args, ctx) => {{
+        r#"
+export default (micro) => {
+    micro.registerCommand("probe", {
+        handler: async (args, ctx) => {
             const unsubscribe = ctx.ui.onTerminalInput((data) => undefined);
             const isFunction = typeof unsubscribe === "function";
             unsubscribe();
-            writeFileSync({log:?}, JSON.stringify({{ isFunction }}));
-            return "done";
-        }},
-    }});
-}};
+            return JSON.stringify({ isFunction });
+        },
+    });
+};
 "#,
-            log = log.display().to_string()
-        ),
     );
 
     let output = fixture.print(&["-m", "test", "/probe"]);
     assert!(output.status.success(), "{}", output.stderr);
 
-    let written = std::fs::read_to_string(&log).expect("the extension wrote its findings");
-    let result: serde_json::Value = serde_json::from_str(&written).expect("valid JSON");
+    let result = stdout_json(&output);
     assert_eq!(result["isFunction"], true);
 }
 
@@ -2578,54 +2525,44 @@ fn an_extension_importing_a_pi_runtime_module_loads_and_runs() {
     }
     let api = FakeApi::start([]);
     let fixture = Fixture::new(&api);
-    let log = fixture.workspace().join("pi-runtime.log");
     fixture.write(
         ".micro/extensions/pi-runtime-probe.ts",
-        &format!(
-            r#"
-import {{ writeFileSync }} from "node:fs";
-import {{ stripTerminalSequences, truncateToWidth, visibleWidth }} from "@earendil-works/pi-tui";
-import {{ CONFIG_DIR_NAME, defineTool }} from "@mariozechner/pi-coding-agent";
-export default (micro) => {{
-    micro.registerCommand("probe", {{
-        handler: async () => {{
+        r#"
+import { stripTerminalSequences, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
+import { CONFIG_DIR_NAME, defineTool } from "@mariozechner/pi-coding-agent";
+export default (micro) => {
+    micro.registerCommand("probe", {
+        handler: async () => {
             const width = visibleWidth("hello");
             // Real pi-tui truncateToWidth wraps its answer with a style reset even for
             // plain text, so what an extension actually reads is stripped through
             // pi-tui's own stripTerminalSequences before it is compared to anything.
             const truncated = stripTerminalSequences(truncateToWidth("hello world", 5));
-            const tool = defineTool({{ name: "x" }});
+            const tool = defineTool({ name: "x" });
             let unsupportedError;
-            try {{
+            try {
                 const mod = await import("@earendil-works/pi-coding-agent");
                 mod.main();
-            }} catch (error) {{
+            } catch (error) {
                 unsupportedError = error instanceof Error ? error.message : String(error);
-            }}
-            writeFileSync(
-                {log:?},
-                JSON.stringify({{
+            }
+            return JSON.stringify({
                     width,
                     truncated,
                     configDirName: CONFIG_DIR_NAME,
                     toolName: tool.name,
                     unsupportedError,
-                }}),
-            );
-            return "done";
-        }},
-    }});
-}};
+                });
+        },
+    });
+};
 "#,
-            log = log.display().to_string()
-        ),
     );
 
     let output = fixture.print(&["-m", "test", "/probe"]);
     assert!(output.status.success(), "{}", output.stderr);
 
-    let written = std::fs::read_to_string(&log).expect("the extension wrote its findings");
-    let result: serde_json::Value = serde_json::from_str(&written).expect("valid JSON");
+    let result = stdout_json(&output);
     assert_eq!(result["width"], 5, "visibleWidth answered for real");
     assert_eq!(
         result["truncated"], "he...",
@@ -2656,13 +2593,10 @@ fn an_extension_uses_pi_tuis_pure_layout_and_autocomplete_components() {
     }
     let api = FakeApi::start([]);
     let fixture = Fixture::new(&api);
-    let log = fixture.workspace().join("pi-tui-components.log");
     fixture.write(
         ".micro/extensions/pi-tui-components-probe.ts",
-        &format!(
-            r#"
-import {{ writeFileSync }} from "node:fs";
-import {{
+        r#"
+import {
     CombinedAutocompleteProvider,
     HStack,
     renderLatex,
@@ -2670,12 +2604,12 @@ import {{
     Text,
     TruncatedText,
     VStack,
-}} from "@earendil-works/pi-tui";
-export default (micro) => {{
-    micro.registerCommand("probe", {{
-        handler: async () => {{
+} from "@earendil-works/pi-tui";
+export default (micro) => {
+    micro.registerCommand("probe", {
+        handler: async () => {
             // Two 3-wide texts side by side in a 10-wide box: real column layout, not a stub.
-            const hstack = new HStack([new Text("aaa", 0, 0), new Text("bbb", 0, 0)], {{ gap: 1 }});
+            const hstack = new HStack([new Text("aaa", 0, 0), new Text("bbb", 0, 0)], { gap: 1 });
             const hstackLines = hstack.render(10).map((line) => stripTerminalSequences(line));
 
             // Stacked vertically instead: line count reflects both children plus the gap.
@@ -2689,37 +2623,30 @@ export default (micro) => {{
             const latex = renderLatex("x^2");
 
             const provider = new CombinedAutocompleteProvider(
-                [{{ name: "help", description: "show help" }}],
+                [{ name: "help", description: "show help" }],
                 process.cwd(),
                 null,
             );
-            const suggestions = await provider.getSuggestions(["/hel"], 0, 4, {{ signal: new AbortController().signal }});
+            const suggestions = await provider.getSuggestions(["/hel"], 0, 4, { signal: new AbortController().signal });
 
-            writeFileSync(
-                {log:?},
-                JSON.stringify({{
+            return JSON.stringify({
                     hstackLineCount: hstackLines.length,
                     hstackFirstLine: hstackLines[0],
                     vstackLineCount: vstackLines.length,
                     truncated,
                     latex,
                     suggestionNames: suggestions?.items.map((item) => item.value) ?? null,
-                }}),
-            );
-            return "done";
-        }},
-    }});
-}};
+                });
+        },
+    });
+};
 "#,
-            log = log.display().to_string()
-        ),
     );
 
     let output = fixture.print(&["-m", "test", "/probe"]);
     assert!(output.status.success(), "{}", output.stderr);
 
-    let written = std::fs::read_to_string(&log).expect("the extension wrote its findings");
-    let result: serde_json::Value = serde_json::from_str(&written).expect("valid JSON");
+    let result = stdout_json(&output);
     assert_eq!(
         result["hstackLineCount"], 1,
         "one line of text laid out side by side stays one line"
@@ -2791,21 +2718,18 @@ fn an_extension_renders_real_markdown() {
     }
     let api = FakeApi::start([]);
     let fixture = Fixture::new(&api);
-    let log = fixture.workspace().join("markdown.log");
     fixture.write(
         ".micro/extensions/markdown-probe.ts",
-        &format!(
-            r##"
-import {{ writeFileSync }} from "node:fs";
-import {{ Markdown, stripTerminalSequences }} from "@earendil-works/pi-tui";
-export default (micro) => {{
-    micro.registerCommand("probe", {{
-        handler: async () => {{
-            const theme = {{
+        r##"
+import { Markdown, stripTerminalSequences } from "@earendil-works/pi-tui";
+export default (micro) => {
+    micro.registerCommand("probe", {
+        handler: async () => {
+            const theme = {
                 heading: (t) => t,
                 link: (t) => t,
                 linkUrl: (t) => t,
-                code: (t) => `[${{t}}]`,
+                code: (t) => `[${t}]`,
                 codeBlock: (t) => t,
                 codeBlockBorder: (t) => t,
                 quote: (t) => t,
@@ -2816,24 +2740,20 @@ export default (micro) => {{
                 italic: (t) => t,
                 strikethrough: (t) => t,
                 underline: (t) => t,
-            }};
+            };
             const markdown = new Markdown("# Title\n\nSome `code` here.", 0, 0, theme);
             const lines = markdown.render(40).map((line) => stripTerminalSequences(line));
-            writeFileSync({log:?}, JSON.stringify({{ lines }}));
-            return "done";
-        }},
-    }});
-}};
+            return JSON.stringify({ lines });
+        },
+    });
+};
 "##,
-            log = log.display().to_string()
-        ),
     );
 
     let output = fixture.print(&["-m", "test", "/probe"]);
     assert!(output.status.success(), "{}", output.stderr);
 
-    let written = std::fs::read_to_string(&log).expect("the extension wrote its findings");
-    let result: serde_json::Value = serde_json::from_str(&written).expect("valid JSON");
+    let result = stdout_json(&output);
     let lines: Vec<String> = result["lines"]
         .as_array()
         .expect("lines is an array")
@@ -2860,42 +2780,35 @@ fn a_components_keybindings_argument_answers_for_real_rather_than_being_empty() 
     }
     let api = FakeApi::start([]);
     let fixture = Fixture::new(&api);
-    let log = fixture.workspace().join("keybindings-probe.log");
     fixture.write(
         ".micro/extensions/keybindings-probe.ts",
-        &format!(
-            r#"
-import {{ writeFileSync }} from "node:fs";
-export default (micro) => {{
-    micro.registerCommand("probe", {{
-        handler: async (args, ctx) => {{
+        r#"
+export default (micro) => {
+    micro.registerCommand("probe", {
+        handler: async (args, ctx) => {
             const seen = [];
-            const factory = (tui, theme, keybindings) => {{
+            const factory = (tui, theme, keybindings) => {
                 seen.push(keybindings.matches("\x1b", "tui.select.cancel"));
                 seen.push(keybindings.matches("x", "tui.select.cancel"));
-                return {{ render: () => ["editor"], handleInput: () => {{}} }};
-            }};
+                return { render: () => ["editor"], handleInput: () => {} };
+            };
             ctx.ui.setEditorComponent(factory);
-            await ctx.ui.custom((tui, theme, keybindings, done) => {{
+            await ctx.ui.custom((tui, theme, keybindings, done) => {
                 seen.push(keybindings.matches("\x1b", "tui.select.cancel"));
                 done("closed");
-                return {{ render: () => ["overlay"], handleInput: () => {{}} }};
-            }});
-            writeFileSync({log:?}, JSON.stringify({{ seen }}));
-            return "done";
-        }},
-    }});
-}};
+                return { render: () => ["overlay"], handleInput: () => {} };
+            });
+            return JSON.stringify({ seen });
+        },
+    });
+};
 "#,
-            log = log.display().to_string()
-        ),
     );
 
     let output = fixture.print(&["-m", "test", "/probe"]);
     assert!(output.status.success(), "{}", output.stderr);
 
-    let written = std::fs::read_to_string(&log).expect("the extension wrote its findings");
-    let result: serde_json::Value = serde_json::from_str(&written).expect("valid JSON");
+    let result = stdout_json(&output);
     let seen: Vec<bool> = result["seen"]
         .as_array()
         .expect("seen is an array")

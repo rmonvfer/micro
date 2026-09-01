@@ -1,11 +1,11 @@
 # DOOM Overlay Demo
 
-Play DOOM as an overlay in pi. Demonstrates that the overlay system can handle real-time game rendering at 35 FPS.
+Play DOOM as a micro overlay. The example exercises real-time terminal rendering at 35 FPS.
 
 ## Usage
 
 ```bash
-pi --extension ./examples/extensions/doom-overlay
+micro --extension ./examples/extensions/doom-overlay
 ```
 
 Then run:
@@ -13,7 +13,13 @@ Then run:
 /doom-overlay
 ```
 
-The shareware WAD file (~4MB) is auto-downloaded on first run.
+Pass a local WAD path to `/doom-overlay`, or place `doom1.wad` in the current directory, your home directory, or `~/.doom/`. The extension host has no network or write access, so it does not download the WAD.
+
+The extension also needs `doom/build/doom.js` and `doom/build/doom.wasm`. If those generated files are absent, install Emscripten and build them from the repository root:
+
+```bash
+./examples/extensions/doom-overlay/doom/build.sh
+```
 
 ## Controls
 
@@ -33,8 +39,9 @@ The shareware WAD file (~4MB) is auto-downloaded on first run.
 DOOM runs as WebAssembly compiled from [doomgeneric](https://github.com/ozkl/doomgeneric). Each frame is rendered using half-block characters (▀) with 24-bit color, where the top pixel is the foreground color and the bottom pixel is the background color.
 
 The overlay uses:
-- `width: "90%"` - 90% of terminal width
-- `maxHeight: "80%"` - Maximum 80% of terminal height
+
+- `width: "75%"` - 75% of terminal width
+- `maxHeight: "95%"` - Maximum 95% of terminal height
 - `anchor: "center"` - Centered in terminal
 
 Height is calculated from width to maintain DOOM's 3.2:1 aspect ratio (accounting for half-block rendering).

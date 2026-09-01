@@ -39,16 +39,13 @@ See [Extensions](../../docs/extensions.md) for API, installation, capabilities, 
 | `structured-output.ts` | Ending a turn through a structured-output tool. |
 | `tool-override.ts` | Wrapping built-in tools. |
 | `preset.ts` | Flags, commands, model selection, and active tools. |
-| `plan-mode/` | A multi-file interactive extension. |
+| `plan-mode/` | Advisory planning UI; its shell filter is not a security boundary. |
 | `status-line.ts` | Footer status updates. |
 | `custom-header.ts` | Custom terminal header. |
 | `custom-footer.ts` | Custom terminal footer. |
 | `modal-editor.ts` | Replacing the input editor. |
 | `overlay-test.ts` | Focused overlays and input. |
-| `subagent/` | Isolated subagent contexts. |
 | `ssh.ts` | Delegating tool operations over SSH. |
-| `custom-provider-anthropic/` | Registering a provider. |
-| `with-deps/` | Package dependencies. |
 
 The directory also contains examples for session control, compaction, autocomplete, themes, notifications, games, resource discovery, Git workflows, and provider hooks.
 
@@ -67,10 +64,10 @@ Requests outside the declared set return a capability error and are recorded in 
 Run the noninteractive sweep with:
 
 ```bash
-cargo test -p micro-cli --test extension_compatibility -- --nocapture
+cargo test -p micro-cli --test extension_compatibility -- --ignored --nocapture
 ```
 
-Interactive examples use a separate pseudo-terminal harness:
+The noninteractive sweep fails if an example cannot load or complete its plain test turn. Interactive examples use a separate pseudo-terminal harness and report any behavior that the harness cannot exercise:
 
 ```bash
 cargo test -p micro-cli --test interactive_extension_compatibility -- --nocapture

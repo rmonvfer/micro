@@ -3,7 +3,7 @@
  * Extracted for testability.
  */
 
-// Destructive commands blocked in plan mode
+// Common modifying commands screened by plan mode
 const DESTRUCTIVE_PATTERNS = [
 	/\brm\b/i,
 	/\brmdir\b/i,
@@ -21,9 +21,7 @@ const DESTRUCTIVE_PATTERNS = [
 	/\bshred\b/i,
 	/(^|[^<])>(?!>)/,
 	/>>/,
-	/\bnpm\s+(install|uninstall|update|ci|link|publish)/i,
-	/\byarn\s+(add|remove|install|publish)/i,
-	/\bpnpm\s+(add|remove|install|publish)/i,
+	/\bbun\s+(add|remove|install|update|link|publish)/i,
 	/\bpip\s+(install|uninstall)/i,
 	/\bapt(-get)?\s+(install|remove|purge|update|upgrade)/i,
 	/\bbrew\s+(install|uninstall|upgrade)/i,
@@ -40,7 +38,7 @@ const DESTRUCTIVE_PATTERNS = [
 	/\b(vim?|nano|emacs|code|subl)\b/i,
 ];
 
-// Safe read-only commands allowed in plan mode
+// Command prefixes recognized by plan mode
 const SAFE_PATTERNS = [
 	/^\s*cat\b/,
 	/^\s*head\b/,
@@ -79,8 +77,7 @@ const SAFE_PATTERNS = [
 	/^\s*free\b/,
 	/^\s*git\s+(status|log|diff|show|branch|remote|config\s+--get)/i,
 	/^\s*git\s+ls-/i,
-	/^\s*npm\s+(list|ls|view|info|search|outdated|audit)/i,
-	/^\s*yarn\s+(list|info|why|audit)/i,
+	/^\s*bun\s+(pm\s+ls|outdated|audit)/i,
 	/^\s*node\s+--version/i,
 	/^\s*python\s+--version/i,
 	/^\s*curl\s/i,
