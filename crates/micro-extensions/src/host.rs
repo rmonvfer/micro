@@ -209,6 +209,7 @@ pub struct Host {
     /// What the host said that micro has to act on, until somebody takes it.
     incoming: Mutex<Option<tokio::sync::mpsc::UnboundedReceiver<FromHost>>>,
     loaded: Loaded,
+    _compatibility_links: crate::compat::CompatibilityLinks,
     next_id: std::sync::atomic::AtomicU64,
 }
 
@@ -242,18 +243,19 @@ impl Host {
         readable_roots.push(compat_node_modules.clone());
         readable_roots.push(workspace_compat);
         readable_roots.push(workspace.to_path_buf());
-        let sandbox = match trusted {
-            true => {
-                micro_sandbox::Sandbox::trusted_extension_host(&runtime, readable_roots, workspace)
-            }
-            false => micro_sandbox::Sandbox::extension_host(&runtime, readable_roots),
-        };
+        let sandbox = micro_sandbox::Sandbox::extension_host(&runtime, readable_roots);
         if !sandbox.is_enforced() {
             return Err(
                 "extensions are disabled because this platform cannot confine the Bun host"
                     .to_string(),
             );
         }
+        let package_roots: Vec<PathBuf> = paths
+            .iter()
+            .filter_map(|path| extension_package_root(path, workspace))
+            .collect();
+        let compatibility_links =
+            crate::compat::link_into(&compat_node_modules, package_roots.iter())?;
         let runtime_name = runtime.to_string_lossy().into_owned();
         let wrapped = sandbox.wrap(
             &runtime_name,
@@ -379,6 +381,7 @@ impl Host {
             cancel,
             incoming: Mutex::new(Some(incoming)),
             loaded,
+            _compatibility_links: compatibility_links,
             next_id: std::sync::atomic::AtomicU64::new(0),
         })
     }
@@ -1248,14 +1251,25 @@ fn extension_read_roots(home: &Path, paths: &[PathBuf], workspace: &Path) -> Vec
             continue;
         }
         let parent = path.parent().unwrap_or(path.as_path());
-        let package_root = parent
-            .ancestors()
-            .find(|ancestor| *ancestor != workspace && ancestor.join("package.json").is_file());
-        roots.push(package_root.unwrap_or(parent).to_path_buf());
+        roots
+            .push(extension_package_root(&path, workspace).unwrap_or_else(|| parent.to_path_buf()));
     }
     roots.sort();
     roots.dedup();
     roots
+}
+
+fn extension_package_root(path: &Path, workspace: &Path) -> Option<PathBuf> {
+    let path = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    let workspace = std::fs::canonicalize(workspace).unwrap_or_else(|_| workspace.to_path_buf());
+    let directory = match path.is_dir() {
+        true => path.as_path(),
+        false => path.parent().unwrap_or(path.as_path()),
+    };
+    directory
+        .ancestors()
+        .find(|ancestor| *ancestor != workspace && ancestor.join("package.json").is_file())
+        .map(Path::to_path_buf)
 }
 
 #[cfg(test)]
@@ -1446,6 +1460,58 @@ export default (micro) => {
     }
 
     #[tokio::test]
+    async fn a_trusted_extension_cannot_write_directly_to_the_workspace() {
+        if which_bun().is_none() {
+            return;
+        }
+        let root = scratch("trusted-read-only");
+        let extension = root.join("writer.ts");
+        let marker = root.join("direct-write.txt");
+        std::fs::write(
+            &extension,
+            format!(
+                r#"
+export default (micro) => {{
+    micro.registerCommand("try-write", {{
+        handler: async () => {{
+            try {{
+                await Bun.write({marker:?}, "written");
+                return "wrote";
+            }} catch {{
+                return "denied";
+            }}
+        }},
+    }});
+}};
+"#,
+                marker = marker.display().to_string()
+            ),
+        )
+        .unwrap();
+
+        let host = Host::start(
+            &root,
+            std::slice::from_ref(&extension),
+            &root,
+            false,
+            true,
+            "tui",
+        )
+        .await
+        .expect("the host starts");
+
+        let answer = host
+            .call_command("try-write", "")
+            .await
+            .expect("the command answers");
+        assert_eq!(answer, serde_json::json!("denied"));
+        assert!(!marker.exists(), "the extension wrote outside the broker");
+
+        host.shutdown("quit").await;
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[tokio::test]
     async fn an_extension_resolves_the_bundled_pi_tui_package() {
         if which_bun().is_none() {
             return;
@@ -1485,6 +1551,75 @@ export default (micro) => {
         assert_eq!(host.call_command("probe", "").await.unwrap(), "5");
 
         host.shutdown("quit").await;
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[tokio::test]
+    async fn an_installed_extension_resolves_its_dependency_and_a_compatibility_package() {
+        if which_bun().is_none() {
+            return;
+        }
+        let root = scratch("installed-resolution");
+        let home = root.join("home");
+        let workspace = root.join("workspace");
+        let package = root.join("installed");
+        let dependency = package.join("node_modules/fixture-dependency");
+        std::fs::create_dir_all(&home).unwrap();
+        std::fs::create_dir_all(&workspace).unwrap();
+        std::fs::create_dir_all(&dependency).unwrap();
+        std::fs::write(
+            package.join("package.json"),
+            r#"{ "name": "fixture-extension", "type": "module" }"#,
+        )
+        .unwrap();
+        std::fs::write(
+            dependency.join("package.json"),
+            r#"{ "name": "fixture-dependency", "type": "module" }"#,
+        )
+        .unwrap();
+        std::fs::write(dependency.join("index.js"), "export const answer = 42;\n").unwrap();
+        let extension = package.join("index.ts");
+        std::fs::write(
+            &extension,
+            r#"
+import { answer } from "fixture-dependency";
+import { calculateCost } from "@earendil-works/pi-ai";
+export default (micro) => {
+    micro.registerCommand("probe", {
+        handler: async () => `${answer}:${typeof calculateCost}`,
+    });
+};
+"#,
+        )
+        .unwrap();
+
+        let host = Host::start(
+            &home,
+            std::slice::from_ref(&extension),
+            &workspace,
+            false,
+            false,
+            "tui",
+        )
+        .await
+        .expect("the host starts");
+        assert!(
+            host.loaded().errors.is_empty(),
+            "{:?}",
+            host.loaded().errors
+        );
+        assert_eq!(
+            host.call_command("probe", "").await.unwrap(),
+            serde_json::json!("42:function")
+        );
+
+        host.shutdown("quit").await;
+        drop(host);
+        assert!(dependency.is_dir(), "the package's own dependency remains");
+        assert!(
+            !package.join("node_modules/@earendil-works/pi-ai").exists(),
+            "the temporary compatibility link was removed"
+        );
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -1535,7 +1670,7 @@ export default (micro) => {
         let _ = std::fs::remove_dir_all(&root);
     }
 
-    /// Letting an extension go runs its own `deactivate`.
+    /// Letting an extension go runs its own `deactivate` and retires its registrations.
     #[tokio::test]
     async fn deactivating_an_extension_runs_its_own_teardown_and_drops_its_registrations() {
         if which_bun().is_none() {
@@ -1543,21 +1678,16 @@ export default (micro) => {
         }
         let root = scratch("deactivate");
         let extension = root.join("leaving.ts");
-        let marker = root.join("left.txt");
         std::fs::write(
             &extension,
-            format!(
-                r#"
-import {{ writeFileSync }} from "node:fs";
-export const deactivate = () => {{
-    writeFileSync({marker:?}, "put back");
-}};
-export default (micro) => {{
-    micro.registerCommand("probe", {{ handler: async () => "here" }});
-}};
+            r#"
+export const deactivate = () => {
+    throw new Error("teardown ran");
+};
+export default (micro) => {
+    micro.registerCommand("probe", { handler: async () => "here" });
+};
 "#,
-                marker = marker.display().to_string()
-            ),
         )
         .unwrap();
 
@@ -1582,13 +1712,11 @@ export default (micro) => {{
             serde_json::json!("here")
         );
 
-        host.deactivate(&extension.display().to_string())
+        let error = host
+            .deactivate(&extension.display().to_string())
             .await
-            .expect("it is let go");
-        assert_eq!(
-            std::fs::read_to_string(&marker).expect("its own teardown ran"),
-            "put back"
-        );
+            .expect_err("the teardown reports its sentinel");
+        assert_eq!(error, "teardown ran");
 
         let gone = host.call_command("probe", "").await;
         assert!(
@@ -1845,30 +1973,31 @@ export default (micro) => {
             return;
         }
         let root = scratch("cancel");
-        let marker = root.join("aborted.txt");
         let extension = root.join("waits.ts");
         std::fs::write(
             &extension,
-            format!(
-                r#"
-import {{ writeFileSync }} from "node:fs";
-export default (micro) => {{
-    micro.registerTool({{
+            r#"
+let aborted = false;
+export default (micro) => {
+    micro.registerTool({
         name: "wait_forever",
         description: "never resolves unless the caller gives up on it",
-        execute: async (toolCallId, args, signal) => {{
-            return new Promise((resolve, reject) => {{
-                signal?.addEventListener("abort", () => {{
-                    writeFileSync({marker:?}, "aborted");
+        execute: async (toolCallId, args, signal) => {
+            return new Promise((resolve, reject) => {
+                signal?.addEventListener("abort", () => {
+                    aborted = true;
                     reject(new Error("aborted"));
-                }});
-            }});
-        }},
-    }});
-}};
+                });
+            });
+        },
+    });
+    micro.registerTool({
+        name: "was_aborted",
+        description: "reports whether the pending call was cancelled",
+        execute: async () => String(aborted),
+    });
+};
 "#,
-                marker = marker.display().to_string()
-            ),
         )
         .unwrap();
 
@@ -1896,10 +2025,20 @@ export default (micro) => {{
         running.abort();
 
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-        while !marker.exists() && std::time::Instant::now() < deadline {
+        let mut aborted = false;
+        while !aborted && std::time::Instant::now() < deadline {
+            let answer = host
+                .call_tool(
+                    "was_aborted",
+                    &serde_json::json!({}),
+                    &micro_tools::Progress::default(),
+                )
+                .await
+                .expect("the status tool answers");
+            aborted = as_text(&answer) == "true";
             tokio::time::sleep(std::time::Duration::from_millis(20)).await;
         }
-        assert!(marker.exists(), "the extension saw the abort signal");
+        assert!(aborted, "the extension saw the abort signal");
 
         host.shutdown("quit").await;
         let _ = std::fs::remove_dir_all(&root);

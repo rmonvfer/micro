@@ -2,6 +2,7 @@
 
 use crate::required_str;
 use crate::resolve_path;
+use crate::resolve_write_path;
 use crate::truncate;
 use crate::Guard;
 use crate::Tool;
@@ -140,7 +141,7 @@ impl Tool for Write {
     }
 
     async fn execute(&self, arguments: &Value) -> Result<String, String> {
-        let path = resolve_path(&self.root, &required_str(arguments, "path")?)?;
+        let path = resolve_write_path(&self.root, &required_str(arguments, "path")?)?;
         self.guard.write(&path)?;
         let content = required_str(arguments, "content")?;
         let _held = crate::mutations::hold(&path).await;
@@ -195,7 +196,7 @@ impl Tool for Edit {
     }
 
     async fn execute(&self, arguments: &Value) -> Result<String, String> {
-        let path = resolve_path(&self.root, &required_str(arguments, "path")?)?;
+        let path = resolve_write_path(&self.root, &required_str(arguments, "path")?)?;
         self.guard.write(&path)?;
         let old_string = required_str(arguments, "old_string")?;
         let new_string = required_str(arguments, "new_string")?;
@@ -287,7 +288,7 @@ impl Tool for MultiEdit {
     }
 
     async fn execute(&self, arguments: &Value) -> Result<String, String> {
-        let path = resolve_path(&self.root, &required_str(arguments, "path")?)?;
+        let path = resolve_write_path(&self.root, &required_str(arguments, "path")?)?;
         self.guard.write(&path)?;
         let edits = arguments
             .get("edits")
@@ -468,6 +469,24 @@ mod tests {
 
         assert_eq!(
             std::fs::read_to_string(root.join("nested/deep/a.txt")).unwrap(),
+            "hi"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn write_creates_a_file_below_an_internal_symlink() {
+        let root = scratch("write-internal-symlink");
+        std::fs::create_dir(root.join("target")).unwrap();
+        std::os::unix::fs::symlink(root.join("target"), root.join("link")).unwrap();
+
+        Write::new(root.clone(), Guard::for_workspace(&root))
+            .execute(&json!({ "path": "link/nested/a.txt", "content": "hi" }))
+            .await
+            .unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(root.join("target/nested/a.txt")).unwrap(),
             "hi"
         );
     }
@@ -661,6 +680,30 @@ mod tests {
             .await
             .unwrap_err();
         assert!(error.contains("escapes the workspace"));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn read_and_list_reject_a_symlink_outside_the_workspace() {
+        let base = scratch("read-symlink-escape");
+        let root = base.join("workspace");
+        let outside = base.join("outside");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::write(outside.join("secret.txt"), "secret").unwrap();
+        std::os::unix::fs::symlink(&outside, root.join("escape")).unwrap();
+
+        let read = Read::new(root.clone(), Guard::for_workspace(&root))
+            .execute(&json!({ "path": "escape/secret.txt" }))
+            .await
+            .unwrap_err();
+        assert!(read.contains("escapes the workspace"), "{read}");
+
+        let listed = Ls::new(root.clone(), Guard::for_workspace(&root))
+            .execute(&json!({ "path": "escape" }))
+            .await
+            .unwrap_err();
+        assert!(listed.contains("escapes the workspace"), "{listed}");
     }
 }
 

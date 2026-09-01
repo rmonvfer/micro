@@ -118,7 +118,7 @@ impl Tool for Grep {
         let start = resolve_path(&self.root, requested)?;
         self.guard.read(&start)?;
         let search = Search {
-            root: self.root.clone(),
+            root: resolve_path(&self.root, ".")?,
             start,
             regex: RegexBuilder::new(&expression)
                 .case_insensitive(case_insensitive)
@@ -193,7 +193,7 @@ impl Tool for Find {
         let start = resolve_path(&self.root, requested)?;
         self.guard.read(&start)?;
         let lookup = Lookup {
-            root: self.root.clone(),
+            root: resolve_path(&self.root, ".")?,
             start,
             pattern,
             limit,
@@ -591,6 +591,30 @@ mod tests {
             .await
             .unwrap_err();
         assert!(error.contains("escapes the workspace"));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn searching_a_symlink_outside_the_workspace_is_refused() {
+        let base = scratch("search-symlink-escape");
+        let root = base.join("workspace");
+        let outside = base.join("outside");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        write(&outside, "secret.txt", "needle\n");
+        std::os::unix::fs::symlink(&outside, root.join("escape")).unwrap();
+
+        let grep = Grep::new(root.clone(), Guard::for_workspace(&root))
+            .execute(&json!({ "pattern": "needle", "path": "escape" }))
+            .await
+            .unwrap_err();
+        assert!(grep.contains("escapes the workspace"), "{grep}");
+
+        let find = Find::new(root.clone(), Guard::for_workspace(&root))
+            .execute(&json!({ "pattern": "**/*", "path": "escape" }))
+            .await
+            .unwrap_err();
+        assert!(find.contains("escapes the workspace"), "{find}");
     }
 
     #[tokio::test]

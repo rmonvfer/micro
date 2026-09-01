@@ -118,6 +118,17 @@ pub fn builtin_tools(root: impl Into<PathBuf>, guard: Guard) -> Vec<Arc<dyn Tool
 
 /// Resolve a model-supplied path against the workspace root, rejecting anything that escapes it.
 pub(crate) fn resolve_path(root: &Path, candidate: &str) -> Result<PathBuf, String> {
+    let root = micro_sandbox::resolve_path(root, Path::new("."));
+    let resolved = resolve_target(&root, candidate)?;
+    if !resolved.starts_with(&root) {
+        return Err(format!("path escapes the workspace: {candidate}"));
+    }
+    Ok(resolved)
+}
+
+/// Resolve a path used for a write. Lexical escapes are rejected here; a symlink escape is handed
+/// to the guard so its policy decides and records the refusal.
+pub(crate) fn resolve_write_path(root: &Path, candidate: &str) -> Result<PathBuf, String> {
     if candidate.trim().is_empty() {
         return Err("path must not be empty".to_string());
     }
@@ -128,7 +139,6 @@ pub(crate) fn resolve_path(root: &Path, candidate: &str) -> Result<PathBuf, Stri
     } else {
         root.join(requested)
     };
-
     let mut normalized = PathBuf::new();
     for component in joined.components() {
         match component {
@@ -141,11 +151,17 @@ pub(crate) fn resolve_path(root: &Path, candidate: &str) -> Result<PathBuf, Stri
             other => normalized.push(other.as_os_str()),
         }
     }
-
     if !normalized.starts_with(root) {
         return Err(format!("path escapes the workspace: {candidate}"));
     }
-    Ok(normalized)
+    resolve_target(root, candidate)
+}
+
+fn resolve_target(root: &Path, candidate: &str) -> Result<PathBuf, String> {
+    if candidate.trim().is_empty() {
+        return Err("path must not be empty".to_string());
+    }
+    Ok(micro_sandbox::resolve_path(root, Path::new(candidate)))
 }
 
 /// Truncate long output around the middle, keeping the head and tail the model needs.
@@ -198,6 +214,21 @@ mod tests {
             resolve_path(root, "src/../README.md").unwrap(),
             PathBuf::from("/work/README.md")
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_symlink_out_of_the_root_is_rejected() {
+        let base = std::env::temp_dir().join("micro-tools-resolve-symlink");
+        let _ = std::fs::remove_dir_all(&base);
+        let root = base.join("workspace");
+        let outside = base.join("outside");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        std::os::unix::fs::symlink(&outside, root.join("escape")).unwrap();
+
+        let error = resolve_path(&root, "escape/secret.txt").unwrap_err();
+        assert!(error.contains("escapes the workspace"), "{error}");
     }
 
     #[test]

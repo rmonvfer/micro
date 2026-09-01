@@ -249,6 +249,108 @@ pub fn node_path(home: &Path, compat_node_modules: &Path) -> Result<std::ffi::Os
     .map_err(|error| format!("cannot build NODE_PATH: {error}"))
 }
 
+#[derive(Default)]
+pub(crate) struct CompatibilityLinks {
+    links: Vec<PathBuf>,
+    directories: Vec<PathBuf>,
+}
+
+impl Drop for CompatibilityLinks {
+    fn drop(&mut self) {
+        for link in self.links.iter().rev() {
+            remove_symlink(link);
+        }
+        for directory in self.directories.iter().rev() {
+            let _ = std::fs::remove_dir(directory);
+        }
+    }
+}
+
+#[cfg(unix)]
+fn remove_symlink(path: &Path) {
+    let _ = std::fs::remove_file(path);
+}
+
+#[cfg(windows)]
+fn remove_symlink(path: &Path) {
+    let _ = std::fs::remove_dir(path);
+}
+
+/// Make compatibility packages visible beside dependencies installed for an extension. Bun does
+/// not fall back to `NODE_PATH` after it finds that extension's own `node_modules` directory.
+pub(crate) fn link_into<'a, I>(
+    compat_node_modules: &Path,
+    package_roots: I,
+) -> Result<CompatibilityLinks, String>
+where
+    I: IntoIterator<Item = &'a PathBuf>,
+{
+    let mut linked = CompatibilityLinks::default();
+    let compat_node_modules = std::fs::canonicalize(compat_node_modules)
+        .unwrap_or_else(|_| compat_node_modules.to_path_buf());
+    let mut roots: Vec<PathBuf> = package_roots.into_iter().cloned().collect();
+    roots.sort();
+    roots.dedup();
+
+    for root in roots {
+        let node_modules = root.join("node_modules");
+        ensure_directory(&node_modules, &mut linked)?;
+        for scope in SCOPES {
+            let target_scope = node_modules.join(scope);
+            ensure_directory(&target_scope, &mut linked)?;
+            for package in PACKAGES {
+                link_package(
+                    &compat_node_modules.join(scope).join(package.name),
+                    &target_scope.join(package.name),
+                    &mut linked,
+                )?;
+            }
+        }
+        for package in ["get-east-asian-width", "typebox", "marked"] {
+            link_package(
+                &compat_node_modules.join(package),
+                &node_modules.join(package),
+                &mut linked,
+            )?;
+        }
+    }
+
+    Ok(linked)
+}
+
+fn ensure_directory(path: &Path, linked: &mut CompatibilityLinks) -> Result<(), String> {
+    if path.is_dir() {
+        return Ok(());
+    }
+    std::fs::create_dir(path).map_err(|error| format!("cannot use {}: {error}", path.display()))?;
+    linked.directories.push(path.to_path_buf());
+    Ok(())
+}
+
+fn link_package(
+    source: &Path,
+    target: &Path,
+    linked: &mut CompatibilityLinks,
+) -> Result<(), String> {
+    if std::fs::symlink_metadata(target).is_ok() {
+        return Ok(());
+    }
+    symlink_directory(source, target)
+        .map_err(|error| format!("cannot link {}: {error}", target.display()))?;
+    linked.links.push(target.to_path_buf());
+    Ok(())
+}
+
+#[cfg(unix)]
+fn symlink_directory(source: &Path, target: &Path) -> std::io::Result<()> {
+    std::os::unix::fs::symlink(source, target)
+}
+
+#[cfg(windows)]
+fn symlink_directory(source: &Path, target: &Path) -> std::io::Result<()> {
+    std::os::windows::fs::symlink_dir(source, target)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -293,6 +395,32 @@ mod tests {
             .is_file());
 
         let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn package_links_preserve_existing_dependencies_and_are_removed_on_drop() {
+        let home = scratch("linked-home");
+        let compat_node_modules = install(&home).unwrap();
+        let package = scratch("linked-package");
+        let existing = package.join("node_modules/@earendil-works/pi-ai");
+        std::fs::create_dir_all(&existing).unwrap();
+        std::fs::write(existing.join("owned.txt"), "package owned").unwrap();
+
+        let linked = link_into(&compat_node_modules, [&package]).unwrap();
+        let temporary = package.join("node_modules/@mariozechner/pi-ai");
+        assert!(temporary.exists(), "the compatibility package is visible");
+        assert_eq!(
+            std::fs::read_to_string(existing.join("owned.txt")).unwrap(),
+            "package owned"
+        );
+
+        drop(linked);
+        assert!(!temporary.exists(), "the temporary link was removed");
+        assert!(existing.join("owned.txt").is_file());
+
+        let _ = std::fs::remove_dir_all(&home);
+        let _ = std::fs::remove_dir_all(&package);
     }
 
     /// `ai/catalog.json` sits under both scopes, beside the `pi-ai` files `PACKAGES` already

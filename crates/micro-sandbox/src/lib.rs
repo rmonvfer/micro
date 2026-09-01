@@ -22,6 +22,12 @@ pub use policy::PROTECTED_NAMES;
 use std::path::Path;
 use std::path::PathBuf;
 
+/// Resolve a path against a base directory as the filesystem would, while preserving a suffix
+/// that does not exist yet.
+pub fn resolve_path(base: &Path, path: &Path) -> PathBuf {
+    paths::resolve(base, path)
+}
+
 /// The environment variable a confined command can read to learn it is confined, and by what.
 pub const SANDBOX_ENV_VAR: &str = "MICRO_SANDBOX";
 
@@ -137,24 +143,6 @@ impl Sandbox {
         let mut sandbox = Sandbox::new(SandboxPolicy::ReadOnly, workspace);
         sandbox.readable_roots = Some(readable_roots);
         sandbox.allowed_executables = vec![runtime];
-        sandbox
-    }
-
-    /// A confined host for extensions the user has trusted, which may also write in the active
-    /// workspace. Its reads, network access, and executable remain explicitly restricted.
-    pub fn trusted_extension_host<I, P>(
-        runtime: impl Into<PathBuf>,
-        readable_roots: I,
-        workspace: impl Into<PathBuf>,
-    ) -> Self
-    where
-        I: IntoIterator<Item = P>,
-        P: Into<PathBuf>,
-    {
-        let workspace = paths::canonicalize_deepest_existing(&workspace.into());
-        let mut sandbox = Self::extension_host(runtime, readable_roots);
-        sandbox.workspace = workspace;
-        sandbox.policy = SandboxPolicy::workspace_write();
         sandbox
     }
 
@@ -564,20 +552,20 @@ mod tests {
     }
 
     #[test]
-    fn a_trusted_extension_host_can_write_only_its_workspace() {
-        let (dir, workspace) = workspace("trusted-extension-host");
+    fn an_extension_host_cannot_write_to_its_workspace() {
+        let (_dir, workspace) = workspace("extension-host-read-only");
         let runtime = workspace.join("bun");
         std::fs::write(&runtime, "runtime").unwrap();
         let package = workspace.join("extension");
         std::fs::create_dir_all(&package).unwrap();
 
-        let sandbox = Sandbox::trusted_extension_host(&runtime, [&package], &workspace);
+        let sandbox = Sandbox::extension_host(&runtime, [&package, &workspace]);
         assert!(
-            sandbox
+            !sandbox
                 .check_write(&workspace.join("extension.log"))
                 .allowed
         );
-        assert!(!sandbox.check_write(&dir.join("outside.log")).allowed);
+        assert!(sandbox.rules().writable_roots.is_empty());
         assert!(!sandbox.rules().allow_network);
     }
 
