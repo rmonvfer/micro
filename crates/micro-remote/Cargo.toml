@@ -3,6 +3,7 @@ name = "micro-remote"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+publish.workspace = true
 
 [dependencies]
 micro-types = { workspace = true }
@@ -25,8 +26,15 @@ x25519-dalek = { workspace = true }
 
 [dev-dependencies]
 base64 = { workspace = true }
+bytes = "1.11"
 futures = { workspace = true }
+http-body-util = "0.1"
+hyper = { version = "1.11", features = ["http1", "server"] }
+hyper-util = { version = "0.1", features = ["tokio"] }
+rcgen = { version = "0.14.10", default-features = false, features = ["ring"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 tokio = { workspace = true }
+tokio-rustls = { version = "0.26.4", default-features = false, features = ["logging", "ring", "tls12"] }
 tokio-tungstenite = { workspace = true }
 x25519-dalek = { workspace = true }
 reqwest = { workspace = true }

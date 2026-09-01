@@ -154,6 +154,45 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d3fb67a6e08acf24fdeccbac2cb6ac4305825bd1f117462e0e6f2f193345ad56"
 
 [[package]]
+name = "asn1-rs"
+version = "0.7.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b7f43a50ac4fdca5df8e885c21b835997f0a1cdee65494a6847694a98652d9d8"
+dependencies = [
+ "asn1-rs-derive",
+ "asn1-rs-impl",
+ "displaydoc",
+ "nom",
+ "num-traits",
+ "rusticata-macros",
+ "thiserror 2.0.20",
+ "time",
+]
+
+[[package]]
+name = "asn1-rs-derive"
+version = "0.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3109e49b1e4909e9db6515a30c633684d68cdeaa252f215214cb4fa1a5bfee2c"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
+ "synstructure",
+]
+
+[[package]]
+name = "asn1-rs-impl"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7b18050c2cd6fe86c3a76584ef5e0baf286d038cda203eb6223df2cc413565f7"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
+]
+
+[[package]]
 name = "async-trait"
 version = "0.1.92"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -249,6 +288,15 @@ name = "bit-vec"
 version = "0.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5e764a1d40d510daf35e07be9eb06e75770908c27d411ee6c92109c9840eaaf7"
+
+[[package]]
+name = "bit-vec"
+version = "0.9.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b71798fca2c1fe1086445a7258a4bc81e6e49dcd24c8d0dd9a1e57395b603f51"
+dependencies = [
+ "serde",
+]
 
 [[package]]
 name = "bitflags"
@@ -833,6 +881,20 @@ name = "deltae"
 version = "0.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5729f5117e208430e437df2f4843f5e5952997175992d1414f94c57d61e270b4"
+
+[[package]]
+name = "der-parser"
+version = "10.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "07da5016415d5a3c4dd39b11ed26f915f52fc4e0dc197d87908bc916e51bc1a6"
+dependencies = [
+ "asn1-rs",
+ "displaydoc",
+ "nom",
+ "num-bigint",
+ "num-traits",
+ "rusticata-macros",
+]
 
 [[package]]
 name = "deranged"
@@ -1593,6 +1655,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6dbf3de79e51f3d586ab4cb9d5c3e2c14aa28ed23d180cf89b4df0454a69cc87"
 
 [[package]]
+name = "httpdate"
+version = "1.0.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "df3b46402a9d5adb4c86a0cf463f42e19994e3ee891101b1841f30a545cb49a9"
+
+[[package]]
 name = "hybrid-array"
 version = "0.4.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1614,6 +1682,7 @@ dependencies = [
  "http",
  "http-body",
  "httparse",
+ "httpdate",
  "itoa",
  "pin-project-lite",
  "smallvec",
@@ -2223,7 +2292,7 @@ dependencies = [
 
 [[package]]
 name = "micro-agent"
-version = "0.1.11"
+version = "0.1.12"
 dependencies = [
  "async-trait",
  "futures",
@@ -2238,7 +2307,7 @@ dependencies = [
 
 [[package]]
 name = "micro-auth"
-version = "0.1.11"
+version = "0.1.12"
 dependencies = [
  "micro-dirs",
  "reqwest",
@@ -2250,7 +2319,7 @@ dependencies = [
 
 [[package]]
 name = "micro-cli"
-version = "0.1.11"
+version = "0.1.12"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2288,7 +2357,7 @@ dependencies = [
 
 [[package]]
 name = "micro-commands"
-version = "0.1.11"
+version = "0.1.12"
 dependencies = [
  "micro-auth",
  "micro-config",
@@ -2307,7 +2376,7 @@ dependencies = [
 
 [[package]]
 name = "micro-config"
-version = "0.1.11"
+version = "0.1.12"
 dependencies = [
  "micro-dirs",
  "serde",
@@ -2318,7 +2387,7 @@ dependencies = [
 
 [[package]]
 name = "micro-context"
-version = "0.1.11"
+version = "0.1.12"
 dependencies = [
  "async-trait",
  "micro-dirs",
@@ -2331,11 +2400,11 @@ dependencies = [
 
 [[package]]
 name = "micro-dirs"
-version = "0.1.11"
+version = "0.1.12"
 
 [[package]]
 name = "micro-extensions"
-version = "0.1.11"
+version = "0.1.12"
 dependencies = [
  "async-trait",
  "micro-models",
@@ -2349,7 +2418,7 @@ dependencies = [
 
 [[package]]
 name = "micro-mcp"
-version = "0.1.11"
+version = "0.1.12"
 dependencies = [
  "async-trait",
  "micro-tools",
@@ -2362,7 +2431,7 @@ dependencies = [
 
 [[package]]
 name = "micro-mermaid"
-version = "0.1.11"
+version = "0.1.12"
 dependencies = [
  "unicode-segmentation",
  "unicode-width",
@@ -2370,7 +2439,7 @@ dependencies = [
 
 [[package]]
 name = "micro-models"
-version = "0.1.11"
+version = "0.1.12"
 dependencies = [
  "micro-dirs",
  "micro-types",
@@ -2383,14 +2452,14 @@ dependencies = [
 
 [[package]]
 name = "micro-prompts"
-version = "0.1.11"
+version = "0.1.12"
 dependencies = [
  "micro-config",
 ]
 
 [[package]]
 name = "micro-provider"
-version = "0.1.11"
+version = "0.1.12"
 dependencies = [
  "async-trait",
  "futures",
@@ -2408,34 +2477,44 @@ dependencies = [
 
 [[package]]
 name = "micro-remote"
-version = "0.1.11"
+version = "0.1.12"
 dependencies = [
  "aes-gcm",
  "base64",
+ "bytes",
  "futures",
  "hkdf",
  "hmac",
+ "http-body-util",
+ "hyper",
+ "hyper-util",
  "micro-types",
  "qrcode",
  "rand 0.8.7",
+ "rcgen",
  "reqwest",
+ "rustls",
  "serde",
  "serde_json",
  "sha2",
  "thiserror 2.0.20",
  "tokio",
+ "tokio-rustls",
  "tokio-tungstenite",
  "x25519-dalek",
 ]
 
 [[package]]
 name = "micro-rpc"
-version = "0.1.11"
+version = "0.1.12"
 dependencies = [
  "async-trait",
  "micro-agent",
+ "micro-auth",
  "micro-commands",
  "micro-models",
+ "micro-provider",
+ "micro-sandbox",
  "micro-session",
  "micro-testkit",
  "micro-tools",
@@ -2447,7 +2526,7 @@ dependencies = [
 
 [[package]]
 name = "micro-sandbox"
-version = "0.1.11"
+version = "0.1.12"
 dependencies = [
  "landlock",
  "libc",
@@ -2458,7 +2537,7 @@ dependencies = [
 
 [[package]]
 name = "micro-session"
-version = "0.1.11"
+version = "0.1.12"
 dependencies = [
  "micro-context",
  "micro-dirs",
@@ -2471,7 +2550,7 @@ dependencies = [
 
 [[package]]
 name = "micro-skills"
-version = "0.1.11"
+version = "0.1.12"
 dependencies = [
  "serde",
  "thiserror 2.0.20",
@@ -2480,7 +2559,7 @@ dependencies = [
 
 [[package]]
 name = "micro-testkit"
-version = "0.1.11"
+version = "0.1.12"
 dependencies = [
  "async-trait",
  "micro-agent",
@@ -2496,7 +2575,7 @@ dependencies = [
 
 [[package]]
 name = "micro-tools"
-version = "0.1.11"
+version = "0.1.12"
 dependencies = [
  "async-trait",
  "base64",
@@ -2511,7 +2590,7 @@ dependencies = [
 
 [[package]]
 name = "micro-tui"
-version = "0.1.11"
+version = "0.1.12"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2543,7 +2622,7 @@ dependencies = [
 
 [[package]]
 name = "micro-types"
-version = "0.1.11"
+version = "0.1.12"
 dependencies = [
  "serde",
  "serde_json",
@@ -2678,6 +2757,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2e5a6c098c7a3b6547378093f5cc30bc54fd361ce711e05293a5cc589562739b"
 dependencies = [
  "memchr",
+]
+
+[[package]]
+name = "oid-registry"
+version = "0.8.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "12f40cff3dde1b6087cc5d5f5d4d65712f34016a03ed60e9c08dcc392736b5b7"
+dependencies = [
+ "asn1-rs",
 ]
 
 [[package]]
@@ -3359,6 +3447,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "rcgen"
+version = "0.14.10"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8774e05a7d0de114588e6a28fe7e71694b82614ed569d86d8b389dfbc98b8ad8"
+dependencies = [
+ "ring",
+ "rustls-pki-types",
+ "time",
+ "x509-parser",
+ "yasna",
+]
+
+[[package]]
 name = "read-fonts"
 version = "0.39.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3545,6 +3646,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "rusticata-macros"
+version = "4.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "faf0c4a6ece9950b9abdb62b1cfcf2a68b3b67a10ba445b3bb85be2a293d0632"
+dependencies = [
+ "nom",
+]
+
+[[package]]
 name = "rustix"
 version = "1.1.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3563,6 +3673,7 @@ version = "0.23.43"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0283386ce02abc0151e1761d08802dfe86c173b0b494af5cbc086574e453da06"
 dependencies = [
+ "log",
  "once_cell",
  "ring",
  "rustls-pki-types",
@@ -5594,6 +5705,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "x509-parser"
+version = "0.18.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d43b0f71ce057da06bc0851b23ee24f3f86190b07203dd8f567d0b706a185202"
+dependencies = [
+ "asn1-rs",
+ "data-encoding",
+ "der-parser",
+ "lazy_static",
+ "nom",
+ "oid-registry",
+ "ring",
+ "rusticata-macros",
+ "thiserror 2.0.20",
+ "time",
+]
+
+[[package]]
 name = "xmlwriter"
 version = "0.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5606,6 +5735,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "56c1936c4cc7a1c9ab21a1ebb602eb942ba868cbd44a99cb7cdc5892335e1c85"
 dependencies = [
  "linked-hash-map",
+]
+
+[[package]]
+name = "yasna"
+version = "0.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b5f6765e852b9b4dc8e2a76843e4d64d1cea8e79bcde0b6901aea8e7c7f08282"
+dependencies = [
+ "bit-vec 0.9.1",
+ "time",
 ]
 
 [[package]]
