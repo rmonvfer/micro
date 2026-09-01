@@ -1,63 +1,85 @@
 # Changelog
 
-## 0.1.0
+## [Unreleased]
 
-First release.
+## [0.1.12] - 2026-09-01
 
-A coding agent for the terminal, in one binary with no runtime to install.
+- Allow manual compaction below the automatic threshold.
+- Fork sessions from the persisted conversation branch.
+- Exclude Git internals from file completion.
+- Add public and authenticated installation bootstrap commands.
+- Ignore local generated artifacts.
+- Add the MIT license, security policy, and contribution guide.
+- Reject filesystem symlink escapes and keep the Bun extension host read-only.
+- Apply the session sandbox to RPC shell commands and rebuild the provider runtime on model switches.
+- Require encrypted remote relays and reject authenticated frame replays after reconnect.
+- Store session files with owner-only permissions and make failed deletion retryable.
+- Record request pricing for stable historical bills and correct compaction branch totals.
+- Preserve run-only trust and refresh the skill command registry during `/reload`.
+- Refresh live model listings at startup when `live_models` is enabled.
+- Load all maintained extension examples and enforce the compatibility sweep in CI.
+- Include MIT and Apache licensing material in release archives.
 
-Talks to OpenRouter, GitHub Copilot, Google Gemini and Anthropic, with API keys or a
-device sign-in, and switches between them mid-conversation without losing what was said.
+## [0.1.11] - 2026-08-14
 
-Every conversation is recorded as it happens and reopens exactly as it was left, branches
-included: going back to an earlier point keeps the answer that was there before.
+- Authenticate managed update checks and downloads for private GitHub releases.
 
-The same log carries a ledger of everything else a run did: the exact request each turn
-sent, with every stretch of the prompt attributed to whatever supplied it, what the provider
-said it cost, what the sandbox refused, and what an extension asked for and was told.
-`micro sessions show <id> --turn N --raw` rebuilds a request out of that record and checks
-it against the hash of the body that went out, and `micro sessions export` prints the whole
-ledger in a documented, versioned format.
+## [0.1.10] - 2026-08-10
 
-`micro bill` itemizes what a session cost, turn by turn and source by source, pricing cache
-reads, cache writes and fresh input separately; `/bill` reads the same from inside a
-session, and `--diff` answers what one turn added and why. `--budget`, or a `budget`
-setting, stops a session at the first turn boundary past what it was allowed to spend, and
-says so in the ledger.
+- Reject external entities and DTD declarations while parsing Typst XML.
+- Authenticate the dependency-audit workflow for the private repository.
 
-The head of a request is meant to stand still so that a provider can reuse it. Anything that
-would move it is taken up at a turn boundary and recorded with its reason, and
-`micro why-miss` prints the span that moved, the lines that differ, and the reason it was
-recorded under.
+## [0.1.9] - 2026-07-31
 
-Commands run under an operating-system sandbox: the workspace is writable, nothing else is,
-the network is off, and `.git` and micro's own directories stay read-only inside a writable
-workspace. `--sandbox` and a `sandbox` setting choose the policy for a run or for a project,
-`micro sandbox try` says what would become of a command before you spend a turn on it, and
-every refusal reaches both the model and the ledger.
+- Publish release artifacts from the private repository.
 
-A project is vouched for once with `/trust` rather than every time, and that one decision
-is what settles whether micro will run the code the project ships. Tool calls themselves
-are not gated after that: once micro is running, it acts.
+## [0.1.8] - 2026-07-24
 
-Extensions run in a Bun process of their own and reach micro only by asking. An extension
-declares what it needs — tools, commands, exec, the interface — and an ask outside that is
-refused by a name it can catch while the session carries on; one that declares nothing is
-asked about once and the answer remembered. `micro install` fetches a package with its
-dependencies, `micro list` shows what each one may do, and an extension may export a
-`deactivate` to put back what it changed outside micro.
+- Align Linux sandbox setup and tests with hosted CI runners.
 
-Tools from MCP servers reach the model beside micro's own. Past a threshold, the extra ones
-are described through a search tool rather than in every request, so a shelf of servers
-costs a lookup instead of a standing share of the context window.
+## [0.1.7] - 2026-07-20
 
-Skills are read from the workspace and from micro's own directory, announced to the model
-by name so it reaches for one only when it applies.
+- Avoid root propagation remounts during Linux sandbox setup.
 
-A session can be handed to a paired phone with `/remote` and read and driven from there
-while the terminal stays fully usable. What crosses the relay is ciphertext the relay
-cannot open.
+## [0.1.6] - 2026-07-13
 
-Where micro keeps things follows the XDG base directory specification, with what you wrote
-kept apart from what micro produced. `MICRO_DIR` puts all of it in one named directory, and
-an existing `~/.micro` keeps holding everything it already held.
+- Isolate RPC interruption test workspaces.
+
+## [0.1.5] - 2026-07-06
+
+- Map the Linux sandbox child process from its parent namespace.
+
+## [0.1.4] - 2026-07-01
+
+- Map the sandbox identity before entering the Linux namespace.
+
+## [0.1.3] - 2026-06-23
+
+- Preserve permitted root writes under the Linux sandbox.
+
+## [0.1.2] - 2026-06-18
+
+- Pass the Linux sandbox lint gate.
+
+## [0.1.1] - 2026-06-15
+
+- Improve Linux handling for protected sandbox paths. Landlock cannot exclude protected descendants from a writable workspace; see the [known gaps](docs/sandbox.md#known-gaps).
+
+## [0.1.0] - 2026-06-08
+
+The first release includes the terminal agent, provider integrations, append-only sessions, billing, prompt-cache diagnostics, project configuration, command sandboxing, extensions, MCP tools, remote control, and managed updates. The core agent is a Rust binary; TypeScript extensions require Bun.
+
+[Unreleased]: https://github.com/rmonvfer/micro/compare/v0.1.12...HEAD
+[0.1.12]: https://github.com/rmonvfer/micro/compare/v0.1.11...v0.1.12
+[0.1.11]: https://github.com/rmonvfer/micro/compare/v0.1.10...v0.1.11
+[0.1.10]: https://github.com/rmonvfer/micro/compare/v0.1.9...v0.1.10
+[0.1.9]: https://github.com/rmonvfer/micro/compare/v0.1.8...v0.1.9
+[0.1.8]: https://github.com/rmonvfer/micro/compare/v0.1.7...v0.1.8
+[0.1.7]: https://github.com/rmonvfer/micro/compare/v0.1.6...v0.1.7
+[0.1.6]: https://github.com/rmonvfer/micro/compare/v0.1.5...v0.1.6
+[0.1.5]: https://github.com/rmonvfer/micro/compare/v0.1.4...v0.1.5
+[0.1.4]: https://github.com/rmonvfer/micro/compare/v0.1.3...v0.1.4
+[0.1.3]: https://github.com/rmonvfer/micro/compare/v0.1.2...v0.1.3
+[0.1.2]: https://github.com/rmonvfer/micro/compare/v0.1.1...v0.1.2
+[0.1.1]: https://github.com/rmonvfer/micro/compare/v0.1.0...v0.1.1
+[0.1.0]: https://github.com/rmonvfer/micro/releases/tag/v0.1.0

@@ -11,14 +11,18 @@ jobs:
   verify:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@1.97.1
         with:
           components: clippy,rustfmt
       - uses: Swatinem/rust-cache@v2
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.4.0"
       - run: cargo fmt --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace
+      - run: cargo test -p micro-cli --test extension_compatibility -- --ignored --nocapture
       - run: bash -n scripts/install.sh
 
   build:
@@ -35,7 +39,7 @@ jobs:
           - os: ubuntu-22.04-arm
             target: linux-arm64
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@1.97.1
       - uses: Swatinem/rust-cache@v2
       - name: Verify release version
@@ -49,8 +53,11 @@ jobs:
       - name: Stage archive
         shell: bash
         run: |
-          mkdir -p dist/micro/bin
+          mkdir -p dist/micro/bin dist/micro/licenses
           cp target/release/micro dist/micro/bin/micro
+          cp LICENSE dist/micro/LICENSE
+          cp crates/micro-sandbox/LICENSE dist/micro/licenses/micro-sandbox-LICENSE
+          cp crates/micro-sandbox/NOTICE dist/micro/licenses/micro-sandbox-NOTICE
           tar -czf "micro-${{ matrix.target }}.tar.gz" -C dist micro
       - name: Smoke test distribution
         shell: bash
@@ -60,9 +67,12 @@ jobs:
           tar -xzf "micro-${{ matrix.target }}.tar.gz" -C "$root"
           binary="$root/micro/bin/micro"
           test -x "$binary"
+          test -f "$root/micro/LICENSE"
+          test -f "$root/micro/licenses/micro-sandbox-LICENSE"
+          test -f "$root/micro/licenses/micro-sandbox-NOTICE"
           "$binary" --help
           test "$("$binary" --version)" = "micro ${GITHUB_REF_NAME#v}"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: micro-${{ matrix.target }}
           path: micro-${{ matrix.target }}.tar.gz
@@ -75,7 +85,7 @@ jobs:
       contents: write
       id-token: write
     steps:
-      - uses: actions/download-artifact@v5
+      - uses: actions/download-artifact@v8
         with:
           path: artifacts
       - name: Prepare release assets
@@ -86,7 +96,7 @@ jobs:
           (cd release && sha256sum micro-*.tar.gz > checksums-sha256.txt)
       - name: Attest public release assets
         if: ${{ !github.event.repository.private }}
-        uses: actions/attest-build-provenance@v3
+        uses: actions/attest-build-provenance@v4
         with:
           subject-path: release/*
       - uses: softprops/action-gh-release@v2
