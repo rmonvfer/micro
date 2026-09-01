@@ -10,13 +10,9 @@ Pairing requires the Parley phone app and is done once per micro data directory:
 /remote pair
 ```
 
-This prints an eight-character code that is valid for five minutes. Enter it in Parley. To display the same code as a QR code:
+This prints a QR code containing a random 32-byte pairing secret. In Parley, open the pairing scanner and scan the code. The QR code is a credential; do not share it or include it in screenshots.
 
-```text
-/remote pair qr
-```
-
-Pairing completes asynchronously. `remote-control.json` is written under micro's data directory with user-only permissions after the phone accepts the code. Wait for pairing to finish before publishing a session.
+`remote-control.json` is written immediately under micro's data directory with user-only permissions. Running `/remote pair` again replaces the stored pairing, so micro no longer connects with the previous QR code. `/remote pair qr` remains an alias for the same command.
 
 ## Publish a session
 
@@ -42,7 +38,7 @@ Running `/remote` again does not open a second connection for the same session.
 
 The phone and machine derive directional keys from their shared pairing secret. Payloads are encrypted before they leave either endpoint. The relay still sees connection metadata, pairing and session identifiers, timing, and traffic volume.
 
-This design protects payloads from passive relay inspection. Authenticated nonces remain blocked after reconnect, so a captured frame cannot be accepted twice. The pairing exchange still does not authenticate valid keys supplied by the relay, so an active malicious relay can substitute keys during first pairing. Use a relay only if you trust it not to alter pairing traffic.
+The pairing secret moves directly from the terminal to the phone in the QR code. The relay receives derived verifiers and cannot substitute a different pairing key. Authenticated nonces remain blocked after reconnect, so a captured frame cannot be accepted twice. A relay can still observe metadata, delay or drop traffic, and deny service.
 
 Use another relay by setting:
 
@@ -54,6 +50,6 @@ micro accepts only HTTPS relay URLs and opens channels over WSS. `MICRO_REMOTE_R
 
 ## Troubleshooting
 
-If `/remote` says no phone is paired, run `/remote pair` again. `MICRO_DIR` changes which pairing file micro reads, so separate profiles require separate pairing.
+If `/remote` says no phone is paired, run `/remote pair` and scan the new QR code. `MICRO_DIR` changes which pairing file micro reads, so separate profiles require separate pairing.
 
 If a session cannot be published, the error is shown in the terminal. The local session remains active and continues to be recorded.

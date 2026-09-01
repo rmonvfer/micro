@@ -704,8 +704,8 @@ impl CliCommands {
 
     /// Put this session on the paired phone, or bond a phone to this machine.
     async fn remote(&mut self, action: micro_commands::RemoteAction) -> Applied {
-        if let micro_commands::RemoteAction::Pair { qr } = action {
-            return match crate::remote::pair(&self.data_home, qr).await {
+        if let micro_commands::RemoteAction::Pair = action {
+            return match crate::remote::pair(&self.data_home) {
                 Ok(lines) => Applied::note(lines.join("\n")),
                 Err(error) => Applied::error(format!("Could not pair a phone: {error}")),
             };

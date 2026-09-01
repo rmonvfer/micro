@@ -36,13 +36,6 @@ use tokio_tungstenite::Connector;
 use tokio_tungstenite::WebSocketStream;
 
 #[derive(Default)]
-struct Enrolment {
-    pairing_id: String,
-    machine_public: String,
-    phone_public: Option<String>,
-}
-
-#[derive(Default)]
 struct Verifiers {
     machine: String,
     phone: String,
@@ -56,7 +49,6 @@ struct Peers {
 
 #[derive(Default)]
 struct State {
-    enrolments: HashMap<String, Enrolment>,
     verifiers: HashMap<String, Verifiers>,
     peers: HashMap<String, Peers>,
 }
@@ -137,64 +129,6 @@ async fn handle(
 ) -> Result<Response<Full<Bytes>>, Infallible> {
     let path = request.uri().path().to_string();
     let method = request.method().clone();
-
-    if method == Method::POST && path == "/enrol/start" {
-        let body = json_body(request).await;
-        let Some(code) = string(&body, "code") else {
-            return Ok(response(StatusCode::BAD_REQUEST, ""));
-        };
-        let Some(pairing_id) = string(&body, "pairingId") else {
-            return Ok(response(StatusCode::BAD_REQUEST, ""));
-        };
-        let Some(machine_public) = string(&body, "machinePublic") else {
-            return Ok(response(StatusCode::BAD_REQUEST, ""));
-        };
-        state.lock().await.enrolments.insert(
-            code,
-            Enrolment {
-                pairing_id,
-                machine_public,
-                phone_public: None,
-            },
-        );
-        return Ok(response(StatusCode::NO_CONTENT, ""));
-    }
-
-    if method == Method::POST && path == "/enrol/claim" {
-        let body = json_body(request).await;
-        let Some(code) = string(&body, "code") else {
-            return Ok(response(StatusCode::BAD_REQUEST, ""));
-        };
-        let Some(phone_public) = string(&body, "phonePublic") else {
-            return Ok(response(StatusCode::BAD_REQUEST, ""));
-        };
-        let mut state = state.lock().await;
-        let Some(enrolment) = state.enrolments.get_mut(&code) else {
-            return Ok(response(StatusCode::NOT_FOUND, ""));
-        };
-        if enrolment.phone_public.is_some() {
-            return Ok(response(StatusCode::CONFLICT, ""));
-        }
-        enrolment.phone_public = Some(phone_public);
-        return Ok(json_response(serde_json::json!({
-            "pairingId": enrolment.pairing_id,
-            "machinePublic": enrolment.machine_public,
-        })));
-    }
-
-    if method == Method::GET && path == "/enrol/await" {
-        let code = query(&request, "code").unwrap_or_default();
-        let state = state.lock().await;
-        let Some(enrolment) = state.enrolments.get(&code) else {
-            return Ok(response(StatusCode::NOT_FOUND, ""));
-        };
-        return match &enrolment.phone_public {
-            Some(phone_public) => Ok(json_response(serde_json::json!({
-                "phonePublic": phone_public,
-            }))),
-            None => Ok(response(StatusCode::NO_CONTENT, "")),
-        };
-    }
 
     if method == Method::POST && path == "/pairings" {
         let body = json_body(request).await;
@@ -354,14 +288,6 @@ fn hex_sha256(value: &str) -> String {
         .iter()
         .map(|byte| format!("{byte:02x}"))
         .collect()
-}
-
-fn json_response(value: Value) -> Response<Full<Bytes>> {
-    Response::builder()
-        .status(StatusCode::OK)
-        .header("content-type", "application/json")
-        .body(Full::new(Bytes::from(value.to_string())))
-        .unwrap()
 }
 
 fn response(status: StatusCode, body: &'static str) -> Response<Full<Bytes>> {

@@ -18,7 +18,7 @@ pub enum RemoteAction {
     /// Put this session on the paired phone.
     Publish,
     /// Bond a phone to this machine, showing it what it needs.
-    Pair { qr: bool },
+    Pair,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

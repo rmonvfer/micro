@@ -143,7 +143,7 @@ Read the [documentation site](https://rmonvfer.github.io/micro/) or browse the M
 
 See [Contributing](CONTRIBUTING.md) for development setup and required checks.
 
-micro does not collect telemetry or upload session logs automatically. Model requests go to the provider selected for the session, and `/share` explicitly uploads a transcript as a secret GitHub gist. Remote-control payloads are encrypted before they pass through the configured relay; see the [remote-control threat model](docs/remote-control.md#encryption-and-relay) before using a custom relay.
+micro does not collect telemetry or upload session logs automatically. Model requests go to the provider selected for the session, and `/share` explicitly uploads a transcript as a secret GitHub gist. Remote pairing transfers its secret through a QR code, and remote-control payloads are encrypted before they pass through the configured relay; see the [remote-control threat model](docs/remote-control.md#encryption-and-relay) before using a custom relay.
 
 ## License
 

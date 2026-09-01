@@ -2,7 +2,6 @@
 
 mod bridge;
 mod crypto;
-mod enrol;
 mod pairing;
 mod protocol;
 mod relay;
@@ -20,18 +19,10 @@ pub use crypto::seal_with_nonce;
 pub use crypto::CryptoError;
 pub use crypto::Direction;
 pub use crypto::WireFrame;
-pub use enrol::begin as begin_enrolment;
-#[doc(hidden)]
-pub use enrol::begin_with_client as begin_enrolment_with_client;
-pub use enrol::Code;
-pub use enrol::Enrolment;
-pub use enrol::Half;
-pub use enrol::CODE_LIFETIME_SECONDS;
 pub use pairing::create as create_pairing;
 pub use pairing::load as load_pairing;
 pub use pairing::path_in;
 pub use pairing::qr_lines;
-pub use pairing::write as write_pairing;
 pub use pairing::Pairing;
 pub use protocol::FrameDecoder;
 pub use protocol::FrameEncoder;

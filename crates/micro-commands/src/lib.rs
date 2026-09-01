@@ -343,8 +343,7 @@ pub async fn run(
 
         "remote" => CommandOutcome::RemoteControl {
             action: match argument.map(str::trim).unwrap_or_default() {
-                "pair" => RemoteAction::Pair { qr: false },
-                "pair qr" | "qr" => RemoteAction::Pair { qr: true },
+                "pair" | "pair qr" | "qr" => RemoteAction::Pair,
                 _ => RemoteAction::Publish,
             },
         },

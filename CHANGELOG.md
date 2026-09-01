@@ -12,7 +12,7 @@
 - Add the MIT license, security policy, and contribution guide.
 - Reject filesystem symlink escapes and keep the Bun extension host read-only.
 - Apply the session sandbox to RPC shell commands and rebuild the provider runtime on model switches.
-- Require encrypted remote relays and reject authenticated frame replays after reconnect.
+- Pair phones through a secret-bearing QR code, require encrypted remote relays, and reject authenticated frame replays after reconnect.
 - Store session files with owner-only permissions and make failed deletion retryable.
 - Record request pricing for stable historical bills and correct compaction branch totals.
 - Preserve run-only trust and refresh the skill command registry during `/reload`.

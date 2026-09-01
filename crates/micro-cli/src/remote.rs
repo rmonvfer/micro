@@ -84,44 +84,34 @@ pub fn is_paired(micro_dir: &std::path::Path) -> bool {
 }
 
 /// Bonds a phone to this machine, and says what to read out.
-pub async fn pair(micro_dir: &std::path::Path, qr: bool) -> Result<Vec<String>, String> {
+pub fn pair(micro_dir: &std::path::Path) -> Result<Vec<String>, String> {
     let relay = std::env::var(RELAY_ENV).unwrap_or_else(|_| DEFAULT_RELAY.to_string());
-    let enrolment = micro_remote::begin_enrolment(&relay).await?;
-    let code = enrolment.code.clone();
-
-    let path = micro_remote::path_in(micro_dir);
-    let relay_for_task = relay.clone();
-    tokio::spawn(async move {
-        if let Ok(secret) = enrolment.complete().await {
-            let _ = micro_remote::write_pairing(
-                &path,
-                &relay_for_task,
-                enrolment.pairing_id(),
-                &secret,
-            );
-        }
-    });
-
-    Ok(pairing_instructions(&code, qr))
+    pair_with_relay(micro_dir, &relay)
 }
 
-/// The instructions shown while a phone completes code-based pairing.
-fn pairing_instructions(code: &micro_remote::Code, qr: bool) -> Vec<String> {
-    let mut lines = vec![
-        format!("Pairing code:  {code}"),
-        String::new(),
-        format!(
-            "Open Parley on your phone and type it in. The code is good for {} minutes.",
-            micro_remote::CODE_LIFETIME_SECONDS / 60
-        ),
-    ];
-    if qr {
-        lines.push(String::new());
-        lines.extend(micro_remote::qr_lines(code.as_str()));
+fn pair_with_relay(micro_dir: &std::path::Path, relay: &str) -> Result<Vec<String>, String> {
+    let path = micro_remote::path_in(micro_dir);
+    let pairing = micro_remote::create_pairing(&path, relay).map_err(|error| error.to_string())?;
+    pairing_instructions(&pairing)
+}
+
+/// The instructions shown while a phone scans a locally generated pairing secret.
+fn pairing_instructions(pairing: &Pairing) -> Result<Vec<String>, String> {
+    let mut qr = micro_remote::qr_lines(&pairing.uri());
+    if qr.is_empty() {
+        return Err("could not encode the pairing QR code".to_string());
     }
+
+    let mut lines = vec![
+        "Scan this QR code with Parley:".to_string(),
+        String::new(),
+        "The QR code contains the pairing secret. Do not share it.".to_string(),
+        String::new(),
+    ];
+    lines.append(&mut qr);
     lines.push(String::new());
-    lines.push("Once it is paired, /remote puts a session on it — no code, no link.".into());
-    lines
+    lines.push("After scanning it, run /remote to put this session on the phone.".into());
+    Ok(lines)
 }
 
 /// Everything the bridge is allowed to ask about the session.
@@ -400,20 +390,27 @@ mod tests {
     }
 
     #[test]
-    fn pairing_instructions_name_the_code_and_explain_how_to_finish() {
-        let code = micro_remote::Code::parse("ABCD-EFGH").expect("valid code");
-        let lines = pairing_instructions(&code, false);
+    fn pairing_instructions_include_the_secret_qr_and_explain_how_to_finish() {
+        let dir = scratch("pairing-instructions");
+        let pairing =
+            micro_remote::create_pairing(&micro_remote::path_in(&dir), "https://relay.example")
+                .expect("the pairing is stored");
+        let lines = pairing_instructions(&pairing).expect("the pairing fits in a QR code");
 
-        assert!(lines.iter().any(|line| line == "Pairing code:  ABCD-EFGH"));
-        assert!(lines.iter().any(|line| line.contains("Open Parley")));
-        assert!(lines.iter().any(|line| line.contains("no code, no link")));
+        assert!(lines.iter().any(|line| line.contains("pairing secret")));
+        assert!(lines.iter().any(|line| line.contains('█')));
+        assert!(lines.iter().any(|line| line.contains("run /remote")));
     }
 
     #[test]
-    fn pairing_instructions_include_a_qr_code_when_requested() {
-        let code = micro_remote::Code::parse("ABCD-EFGH").expect("valid code");
-        let lines = pairing_instructions(&code, true);
+    fn pairing_writes_the_secret_locally_without_contacting_the_relay() {
+        let dir = scratch("pairing-local");
+        let lines = pair_with_relay(&dir, "https://relay.example").expect("pairing succeeds");
+        let pairing = micro_remote::load_pairing(&micro_remote::path_in(&dir))
+            .expect("the pairing was stored");
 
+        assert_eq!(pairing.relay_url, "https://relay.example");
+        assert_eq!(pairing.secret().expect("the secret decodes").len(), 32);
         assert!(lines.iter().any(|line| line.contains('█')));
     }
 }

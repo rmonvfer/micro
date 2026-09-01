@@ -34,7 +34,10 @@ pub struct Pairing {
 impl Pairing {
     /// The secret as bytes, or nothing when the file has been edited into nonsense.
     pub fn secret(&self) -> Option<Vec<u8>> {
-        STANDARD.decode(&self.secret_b64).ok()
+        STANDARD
+            .decode(&self.secret_b64)
+            .ok()
+            .filter(|secret| secret.len() == 32)
     }
 
     /// The link that pairs a phone with this machine.
@@ -56,6 +59,15 @@ pub fn load(path: &Path) -> Option<Pairing> {
     let raw = std::fs::read_to_string(path).ok()?;
     let pairing: Pairing = serde_json::from_str(&raw).ok()?;
     validate_relay_url(&pairing.relay_url).ok()?;
+    pairing.secret()?;
+    if pairing.pairing_id.len() != 32
+        || !pairing
+            .pairing_id
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+    {
+        return None;
+    }
     Some(pairing)
 }
 
@@ -74,29 +86,6 @@ pub fn create(path: &Path, relay_url: &str) -> std::io::Result<Pairing> {
         machine_name: machine_name(),
     };
 
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    let body = serde_json::to_string(&pairing).expect("a pairing of our own always serializes");
-    std::fs::write(path, body)?;
-    restrict(path)?;
-    Ok(pairing)
-}
-
-/// Writes a pairing the two ends have already agreed on.
-pub fn write(
-    path: &Path,
-    relay_url: &str,
-    pairing_id: &str,
-    secret: &[u8],
-) -> std::io::Result<Pairing> {
-    require_secure_relay_url(relay_url)?;
-    let pairing = Pairing {
-        relay_url: relay_url.to_string(),
-        pairing_id: pairing_id.to_string(),
-        secret_b64: STANDARD.encode(secret),
-        machine_name: machine_name(),
-    };
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
@@ -258,6 +247,45 @@ mod tests {
     }
 
     #[test]
+    fn a_pairing_secret_has_exactly_thirty_two_bytes() {
+        for secret in [Vec::new(), vec![1u8; 31], vec![1u8; 33]] {
+            let pairing = Pairing {
+                relay_url: "https://relay.example".into(),
+                pairing_id: "p1".into(),
+                secret_b64: STANDARD.encode(secret),
+                machine_name: "laptop".into(),
+            };
+            assert_eq!(pairing.secret(), None);
+        }
+    }
+
+    #[test]
+    fn a_saved_pairing_requires_a_generated_id_and_secret() {
+        let dir = scratch("invalid-fields");
+        let path = path_in(&dir);
+        for (pairing_id, secret_b64) in [
+            ("p1", STANDARD.encode([1u8; 32])),
+            (
+                "0123456789abcdef0123456789abcdeG",
+                STANDARD.encode([1u8; 32]),
+            ),
+            (
+                "0123456789abcdef0123456789abcdef",
+                STANDARD.encode([1u8; 31]),
+            ),
+        ] {
+            let body = serde_json::json!({
+                "relayUrl": "https://relay.example",
+                "pairingId": pairing_id,
+                "secretB64": secret_b64,
+                "machineName": "laptop",
+            });
+            std::fs::write(&path, body.to_string()).unwrap();
+            assert_eq!(load(&path), None);
+        }
+    }
+
+    #[test]
     fn a_pairing_is_a_new_secret_every_time() {
         let dir = scratch("unique");
         let first = create(&path_in(&dir), "https://relay.example").unwrap();
@@ -271,18 +299,17 @@ mod tests {
     /// The link is what the phone opens, so its shape is the phone's to dictate.
     #[test]
     fn the_link_carries_the_relay_the_pairing_and_the_secret() {
+        let secret: Vec<u8> = (0..32).collect();
         let pairing = Pairing {
-            relay_url: "https://relay.example".into(),
-            pairing_id: "abc123".into(),
-            secret_b64: STANDARD.encode([1u8; 32]),
+            relay_url: "https://relay.example.com".into(),
+            pairing_id: "9f2c".into(),
+            secret_b64: STANDARD.encode(&secret),
             machine_name: "laptop".into(),
         };
-        let uri = pairing.uri();
-        assert!(uri.starts_with("parley://pair?"));
-        assert!(uri.contains("u=https%3A%2F%2Frelay.example"));
-        assert!(uri.contains("p=abc123"));
-
-        assert!(uri.contains(&format!("s={}", URL_SAFE_NO_PAD.encode([1u8; 32]))));
+        assert_eq!(
+            pairing.uri(),
+            "parley://pair?u=https%3A%2F%2Frelay.example.com&p=9f2c&s=AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8"
+        );
     }
 
     #[test]

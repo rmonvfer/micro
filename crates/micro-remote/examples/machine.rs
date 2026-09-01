@@ -91,12 +91,14 @@ async fn main() -> Result<(), String> {
     let pairing = match micro_remote::load_pairing(&path) {
         Some(pairing) => pairing,
         None => {
-            let enrolment = micro_remote::begin_enrolment(&relay).await?;
-            println!("\n  Pairing code:  {}\n", enrolment.code);
-            println!("  Type it into Parley on your phone.\n");
-            let secret = enrolment.complete().await?;
-            micro_remote::write_pairing(&path, &relay, enrolment.pairing_id(), &secret)
-                .map_err(|error| error.to_string())?
+            let pairing =
+                micro_remote::create_pairing(&path, &relay).map_err(|error| error.to_string())?;
+            println!("\n  Scan this QR code with Parley:\n");
+            for line in micro_remote::qr_lines(&pairing.uri()) {
+                println!("  {line}");
+            }
+            println!("\n  The QR code contains the pairing secret. Do not share it.\n");
+            pairing
         }
     };
     let secret = pairing.secret().ok_or("the pairing is unreadable")?;
