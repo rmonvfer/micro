@@ -1,28 +1,16 @@
 //! Pairing by code, against a relay that is actually running.
 
+mod support;
+
 use micro_remote::Code;
 use micro_remote::Half;
-use std::time::Duration;
-
-const RELAY: &str = "http://localhost:8090";
-
-async fn relay_is_up() -> bool {
-    matches!(
-        tokio::time::timeout(
-            Duration::from_millis(500),
-            reqwest::Client::new()
-                .post(format!("{RELAY}/pairings"))
-                .send(),
-        )
-        .await,
-        Ok(Ok(_))
-    )
-}
+use support::RelayFixture;
 
 /// The phone's side of the exchange, which in the app is CryptoKit doing the same thing.
-async fn claim(code: &str, phone: &Half) -> Option<(String, String)> {
-    let response = reqwest::Client::new()
-        .post(format!("{RELAY}/enrol/claim"))
+async fn claim(relay: &RelayFixture, code: &str, phone: &Half) -> Option<(String, String)> {
+    let response = relay
+        .http
+        .post(format!("{}/enrol/claim", relay.url))
         .json(&serde_json::json!({ "code": code, "phonePublic": phone.public() }))
         .send()
         .await
@@ -40,12 +28,8 @@ async fn claim(code: &str, phone: &Half) -> Option<(String, String)> {
 /// The whole point: a code short enough to type leaves both ends holding the same secret.
 #[tokio::test]
 async fn a_code_leaves_both_ends_holding_the_same_secret() {
-    if !relay_is_up().await {
-        eprintln!("no relay on {RELAY}; skipping");
-        return;
-    }
-
-    let enrolment = micro_remote::begin_enrolment(RELAY)
+    let relay = RelayFixture::start().await;
+    let enrolment = micro_remote::begin_enrolment_with_client(&relay.url, relay.http.clone())
         .await
         .expect("the relay takes the machine's half");
 
@@ -54,7 +38,7 @@ async fn a_code_leaves_both_ends_holding_the_same_secret() {
 
     let phone = Half::generate();
     let code = Code::parse(&typed).expect("the code reads back as itself");
-    let (pairing_id, machine_public) = claim(code.as_str(), &phone)
+    let (pairing_id, machine_public) = claim(&relay, code.as_str(), &phone)
         .await
         .expect("the relay hands over the machine's half");
 
@@ -73,18 +57,19 @@ async fn a_code_leaves_both_ends_holding_the_same_secret() {
 
 #[tokio::test]
 async fn the_relay_is_never_told_the_secret() {
-    if !relay_is_up().await {
-        eprintln!("no relay on {RELAY}; skipping");
-        return;
-    }
-
-    let enrolment = micro_remote::begin_enrolment(RELAY).await.unwrap();
+    let relay = RelayFixture::start().await;
+    let enrolment = micro_remote::begin_enrolment_with_client(&relay.url, relay.http.clone())
+        .await
+        .unwrap();
     let phone = Half::generate();
-    let (pairing_id, machine_public) = claim(enrolment.code.as_str(), &phone).await.unwrap();
+    let (pairing_id, machine_public) = claim(&relay, enrolment.code.as_str(), &phone)
+        .await
+        .unwrap();
     let secret = phone.shared_secret(&machine_public, &pairing_id).unwrap();
 
-    let told = reqwest::Client::new()
-        .get(format!("{RELAY}/enrol/await"))
+    let told = relay
+        .http
+        .get(format!("{}/enrol/await", relay.url))
         .query(&[("code", enrolment.code.as_str())])
         .send()
         .await
@@ -106,17 +91,19 @@ async fn the_relay_is_never_told_the_secret() {
 /// A code is good once.
 #[tokio::test]
 async fn a_code_cannot_be_spent_twice() {
-    if !relay_is_up().await {
-        eprintln!("no relay on {RELAY}; skipping");
-        return;
-    }
-
-    let enrolment = micro_remote::begin_enrolment(RELAY).await.unwrap();
+    let relay = RelayFixture::start().await;
+    let enrolment = micro_remote::begin_enrolment_with_client(&relay.url, relay.http.clone())
+        .await
+        .unwrap();
     let first = Half::generate();
     let second = Half::generate();
 
-    assert!(claim(enrolment.code.as_str(), &first).await.is_some());
-    assert!(claim(enrolment.code.as_str(), &second).await.is_none());
+    assert!(claim(&relay, enrolment.code.as_str(), &first)
+        .await
+        .is_some());
+    assert!(claim(&relay, enrolment.code.as_str(), &second)
+        .await
+        .is_none());
 }
 
 fn base64_of(bytes: &[u8]) -> String {

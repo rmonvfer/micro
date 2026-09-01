@@ -245,7 +245,7 @@ pub async fn start(
 
     micro_remote::register(&config).await?;
     let (events, incoming) = tokio::sync::mpsc::unbounded_channel();
-    let client = Arc::new(RelayClient::start(config, events));
+    let client = Arc::new(RelayClient::start(config, events)?);
 
     let (mirrored, mirrored_rx) = tokio::sync::mpsc::unbounded_channel();
     *mirror.lock().await = Some(mirrored);

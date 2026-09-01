@@ -83,7 +83,7 @@ impl Session for Stub {
 async fn main() -> Result<(), String> {
     let relay = std::env::args()
         .nth(1)
-        .unwrap_or_else(|| "http://localhost:8090".to_string());
+        .ok_or("pass an HTTPS relay URL as the first argument")?;
     let directory = std::env::temp_dir().join("micro-remote-example");
     std::fs::create_dir_all(&directory).map_err(|error| error.to_string())?;
 
@@ -111,7 +111,7 @@ async fn main() -> Result<(), String> {
     println!("paired with {}", pairing.machine_name);
 
     let (events, mut incoming) = tokio::sync::mpsc::unbounded_channel();
-    let client = RelayClient::start(config, events);
+    let client = RelayClient::start(config, events)?;
     let bridge = Bridge::new("s1");
     let mut session = Stub;
 

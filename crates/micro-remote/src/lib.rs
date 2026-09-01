@@ -21,6 +21,8 @@ pub use crypto::CryptoError;
 pub use crypto::Direction;
 pub use crypto::WireFrame;
 pub use enrol::begin as begin_enrolment;
+#[doc(hidden)]
+pub use enrol::begin_with_client as begin_enrolment_with_client;
 pub use enrol::Code;
 pub use enrol::Enrolment;
 pub use enrol::Half;
@@ -39,6 +41,8 @@ pub use protocol::PhonePayload;
 pub use protocol::PushKind;
 pub use protocol::PushPayload;
 pub use relay::register;
+#[doc(hidden)]
+pub use relay::register_with_client;
 pub use relay::ConnectionState;
 pub use relay::RelayClient;
 pub use relay::RelayConfig;

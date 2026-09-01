@@ -68,6 +68,10 @@ pub struct RelayConfig {
 }
 
 impl RelayConfig {
+    pub fn validate(&self) -> Result<(), String> {
+        validate_relay_url(&self.relay_url)
+    }
+
     /// The token that proves this end may use its leg of the channel.
     pub fn auth_token(&self, role: Role) -> String {
         let mut mac = hmac::Hmac::<sha2::Sha256>::new_from_slice(&self.secret)
@@ -82,14 +86,15 @@ impl RelayConfig {
         digest.iter().map(|byte| format!("{byte:02x}")).collect()
     }
 
-    fn channel_url(&self) -> String {
+    fn channel_url(&self) -> Result<String, String> {
+        self.validate()?;
         let base = websocket_base(&self.relay_url);
-        format!(
+        Ok(format!(
             "{base}/channel/{}?role=machine&session={}&token={}",
             self.pairing_id,
             urlencode(&self.session_id),
             urlencode(&self.auth_token(Role::Machine))
-        )
+        ))
     }
 }
 
@@ -111,10 +116,23 @@ pub struct RelayClient {
 
 impl RelayClient {
     /// Opens the connection and starts keeping it.
-    pub fn start(config: RelayConfig, events: mpsc::UnboundedSender<RelayEvent>) -> Self {
+    pub fn start(
+        config: RelayConfig,
+        events: mpsc::UnboundedSender<RelayEvent>,
+    ) -> Result<Self, String> {
+        Self::start_with_transport(config, events, reqwest::Client::new(), None)
+    }
+
+    #[doc(hidden)]
+    pub fn start_with_transport(
+        config: RelayConfig,
+        events: mpsc::UnboundedSender<RelayEvent>,
+        http: reqwest::Client,
+        connector: Option<tokio_tungstenite::Connector>,
+    ) -> Result<Self, String> {
+        config.validate()?;
         let (outgoing, outgoing_rx) = mpsc::unbounded_channel();
         let (stop, stop_rx) = mpsc::unbounded_channel();
-        let http = reqwest::Client::new();
 
         tokio::spawn(run(
             config.clone(),
@@ -122,14 +140,15 @@ impl RelayClient {
             outgoing_rx,
             stop_rx,
             http.clone(),
+            connector,
         ));
 
-        RelayClient {
+        Ok(RelayClient {
             config,
             outgoing,
             stop,
             http,
-        }
+        })
     }
 
     /// Sends a payload, if there is anywhere to send it.
@@ -153,6 +172,7 @@ impl RelayClient {
         payload: &PushPayload,
         collapse_id: Option<&str>,
     ) -> Result<(), String> {
+        self.config.validate()?;
         let body = serde_json::to_string(payload).expect("a payload of our own serializes");
         let frame = seal(push_key, &body);
         let request = serde_json::json!({
@@ -181,7 +201,16 @@ pub async fn register(config: &RelayConfig) -> Result<(), String> {
     register_pairing(&reqwest::Client::new(), config).await
 }
 
+#[doc(hidden)]
+pub async fn register_with_client(
+    config: &RelayConfig,
+    http: &reqwest::Client,
+) -> Result<(), String> {
+    register_pairing(http, config).await
+}
+
 async fn register_pairing(http: &reqwest::Client, config: &RelayConfig) -> Result<(), String> {
+    config.validate()?;
     let body = serde_json::json!({
         "pairingId": config.pairing_id,
         "machineVerifier": RelayConfig::verifier(&config.auth_token(Role::Machine)),
@@ -209,6 +238,7 @@ async fn run(
     mut outgoing: mpsc::UnboundedReceiver<MachinePayload>,
     mut stop: mpsc::UnboundedReceiver<()>,
     http: reqwest::Client,
+    connector: Option<tokio_tungstenite::Connector>,
 ) {
     let mut backoff = BACKOFF_INITIAL;
     let mut decoder = FrameDecoder::new(derive_key(
@@ -228,7 +258,12 @@ async fn run(
         let attempt = tokio::select! {
             biased;
             _ = stop.recv() => break,
-            attempt = tokio_tungstenite::connect_async(config.channel_url()) => attempt,
+            attempt = tokio_tungstenite::connect_async_tls_with_config(
+                config.channel_url().expect("a relay URL validated before the connection loop"),
+                None,
+                false,
+                connector.clone(),
+            ) => attempt,
         };
 
         let close_code = match attempt {
@@ -375,13 +410,31 @@ fn handle(text: &str, events: &mpsc::UnboundedSender<RelayEvent>, decoder: &mut 
 
 /// The relay's websocket address, from the address its HTTP side is on.
 fn websocket_base(relay_url: &str) -> String {
-    match relay_url.strip_prefix("https://") {
-        Some(rest) => format!("wss://{rest}"),
-        None => match relay_url.strip_prefix("http://") {
-            Some(rest) => format!("ws://{rest}"),
-            None => relay_url.to_string(),
-        },
+    format!(
+        "wss://{}",
+        relay_url
+            .strip_prefix("https://")
+            .expect("relay URLs are validated before conversion")
+    )
+}
+
+/// Accepts only an HTTPS origin because relay requests carry pairing credentials.
+pub(crate) fn validate_relay_url(relay_url: &str) -> Result<(), String> {
+    let parsed = reqwest::Url::parse(relay_url)
+        .map_err(|error| format!("the remote relay URL is invalid: {error}"))?;
+    if parsed.scheme() != "https" {
+        return Err("the remote relay URL must use HTTPS (and WSS for its channel)".into());
     }
+    if parsed.host_str().is_none() {
+        return Err("the remote relay URL must include a host".into());
+    }
+    if !parsed.username().is_empty() || parsed.password().is_some() {
+        return Err("the remote relay URL must not contain credentials".into());
+    }
+    if parsed.query().is_some() || parsed.fragment().is_some() {
+        return Err("the remote relay URL must not contain a query or fragment".into());
+    }
+    Ok(())
 }
 
 /// Percent-encodes the characters that would otherwise end a query value.
@@ -404,7 +457,7 @@ mod tests {
 
     fn config() -> RelayConfig {
         RelayConfig {
-            relay_url: "http://localhost:8090".into(),
+            relay_url: "https://relay.example".into(),
             pairing_id: "vector-pairing".into(),
             secret: vec![7u8; 32],
             session_id: "s1".into(),
@@ -447,18 +500,22 @@ mod tests {
             websocket_base("https://relay.example"),
             "wss://relay.example"
         );
-        assert_eq!(
-            websocket_base("http://localhost:8090"),
-            "ws://localhost:8090"
-        );
+    }
 
-        assert_eq!(websocket_base("ws://localhost:8090"), "ws://localhost:8090");
+    #[test]
+    fn plaintext_relay_urls_are_rejected() {
+        for relay_url in ["http://relay.example", "ws://relay.example"] {
+            let mut config = config();
+            config.relay_url = relay_url.into();
+            assert!(config.validate().is_err(), "accepted {relay_url}");
+            assert!(config.channel_url().is_err(), "built a URL for {relay_url}");
+        }
     }
 
     #[test]
     fn the_channel_address_carries_the_role_and_the_token() {
-        let url = config().channel_url();
-        assert!(url.starts_with("ws://localhost:8090/channel/vector-pairing?"));
+        let url = config().channel_url().unwrap();
+        assert!(url.starts_with("wss://relay.example/channel/vector-pairing?"));
         assert!(url.contains("role=machine"));
 
         assert!(url.contains("token="));
@@ -537,5 +594,39 @@ mod tests {
                 command: crate::protocol::PhoneCommand::Abort,
             })
         );
+    }
+
+    #[test]
+    fn a_frame_captured_before_reconnect_is_not_reported_again() {
+        let config = config();
+        let key = derive_key(
+            &config.secret,
+            &config.pairing_id,
+            Direction::PhoneToMachine,
+        );
+        let mut encoder = FrameEncoder::new(key);
+        let frame = serde_json::to_string(&encoder.encode(&PhonePayload::Command {
+            session_id: "s1".into(),
+            id: "c1".into(),
+            command: crate::protocol::PhoneCommand::Abort,
+        }))
+        .unwrap();
+        let (events, mut received) = mpsc::unbounded_channel();
+        let mut decoder = FrameDecoder::new(key);
+
+        handle(&frame, &events, &mut decoder);
+        assert!(matches!(received.try_recv(), Ok(RelayEvent::Payload(_))));
+        handle(
+            r#"{"relay":"peer","role":"phone","connected":true}"#,
+            &events,
+            &mut decoder,
+        );
+        assert_eq!(
+            received.try_recv().unwrap(),
+            RelayEvent::Peer { connected: true }
+        );
+
+        handle(&frame, &events, &mut decoder);
+        assert!(received.try_recv().is_err());
     }
 }

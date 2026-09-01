@@ -9,6 +9,8 @@ use sha2::Sha256;
 use x25519_dalek::PublicKey;
 use x25519_dalek::StaticSecret;
 
+use crate::relay::validate_relay_url;
+
 pub const CODE_LIFETIME_SECONDS: u64 = 300;
 
 /// How many characters a code carries.
@@ -88,7 +90,14 @@ impl Half {
     pub fn shared_secret(&self, their_public: &str, pairing_id: &str) -> Option<Vec<u8>> {
         let decoded = STANDARD.decode(their_public).ok()?;
         let bytes: [u8; 32] = decoded.try_into().ok()?;
+        let own_public = PublicKey::from(&self.secret);
+        if bytes == *own_public.as_bytes() {
+            return None;
+        }
         let shared = self.secret.diffie_hellman(&PublicKey::from(bytes));
+        if shared.as_bytes().iter().all(|byte| *byte == 0) {
+            return None;
+        }
 
         let hkdf = Hkdf::<Sha256>::new(None, shared.as_bytes());
         let mut secret = vec![0u8; 32];
@@ -113,13 +122,21 @@ pub struct Enrolment {
 
 /// Publishes this machine's public half under a fresh code.
 pub async fn begin(relay_url: &str) -> Result<Enrolment, String> {
+    begin_with_client(relay_url, reqwest::Client::new()).await
+}
+
+#[doc(hidden)]
+pub async fn begin_with_client(
+    relay_url: &str,
+    http: reqwest::Client,
+) -> Result<Enrolment, String> {
+    validate_relay_url(relay_url)?;
     let half = Half::generate();
     let code = Code::generate();
     let mut id = [0u8; 16];
     rand::thread_rng().fill_bytes(&mut id);
     let pairing_id: String = id.iter().map(|byte| format!("{byte:02x}")).collect();
 
-    let http = reqwest::Client::new();
     let response = http
         .post(format!("{relay_url}/enrol/start"))
         .json(&serde_json::json!({
@@ -232,6 +249,30 @@ mod tests {
             machine.shared_secret(&STANDARD.encode([0u8; 8]), "p1"),
             None
         );
+    }
+
+    #[test]
+    fn a_relay_cannot_reflect_the_machine_key_as_the_phone_key() {
+        let machine = Half::generate();
+        assert_eq!(machine.shared_secret(&machine.public(), "p1"), None);
+    }
+
+    #[test]
+    fn a_relay_cannot_substitute_a_noncontributory_phone_key() {
+        let machine = Half::generate();
+        assert_eq!(
+            machine.shared_secret(&STANDARD.encode([0u8; 32]), "p1"),
+            None
+        );
+    }
+
+    #[tokio::test]
+    async fn pairing_refuses_a_plaintext_relay_without_contacting_it() {
+        let error = match begin("http://127.0.0.1:9").await {
+            Ok(_) => panic!("a plaintext relay started pairing"),
+            Err(error) => error,
+        };
+        assert!(error.contains("HTTPS"), "{error}");
     }
 
     #[test]

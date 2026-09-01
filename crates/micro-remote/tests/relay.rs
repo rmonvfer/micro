@@ -1,5 +1,7 @@
 //! The machine against a relay that is actually running.
 
+mod support;
+
 use futures::SinkExt;
 use futures::StreamExt;
 use micro_remote::Direction;
@@ -13,26 +15,11 @@ use micro_remote::RelayConfig;
 use micro_remote::RelayEvent;
 use micro_remote::Role;
 use std::time::Duration;
+use support::RelayFixture;
 
-const RELAY: &str = "http://localhost:8090";
-
-/// Whether there is a relay to talk to.
-async fn relay_is_up() -> bool {
-    matches!(
-        tokio::time::timeout(
-            Duration::from_millis(500),
-            reqwest::Client::new()
-                .post(format!("{RELAY}/pairings"))
-                .send(),
-        )
-        .await,
-        Ok(Ok(_))
-    )
-}
-
-fn config(pairing_id: &str) -> RelayConfig {
+fn config(relay: &RelayFixture, pairing_id: &str) -> RelayConfig {
     RelayConfig {
-        relay_url: RELAY.into(),
+        relay_url: relay.url.clone(),
         pairing_id: pairing_id.into(),
         secret: vec![9u8; 32],
         session_id: "s1".into(),
@@ -50,15 +37,21 @@ struct Phone {
 }
 
 impl Phone {
-    async fn join(config: &RelayConfig) -> Phone {
+    async fn join(relay: &RelayFixture, config: &RelayConfig) -> Phone {
         let url = format!(
-            "ws://localhost:8090/channel/{}?role=phone&token={}",
+            "{}/channel/{}?role=phone&token={}",
+            relay.url.replacen("https://", "wss://", 1),
             config.pairing_id,
             urlencoding(&config.auth_token(Role::Phone))
         );
-        let (socket, _) = tokio_tungstenite::connect_async(url)
-            .await
-            .expect("the relay accepts the phone's leg");
+        let (socket, _) = tokio_tungstenite::connect_async_tls_with_config(
+            url,
+            None,
+            false,
+            Some(relay.connector.clone()),
+        )
+        .await
+        .expect("the relay accepts the phone's leg");
         Phone {
             socket,
 
@@ -119,18 +112,20 @@ fn urlencoding(value: &str) -> String {
 
 #[tokio::test]
 async fn a_session_reaches_a_phone_through_a_running_relay() {
-    if !relay_is_up().await {
-        eprintln!("no relay on {RELAY}; skipping");
-        return;
-    }
+    let relay = RelayFixture::start().await;
+    let config = config(&relay, "micro-test-offer");
 
-    let config = config("micro-test-offer");
-
-    micro_remote::register(&config)
+    micro_remote::register_with_client(&config, &relay.http)
         .await
         .expect("the relay accepts a new pairing");
     let (events, mut incoming) = tokio::sync::mpsc::unbounded_channel();
-    let client = RelayClient::start(config.clone(), events);
+    let client = RelayClient::start_with_transport(
+        config.clone(),
+        events,
+        relay.http.clone(),
+        Some(relay.connector.clone()),
+    )
+    .expect("the secure relay URL starts a client");
 
     let connected = tokio::time::timeout(Duration::from_secs(5), async {
         while let Some(event) = incoming.recv().await {
@@ -147,7 +142,7 @@ async fn a_session_reaches_a_phone_through_a_running_relay() {
     .unwrap_or(false);
     assert!(connected, "the machine connects to the relay");
 
-    let mut phone = Phone::join(&config).await;
+    let mut phone = Phone::join(&relay, &config).await;
 
     let peered = tokio::time::timeout(Duration::from_secs(5), async {
         while let Some(event) = incoming.recv().await {
@@ -215,19 +210,23 @@ async fn a_session_reaches_a_phone_through_a_running_relay() {
 /// A token the relay has never been given the hash of does not open a channel.
 #[tokio::test]
 async fn a_leg_without_a_registered_pairing_is_refused() {
-    if !relay_is_up().await {
-        eprintln!("no relay on {RELAY}; skipping");
-        return;
-    }
-
-    let config = config("micro-test-unregistered");
+    let relay = RelayFixture::start().await;
+    let config = config(&relay, "micro-test-unregistered");
     let url = format!(
-        "ws://localhost:8090/channel/{}?role=machine&token={}",
+        "{}/channel/{}?role=machine&token={}",
+        relay.url.replacen("https://", "wss://", 1),
         config.pairing_id,
         urlencoding(&config.auth_token(Role::Machine))
     );
 
-    match tokio_tungstenite::connect_async(url).await {
+    match tokio_tungstenite::connect_async_tls_with_config(
+        url,
+        None,
+        false,
+        Some(relay.connector.clone()),
+    )
+    .await
+    {
         Err(_) => {}
         Ok((mut socket, _)) => {
             let closed = tokio::time::timeout(Duration::from_secs(5), socket.next()).await;

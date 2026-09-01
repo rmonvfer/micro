@@ -6,6 +6,7 @@ use crate::crypto::WireFrame;
 use serde::Deserialize;
 use serde::Serialize;
 use serde_json::Value;
+use std::collections::HashSet;
 
 /// What the machine tells the phone.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -161,25 +162,34 @@ impl FrameEncoder {
 pub struct FrameDecoder {
     key: [u8; 32],
     last_seq: u64,
+    seen_nonces: HashSet<String>,
 }
 
 impl FrameDecoder {
     pub fn new(key: [u8; 32]) -> Self {
-        FrameDecoder { key, last_seq: 0 }
+        FrameDecoder {
+            key,
+            last_seq: 0,
+            seen_nonces: HashSet::new(),
+        }
     }
 
     /// The payload inside a frame, or nothing when there is no reason to trust it.
     pub fn decode<T: for<'de> Deserialize<'de>>(&mut self, frame: &WireFrame) -> Option<T> {
+        if self.seen_nonces.contains(&frame.n) {
+            return None;
+        }
         let plaintext = open(&self.key, frame).ok()?;
         let envelope: Envelope<T> = serde_json::from_str(&plaintext).ok()?;
         if envelope.seq <= self.last_seq {
             return None;
         }
+        self.seen_nonces.insert(frame.n.clone());
         self.last_seq = envelope.seq;
         Some(envelope.payload)
     }
 
-    /// Forgets the sequence, for a channel that has been rebuilt from nothing.
+    /// Restarts sequence validation for a reconnected peer while retaining replay history.
     pub fn reset(&mut self) {
         self.last_seq = 0;
     }
@@ -224,15 +234,16 @@ mod tests {
         assert!(decoder.decode::<MachinePayload>(&frame).is_none());
     }
 
-    /// A reconnected peer counts from one again, so the decoder has to be told the channel is new
-    /// or it drops everything that follows.
+    /// A reconnected peer may restart its sequence, but a frame captured before reconnect remains
+    /// invalid.
     #[test]
-    fn a_reset_decoder_accepts_the_sequence_starting_again() {
+    fn a_reset_decoder_accepts_a_new_sequence_but_rejects_an_old_frame() {
         let mut encoder = FrameEncoder::new(key());
         let mut decoder = FrameDecoder::new(key());
-        decoder.decode::<MachinePayload>(&encoder.encode(&MachinePayload::SessionOffline {
+        let captured = encoder.encode(&MachinePayload::SessionOffline {
             session_id: "s1".into(),
-        }));
+        });
+        assert!(decoder.decode::<MachinePayload>(&captured).is_some());
 
         let mut reconnected = FrameEncoder::new(key());
         let frame = reconnected.encode(&MachinePayload::SessionOffline {
@@ -242,6 +253,7 @@ mod tests {
 
         decoder.reset();
         assert!(decoder.decode::<MachinePayload>(&frame).is_some());
+        assert!(decoder.decode::<MachinePayload>(&captured).is_none());
     }
 
     #[test]

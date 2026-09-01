@@ -9,6 +9,8 @@ use serde::Serialize;
 use std::path::Path;
 use std::path::PathBuf;
 
+use crate::relay::validate_relay_url;
+
 /// What the file under the user's directory is called.
 pub const FILE_NAME: &str = "remote-control.json";
 
@@ -52,11 +54,14 @@ impl Pairing {
 /// Reads the pairing already made, if there is one.
 pub fn load(path: &Path) -> Option<Pairing> {
     let raw = std::fs::read_to_string(path).ok()?;
-    serde_json::from_str(&raw).ok()
+    let pairing: Pairing = serde_json::from_str(&raw).ok()?;
+    validate_relay_url(&pairing.relay_url).ok()?;
+    Some(pairing)
 }
 
 /// Makes a pairing and writes it down.
 pub fn create(path: &Path, relay_url: &str) -> std::io::Result<Pairing> {
+    require_secure_relay_url(relay_url)?;
     let mut id = [0u8; 16];
     let mut secret = [0u8; 32];
     rand::thread_rng().fill_bytes(&mut id);
@@ -85,6 +90,7 @@ pub fn write(
     pairing_id: &str,
     secret: &[u8],
 ) -> std::io::Result<Pairing> {
+    require_secure_relay_url(relay_url)?;
     let pairing = Pairing {
         relay_url: relay_url.to_string(),
         pairing_id: pairing_id.to_string(),
@@ -98,6 +104,11 @@ pub fn write(
     std::fs::write(path, body)?;
     restrict(path)?;
     Ok(pairing)
+}
+
+fn require_secure_relay_url(relay_url: &str) -> std::io::Result<()> {
+    validate_relay_url(relay_url)
+        .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidInput, error))
 }
 
 /// Where the pairing lives, under whichever directory micro is keeping things in.
@@ -194,7 +205,7 @@ mod tests {
     fn a_pairing_written_is_a_pairing_read_back() {
         let dir = scratch("roundtrip");
         let path = path_in(&dir);
-        let made = create(&path, "http://localhost:8090").unwrap();
+        let made = create(&path, "https://relay.example").unwrap();
         assert_eq!(load(&path), Some(made));
     }
 
@@ -202,7 +213,7 @@ mod tests {
     fn a_pairing_is_written_where_only_its_owner_can_read_it() {
         let dir = scratch("mode");
         let path = path_in(&dir);
-        create(&path, "http://localhost:8090").unwrap();
+        create(&path, "https://relay.example").unwrap();
 
         #[cfg(unix)]
         {
@@ -217,13 +228,13 @@ mod tests {
     fn rewriting_a_pairing_restores_the_mode_it_should_have() {
         let dir = scratch("rewrite");
         let path = path_in(&dir);
-        create(&path, "http://localhost:8090").unwrap();
+        create(&path, "https://relay.example").unwrap();
 
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
             std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
-            create(&path, "http://localhost:8090").unwrap();
+            create(&path, "https://relay.example").unwrap();
             let mode = std::fs::metadata(&path).unwrap().permissions().mode();
             assert_eq!(mode & 0o777, 0o600);
         }
@@ -249,8 +260,8 @@ mod tests {
     #[test]
     fn a_pairing_is_a_new_secret_every_time() {
         let dir = scratch("unique");
-        let first = create(&path_in(&dir), "http://localhost:8090").unwrap();
-        let second = create(&path_in(&dir), "http://localhost:8090").unwrap();
+        let first = create(&path_in(&dir), "https://relay.example").unwrap();
+        let second = create(&path_in(&dir), "https://relay.example").unwrap();
         assert_ne!(first.pairing_id, second.pairing_id);
         assert_ne!(first.secret_b64, second.secret_b64);
         assert_eq!(first.secret().unwrap().len(), 32);
@@ -261,14 +272,14 @@ mod tests {
     #[test]
     fn the_link_carries_the_relay_the_pairing_and_the_secret() {
         let pairing = Pairing {
-            relay_url: "http://localhost:8090".into(),
+            relay_url: "https://relay.example".into(),
             pairing_id: "abc123".into(),
             secret_b64: STANDARD.encode([1u8; 32]),
             machine_name: "laptop".into(),
         };
         let uri = pairing.uri();
         assert!(uri.starts_with("parley://pair?"));
-        assert!(uri.contains("u=http%3A%2F%2Flocalhost%3A8090"));
+        assert!(uri.contains("u=https%3A%2F%2Frelay.example"));
         assert!(uri.contains("p=abc123"));
 
         assert!(uri.contains(&format!("s={}", URL_SAFE_NO_PAD.encode([1u8; 32]))));
@@ -276,7 +287,7 @@ mod tests {
 
     #[test]
     fn a_code_is_drawn_with_a_quiet_border_around_it() {
-        let lines = qr_lines("parley://pair?u=http%3A%2F%2Flocalhost%3A8090&p=abc&s=xyz");
+        let lines = qr_lines("parley://pair?u=https%3A%2F%2Frelay.example&p=abc&s=xyz");
         assert!(!lines.is_empty());
 
         let width = lines[0].chars().count();
@@ -288,5 +299,21 @@ mod tests {
     #[test]
     fn a_uri_too_long_to_encode_draws_nothing_rather_than_panicking() {
         assert!(qr_lines(&"x".repeat(10_000)).is_empty());
+    }
+
+    #[test]
+    fn a_plaintext_relay_is_not_saved_or_loaded() {
+        let dir = scratch("plaintext");
+        let path = path_in(&dir);
+        let error = create(&path, "http://relay.example").unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
+        assert!(!path.exists());
+
+        std::fs::write(
+            &path,
+            r#"{"relayUrl":"http://relay.example","pairingId":"p1","secretB64":"AQ==","machineName":"laptop"}"#,
+        )
+        .unwrap();
+        assert_eq!(load(&path), None);
     }
 }
