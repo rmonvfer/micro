@@ -15,13 +15,6 @@ curl --proto '=https' --tlsv1.2 --fail --silent --show-error --location \
   https://raw.githubusercontent.com/rmonvfer/micro/main/scripts/install.sh | bash
 ```
 
-If GitHub requires authentication for the repository, use:
-
-```bash
-gh auth login
-gh api -H "Accept: application/vnd.github.raw+json" repos/rmonvfer/micro/contents/scripts/install.sh | bash
-```
-
 The installer verifies the release checksum, installs versioned distributions under `~/.local/share/micro/dist`, and links `micro` from `~/.local/bin`. It prints the required shell configuration when that directory is not already on `PATH`. Set `MICRO_INSTALL_DIR` or `MICRO_DIST_DIR` to override those locations, and set `MICRO_VERSION` to a release tag to install a specific version.
 
 Managed installations check for updates once every 24 hours when starting an interactive session. Run `micro update` to update immediately, set `auto_update` to `false` in the configuration, or set `MICRO_NO_AUTO_UPDATE=1` for one launch.
