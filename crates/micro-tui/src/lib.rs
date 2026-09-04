@@ -77,6 +77,7 @@ use serde_json::Value;
 use std::collections::HashSet;
 use std::future::Future;
 use std::io::Stdout;
+use std::path::Path;
 use std::sync::Once;
 use std::time::Duration;
 use std::time::Instant;
@@ -112,6 +113,7 @@ pub async fn run_with(
 ) -> Result<Vec<Message>> {
     install_panic_hook();
     let mut screen = Screen::enter(options.tui_mode)?;
+    set_terminal_title(&workspace_title(&options.cwd));
 
     background::prime();
     options.theme = Some(options.theme.unwrap_or_else(background::detect_theme));
@@ -307,9 +309,22 @@ fn report_progress(enabled: bool, running: bool) {
 /// Set the terminal's window/tab title.
 fn set_terminal_title(title: &str) {
     use std::io::Write as _;
+    let title: String = title
+        .chars()
+        .filter(|character| !character.is_control())
+        .collect();
     let mut out = std::io::stdout();
     let _ = write!(out, "\x1b]0;{title}\x07");
     let _ = out.flush();
+}
+
+fn workspace_title(workspace: &Path) -> String {
+    let name = workspace
+        .file_name()
+        .map(|name| name.to_string_lossy())
+        .filter(|name| !name.is_empty())
+        .unwrap_or_else(|| "workspace".into());
+    format!("micro — {name}")
 }
 
 /// Tell the terminal a prompt was submitted and its answer is about to arrive.
@@ -1889,6 +1904,12 @@ mod tests {
 
     use crate::capabilities::ImageProtocol;
     use crate::render::pictures::Pictures;
+
+    #[test]
+    fn the_terminal_title_names_the_workspace() {
+        assert_eq!(workspace_title(Path::new("/work/micro")), "micro — micro");
+        assert_eq!(workspace_title(Path::new("/")), "micro — workspace");
+    }
 
     #[test]
     fn an_editor_buffer_has_a_private_temporary_directory() {

@@ -29,6 +29,9 @@ const HOST_SOURCE: &[(&str, &str)] = &[
 /// What the host is entered through, under micro's own directory.
 const HOST_FILE: &str = "extension-host.ts";
 
+/// The process name shown for the Bun extension host.
+const HOST_PROCESS_TITLE: &str = "micro-extension-host";
+
 /// How long a tool call may run before micro stops waiting for it.
 const TOOL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
 
@@ -257,17 +260,7 @@ impl Host {
         let compatibility_links =
             crate::compat::link_into(&compat_node_modules, package_roots.iter())?;
         let runtime_name = runtime.to_string_lossy().into_owned();
-        let wrapped = sandbox.wrap(
-            &runtime_name,
-            [
-                "run".to_string(),
-                "--no-install".to_string(),
-                script.display().to_string(),
-                "--micro-home".to_string(),
-                home.display().to_string(),
-            ],
-            home,
-        );
+        let wrapped = sandbox.wrap(&runtime_name, host_arguments(&script, home), home);
         if !wrapped.enforced {
             return Err(
                 "extensions are disabled because the Bun host would be unconfined".to_string(),
@@ -1259,6 +1252,17 @@ fn extension_read_roots(home: &Path, paths: &[PathBuf], workspace: &Path) -> Vec
     roots
 }
 
+fn host_arguments(script: &Path, home: &Path) -> Vec<String> {
+    vec![
+        format!("--title={HOST_PROCESS_TITLE}"),
+        "run".to_string(),
+        "--no-install".to_string(),
+        script.display().to_string(),
+        "--micro-home".to_string(),
+        home.display().to_string(),
+    ]
+}
+
 fn extension_package_root(path: &Path, workspace: &Path) -> Option<PathBuf> {
     let path = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
     let workspace = std::fs::canonicalize(workspace).unwrap_or_else(|_| workspace.to_path_buf());
@@ -1275,6 +1279,21 @@ fn extension_package_root(path: &Path, workspace: &Path) -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_host_process_has_a_stable_title() {
+        assert_eq!(
+            host_arguments(Path::new("/micro/extension-host.ts"), Path::new("/micro")),
+            vec![
+                "--title=micro-extension-host",
+                "run",
+                "--no-install",
+                "/micro/extension-host.ts",
+                "--micro-home",
+                "/micro",
+            ]
+        );
+    }
 
     #[test]
     fn the_host_is_written_where_bun_can_run_it() {

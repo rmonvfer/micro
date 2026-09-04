@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- Show `micro — <workspace>` in terminal tabs and name Bun extension host processes.
+
 ## [0.1.12] - 2026-09-01
 
 - Allow manual compaction below the automatic threshold.
