@@ -20,13 +20,18 @@ fn workspace(name: &str) -> (PathBuf, PathBuf) {
 }
 
 fn sandbox(policy: SandboxPolicy, workspace: &PathBuf) -> Sandbox {
-    Sandbox::new(policy, workspace).with_helper_program(env!("CARGO_BIN_EXE_micro-sandbox-helper"))
+    Sandbox::new(policy, workspace)
 }
 
 /// Run `script` under the sandbox, answering with how it ended and everything it said.
 fn run(sandbox: &Sandbox, script: &str) -> (ExitStatus, String) {
     let wrapped = sandbox.wrap("/bin/bash", ["-c", script], sandbox.workspace());
     assert!(wrapped.enforced, "the command was not confined");
+    #[cfg(target_os = "linux")]
+    assert_eq!(
+        wrapped.program,
+        PathBuf::from(env!("CARGO_BIN_EXE_micro-sandbox-helper"))
+    );
     let output = wrapped.to_std_command().output().unwrap();
     let said = format!(
         "{}{}",

@@ -19,6 +19,7 @@
 - Refresh live model listings at startup when `live_models` is enabled.
 - Load all maintained extension examples and enforce the compatibility sweep in CI.
 - Include MIT and Apache licensing material in release archives.
+- Use the standalone sandbox helper when Linux tests launch extension hosts.
 
 ## [0.1.11] - 2026-08-14
 

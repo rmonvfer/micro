@@ -104,6 +104,30 @@ impl Decision {
     }
 }
 
+fn helper_program() -> Option<PathBuf> {
+    let executable = std::env::current_exe().ok()?;
+    #[cfg(target_os = "linux")]
+    if let Some(helper) = standalone_helper_beside_test_binary(&executable) {
+        return Some(helper);
+    }
+    Some(executable)
+}
+
+/// Cargo's libtest executables cannot dispatch the application's helper marker. Workspace builds
+/// place the standalone helper beside the `deps` directory, so tests use that executable.
+#[cfg(target_os = "linux")]
+fn standalone_helper_beside_test_binary(executable: &Path) -> Option<PathBuf> {
+    let deps = executable.parent()?;
+    if deps.file_name()? != "deps" {
+        return None;
+    }
+    let helper = deps.parent()?.join(format!(
+        "micro-sandbox-helper{}",
+        std::env::consts::EXE_SUFFIX
+    ));
+    helper.is_file().then_some(helper)
+}
+
 impl Sandbox {
     /// A sandbox enforcing `policy` around `workspace`.
     pub fn new(policy: SandboxPolicy, workspace: impl Into<PathBuf>) -> Self {
@@ -113,7 +137,7 @@ impl Sandbox {
             policy,
             workspace,
             micro_homes: Vec::new(),
-            helper_program: std::env::current_exe().ok(),
+            helper_program: helper_program(),
             readable_roots: None,
             allowed_executables: Vec::new(),
         }
@@ -422,6 +446,26 @@ mod tests {
         std::fs::create_dir_all(workspace.join("src")).unwrap();
         std::fs::create_dir_all(workspace.join(".git")).unwrap();
         (dir, workspace)
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_cargo_test_binary_uses_the_standalone_sandbox_helper() {
+        let root = scratch("test-helper");
+        let deps = root.join("debug/deps");
+        std::fs::create_dir_all(&deps).unwrap();
+        let test_binary = deps.join("micro_cli-0123456789abcdef");
+        std::fs::write(&test_binary, "test binary").unwrap();
+        let helper = root.join("debug").join(format!(
+            "micro-sandbox-helper{}",
+            std::env::consts::EXE_SUFFIX
+        ));
+        std::fs::write(&helper, "helper").unwrap();
+
+        assert_eq!(
+            standalone_helper_beside_test_binary(&test_binary),
+            Some(helper)
+        );
     }
 
     #[test]
