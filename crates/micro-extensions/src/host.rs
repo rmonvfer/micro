@@ -1854,6 +1854,51 @@ export default (micro) => { micro.registerTool({ name: "uses_it", execute: async
         let _ = std::fs::remove_dir_all(&root);
     }
 
+    #[tokio::test]
+    async fn both_bun_missing_package_wordings_get_install_guidance() {
+        if which_bun().is_none() {
+            return;
+        }
+        let root = scratch("missing-dependency-wordings");
+        let direct_from_wording = root.join("direct-from.ts");
+        let imported_from_wording = root.join("imported-from.ts");
+        std::fs::write(
+            &direct_from_wording,
+            r#"export default () => { throw new Error("Cannot find package 'left-pad-fake-dependency' from '/tmp/direct-from.ts'"); };"#,
+        )
+        .unwrap();
+        std::fs::write(
+            &imported_from_wording,
+            r#"export default () => { throw new Error("ResolveMessage: Cannot find package 'left-pad-fake-dependency' imported from /tmp/imported-from.ts"); };"#,
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("package.json"),
+            r#"{ "name": "with-deps", "dependencies": { "left-pad-fake-dependency": "^1.0.0" } }"#,
+        )
+        .unwrap();
+
+        let host = Host::start(
+            &root,
+            &[direct_from_wording, imported_from_wording],
+            &root,
+            false,
+            false,
+            "tui",
+        )
+        .await
+        .expect("the host starts");
+
+        assert_eq!(host.loaded().errors.len(), 2, "{:?}", host.loaded().errors);
+        for failure in &host.loaded().errors {
+            assert!(failure.error.contains("bun install"), "{}", failure.error);
+            assert!(failure.error.contains(&root.display().to_string()));
+        }
+
+        host.shutdown("quit").await;
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     /// An extension missing a dependency nobody declared is left with the plain resolution error.
     #[tokio::test]
     async fn a_missing_undeclared_dependency_is_left_as_reported() {

@@ -300,7 +300,7 @@ async function load(path: string): Promise<void> {
 
 /** Add installation guidance to missing-package errors. */
 function describeLoadFailure(path: string, message: string): string {
-	const missing = /Cannot find package '([^']+)' from/.exec(message)?.[1];
+	const missing = /Cannot find package '([^']+)' (?:imported )?from/.exec(message)?.[1];
 	if (!missing) {
 		return message;
 	}
