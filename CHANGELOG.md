@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.1.13] - 2026-09-04
+
 - Show `micro — <workspace>` in terminal tabs and name Bun extension host processes.
 
 ## [0.1.12] - 2026-09-01
@@ -73,7 +75,8 @@
 
 The first release includes the terminal agent, provider integrations, append-only sessions, billing, prompt-cache diagnostics, project configuration, command sandboxing, extensions, MCP tools, remote control, and managed updates. The core agent is a Rust binary; TypeScript extensions require Bun.
 
-[Unreleased]: https://github.com/rmonvfer/micro/compare/v0.1.12...HEAD
+[Unreleased]: https://github.com/rmonvfer/micro/compare/v0.1.13...HEAD
+[0.1.13]: https://github.com/rmonvfer/micro/compare/v0.1.12...v0.1.13
 [0.1.12]: https://github.com/rmonvfer/micro/compare/v0.1.11...v0.1.12
 [0.1.11]: https://github.com/rmonvfer/micro/compare/v0.1.10...v0.1.11
 [0.1.10]: https://github.com/rmonvfer/micro/compare/v0.1.9...v0.1.10

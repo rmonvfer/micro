@@ -2260,7 +2260,7 @@ dependencies = [
 
 [[package]]
 name = "micro-agent"
-version = "0.1.12"
+version = "0.1.13"
 dependencies = [
  "async-trait",
  "futures",
@@ -2275,7 +2275,7 @@ dependencies = [
 
 [[package]]
 name = "micro-auth"
-version = "0.1.12"
+version = "0.1.13"
 dependencies = [
  "micro-dirs",
  "reqwest",
@@ -2287,7 +2287,7 @@ dependencies = [
 
 [[package]]
 name = "micro-cli"
-version = "0.1.12"
+version = "0.1.13"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2325,7 +2325,7 @@ dependencies = [
 
 [[package]]
 name = "micro-commands"
-version = "0.1.12"
+version = "0.1.13"
 dependencies = [
  "micro-auth",
  "micro-config",
@@ -2344,7 +2344,7 @@ dependencies = [
 
 [[package]]
 name = "micro-config"
-version = "0.1.12"
+version = "0.1.13"
 dependencies = [
  "micro-dirs",
  "serde",
@@ -2355,7 +2355,7 @@ dependencies = [
 
 [[package]]
 name = "micro-context"
-version = "0.1.12"
+version = "0.1.13"
 dependencies = [
  "async-trait",
  "micro-dirs",
@@ -2368,11 +2368,11 @@ dependencies = [
 
 [[package]]
 name = "micro-dirs"
-version = "0.1.12"
+version = "0.1.13"
 
 [[package]]
 name = "micro-extensions"
-version = "0.1.12"
+version = "0.1.13"
 dependencies = [
  "async-trait",
  "micro-models",
@@ -2386,7 +2386,7 @@ dependencies = [
 
 [[package]]
 name = "micro-mcp"
-version = "0.1.12"
+version = "0.1.13"
 dependencies = [
  "async-trait",
  "micro-tools",
@@ -2399,7 +2399,7 @@ dependencies = [
 
 [[package]]
 name = "micro-mermaid"
-version = "0.1.12"
+version = "0.1.13"
 dependencies = [
  "unicode-segmentation",
  "unicode-width",
@@ -2407,7 +2407,7 @@ dependencies = [
 
 [[package]]
 name = "micro-models"
-version = "0.1.12"
+version = "0.1.13"
 dependencies = [
  "micro-dirs",
  "micro-types",
@@ -2420,14 +2420,14 @@ dependencies = [
 
 [[package]]
 name = "micro-prompts"
-version = "0.1.12"
+version = "0.1.13"
 dependencies = [
  "micro-config",
 ]
 
 [[package]]
 name = "micro-provider"
-version = "0.1.12"
+version = "0.1.13"
 dependencies = [
  "async-trait",
  "futures",
@@ -2445,7 +2445,7 @@ dependencies = [
 
 [[package]]
 name = "micro-remote"
-version = "0.1.12"
+version = "0.1.13"
 dependencies = [
  "aes-gcm",
  "base64",
@@ -2473,7 +2473,7 @@ dependencies = [
 
 [[package]]
 name = "micro-rpc"
-version = "0.1.12"
+version = "0.1.13"
 dependencies = [
  "async-trait",
  "micro-agent",
@@ -2493,7 +2493,7 @@ dependencies = [
 
 [[package]]
 name = "micro-sandbox"
-version = "0.1.12"
+version = "0.1.13"
 dependencies = [
  "landlock",
  "libc",
@@ -2504,7 +2504,7 @@ dependencies = [
 
 [[package]]
 name = "micro-session"
-version = "0.1.12"
+version = "0.1.13"
 dependencies = [
  "micro-context",
  "micro-dirs",
@@ -2517,7 +2517,7 @@ dependencies = [
 
 [[package]]
 name = "micro-skills"
-version = "0.1.12"
+version = "0.1.13"
 dependencies = [
  "serde",
  "thiserror 2.0.20",
@@ -2526,7 +2526,7 @@ dependencies = [
 
 [[package]]
 name = "micro-testkit"
-version = "0.1.12"
+version = "0.1.13"
 dependencies = [
  "async-trait",
  "micro-agent",
@@ -2542,7 +2542,7 @@ dependencies = [
 
 [[package]]
 name = "micro-tools"
-version = "0.1.12"
+version = "0.1.13"
 dependencies = [
  "async-trait",
  "base64",
@@ -2557,7 +2557,7 @@ dependencies = [
 
 [[package]]
 name = "micro-tui"
-version = "0.1.12"
+version = "0.1.13"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2589,7 +2589,7 @@ dependencies = [
 
 [[package]]
 name = "micro-types"
-version = "0.1.12"
+version = "0.1.13"
 dependencies = [
  "serde",
  "serde_json",
