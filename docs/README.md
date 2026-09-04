@@ -2,6 +2,8 @@
 
 micro is a terminal coding agent. It can run interactively, print one response for a script, or expose a JSONL RPC interface. Sessions are stored locally as append-only logs.
 
+![micro running an interactive coding session in a terminal](https://raw.githubusercontent.com/rmonvfer/micro/main/assets/micro-intro.png)
+
 If this is your first time using micro, follow [Getting started](getting-started.md). The [CLI reference](cli-reference.md) is the quickest way to look up a command or flag.
 
 ## Start here

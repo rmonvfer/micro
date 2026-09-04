@@ -4,6 +4,8 @@ micro is a terminal coding agent with local, inspectable session logs.
 
 It supports multiple model providers, runs commands in an operating-system sandbox, and records requests, usage, tool calls, and policy decisions as the session runs.
 
+![micro running an interactive coding session in a terminal](assets/micro-intro.png)
+
 ## Installation
 
 The release installer supports macOS on Apple Silicon and Linux on x86-64 or ARM64. Linux release binaries require glibc 2.35 or later; musl builds are not provided. Windows is not supported. Install the latest public release with:
