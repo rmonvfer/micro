@@ -6,6 +6,7 @@ pub mod links;
 mod menu;
 mod overlay;
 pub mod pictures;
+pub mod selection;
 pub mod status;
 mod tool;
 pub mod transcript;
@@ -158,6 +159,17 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     draw_status(frame, inset_by(status_area, content_padding), app, &theme);
 
     app.links().apply(frame.buffer_mut(), area);
+
+    if let Some(selection) = app.selection().copied() {
+        if selection.copy_pending {
+            let text = selection::extract_text(frame.buffer_mut(), &selection);
+            if !text.is_empty() {
+                crate::clipboard::write_text(&text);
+            }
+            app.clear_copy_pending();
+        }
+        selection::apply_selection(frame.buffer_mut(), &selection);
+    }
 
     let first_visible = app
         .lines()

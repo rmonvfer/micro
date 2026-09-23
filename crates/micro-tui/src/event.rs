@@ -74,6 +74,21 @@ pub enum Action {
     Undo,
 
     Paste(String),
+    /// Start selecting text at terminal coordinates (column, row).
+    SelectStart {
+        col: u16,
+        row: u16,
+    },
+    /// Update active selection endpoint to terminal coordinates (column, row).
+    SelectDrag {
+        col: u16,
+        row: u16,
+    },
+    /// Finish selecting text, releasing mouse button at terminal coordinates (column, row).
+    SelectEnd {
+        col: u16,
+        row: u16,
+    },
     /// Back out of whatever is asking: an approval, a picker, the command menu.
     Cancel,
     /// Take the highlighted completion, or indent when nothing is offering one.
@@ -92,6 +107,24 @@ pub fn action_for(event: &Event) -> Action {
         Event::Mouse(mouse) => match mouse.kind {
             crossterm::event::MouseEventKind::ScrollUp => Action::ScrollUp,
             crossterm::event::MouseEventKind::ScrollDown => Action::ScrollDown,
+            crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Left) => {
+                Action::SelectStart {
+                    col: mouse.column,
+                    row: mouse.row,
+                }
+            }
+            crossterm::event::MouseEventKind::Drag(crossterm::event::MouseButton::Left) => {
+                Action::SelectDrag {
+                    col: mouse.column,
+                    row: mouse.row,
+                }
+            }
+            crossterm::event::MouseEventKind::Up(crossterm::event::MouseButton::Left) => {
+                Action::SelectEnd {
+                    col: mouse.column,
+                    row: mouse.row,
+                }
+            }
             _ => Action::Ignored,
         },
         Event::Resize(..) => Action::Resize,
@@ -396,12 +429,29 @@ mod tests {
         assert_eq!(
             action_for(&Event::Mouse(MouseEvent {
                 kind: MouseEventKind::Down(crossterm::event::MouseButton::Left),
-                column: 0,
-                row: 0,
+                column: 5,
+                row: 10,
                 modifiers: KeyModifiers::NONE,
             })),
-            Action::Ignored,
-            "a click is still the terminal's to select with"
+            Action::SelectStart { col: 5, row: 10 }
+        );
+        assert_eq!(
+            action_for(&Event::Mouse(MouseEvent {
+                kind: MouseEventKind::Drag(crossterm::event::MouseButton::Left),
+                column: 15,
+                row: 12,
+                modifiers: KeyModifiers::NONE,
+            })),
+            Action::SelectDrag { col: 15, row: 12 }
+        );
+        assert_eq!(
+            action_for(&Event::Mouse(MouseEvent {
+                kind: MouseEventKind::Up(crossterm::event::MouseButton::Left),
+                column: 15,
+                row: 12,
+                modifiers: KeyModifiers::NONE,
+            })),
+            Action::SelectEnd { col: 15, row: 12 }
         );
     }
 

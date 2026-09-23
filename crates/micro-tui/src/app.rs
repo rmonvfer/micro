@@ -391,6 +391,8 @@ pub struct App {
     /// An `applyCompletion` question queued by committing an extension's own menu item, taken once
     /// by the event loop.
     pending_completion_request: Option<CompletionRequest>,
+    /// Mouse text selection in screen coordinates.
+    selection: Option<crate::render::selection::Selection>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -644,6 +646,7 @@ impl App {
             autocomplete_triggers: Vec::new(),
             pending_suggestion_request: None,
             pending_completion_request: None,
+            selection: None,
         };
 
         if let Some(notice) = notice {
@@ -793,6 +796,16 @@ impl App {
 
     pub fn key_prompt(&self) -> Option<&KeyPrompt> {
         self.key_prompt.as_ref()
+    }
+
+    pub fn selection(&self) -> Option<&crate::render::selection::Selection> {
+        self.selection.as_ref()
+    }
+
+    pub fn clear_copy_pending(&mut self) {
+        if let Some(selection) = self.selection.as_mut() {
+            selection.copy_pending = false;
+        }
     }
 
     /// Whether something is holding the keyboard.
@@ -2014,13 +2027,43 @@ impl App {
             }
             Action::PasteImage => self.paste_image(),
 
+            Action::SelectStart { col, row } => {
+                self.selection = Some(crate::render::selection::Selection::new(col, row));
+                Outcome::Handled
+            }
+            Action::SelectDrag { col, row } => {
+                if let Some(selection) = self.selection.as_mut() {
+                    selection.current = (col, row);
+                    selection.dragging = true;
+                }
+                Outcome::Handled
+            }
+            Action::SelectEnd { col, row } => {
+                if let Some(selection) = self.selection.as_mut() {
+                    selection.current = (col, row);
+                    selection.dragging = false;
+                    if selection.is_empty() {
+                        self.selection = None;
+                    } else {
+                        selection.copy_pending = true;
+                    }
+                }
+                Outcome::Handled
+            }
             Action::ArmJump { forward } => {
                 self.jump = Some(forward);
                 Outcome::Handled
             }
             Action::ExternalEditor => Outcome::ExternalEditor,
             Action::Suspend => Outcome::Suspend,
-            Action::Cancel => self.cancel(),
+            Action::Cancel => {
+                if self.selection.is_some() {
+                    self.selection = None;
+                    Outcome::Handled
+                } else {
+                    self.cancel()
+                }
+            }
         }
     }
 
@@ -2313,6 +2356,14 @@ impl App {
     }
 
     fn handle_key_prompt(&mut self, action: Action) -> Outcome {
+        if matches!(
+            action,
+            Action::SelectStart { .. }
+                | Action::SelectDrag { .. }
+                | Action::SelectEnd { .. }
+        ) {
+            return Outcome::Handled;
+        }
         let Some(prompt) = self.key_prompt.as_mut() else {
             return Outcome::Handled;
         };
@@ -2346,6 +2397,14 @@ impl App {
     }
 
     fn handle_picker(&mut self, action: Action) -> Outcome {
+        if matches!(
+            action,
+            Action::SelectStart { .. }
+                | Action::SelectDrag { .. }
+                | Action::SelectEnd { .. }
+        ) {
+            return Outcome::Handled;
+        }
         let Some(picker) = self.picker.as_mut() else {
             return Outcome::Handled;
         };
@@ -2410,6 +2469,14 @@ impl App {
     }
 
     fn handle_inspection(&mut self, action: Action) -> Outcome {
+        if matches!(
+            action,
+            Action::SelectStart { .. }
+                | Action::SelectDrag { .. }
+                | Action::SelectEnd { .. }
+        ) {
+            return Outcome::Handled;
+        }
         if matches!(action, Action::Cancel | Action::Interrupt) {
             if self
                 .inspection
@@ -2475,6 +2542,14 @@ impl App {
 
     /// Drive an extension's `editor()` overlay.
     fn handle_extension_editor(&mut self, action: Action) -> Outcome {
+        if matches!(
+            action,
+            Action::SelectStart { .. }
+                | Action::SelectDrag { .. }
+                | Action::SelectEnd { .. }
+        ) {
+            return Outcome::Handled;
+        }
         let Some(overlay) = self.extension_editor.as_mut() else {
             return Outcome::Handled;
         };
@@ -4875,5 +4950,35 @@ mod tests {
 
         app.set_editor_component_lines("some-other-component", vec!["stale".to_string()]);
         assert_eq!(app.editor_component_lines(), ["v1".to_string()]);
+    }
+
+    #[test]
+    fn mouse_drag_selects_and_copies_on_release() {
+        let mut app = app();
+        app.handle(Action::SelectStart { col: 2, row: 1 });
+        assert!(app.selection().is_some());
+        assert_eq!(app.selection().unwrap().origin, (2, 1));
+        assert!(app.selection().unwrap().dragging);
+
+        app.handle(Action::SelectDrag { col: 10, row: 1 });
+        assert_eq!(app.selection().unwrap().current, (10, 1));
+
+        app.handle(Action::SelectEnd { col: 12, row: 1 });
+        let sel = app.selection().unwrap();
+        assert_eq!(sel.current, (12, 1));
+        assert!(!sel.dragging);
+        assert!(sel.copy_pending);
+
+        // Escape clears selection
+        app.handle(Action::Cancel);
+        assert!(app.selection().is_none());
+    }
+
+    #[test]
+    fn mouse_click_without_drag_clears_selection() {
+        let mut app = app();
+        app.handle(Action::SelectStart { col: 5, row: 5 });
+        app.handle(Action::SelectEnd { col: 5, row: 5 });
+        assert!(app.selection().is_none());
     }
 }
