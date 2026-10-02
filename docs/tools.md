@@ -42,6 +42,14 @@ micro --exclude-tools write,edit,multi_edit,bash
 
 Names are matched exactly. The allowlist is applied first; the denylist then removes names from the result.
 
+The `default_tools` setting chooses the built-in tools a session starts with, in `config.json` or in a trusted project's `.micro/settings.json`. Plain names replace the full built-in set; `+name` adds a tool and `-name` removes one. A project list made only of `+name` and `-name` entries applies on top of the user's list, while a project list with plain names replaces it. An empty list turns every built-in tool off. Extension and MCP tools are not affected.
+
+```json
+{ "default_tools": ["-bash", "-write"] }
+```
+
+`/reload` turns on tools newly added to `default_tools`. Tools removed from it stay on, and a tool turned off during the session stays off unless it is newly added. `--tools` overrides the setting, also on reload, and tools removed with `--exclude-tools` cannot be turned on.
+
 Inside an interactive session, `/tools` may be provided by an extension, but the built-in command-line flags remain the startup control.
 
 ## Tool failures

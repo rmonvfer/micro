@@ -69,6 +69,12 @@ pub struct CliCommands {
     model_source: &'static str,
     /// Every tool this run actually offers the model.
     tool_names: Vec<String>,
+    /// Every tool the agent has, offered or not.
+    available_tools: Vec<String>,
+    /// What the `default_tools` setting selected, so `/reload` can turn on what it newly names.
+    default_tools: crate::default_tools::DefaultTools,
+    /// The agent's list of the tools it offers the model.
+    offered_tools: Arc<std::sync::RwLock<Option<Vec<String>>>>,
     /// The policy that commands in this session currently use.
     sandbox: micro_tools::Guard,
     /// Whether this workspace was trusted when the session started.
@@ -102,6 +108,9 @@ pub struct HostParts {
     pub prompts: Vec<micro_prompts::PromptTemplate>,
     pub skills: Vec<micro_skills::Skill>,
     pub tool_names: Vec<String>,
+    pub available_tools: Vec<String>,
+    pub default_tools: crate::default_tools::DefaultTools,
+    pub offered_tools: Arc<std::sync::RwLock<Option<Vec<String>>>>,
     pub sandbox: micro_tools::Guard,
     pub project_trusted: bool,
     pub sandbox_overridden: bool,
@@ -144,6 +153,9 @@ impl CliCommands {
             remote_started: false,
             model_source: "set",
             tool_names: parts.tool_names,
+            available_tools: parts.available_tools,
+            default_tools: parts.default_tools,
+            offered_tools: parts.offered_tools,
             sandbox: parts.sandbox,
             project_trusted: parts.project_trusted,
             sandbox_overridden: parts.sandbox_overridden,
@@ -792,6 +804,23 @@ impl CliCommands {
 
     /// Read the instruction files and skills again, and tell the model what they say now.
     async fn reload(&mut self) -> Applied {
+        let user_tools =
+            micro_config::Config::load_from(self.config_home.join(micro_config::FILE_NAME))
+                .ok()
+                .and_then(|config| config.default_tools);
+        let enabled = self.default_tools.reload(
+            user_tools,
+            &self.workspace,
+            self.project_trusted,
+            &self.offered_tools,
+            &self.available_tools,
+        );
+        for name in &enabled {
+            if !self.tool_names.contains(name) {
+                self.tool_names.push(name.clone());
+            }
+        }
+
         let context = crate::runtime::load_context(
             &self.workspace,
             self.skills_enabled,
@@ -808,6 +837,9 @@ impl CliCommands {
             counted(context.instruction_files.len(), "context file"),
             counted(context.skills.len(), "skill")
         );
+        if !enabled.is_empty() {
+            note.push_str(&format!("\nEnabled tools: {}.", enabled.join(", ")));
+        }
         for diagnostic in &context.diagnostics {
             note.push('\n');
             note.push_str(diagnostic);
@@ -1359,6 +1391,15 @@ mod tests {
             prompts: Vec::new(),
             skills: Vec::new(),
             tool_names: Vec::new(),
+            available_tools: Vec::new(),
+            default_tools: crate::default_tools::DefaultTools::new(
+                Vec::new(),
+                None,
+                &root,
+                false,
+                false,
+            ),
+            offered_tools: Default::default(),
             sandbox,
 
             project_trusted: false,

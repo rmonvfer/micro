@@ -16,6 +16,8 @@ pub const PROJECT_SETTINGS_FILE: &str = "settings.json";
 #[serde(default)]
 pub struct ProjectConfig {
     pub sandbox: Option<Value>,
+    /// Laid over the user's `default_tools`; see [`crate::merge_default_tools`].
+    pub default_tools: Option<Vec<String>>,
 }
 
 impl ProjectConfig {

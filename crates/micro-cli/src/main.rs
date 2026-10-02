@@ -3,6 +3,7 @@
 mod access;
 mod capabilities;
 mod commands;
+mod default_tools;
 mod extension_broker;
 mod extensions;
 mod headless;

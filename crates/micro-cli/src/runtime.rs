@@ -403,7 +403,18 @@ pub async fn build(
     let tools = offered(tools, &selection.tools, &selection.exclude_tools);
     let tools = searchable_beyond(tools, &builtin, settings.tool_search_threshold);
 
-    let tool_names: Vec<String> = tools.iter().map(|tool| tool.definition().name).collect();
+    let available_tools: Vec<String> = tools.iter().map(|tool| tool.definition().name).collect();
+    let default_tools = crate::default_tools::DefaultTools::new(
+        builtin.clone(),
+        settings.default_tools.clone(),
+        root,
+        trusted,
+        !selection.tools.is_empty(),
+    );
+    let initial_offer = default_tools.initial_offer(&available_tools);
+    let tool_names: Vec<String> = initial_offer
+        .clone()
+        .unwrap_or_else(|| available_tools.clone());
 
     let tool_definitions: Vec<micro_types::ToolDefinition> =
         tools.iter().map(|tool| tool.definition()).collect();
@@ -486,7 +497,8 @@ pub async fn build(
     let context_files = context.context_files.clone();
     let skills = context.skills.clone();
 
-    let offered_tools: Arc<std::sync::RwLock<Option<Vec<String>>>> = Arc::default();
+    let offered_tools: Arc<std::sync::RwLock<Option<Vec<String>>>> =
+        Arc::new(std::sync::RwLock::new(initial_offer));
     let agent = Agent::new(
         Arc::clone(&resolved.client),
         tools,
@@ -573,6 +585,9 @@ pub async fn build(
         prompts,
         skills: skills.clone(),
         tool_names: tool_names.clone(),
+        available_tools,
+        default_tools,
+        offered_tools: Arc::clone(&offered_tools),
         sandbox: guard.clone(),
         project_trusted: trusted,
         sandbox_overridden,

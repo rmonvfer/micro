@@ -290,6 +290,10 @@ pub struct Config {
     /// How many tools beyond the built-in ones are described to the model up front.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tool_search_threshold: Option<usize>,
+    /// Which built-in tools a session starts with: plain names replace the defaults, `+name` and
+    /// `-name` add to or take from them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_tools: Option<Vec<String>>,
     /// Warn that Anthropic subscription auth bills per token in a third-party harness.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub anthropic_extra_usage: Option<bool>,
@@ -362,6 +366,8 @@ pub struct Settings {
     pub scoped_models: Vec<String>,
     pub mcp_servers: Map<String, Value>,
     pub tool_search_threshold: usize,
+    /// The `default_tools` entries, as written; [`resolve_default_tools`] reads them.
+    pub default_tools: Option<Vec<String>>,
     pub anthropic_extra_usage: bool,
     pub transport: String,
     /// The sandbox policy the user settled on, if they settled on one.
@@ -423,6 +429,7 @@ impl Default for Settings {
             scoped_models: Vec::new(),
             mcp_servers: Map::new(),
             tool_search_threshold: 15,
+            default_tools: None,
             anthropic_extra_usage: true,
             transport: DEFAULT_TRANSPORT.to_string(),
             sandbox: None,
@@ -613,6 +620,7 @@ impl Config {
             tool_search_threshold: self
                 .tool_search_threshold
                 .unwrap_or(defaults.tool_search_threshold),
+            default_tools: self.default_tools.clone(),
             anthropic_extra_usage: self
                 .anthropic_extra_usage
                 .unwrap_or(defaults.anthropic_extra_usage),
@@ -671,6 +679,7 @@ impl Config {
             scoped_models: take(&mut fields, "scoped_models", path)?,
             mcp_servers: take(&mut fields, "mcp_servers", path)?,
             tool_search_threshold: take(&mut fields, "tool_search_threshold", path)?,
+            default_tools: take(&mut fields, "default_tools", path)?,
             anthropic_extra_usage: take(&mut fields, "anthropic_extra_usage", path)?,
             transport: take(&mut fields, "transport", path)?,
             sandbox: take(&mut fields, "sandbox", path)?,
@@ -680,6 +689,57 @@ impl Config {
         };
         Ok(config)
     }
+}
+
+/// Whether a `default_tools` entry changes the inherited selection rather than naming a tool.
+fn is_tool_modifier(entry: &str) -> bool {
+    entry.starts_with('+') || entry.starts_with('-')
+}
+
+/// Lay one settings layer's `default_tools` over another's: a list naming any tool outright
+/// replaces what it inherits, while a list of only `+name` and `-name` entries is applied after it.
+pub fn merge_default_tools(
+    base: Option<Vec<String>>,
+    over: Option<Vec<String>>,
+) -> Option<Vec<String>> {
+    match (base, over) {
+        (base, None) => base,
+        (Some(mut base), Some(over)) if over.iter().all(|entry| is_tool_modifier(entry)) => {
+            base.extend(over);
+            Some(base)
+        }
+        (_, over) => over,
+    }
+}
+
+/// The built-in tools a `default_tools` list selects. Plain names replace `defaults`; then each
+/// `+name` adds a tool and each `-name` removes one, in list order. An empty list selects none.
+pub fn resolve_default_tools(entries: &[String], defaults: &[String]) -> Vec<String> {
+    let plain: Vec<String> = entries
+        .iter()
+        .filter(|entry| !is_tool_modifier(entry))
+        .map(|entry| entry.trim().to_string())
+        .filter(|entry| !entry.is_empty())
+        .collect();
+    let mut tools = match plain.is_empty() && !entries.is_empty() {
+        true => defaults.to_vec(),
+        false => plain,
+    };
+    for entry in entries.iter().filter(|entry| is_tool_modifier(entry)) {
+        let name = entry[1..].trim();
+        if name.is_empty() {
+            continue;
+        }
+        let position = tools.iter().position(|tool| tool == name);
+        match (entry.starts_with('+'), position) {
+            (true, None) => tools.push(name.to_string()),
+            (false, Some(position)) => {
+                tools.remove(position);
+            }
+            _ => {}
+        }
+    }
+    tools
 }
 
 /// The proxy variables a configured `http_proxy` supplies: `HTTP_PROXY` and `HTTPS_PROXY`, each
@@ -834,6 +894,51 @@ mod tests {
     use std::collections::HashMap;
     use std::sync::atomic::AtomicU32;
     use std::sync::atomic::Ordering;
+
+    fn names(entries: &[&str]) -> Vec<String> {
+        entries.iter().map(|entry| entry.to_string()).collect()
+    }
+
+    #[test]
+    fn plain_tool_names_replace_the_defaults() {
+        let defaults = names(&["read", "bash", "edit"]);
+        assert_eq!(
+            resolve_default_tools(&names(&["read", "grep"]), &defaults),
+            names(&["read", "grep"])
+        );
+        assert!(resolve_default_tools(&[], &defaults).is_empty());
+    }
+
+    #[test]
+    fn modifiers_change_the_defaults_in_order() {
+        let defaults = names(&["read", "bash", "edit"]);
+        assert_eq!(
+            resolve_default_tools(&names(&["-bash", "+find", "+read"]), &defaults),
+            names(&["read", "edit", "find"])
+        );
+        assert_eq!(
+            resolve_default_tools(&names(&["read", "+ls", "-read"]), &defaults),
+            names(&["ls"])
+        );
+    }
+
+    #[test]
+    fn a_project_list_of_modifiers_applies_on_top_of_the_user_list() {
+        let merged = merge_default_tools(Some(names(&["read", "bash"])), Some(names(&["-bash"])));
+        assert_eq!(merged, Some(names(&["read", "bash", "-bash"])));
+
+        let replaced = merge_default_tools(Some(names(&["read", "bash"])), Some(names(&["ls"])));
+        assert_eq!(replaced, Some(names(&["ls"])));
+
+        assert_eq!(
+            merge_default_tools(None, Some(names(&["+ls"]))),
+            Some(names(&["+ls"]))
+        );
+        assert_eq!(
+            merge_default_tools(Some(names(&["ls"])), None),
+            Some(names(&["ls"]))
+        );
+    }
 
     #[test]
     fn a_configured_proxy_fills_both_schemes() {

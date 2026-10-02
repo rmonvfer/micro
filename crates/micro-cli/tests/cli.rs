@@ -592,6 +592,33 @@ fn a_session_can_be_deleted() {
 }
 
 #[test]
+fn default_tools_from_the_user_and_the_project_choose_the_built_in_tools() {
+    let api = FakeApi::start([Reply::text("done")]);
+    let fixture = Fixture::new(&api);
+    std::fs::write(
+        fixture.home().join("config.json"),
+        r#"{"default_project_trust":"always","default_tools":["-bash"]}"#,
+    )
+    .unwrap();
+    fixture.write(".micro/settings.json", r#"{"default_tools":["-grep"]}"#);
+
+    fixture
+        .print(&["-m", "test", "hello"])
+        .expect_success("micro --print");
+
+    let request = api.request(0);
+    let offered: Vec<&str> = request["tools"]
+        .as_array()
+        .expect("tools were sent")
+        .iter()
+        .filter_map(|tool| tool["function"]["name"].as_str())
+        .collect();
+    assert!(offered.contains(&"read"), "{offered:?}");
+    assert!(!offered.contains(&"bash"), "{offered:?}");
+    assert!(!offered.contains(&"grep"), "{offered:?}");
+}
+
+#[test]
 fn leaving_before_anything_is_said_leaves_no_session() {
     let api = FakeApi::start([]);
     let fixture = Fixture::new(&api);

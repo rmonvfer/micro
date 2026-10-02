@@ -115,6 +115,7 @@ Command-line options take precedence over environment variables, which take prec
 | `scoped_models` | `[]` | Model queries allowed in the workspace. Empty permits the full catalog. |
 | `mcp_servers` | `{}` | Named MCP server definitions. |
 | `tool_search_threshold` | `15` | Number of non-built-in tools included directly before `tool_search` is used. |
+| `default_tools` | unset | Built-in tools a session starts with; `+name` and `-name` adjust the defaults. See [Tools](tools.md#select-tools). |
 | `anthropic_extra_usage` | `true` | Warn about per-token use of Anthropic subscription credentials in a third-party client. |
 | `transport` | `sse` | `sse` or `auto` for the ChatGPT Codex backend. |
 | `sandbox` | unset | Command policy; runtime default is `workspace-write`. |
@@ -272,7 +273,7 @@ MCP servers are configured programs and are not launched inside the command sand
 
 ## Project configuration
 
-A trusted project may provide `.micro/settings.json`, extensions, skills, prompts, themes, `SYSTEM.md`, and `APPEND_SYSTEM.md`. Project `settings.json` accepts only `sandbox`; other user settings remain controlled by `config.json`, environment variables, and command-line options.
+A trusted project may provide `.micro/settings.json`, extensions, skills, prompts, themes, `SYSTEM.md`, and `APPEND_SYSTEM.md`. Project `settings.json` accepts `sandbox` and `default_tools`; other user settings remain controlled by `config.json`, environment variables, and command-line options.
 
 `--approve` and `--no-approve` override trust for one run. `/trust on` and `/trust off` save a decision for later runs.
 
