@@ -43,7 +43,7 @@ micro auth login anthropic
 micro auth status
 ```
 
-For API-key providers, `micro auth login` reads the key from the terminal and stores it in `auth.json` with user-only permissions. Providers that use device authorization, such as GitHub Copilot, open a browser flow.
+`micro auth login` signs in with a subscription or account where the provider offers one, such as a Claude Pro/Max or ChatGPT plan, or reads an API key from the terminal. Credentials are stored in `auth.json` with user-only permissions. Over SSH, `micro auth login anthropic --method copy_code` lets you finish the sign-in in a browser on another machine.
 
 Environment variables also work:
 
@@ -150,5 +150,6 @@ Inside the interface, `/sessions`, `/resume`, `/tree`, and `/fork` provide the s
 
 - Read [Sessions](sessions.md) to inspect requests, costs, and cache misses.
 - Read [Configuration](configuration.md) to set defaults and add project instructions.
+- Read [MCP servers](mcp.md) to connect external tools.
 - Read [Extensions](extensions.md) to add tools, commands, and UI components.
 - Use `micro --help` and [CLI reference](cli-reference.md) for the full command list.

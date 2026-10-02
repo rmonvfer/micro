@@ -36,7 +36,7 @@ micro --no-context-files
 
 User-level files live in micro's configuration directory. A trusted project may provide its own files under `.micro/`; project files take precedence.
 
-Project instructions and the skill list are added separately after the system prompt.
+Project instructions, the skill list, and the list of [MCP servers](mcp.md#control-exposure) whose tools are not declared are added separately after the system prompt.
 
 ## Skills
 

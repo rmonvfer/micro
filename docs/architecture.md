@@ -35,6 +35,7 @@ micro-cli
 | `micro-commands`   | Slash-command parsing and outcomes.                                              |
 | `micro-extensions` | Bun extension host and capability broker.                                        |
 | `micro-mcp`        | MCP servers over stdio and streamable HTTP, OAuth sign-in, and their tools.      |
+| `micro-codemode`   | The `codemode` tool's QuickJS sandbox, script globals, and tool bridge.          |
 | `micro-skills`     | Skill discovery and loading.                                                     |
 | `micro-prompts`    | Prompt-template discovery and argument expansion.                                |
 | `micro-mermaid`    | Mermaid diagram rendering requested by a response.                               |

@@ -40,13 +40,16 @@ micro "explain this repository"
 
 ## What it does
 
-- Opens an interactive terminal interface or runs a single prompt with `--print`.
-- Works with Anthropic, OpenAI, Google, OpenRouter, GitHub Copilot, and other compatible providers.
+- Opens an interactive terminal interface, runs a single prompt with `--print`, or takes JSON-line commands with `--rpc`.
+- Works with Anthropic, OpenAI, Google, OpenRouter, xAI, GitHub Copilot, and other compatible providers, signing in with a Claude Pro/Max, ChatGPT, SuperGrok, or Kimi Code subscription as well as API keys.
+- Runs local models through a llama.cpp router managed with `micro llama`.
+- Connects to MCP servers over stdio or streamable HTTP, with OAuth sign-in, configured in the `mcp.json` format other clients share.
+- Lets the model write `codemode` scripts that call tools and image or classifier models side by side, so only the script's output reaches the context.
 - Saves conversations as append-only JSONL logs on your machine.
-- Reports provider usage and estimated cost by turn with `micro bill`.
+- Reports provider usage and estimated cost by turn with `micro bill`, and keeps prompt caches warm during long tool runs.
 - Provides a local prompt-prefix diagnostic for cache misses with `micro why-miss`.
 - Uses Seatbelt on macOS and Landlock with seccomp on Linux to restrict commands.
-- Loads TypeScript extensions in a confined Bun process with explicit host capabilities.
+- Loads TypeScript extensions in a confined Bun process with explicit host capabilities; extensions can add tools, MCP servers, and virtual models that route each request.
 
 The core agent is a native Rust binary. Bun is only needed for TypeScript extensions.
 
@@ -71,12 +74,21 @@ micro --print "summarize the error handling in src/"
 micro -p -q "list the public functions in micro-agent" > api.txt
 ```
 
-Select a model with `-m`:
+Select a model with `-m`. Inside the interface, `/model` switches for the current session; `ctrl+s` in the picker saves the choice as the default:
 
 ```bash
 micro -m opus "review this patch"
 micro models sonnet
 ```
+
+Add an MCP server; its tools are reached from `codemode` scripts by default:
+
+```bash
+micro mcp add docs --url https://example.com/mcp
+micro mcp login docs
+```
+
+Report a problem with `/bug`, which writes a redacted ZIP to attach to an issue and uploads nothing.
 
 Resume the latest session for the current workspace:
 
@@ -126,11 +138,16 @@ Read the [documentation site](https://rmonvfer.github.io/micro/) or browse the M
 - [CLI reference](docs/cli-reference.md)
 - [Sessions, billing, and cache analysis](docs/sessions.md)
 - [Tools and integrations](docs/tools.md)
+- [MCP servers](docs/mcp.md)
+- [Codemode](docs/codemode.md)
 - [Project context](docs/project-context.md)
 - [Providers and models](docs/providers.md)
+- [Image and classifier models](docs/models.md)
+- [Local models with llama.cpp](docs/llama-cpp.md)
 - [Configuration](docs/configuration.md)
 - [Security model](docs/security.md)
 - [Extensions](docs/extensions.md)
+- [Virtual models](docs/virtual-models.md)
 - [Remote control](docs/remote-control.md)
 - [RPC mode](docs/rpc.md)
 - [Ledger format](docs/ledger.md)

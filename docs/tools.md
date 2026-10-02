@@ -15,7 +15,7 @@ micro gives the model a small built-in tool set. Extensions and MCP servers may 
 | `find`                   | Find paths by name or pattern.                        |
 | `micro_docs`             | Read or search documentation embedded in the binary. |
 | `bash`                   | Run a shell command.                                  |
-| `codemode`               | Run JavaScript that calls the other tools. Offered on request; see [Codemode](codemode.md). |
+| `codemode`               | Run JavaScript that calls the other tools. Offered when selected or when an MCP server uses `codemode` exposure; see [Codemode](codemode.md). |
 
 The file tools resolve paths against the workspace selected by `-C` or the current directory. They reject absolute paths, lexical `..` traversal, and paths whose existing components resolve outside the workspace.
 
@@ -86,13 +86,13 @@ See [MCP servers](mcp.md) for HTTP servers, OAuth sign-in, exposure, and `micro 
 
 ## Deferred tool search
 
-Large MCP and extension tool sets increase every provider request because their schemas are included in the prompt.
+Large tool sets increase every provider request because their schemas are included in the prompt.
 
-When the number of non-built-in tools exceeds `tool_search_threshold`, micro leaves those definitions out and adds `tool_search`. The model searches by name or description, receives matching definitions, and then calls the selected tool normally.
+When the number of extension tools exceeds `tool_search_threshold`, micro leaves their definitions out and adds `tool_search`. The model searches by name or description, receives matching definitions, and then calls the selected tool normally.
 
-The default threshold is `15`. Set it to `0` to include every tool definition on every request.
+The default threshold is `15`. Set it to `0` to declare every extension tool on every request.
 
-Built-in tools are never deferred, and neither are the tools of an MCP server with `"exposure": "direct"`. The tools of servers with `codemode` or `deferred` exposure are never declared: those servers connect in the background, and `tool_search` waits for them before answering.
+Built-in tools are never deferred. MCP tools follow their server's `exposure` rather than the threshold: `direct` tools are always declared, and the tools of servers with `codemode` (the default) or `deferred` exposure never are. Those servers connect in the background, and `tool_search` waits for them before answering.
 
 ## Extension tools
 

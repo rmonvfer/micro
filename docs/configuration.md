@@ -15,6 +15,9 @@ Without `MICRO_DIR`, an existing `~/.micro` remains in use. New installations us
 ```text
 ~/.config/micro/                 user configuration
 ├── auth.json                    stored provider credentials
+├── mcp.json                     MCP servers
+├── mcp-auth.json                MCP server sign-ins
+├── llama-cpp.json               llama.cpp router connection
 ├── models.json                  model and provider overrides
 ├── trust.json                   saved project trust decisions
 ├── capabilities.json            saved extension capability decisions
@@ -30,6 +33,8 @@ Without `MICRO_DIR`, an existing `~/.micro` remains in use. New installations us
 ├── npm/
 ├── git/
 ├── extensions/
+├── mcp.log                      MCP server logs
+├── llama-cpp-context.json       llama.cpp context windows
 └── remote-control.json
 ```
 
@@ -114,7 +119,7 @@ Command-line options take precedence over environment variables, which take prec
 | `http_idle_timeout` | `120` | Seconds without provider output before a request fails. |
 | `http_proxy` | unset | Proxy URL applied as `HTTP_PROXY` and `HTTPS_PROXY` to micro's HTTP clients. |
 | `scoped_models` | `[]` | Model queries allowed in the workspace. Empty permits the full catalog. |
-| `tool_search_threshold` | `15` | Number of non-built-in tools included directly before `tool_search` is used. |
+| `tool_search_threshold` | `15` | Number of extension tools declared directly before they move behind `tool_search`. |
 | `default_tools` | unset | Built-in tools a session starts with; `+name` and `-name` adjust the defaults. See [Tools](tools.md#select-tools). |
 | `compaction` | unset | Compaction budgets in tokens, with per-model overrides. |
 | `image_limits` | 2000×2000, 4.5 MiB | Size limits for images sent to a model, with per-model overrides. |
@@ -141,6 +146,8 @@ Unknown keys are preserved when micro rewrites the file but have no effect in a 
 ### model and provider
 
 `model` is resolved the same way as `--model`: exact ID, qualified ID, alias, or unique partial match. `provider` is used when the model query does not select one.
+
+`/model` and `/thinking` change only the current session. `ctrl+s` in their pickers, or `--default` before the argument, also writes the choice to `config.json`: `model` and `provider` for a model, `thinking` for a level.
 
 ### thinking
 
@@ -201,7 +208,7 @@ Sets a per-session cost ceiling in US dollars. `0` disables the ceiling. The tot
 
 ### tool_search_threshold
 
-When extensions and MCP servers add more tools than this threshold, micro exposes them through `tool_search` instead of sending every tool definition on every request. The default is `15`. Set it to `0` to describe every tool directly.
+When extensions add more tools than this threshold, micro exposes them through `tool_search` instead of sending every tool definition on every request. The default is `15`. Set it to `0` to declare every extension tool directly. How MCP tools are reached is decided by each server's [`exposure`](mcp.md#control-exposure) instead.
 
 ### codemode
 

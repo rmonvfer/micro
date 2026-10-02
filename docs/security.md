@@ -68,11 +68,13 @@ Capabilities decide which host operations an extension may request. Direct files
 
 The command sandbox does not wrap:
 
-- configured MCP server processes;
+- MCP server processes, whether configured in `mcp.json` or registered by an extension with the `mcp_servers` capability;
 - commands entered manually with `!` in the terminal;
 - micro's own provider network requests.
 
 Those processes and actions run with the permissions of the user who started micro. The extension host is covered by its own confinement described above.
+
+A project's `.micro/mcp.json` cannot send a provider credential to a server with `auth.provider`; only the global `mcp.json` and extensions with the `mcp_servers` capability can. Review that capability in project extensions before trusting the project.
 
 ## Recorded decisions
 
@@ -86,6 +88,6 @@ The ledger is an audit record, not a prevention mechanism. The sandbox and capab
 
 ## Data and privacy
 
-micro does not send telemetry, crash reports, analytics, or installation identifiers. Session directories use owner-only permissions on Unix; logs, metadata, and retained provider request bodies are owner-readable and owner-writable. The files remain local unless you export, copy, or share them.
+micro does not send telemetry, crash reports, or analytics. Sign in with ChatGPT registers a stable installation `device_id` with OpenAI; see [Providers](providers.md#authenticate). Session directories use owner-only permissions on Unix; logs, metadata, and retained provider request bodies are owner-readable and owner-writable. The files remain local unless you export, copy, or share them.
 
-Model requests are sent to the provider selected for the session. Remote pairing transfers its secret through a QR code instead of the relay. Relay connections require HTTPS, payloads are encrypted, and authenticated frames cannot be replayed after reconnect. The relay still sees connection metadata and can deny service. Read the [remote-control threat model](remote-control.md#encryption-and-relay). `/share` uploads the conversation to a secret GitHub gist using the token you configured.
+Model requests are sent to the provider selected for the session. Remote pairing transfers its secret through a QR code instead of the relay. Relay connections require HTTPS, payloads are encrypted, and authenticated frames cannot be replayed after reconnect. The relay still sees connection metadata and can deny service. Read the [remote-control threat model](remote-control.md#encryption-and-relay). `/share` uploads the conversation to a secret GitHub gist using the token you configured. `/bug` writes its report to the workspace with secret-looking settings redacted and uploads nothing.

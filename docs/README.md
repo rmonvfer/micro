@@ -14,15 +14,20 @@ If this is your first time using micro, follow [Getting started](getting-started
 ## Use micro
 
 - [Sessions](sessions.md): saved conversations, billing, budgets, request inspection, and cache-miss analysis.
-- [Tools and integrations](tools.md): built-in tools, workspace boundaries, MCP servers, and deferred tool search.
+- [Tools and integrations](tools.md): built-in tools, workspace boundaries, tool selection, and deferred tool search.
+- [MCP servers](mcp.md): `mcp.json`, HTTP servers, OAuth sign-in, exposure, and `micro mcp`.
+- [Codemode](codemode.md): let the model write scripts that call tools and models side by side.
 - [Project context](project-context.md): instruction files, skills, system prompts, and prompt templates.
-- [Providers and models](providers.md): authentication, model selection, live listings, and custom endpoints.
+- [Providers and models](providers.md): subscription and API-key sign-in, model selection, live listings, and custom endpoints.
+- [Image and classifier models](models.md): image generation and classification for extensions and scripts.
+- [Local models with llama.cpp](llama-cpp.md): connect a llama.cpp router and manage its models.
 - [Remote control](remote-control.md): pair a phone and publish an active terminal session.
 
 ## Configure and extend it
 
 - [Configuration](configuration.md): settings, paths, models, trust defaults, and MCP servers.
 - [Extensions](extensions.md): write, install, and permission TypeScript extensions.
+- [Virtual models](virtual-models.md): route each request to a physical model from an extension.
 - [Testing extensions](extension-testing.md): compatibility and terminal test harnesses.
 
 ## Security and internals

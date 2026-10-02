@@ -30,7 +30,6 @@ With no subcommand, micro opens the terminal interface. A prompt on the command 
 | `--continue`            | Resume the latest session for the workspace.                                 |
 | `--session-id <ID>`     | Resume this workspace's session with this exact ID, or start one under it.   |
 | `-n`, `--name <NAME>`   | Set the session display name at startup.                                     |
-
 | `--budget <USD>`        | Stop at the first turn boundary after the session total reaches this amount. |
 
 ## Tools and project resources
@@ -77,7 +76,10 @@ See [Providers](providers.md#authenticate) for the sign-in methods and what each
 ```bash
 micro models [QUERY]
 micro models --live
+micro models --type <chat|image|classifier> [QUERY]
 ```
+
+`--type` lists [image and classifier models](models.md) instead of chat models.
 
 ### Updates
 
@@ -109,6 +111,19 @@ micro mcp logout <NAME>
 ```
 
 See [MCP servers](mcp.md).
+
+### llama.cpp
+
+```bash
+micro llama connect [URL] [--api-key <KEY>]
+micro llama status
+micro llama search <QUERY>
+micro llama download <OWNER/REPOSITORY[:QUANT]>
+micro llama load <MODEL> [--unload-others]
+micro llama unload <MODEL>
+```
+
+See [Local models with llama.cpp](llama-cpp.md).
 
 ### Sessions and costs
 
