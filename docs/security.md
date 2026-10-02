@@ -4,7 +4,7 @@ micro has separate controls for project-provided configuration, commands, and ex
 
 ## Project trust
 
-A project can include a `.micro/` directory with settings, extensions, skills, prompts, themes, and system-prompt overrides. micro asks for a trust decision before loading those resources.
+A project can include a `.micro/` directory with settings, MCP servers, extensions, skills, prompts, themes, and system-prompt overrides. micro asks for a trust decision before loading those resources.
 
 A project without `.micro/` does not require a decision.
 

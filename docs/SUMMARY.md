@@ -11,6 +11,7 @@
 
 - [Sessions](sessions.md)
 - [Tools and integrations](tools.md)
+- [MCP servers](mcp.md)
 - [Project context](project-context.md)
 - [Providers and models](providers.md)
 - [Remote control](remote-control.md)

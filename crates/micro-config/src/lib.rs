@@ -279,10 +279,6 @@ pub struct Config {
     /// Models this workspace may use, when it should not have the whole catalog.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub scoped_models: Option<Vec<String>>,
-    /// Programs that provide tools over the Model Context Protocol, by the name their tools are
-    /// announced under.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub mcp_servers: Option<Map<String, Value>>,
     /// How many tools beyond the built-in ones are described to the model up front.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tool_search_threshold: Option<usize>,
@@ -356,7 +352,6 @@ pub struct Settings {
     pub default_project_trust: ProjectTrust,
     pub http_idle_timeout: u64,
     pub scoped_models: Vec<String>,
-    pub mcp_servers: Map<String, Value>,
     pub tool_search_threshold: usize,
     pub anthropic_extra_usage: bool,
     pub transport: String,
@@ -417,7 +412,6 @@ impl Default for Settings {
             default_project_trust: ProjectTrust::default(),
             http_idle_timeout: DEFAULT_HTTP_IDLE_TIMEOUT,
             scoped_models: Vec::new(),
-            mcp_servers: Map::new(),
             tool_search_threshold: 15,
             anthropic_extra_usage: true,
             transport: DEFAULT_TRANSPORT.to_string(),
@@ -605,7 +599,6 @@ impl Config {
                 .unwrap_or(defaults.http_idle_timeout)
                 .max(1),
             scoped_models: self.scoped_models.clone().unwrap_or(defaults.scoped_models),
-            mcp_servers: self.mcp_servers.clone().unwrap_or(defaults.mcp_servers),
             tool_search_threshold: self
                 .tool_search_threshold
                 .unwrap_or(defaults.tool_search_threshold),
@@ -664,7 +657,6 @@ impl Config {
             default_project_trust: take(&mut fields, "default_project_trust", path)?,
             http_idle_timeout: take(&mut fields, "http_idle_timeout", path)?,
             scoped_models: take(&mut fields, "scoped_models", path)?,
-            mcp_servers: take(&mut fields, "mcp_servers", path)?,
             tool_search_threshold: take(&mut fields, "tool_search_threshold", path)?,
             anthropic_extra_usage: take(&mut fields, "anthropic_extra_usage", path)?,
             transport: take(&mut fields, "transport", path)?,

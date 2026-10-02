@@ -1,32 +1,49 @@
 //! Tools a separate program provides, over the Model Context Protocol.
 
+pub mod config;
+pub mod names;
+pub mod oauth;
+mod servers;
+mod transport;
+
+pub use config::Exposure;
+pub use config::LoadedConfig;
+pub use config::ServerConfig;
+pub use config::ServerEntry;
+pub use servers::ProviderAuthorizer;
+pub use servers::ServerReport;
+pub use servers::Servers;
+pub use servers::Status;
+pub use transport::Authorizer;
+pub use transport::TransportError;
+
 use async_trait::async_trait;
 use micro_types::ContentBlock;
 use micro_types::ToolDefinition;
-use serde::Deserialize;
-use serde::Serialize;
 use serde_json::json;
 use serde_json::Value;
 use std::collections::HashMap;
-use std::process::Stdio;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
+use std::sync::Weak;
 use std::time::Duration;
 use tokio::sync::oneshot;
 use tokio::sync::Mutex;
+use transport::Transport;
 
 /// The revision of the protocol this speaks.
-const PROTOCOL_VERSION: &str = "2024-11-05";
+pub const PROTOCOL_VERSION: &str = "2025-06-18";
 
-/// How long a server has to answer the handshake before it is given up on.
-const DEFAULT_STARTUP_TIMEOUT: Duration = Duration::from_secs(20);
+/// How long a server has to answer the handshake, or any request but a tool call, when its
+/// configuration does not say.
+const DEFAULT_TIMEOUT: Duration = Duration::from_secs(60);
 
-/// How long a single tool call may take.
+/// How long a single tool call may take when the configuration does not say.
 const DEFAULT_CALL_TIMEOUT: Duration = Duration::from_secs(120);
 
-/// What separates a server's name from a tool's in the name the model sees.
-const NAME_SEPARATOR: &str = "__";
+/// JSON-RPC's code for a method the receiver does not offer.
+const METHOD_NOT_FOUND: i64 = -32601;
 
 #[derive(Debug, thiserror::Error)]
 pub enum McpError {
@@ -45,111 +62,76 @@ pub enum McpError {
 
     #[error("{server}: took longer than {seconds}s")]
     TimedOut { server: String, seconds: u64 },
+
+    #[error("{server}: needs sign-in; run `micro mcp login {server}` or `/mcp login {server}`")]
+    AuthRequired { server: String },
+
+    #[error("{server}: {message}")]
+    Config { server: String, message: String },
 }
 
-pub type Result<T, E = McpError> = std::result::Result<T, E>;
+impl McpError {
+    pub fn server(&self) -> &str {
+        match self {
+            McpError::Start { server, .. }
+            | McpError::Protocol { server, .. }
+            | McpError::Closed { server }
+            | McpError::TimedOut { server, .. }
+            | McpError::AuthRequired { server }
+            | McpError::Config { server, .. } => server,
+        }
+    }
 
-/// One server, as it is written in the config file.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct ServerConfig {
-    /// The program to run.
-    pub command: String,
-    #[serde(default)]
-    pub args: Vec<String>,
-
-    #[serde(default)]
-    pub env: HashMap<String, String>,
-    /// Where the server runs.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub cwd: Option<String>,
-    /// A server listed but turned off stays in the file, so it can be turned back on without being
-    /// written out again.
-    #[serde(default = "enabled_by_default")]
-    pub enabled: bool,
-    /// Seconds the handshake may take.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub startup_timeout: Option<u64>,
-    /// Seconds any one of its tools may take.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub tool_timeout: Option<u64>,
-}
-
-fn enabled_by_default() -> bool {
-    true
-}
-
-impl Default for ServerConfig {
-    fn default() -> Self {
-        ServerConfig {
-            command: String::new(),
-            args: Vec::new(),
-            env: HashMap::new(),
-            cwd: None,
-            enabled: enabled_by_default(),
-            startup_timeout: None,
-            tool_timeout: None,
+    fn carrying(server: &str, error: TransportError) -> McpError {
+        let server = server.to_string();
+        match error {
+            TransportError::Closed => McpError::Closed { server },
+            TransportError::AuthRequired(_) => McpError::AuthRequired { server },
+            TransportError::Http { message, .. } | TransportError::Other(message) => {
+                McpError::Protocol { server, message }
+            }
         }
     }
 }
 
-/// A running server, and the way to ask it things.
+pub type Result<T, E = McpError> = std::result::Result<T, E>;
+
+type Waiting = Arc<Mutex<HashMap<u64, oneshot::Sender<Result<Value>>>>>;
+
+/// A connected server, and the way to ask it things.
 pub struct Client {
     name: String,
-    outbound: tokio::sync::mpsc::UnboundedSender<String>,
+    transport: Arc<dyn Transport>,
     /// Answers are routed back to whoever asked, by the id they asked with.
-    pending: Arc<Mutex<HashMap<u64, oneshot::Sender<Result<Value>>>>>,
+    pending: Waiting,
     next_id: AtomicU64,
-    call_timeout: Duration,
-
-    _child: Arc<tokio::process::Child>,
+    timeout: Option<Duration>,
+    /// What the server said about itself when it shook hands.
+    instructions: Option<String>,
 }
 
 impl Client {
-    /// Start a server and shake hands with it.
-    pub async fn start(name: &str, config: &ServerConfig) -> Result<Arc<Client>> {
-        let mut command = tokio::process::Command::new(&config.command);
-        command
-            .args(&config.args)
-            .envs(&config.env)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .kill_on_drop(true);
-        if let Some(cwd) = &config.cwd {
-            command.current_dir(cwd);
-        }
-
-        let mut child = command.spawn().map_err(|error| McpError::Start {
-            server: name.to_string(),
-            command: config.command.clone(),
-            message: error.to_string(),
-        })?;
-
-        let stdin = child.stdin.take().expect("stdin was piped");
-        let stdout = child.stdout.take().expect("stdout was piped");
-        let pending: Arc<Mutex<HashMap<u64, oneshot::Sender<Result<Value>>>>> = Arc::default();
-
-        let (outbound, mut queued) = tokio::sync::mpsc::unbounded_channel::<String>();
-        tokio::spawn(async move {
-            use tokio::io::AsyncWriteExt as _;
-            let mut stdin = stdin;
-            while let Some(line) = queued.recv().await {
-                if stdin.write_all(line.as_bytes()).await.is_err() || stdin.flush().await.is_err() {
-                    return;
-                }
-            }
-        });
+    /// Shake hands over a transport whose incoming messages arrive on `incoming`.
+    async fn connect(
+        name: &str,
+        transport: Arc<dyn Transport>,
+        mut incoming: tokio::sync::mpsc::UnboundedReceiver<Value>,
+        timeout: Option<Duration>,
+    ) -> Result<Arc<Client>> {
+        let pending: Waiting = Arc::default();
 
         let reader_pending = Arc::clone(&pending);
         let reader_name = name.to_string();
+        let replies: Weak<dyn Transport> = Arc::downgrade(&transport);
         tokio::spawn(async move {
-            use tokio::io::AsyncBufReadExt as _;
-            let mut lines = tokio::io::BufReader::new(stdout).lines();
-            while let Ok(Some(line)) = lines.next_line().await {
-                let Ok(message) = serde_json::from_str::<Value>(&line) else {
+            while let Some(message) = incoming.recv().await {
+                if let Some(method) = message.get("method").and_then(Value::as_str) {
+                    if let (Some(id), Some(transport)) = (message.get("id"), replies.upgrade()) {
+                        let reply = answer_server_request(id, method);
+                        let _ = transport.send(&reply).await;
+                    }
                     continue;
-                };
-
+                }
                 let Some(id) = message.get("id").and_then(Value::as_u64) else {
                     continue;
                 };
@@ -167,21 +149,16 @@ impl Client {
             }
         });
 
-        let client = Arc::new(Client {
+        let mut client = Client {
             name: name.to_string(),
-            outbound,
+            transport,
             pending,
             next_id: AtomicU64::new(1),
-            call_timeout: config
-                .tool_timeout
-                .map_or(DEFAULT_CALL_TIMEOUT, Duration::from_secs),
-            _child: Arc::new(child),
-        });
+            timeout,
+            instructions: None,
+        };
 
-        let startup = config
-            .startup_timeout
-            .map_or(DEFAULT_STARTUP_TIMEOUT, Duration::from_secs);
-        client
+        let shook = client
             .request_within(
                 "initialize",
                 json!({
@@ -189,36 +166,98 @@ impl Client {
                     "capabilities": {},
                     "clientInfo": { "name": "micro", "version": env!("CARGO_PKG_VERSION") },
                 }),
-                startup,
+                timeout.unwrap_or(DEFAULT_TIMEOUT),
             )
-            .await?;
-        client.notify("notifications/initialized", json!({}));
+            .await;
+        let shook = match shook {
+            Ok(shook) => shook,
+            Err(McpError::Closed { server }) => {
+                return Err(match client.transport.stderr_tail() {
+                    Some(stderr) => McpError::Protocol {
+                        server,
+                        message: format!("stopped answering:\n{stderr}"),
+                    },
+                    None => McpError::Closed { server },
+                })
+            }
+            Err(error) => return Err(error),
+        };
+        if let Some(version) = shook.get("protocolVersion").and_then(Value::as_str) {
+            client.transport.set_protocol_version(version);
+        }
+        client.instructions = shook
+            .get("instructions")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|instructions| !instructions.is_empty())
+            .map(str::to_string);
+        client
+            .transport
+            .send(&json!({ "jsonrpc": "2.0", "method": "notifications/initialized" }))
+            .await
+            .map_err(|error| McpError::carrying(name, error))?;
 
-        Ok(client)
+        Ok(Arc::new(client))
+    }
+
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// What the server said about itself, if anything.
+    pub fn instructions(&self) -> Option<&str> {
+        self.instructions.as_deref()
     }
 
     /// The tools this server offers, each ready to be called.
     pub async fn tools(self: &Arc<Self>) -> Result<Vec<Arc<dyn micro_tools::Tool>>> {
-        let listed = self
-            .request_within("tools/list", json!({}), self.call_timeout)
-            .await?;
+        let mut listed: Vec<Value> = Vec::new();
+        let mut cursor: Option<String> = None;
+        loop {
+            let params = match &cursor {
+                Some(cursor) => json!({ "cursor": cursor }),
+                None => json!({}),
+            };
+            let page = self
+                .request_within(
+                    "tools/list",
+                    params,
+                    self.timeout.unwrap_or(DEFAULT_TIMEOUT),
+                )
+                .await?;
+            let tools =
+                page.get("tools")
+                    .and_then(Value::as_array)
+                    .ok_or_else(|| McpError::Protocol {
+                        server: self.name.clone(),
+                        message: "answered tools/list without a list of tools".to_string(),
+                    })?;
+            listed.extend(tools.iter().cloned());
+            cursor = page
+                .get("nextCursor")
+                .and_then(Value::as_str)
+                .filter(|next| !next.is_empty() && cursor.as_deref() != Some(*next))
+                .map(str::to_string);
+            if cursor.is_none() {
+                break;
+            }
+        }
 
-        let tools = listed
-            .get("tools")
-            .and_then(Value::as_array)
-            .ok_or_else(|| McpError::Protocol {
-                server: self.name.clone(),
-                message: "answered tools/list without a list of tools".to_string(),
-            })?;
+        let listed: Vec<(String, Value)> = listed
+            .into_iter()
+            .filter_map(|tool| Some((tool.get("name")?.as_str()?.to_string(), tool)))
+            .collect();
+        let remote_names: Vec<String> = listed.iter().map(|(name, _)| name.clone()).collect();
+        let names = names::tool_names(&self.name, &remote_names);
 
-        Ok(tools
-            .iter()
-            .filter_map(|tool| {
-                let remote = tool.get("name").and_then(Value::as_str)?.to_string();
-                Some(Arc::new(RemoteTool {
+        Ok(listed
+            .into_iter()
+            .zip(names)
+            .map(|((remote, tool), name)| {
+                Arc::new(RemoteTool {
                     client: Arc::clone(self),
                     definition: ToolDefinition {
-                        name: qualified_name(&self.name, &remote),
+                        name,
                         description: tool
                             .get("description")
                             .and_then(Value::as_str)
@@ -233,7 +272,7 @@ impl Client {
                         constrained_sampling: None,
                     },
                     remote,
-                }) as Arc<dyn micro_tools::Tool>)
+                }) as Arc<dyn micro_tools::Tool>
             })
             .collect())
     }
@@ -244,15 +283,21 @@ impl Client {
         let (answered, answer) = oneshot::channel();
         self.pending.lock().await.insert(id, answered);
 
-        let line = format!(
-            "{}\n",
-            json!({ "jsonrpc": "2.0", "id": id, "method": method, "params": params })
-        );
-        if self.outbound.send(line).is_err() {
-            self.pending.lock().await.remove(&id);
-            return Err(McpError::Closed {
-                server: self.name.clone(),
-            });
+        let message = json!({ "jsonrpc": "2.0", "id": id, "method": method, "params": params });
+        let sent = tokio::time::timeout(within, self.transport.send(&message)).await;
+        match sent {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) => {
+                self.pending.lock().await.remove(&id);
+                return Err(McpError::carrying(&self.name, error));
+            }
+            Err(_) => {
+                self.pending.lock().await.remove(&id);
+                return Err(McpError::TimedOut {
+                    server: self.name.clone(),
+                    seconds: within.as_secs(),
+                });
+            }
         }
 
         match tokio::time::timeout(within, answer).await {
@@ -270,14 +315,18 @@ impl Client {
             }
         }
     }
+}
 
-    /// Say something that takes no answer.
-    fn notify(&self, method: &str, params: Value) {
-        let line = format!(
-            "{}\n",
-            json!({ "jsonrpc": "2.0", "method": method, "params": params })
-        );
-        let _ = self.outbound.send(line);
+/// What micro says to a request the server makes of it: `ping` is answered, nothing else is
+/// offered.
+fn answer_server_request(id: &Value, method: &str) -> Value {
+    match method {
+        "ping" => json!({ "jsonrpc": "2.0", "id": id, "result": {} }),
+        other => json!({
+            "jsonrpc": "2.0",
+            "id": id,
+            "error": { "code": METHOD_NOT_FOUND, "message": format!("micro does not offer {other}") },
+        }),
     }
 }
 
@@ -294,11 +343,6 @@ fn answer(server: &str, message: &Value) -> Result<Value> {
         });
     }
     Ok(message.get("result").cloned().unwrap_or(Value::Null))
-}
-
-/// The name the model calls a remote tool by.
-pub fn qualified_name(server: &str, tool: &str) -> String {
-    format!("mcp{NAME_SEPARATOR}{server}{NAME_SEPARATOR}{tool}")
 }
 
 /// One tool belonging to a server, as the agent loop sees it.
@@ -331,7 +375,7 @@ impl micro_tools::Tool for RemoteTool {
             .request_within(
                 "tools/call",
                 json!({ "name": self.remote, "arguments": arguments }),
-                self.client.call_timeout,
+                self.client.timeout.unwrap_or(DEFAULT_CALL_TIMEOUT),
             )
             .await
             .map_err(|error| error.to_string())?;
@@ -381,47 +425,29 @@ fn content_block(block: &Value) -> Option<ContentBlock> {
     }
 }
 
-/// Start every server that is turned on, and collect the tools they offer.
-pub async fn connect(
-    servers: &HashMap<String, ServerConfig>,
-) -> (Vec<Arc<dyn micro_tools::Tool>>, Vec<McpError>) {
-    let mut names: Vec<&String> = servers.keys().collect();
-    names.sort();
+#[cfg(test)]
+mod test_server;
 
-    let mut tools = Vec::new();
-    let mut problems = Vec::new();
-    for name in names {
-        let config = &servers[name];
-        if !config.enabled {
-            continue;
-        }
-        match Client::start(name, config).await {
-            Ok(client) => match client.tools().await {
-                Ok(found) => tools.extend(found),
-                Err(error) => problems.push(error),
-            },
-            Err(error) => problems.push(error),
-        }
-    }
-    (tools, problems)
-}
+#[cfg(test)]
+mod http_tests;
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::Path;
 
     /// A server that answers the handshake, offers one tool, and echoes what it is given.
     fn echo_server() -> ServerConfig {
-        ServerConfig {
-            command: "bash".to_string(),
-            args: vec![
+        ServerConfig::stdio(
+            "bash",
+            vec![
                 "-c".to_string(),
                 r#"
                 while IFS= read -r line; do
                   id=$(printf '%s' "$line" | sed -n 's/.*"id":\([0-9]*\).*/\1/p')
                   case "$line" in
                     *'"initialize"'*)
-                      printf '{"jsonrpc":"2.0","id":%s,"result":{"protocolVersion":"2024-11-05"}}\n' "$id" ;;
+                      printf '{"jsonrpc":"2.0","id":%s,"result":{"protocolVersion":"2025-06-18","instructions":"Echoes things back.\\nSecond line."}}\n' "$id" ;;
                     *'"tools/list"'*)
                       printf '{"jsonrpc":"2.0","id":%s,"result":{"tools":[{"name":"echo","description":"Say it back","inputSchema":{"type":"object","properties":{"text":{"type":"string"}}}}]}}\n' "$id" ;;
                     *'"tools/call"'*)
@@ -432,31 +458,51 @@ mod tests {
                 "#
                 .to_string(),
             ],
-            ..ServerConfig::default()
+        )
+    }
+
+    fn entry(name: &str, config: ServerConfig) -> ServerEntry {
+        ServerEntry {
+            name: name.to_string(),
+            config,
+            source: "mcp.json".into(),
+            scope: config::Scope::Global,
         }
+    }
+
+    fn servers(entries: Vec<ServerEntry>) -> Servers {
+        Servers::new(
+            LoadedConfig {
+                servers: entries,
+                errors: Vec::new(),
+            },
+            Path::new("."),
+        )
     }
 
     #[tokio::test]
     async fn a_servers_tools_arrive_named_after_it() {
-        let client = Client::start("demo", &echo_server())
-            .await
-            .expect("it starts and shakes hands");
-        let tools = client.tools().await.expect("it lists its tools");
+        let servers = servers(vec![entry("de-mo", echo_server())]);
+        let tools = servers.connect("de-mo").await.expect("it connects");
 
         assert_eq!(tools.len(), 1);
         let definition = tools[0].definition();
-        assert_eq!(definition.name, "mcp__demo__echo");
+        assert_eq!(definition.name, "mcp__de_mo__echo");
         assert_eq!(definition.description, "Say it back");
         assert_eq!(
             definition.parameters["properties"]["text"]["type"],
             "string"
         );
+        assert_eq!(
+            servers.status("de-mo"),
+            Some(Status::Connected { tools: 1 })
+        );
     }
 
     #[tokio::test]
     async fn calling_one_reaches_the_server_and_comes_back() {
-        let client = Client::start("demo", &echo_server()).await.unwrap();
-        let tools = client.tools().await.unwrap();
+        let servers = servers(vec![entry("demo", echo_server())]);
+        let tools = servers.connect("demo").await.unwrap();
 
         let said = tools[0]
             .execute(&json!({ "text": "hello" }))
@@ -467,53 +513,84 @@ mod tests {
 
     #[tokio::test]
     async fn a_server_that_will_not_start_is_reported_and_skipped() {
-        let mut servers = HashMap::new();
-        servers.insert(
-            "broken".to_string(),
-            ServerConfig {
-                command: "definitely-not-a-program-anyone-has".to_string(),
-                ..ServerConfig::default()
-            },
-        );
-        servers.insert("demo".to_string(), echo_server());
+        let servers = servers(vec![
+            entry(
+                "broken",
+                ServerConfig::stdio("definitely-not-a-program-anyone-has", Vec::new()),
+            ),
+            entry("demo", echo_server()),
+        ]);
 
-        let (tools, problems) = connect(&servers).await;
+        let (tools, problems) = servers.connect_all().await;
 
         assert_eq!(tools.len(), 1, "the working server still offered its tool");
         assert_eq!(problems.len(), 1);
         assert!(problems[0].to_string().contains("broken"), "{problems:?}");
+        assert!(matches!(servers.status("broken"), Some(Status::Failed(_))));
     }
 
     /// A server that is turned off is not started at all.
     #[tokio::test]
     async fn a_disabled_server_is_left_alone() {
-        let mut servers = HashMap::new();
-        servers.insert(
-            "demo".to_string(),
-            ServerConfig {
-                enabled: false,
-                ..echo_server()
-            },
-        );
+        let mut config = echo_server();
+        config.enabled = false;
+        let servers = servers(vec![entry("demo", config)]);
 
-        let (tools, problems) = connect(&servers).await;
+        let (tools, problems) = servers.connect_all().await;
         assert!(tools.is_empty());
         assert!(problems.is_empty());
+        assert_eq!(servers.status("demo"), Some(Status::Disabled));
     }
 
     #[tokio::test]
     async fn a_server_that_never_answers_times_out() {
-        let silent = ServerConfig {
-            command: "bash".to_string(),
-            args: vec!["-c".to_string(), "sleep 60".to_string()],
-            startup_timeout: Some(1),
-            ..ServerConfig::default()
-        };
+        let mut silent = ServerConfig::stdio("bash", vec!["-c".into(), "sleep 60".into()]);
+        silent.timeout = Some(Duration::from_secs(1));
+        let servers = servers(vec![entry("silent", silent)]);
 
-        let error = Client::start("silent", &silent)
+        let error = servers
+            .connect("silent")
             .await
             .err()
             .expect("it never shook hands");
         assert!(error.to_string().contains("longer than"), "{error}");
+    }
+
+    #[tokio::test]
+    async fn a_server_that_dies_says_what_it_printed() {
+        let dying = ServerConfig::stdio(
+            "bash",
+            vec!["-c".into(), "echo 'missing API key' >&2; exit 1".into()],
+        );
+        let servers = servers(vec![entry("dying", dying)]);
+        let error = servers.connect("dying").await.err().unwrap();
+        assert!(error.to_string().contains("missing API key"), "{error}");
+    }
+
+    /// Deferred servers are listed for the model with what they offer; the first line is enough.
+    #[tokio::test]
+    async fn undeclared_servers_are_listed_with_what_they_offer() {
+        let mut described = echo_server();
+        described.description = Some("Search the docs".into());
+        let servers = servers(vec![
+            entry("docs", described),
+            entry("echo-box", echo_server()),
+        ]);
+        servers.connect("echo-box").await.unwrap();
+
+        let section = servers
+            .prompt_section(&["docs".to_string(), "echo-box".to_string()])
+            .expect("there is something to list");
+        assert!(section.contains("`tool_search`"), "{section}");
+        assert!(
+            section.contains("- mcp__docs: Search the docs"),
+            "{section}"
+        );
+        assert!(
+            section.contains("- mcp__echo_box: Echoes things back."),
+            "{section}"
+        );
+        assert!(!section.contains("Second line"), "{section}");
+        assert!(servers.prompt_section(&[]).is_none());
     }
 }

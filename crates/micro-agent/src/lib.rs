@@ -299,6 +299,8 @@ pub struct Agent {
     steering: Steering,
     /// Which tools the model may see and the agent may execute, when something has narrowed them.
     offered: Option<Arc<std::sync::RwLock<Option<Vec<String>>>>>,
+    /// Tools that became callable after the agent was built, never declared to the model.
+    arrivals: Option<micro_tools::Arrivals>,
 
     turn: u64,
     /// Results written to answer tool calls a conversation arrived with unanswered, waiting for a
@@ -343,6 +345,7 @@ impl Agent {
             model_cost: None,
             steering: Steering::default(),
             offered: None,
+            arrivals: None,
             turn: 0,
             repairs: Vec::new(),
             stored_blobs: HashSet::new(),
@@ -508,6 +511,12 @@ impl Agent {
         offered: Arc<std::sync::RwLock<Option<Vec<String>>>>,
     ) -> Self {
         self.offered = Some(offered);
+        self
+    }
+
+    /// Also call tools that arrive while the session runs, once a search has named them.
+    pub fn with_arrivals(mut self, arrivals: micro_tools::Arrivals) -> Self {
+        self.arrivals = Some(arrivals);
         self
     }
 
@@ -856,7 +865,7 @@ impl Agent {
             .collect()
     }
 
-    fn find_tool(&self, name: &str) -> Option<&Arc<dyn Tool>> {
+    fn find_tool(&self, name: &str) -> Option<Arc<dyn Tool>> {
         let offered = self.offered.as_ref().and_then(|offered| {
             offered
                 .read()
@@ -869,6 +878,8 @@ impl Agent {
         self.tools
             .iter()
             .find(|tool| tool.definition().name == name)
+            .cloned()
+            .or_else(|| self.arrivals.as_ref()?.find(name))
     }
 
     /// Run one exchange to completion.
@@ -1032,7 +1043,7 @@ impl Agent {
                                 arguments = replacement;
                             }
                             match self.find_tool(&name) {
-                                Some(tool) => runnable = Some(Arc::clone(tool)),
+                                Some(tool) => runnable = Some(tool),
                                 None => settled = Some((format!("tool not found: {name}"), true)),
                             }
                         }

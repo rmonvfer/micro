@@ -328,6 +328,18 @@ fn plain(subject: String, output: &str) -> ToolView {
     }
 }
 
+/// What a call is titled: an MCP server's tool as `server/tool`, anything else by its name.
+pub fn title(name: &str) -> String {
+    let server_tool = name
+        .strip_prefix("mcp__")
+        .and_then(|rest| rest.split_once("__"))
+        .filter(|(server, tool)| !server.is_empty() && !tool.is_empty());
+    match server_tool {
+        Some((server, tool)) => format!("{server}/{tool}"),
+        None => name.to_string(),
+    }
+}
+
 /// The one argument that says what a call is about.
 pub fn subject(name: &str, arguments: &Value) -> String {
     subject_text(name, arguments).trim().to_string()
@@ -477,6 +489,13 @@ mod tests {
                 _ => None,
             })
             .collect()
+    }
+
+    #[test]
+    fn an_mcp_call_is_titled_server_slash_tool() {
+        assert_eq!(title("mcp__github__create_issue"), "github/create_issue");
+        assert_eq!(title("read"), "read");
+        assert_eq!(title("mcp__lonely"), "mcp__lonely");
     }
 
     #[test]

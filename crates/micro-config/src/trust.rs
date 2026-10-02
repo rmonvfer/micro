@@ -12,6 +12,7 @@ pub const TRUST_FILE_NAME: &str = "trust.json";
 /// What a project keeps under its own directory that micro would run or be steered by.
 const TRUST_REQUIRING: &[&str] = &[
     "settings.json",
+    "mcp.json",
     "extensions",
     "skills",
     "prompts",

@@ -1571,18 +1571,13 @@ done
     std::fs::set_permissions(&server, std::os::unix::fs::PermissionsExt::from_mode(0o755))
         .expect("make it runnable");
 
-    std::fs::write(
-        fixture.home().join("config.json"),
+    write_mcp_servers(
+        &fixture,
         serde_json::json!({
-            "default_project_trust": "always",
-            "mcp_servers": {
-                "demo": { "command": server.to_string_lossy() },
-                "off": { "command": "never-run-me", "enabled": false },
-            },
-        })
-        .to_string(),
-    )
-    .expect("write config.json");
+            "demo": { "command": server.to_string_lossy() },
+            "off": { "command": "never-run-me", "enabled": false },
+        }),
+    );
 
     fixture
         .print(&["-m", "test", "say hello"])
@@ -1607,15 +1602,10 @@ fn an_mcp_server_that_will_not_start_is_reported() {
     let api = FakeApi::start([Reply::text("done")]);
     let fixture = Fixture::new(&api);
 
-    std::fs::write(
-        fixture.home().join("config.json"),
-        serde_json::json!({
-            "default_project_trust": "always",
-            "mcp_servers": { "broken": { "command": "definitely-not-a-program-anyone-has" } },
-        })
-        .to_string(),
-    )
-    .expect("write config.json");
+    write_mcp_servers(
+        &fixture,
+        serde_json::json!({ "broken": { "command": "definitely-not-a-program-anyone-has" } }),
+    );
 
     let output = fixture.print(&["-m", "test", "say hello"]);
 
@@ -1659,16 +1649,145 @@ done
         .expect("make it runnable");
 }
 
+/// Configure MCP servers in the global `mcp.json`.
+fn write_mcp_servers(fixture: &Fixture, servers: serde_json::Value) {
+    std::fs::write(
+        fixture.home().join("mcp.json"),
+        serde_json::json!({ "mcpServers": servers }).to_string(),
+    )
+    .expect("write mcp.json");
+}
+
 fn with_mcp_server(fixture: &Fixture, server: &std::path::Path, extra: serde_json::Value) {
-    let mut config = serde_json::json!({
-        "default_project_trust": "always",
-        "mcp_servers": { "demo": { "command": server.to_string_lossy() } },
-    });
+    write_mcp_servers(
+        fixture,
+        serde_json::json!({ "demo": { "command": server.to_string_lossy() } }),
+    );
+    let mut config = serde_json::json!({ "default_project_trust": "always" });
     for (key, value) in extra.as_object().expect("an object") {
         config[key] = value.clone();
     }
     std::fs::write(fixture.home().join("config.json"), config.to_string())
         .expect("write config.json");
+}
+
+/// A deferred server connects in the background: its tools are left to the search, and the
+/// system prompt says what the server is for.
+#[test]
+fn a_deferred_server_is_searched_for_and_named_in_the_prompt() {
+    let api = FakeApi::start([
+        Reply::tool_call(
+            "call-1",
+            "tool_search",
+            serde_json::json!({ "query": "thing1" }),
+        ),
+        Reply::text("done"),
+    ]);
+    let fixture = Fixture::new(&api);
+    let server = fixture.workspace().join("slow.sh");
+    many_tool_server(&server, 2);
+    write_mcp_servers(
+        &fixture,
+        serde_json::json!({
+            "notes": {
+                "command": server.to_string_lossy(),
+                "exposure": "deferred",
+                "description": "Read and append to the daily notes",
+            },
+        }),
+    );
+
+    fixture
+        .print(&["-m", "test", "find the thing"])
+        .expect_success("micro --print");
+
+    let first = api.request(0);
+    let tools = offered_tools(&first);
+    assert!(tools.contains(&"tool_search".to_string()), "{tools:?}");
+    assert!(
+        !tools.iter().any(|name| name.starts_with("mcp__notes__")),
+        "{tools:?}"
+    );
+    assert!(
+        transcript(&first).contains("- mcp__notes: Read and append to the daily notes"),
+        "{}",
+        transcript(&first)
+    );
+    let answered = transcript(&api.request(1));
+    assert!(answered.contains("mcp__notes__thing1"), "{answered}");
+}
+
+/// `micro mcp` writes `mcp.json`, checks what it describes, and takes entries out again.
+#[test]
+fn servers_are_added_listed_and_removed_from_the_shell() {
+    let api = FakeApi::start([]);
+    let fixture = Fixture::new(&api);
+    let server = fixture.workspace().join("listed.sh");
+    many_tool_server(&server, 1);
+    let server = server.to_string_lossy().to_string();
+
+    let added = fixture.micro_run(&[
+        "mcp",
+        "add",
+        "my-tools",
+        "--description",
+        "Tools",
+        "--",
+        &server,
+    ]);
+    added.expect_success("micro mcp add");
+    let written: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(fixture.home().join("mcp.json")).unwrap())
+            .unwrap();
+    assert_eq!(
+        written["mcpServers"]["my-tools"]["command"],
+        server.as_str()
+    );
+    assert_eq!(written["mcpServers"]["my-tools"]["description"], "Tools");
+
+    let listed = fixture.micro_run(&["mcp", "list"]);
+    listed.expect_success("micro mcp list");
+    assert!(
+        listed.stdout.contains("my-tools  connected, 1 tool"),
+        "{}",
+        listed.stdout
+    );
+    assert!(
+        listed.stdout.contains("- mcp__my_tools__thing0"),
+        "{}",
+        listed.stdout
+    );
+
+    let json = fixture.micro_run(&["mcp", "list", "--json"]);
+    let parsed: serde_json::Value = serde_json::from_str(&json.stdout).expect(&json.stdout);
+    assert_eq!(parsed["servers"][0]["tools"][0], "mcp__my_tools__thing0");
+
+    fixture
+        .micro_run(&[
+            "mcp",
+            "add",
+            "broken",
+            "--",
+            "definitely-not-a-program-anyone-has",
+        ])
+        .expect_success("micro mcp add");
+    let failing = fixture.micro_run(&["mcp", "list"]);
+    failing.expect_failure("a server that does not connect fails the list");
+    assert!(
+        failing.stdout.contains("broken  failed"),
+        "{}",
+        failing.stdout
+    );
+
+    fixture
+        .micro_run(&["mcp", "remove", "broken"])
+        .expect_success("micro mcp remove");
+    fixture
+        .micro_run(&["mcp", "remove", "broken"])
+        .expect_failure("it is gone already");
+    fixture
+        .micro_run(&["mcp", "add", "bad name", "--", &server])
+        .expect_failure("names are letters, digits, - and _");
 }
 
 /// Past the threshold the extra tools stop being described and `tool_search` stands in for them.

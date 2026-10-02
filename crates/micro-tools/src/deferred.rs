@@ -8,9 +8,14 @@ use micro_types::ToolDefinition;
 use serde_json::json;
 use serde_json::Value;
 use std::sync::Arc;
+use std::sync::RwLock;
+use std::time::Duration;
 
 /// How many tools a search answers with when the caller does not say.
 const DEFAULT_LIMIT: usize = 8;
+
+/// How long a search waits for tools still on their way before answering with what it has.
+const ARRIVAL_WAIT: Duration = Duration::from_secs(30);
 
 pub struct Deferred(Arc<dyn Tool>);
 
@@ -51,9 +56,115 @@ impl Tool for Deferred {
     }
 }
 
+/// Tools that become callable while a session runs, such as those of a server that connects in
+/// the background. They are never declared to the model: a search finds them, and the model then
+/// calls them by name.
+#[derive(Clone, Default)]
+pub struct Arrivals {
+    inner: Arc<ArrivalsInner>,
+}
+
+#[derive(Default)]
+struct ArrivalsInner {
+    tools: RwLock<Vec<Arc<dyn Tool>>>,
+    /// The groups whose tools are expected, so a search can name them before they arrive.
+    groups: RwLock<Vec<String>>,
+    /// How many sources are still on their way.
+    pending: tokio::sync::watch::Sender<usize>,
+}
+
+/// A source of tools that has not arrived yet. Dropping it says the source is done, whether or
+/// not it delivered anything.
+pub struct Expected {
+    arrivals: Arrivals,
+}
+
+impl Drop for Expected {
+    fn drop(&mut self) {
+        self.arrivals
+            .inner
+            .pending
+            .send_modify(|pending| *pending = pending.saturating_sub(1));
+    }
+}
+
+impl Arrivals {
+    /// Say that tools of `group` are on their way.
+    pub fn expect(&self, group: impl Into<String>) -> Expected {
+        self.announce(group);
+        self.inner.pending.send_modify(|pending| *pending += 1);
+        Expected {
+            arrivals: self.clone(),
+        }
+    }
+
+    /// Name a group whose tools may arrive later, without anything waiting for them.
+    pub fn announce(&self, group: impl Into<String>) {
+        let group = group.into();
+        let mut groups = write(&self.inner.groups);
+        if !groups.contains(&group) {
+            groups.push(group);
+        }
+    }
+
+    /// Make tools callable, replacing any already here under the same name.
+    pub fn add(&self, arrived: Vec<Arc<dyn Tool>>) {
+        let mut tools = write(&self.inner.tools);
+        for tool in arrived {
+            let name = tool.definition().name;
+            tools.retain(|kept| kept.definition().name != name);
+            tools.push(tool);
+        }
+    }
+
+    /// Take away every tool whose name starts with `prefix`, for a source that went away.
+    pub fn remove_prefixed(&self, prefix: &str) {
+        write(&self.inner.tools).retain(|tool| !tool.definition().name.starts_with(prefix));
+    }
+
+    pub fn find(&self, name: &str) -> Option<Arc<dyn Tool>> {
+        read(&self.inner.tools)
+            .iter()
+            .find(|tool| tool.definition().name == name)
+            .cloned()
+    }
+
+    pub fn definitions(&self) -> Vec<ToolDefinition> {
+        read(&self.inner.tools)
+            .iter()
+            .map(|tool| tool.definition())
+            .collect()
+    }
+
+    pub fn groups(&self) -> Vec<String> {
+        read(&self.inner.groups).clone()
+    }
+
+    /// Whether anything has been or will be delivered here.
+    pub fn is_empty(&self) -> bool {
+        read(&self.inner.groups).is_empty() && read(&self.inner.tools).is_empty()
+    }
+
+    /// Wait until no source is still on its way, or `within` has passed.
+    pub async fn settled(&self, within: Duration) {
+        let mut pending = self.inner.pending.subscribe();
+        let _ = tokio::time::timeout(within, pending.wait_for(|pending| *pending == 0)).await;
+    }
+}
+
+fn read<T>(lock: &RwLock<T>) -> std::sync::RwLockReadGuard<'_, T> {
+    lock.read().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+fn write<T>(lock: &RwLock<T>) -> std::sync::RwLockWriteGuard<'_, T> {
+    lock.write()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
 /// The one tool that stands in for all the deferred ones.
 pub struct ToolSearch {
     hidden: Vec<ToolDefinition>,
+    arrivals: Option<Arrivals>,
 }
 
 impl ToolSearch {
@@ -64,16 +175,25 @@ impl ToolSearch {
                 .filter(|tool| tool.deferred())
                 .map(|tool| tool.definition())
                 .collect(),
+            arrivals: None,
         }
+    }
+
+    /// Search the tools that arrive while the session runs as well, waiting for any still on
+    /// their way.
+    pub fn with_arrivals(mut self, arrivals: Arrivals) -> Self {
+        self.arrivals = Some(arrivals);
+        self
     }
 
     /// Whether there is anything to search, so a caller can leave the tool out entirely when
     /// nothing was deferred.
     pub fn is_empty(&self) -> bool {
-        self.hidden.is_empty()
+        self.hidden.is_empty() && self.arrivals.as_ref().is_none_or(Arrivals::is_empty)
     }
 
-    /// The names on offer, grouped by the prefix they share.
+    /// The names on offer, grouped by the prefix they share. Groups of tools that arrive later
+    /// are named from the start, so the description does not change when they come.
     fn groups(&self) -> Vec<String> {
         let mut groups: Vec<String> = Vec::new();
         for definition in &self.hidden {
@@ -86,7 +206,26 @@ impl ToolSearch {
                 groups.push(group);
             }
         }
+        for group in self.arrivals.iter().flat_map(Arrivals::groups) {
+            if !groups.contains(&group) {
+                groups.push(group);
+            }
+        }
         groups
+    }
+
+    /// Every definition a search looks through, once whatever is on its way has arrived.
+    async fn searchable(&self) -> Vec<ToolDefinition> {
+        let mut searchable = self.hidden.clone();
+        if let Some(arrivals) = &self.arrivals {
+            arrivals.settled(ARRIVAL_WAIT).await;
+            for definition in arrivals.definitions() {
+                if !searchable.iter().any(|kept| kept.name == definition.name) {
+                    searchable.push(definition);
+                }
+            }
+        }
+        searchable
     }
 }
 
@@ -97,12 +236,14 @@ impl Tool for ToolSearch {
         ToolDefinition {
             name: "tool_search".into(),
             description: format!(
-                "Find tools that are available but not listed. {} further tools can be \
-                 called, in these groups: {}. Search before saying something cannot be \
-                 done: the tool for it may be here. The answer gives each tool's name, \
-                 what it does, and its arguments; call it by name afterwards, the same as \
-                 any other tool.",
-                self.hidden.len(),
+                "Find tools that are available but not listed. {} can be called, in these \
+                 groups: {}. Search before saying something cannot be done: the tool for it \
+                 may be here. The answer gives each tool's name, what it does, and its \
+                 arguments; call it by name afterwards, the same as any other tool.",
+                match self.arrivals.is_some() {
+                    true => "Further tools".to_string(),
+                    false => format!("{} further tools", self.hidden.len()),
+                },
                 groups.join(", ")
             ),
             parameters: json!({
@@ -136,8 +277,8 @@ impl Tool for ToolSearch {
             .unwrap_or(DEFAULT_LIMIT)
             .max(1);
 
-        let matched: Vec<&ToolDefinition> = self
-            .hidden
+        let searchable = self.searchable().await;
+        let matched: Vec<&ToolDefinition> = searchable
             .iter()
             .filter(|definition| {
                 let haystack =
@@ -283,6 +424,39 @@ mod tests {
     async fn a_capped_search_says_it_was_capped() {
         let found = search().execute(&json!({ "limit": 1 })).await.unwrap();
         assert!(found.contains("3 tools match; 1 are shown"), "{found}");
+    }
+
+    /// A search waits for tools still on their way, and finds them once they are here.
+    #[tokio::test]
+    async fn a_search_waits_for_tools_on_their_way() {
+        let arrivals = Arrivals::default();
+        let expected = arrivals.expect("mcp__slow");
+        let search = ToolSearch::new(&[]).with_arrivals(arrivals.clone());
+        assert!(!search.is_empty(), "something is on its way");
+        assert!(search.definition().description.contains("mcp__slow"));
+
+        let delivering = arrivals.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            delivering.add(vec![Arc::new(Named("mcp__slow__ping", "Answer a ping"))]);
+            drop(expected);
+        });
+
+        let found = search.execute(&json!({ "query": "ping" })).await.unwrap();
+        assert!(found.contains("mcp__slow__ping"), "{found}");
+        assert!(arrivals.find("mcp__slow__ping").is_some());
+    }
+
+    #[test]
+    fn a_tool_that_arrives_again_replaces_the_one_before() {
+        let arrivals = Arrivals::default();
+        arrivals.add(vec![Arc::new(Named("mcp__a__x", "first"))]);
+        arrivals.add(vec![Arc::new(Named("mcp__a__x", "second"))]);
+        assert_eq!(arrivals.definitions().len(), 1);
+        assert_eq!(arrivals.definitions()[0].description, "second");
+
+        arrivals.remove_prefixed("mcp__a__");
+        assert!(arrivals.find("mcp__a__x").is_none());
     }
 
     #[test]

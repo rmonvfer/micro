@@ -89,7 +89,7 @@ fn header(
     theme: &Theme,
 ) -> Vec<Line<'static>> {
     let mut spans = vec![Span::styled(
-        tool.name.clone(),
+        tools::title(&tool.name),
         Style::new()
             .fg(theme.tool_title)
             .add_modifier(Modifier::BOLD),

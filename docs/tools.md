@@ -60,23 +60,20 @@ Configured MCP servers add tools named:
 mcp__<server>__<tool>
 ```
 
-Example configuration:
+Servers are configured in `mcp.json`:
 
 ```json
 {
-  "mcp_servers": {
-    "notes": {
-      "command": "/usr/local/bin/notes-mcp",
-      "args": ["--stdio"],
-      "env": { "NOTES_HOME": "/srv/notes" }
-    }
+  "mcpServers": {
+    "notes": { "command": "/usr/local/bin/notes-mcp", "args": ["--stdio"] },
+    "docs": { "url": "https://example.com/mcp" }
   }
 }
 ```
 
-An MCP server that fails to start is reported and skipped. Other tools remain available. Server processes are configured programs and do not run inside the command sandbox.
+A server that fails to connect is reported and skipped. Other tools remain available. Server processes are configured programs and do not run inside the command sandbox.
 
-See [Configuration](configuration.md) for timeouts, working directories, and disabling a server.
+See [MCP servers](mcp.md) for HTTP servers, OAuth sign-in, exposure, and `micro mcp`.
 
 ## Deferred tool search
 
@@ -86,7 +83,7 @@ When the number of non-built-in tools exceeds `tool_search_threshold`, micro lea
 
 The default threshold is `15`. Set it to `0` to include every tool definition on every request.
 
-Built-in tools are never deferred.
+Built-in tools are never deferred, and neither are the tools of an MCP server with `"exposure": "direct"`. A server with `"exposure": "deferred"` connects in the background; `tool_search` waits for it before answering.
 
 ## Extension tools
 
