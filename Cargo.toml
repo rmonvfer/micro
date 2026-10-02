@@ -20,6 +20,7 @@ members = [
     "crates/micro-testkit",
     "crates/micro-mermaid",
     "crates/micro-mcp",
+    "crates/micro-codemode",
     "crates/micro-remote",
     "crates/micro-tui",
     "crates/micro-cli",
@@ -53,6 +54,7 @@ micro-commands = { path = "crates/micro-commands" }
 micro-agent = { path = "crates/micro-agent" }
 micro-testkit = { path = "crates/micro-testkit" }
 micro-mcp = { path = "crates/micro-mcp" }
+micro-codemode = { path = "crates/micro-codemode" }
 micro-remote = { path = "crates/micro-remote" }
 micro-tui = { path = "crates/micro-tui" }
 
