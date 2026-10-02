@@ -517,7 +517,8 @@ pub async fn build(
     .with_observer(watching)
     .with_cache_key(session.id())
     .with_compaction_budgets(compaction_budgets(&settings.compaction))
-    .with_image_limits(image_limits(&settings.image_limits));
+    .with_image_limits(image_limits(&settings.image_limits))
+    .with_cache_warming(cache_warming(settings));
 
     let agent = match recorded_model_cost {
         Some(cost) => agent.with_model_cost(cost),
@@ -625,6 +626,22 @@ pub async fn build(
         context_files,
         skills,
     })
+}
+
+/// When the settings have micro keep a prompt cache warm, and how long each provider keeps one.
+pub fn cache_warming(settings: &micro_config::Settings) -> micro_agent::CacheWarming {
+    micro_agent::CacheWarming {
+        mode: match settings.cache_warming {
+            micro_config::CacheWarming::Off => micro_agent::CacheWarmingMode::Off,
+            micro_config::CacheWarming::Streaming => micro_agent::CacheWarmingMode::Streaming,
+            micro_config::CacheWarming::Idle => micro_agent::CacheWarmingMode::Idle,
+        },
+        lifetimes: settings
+            .prompt_cache_lifetimes
+            .iter()
+            .map(|(key, seconds)| (key.clone(), std::time::Duration::from_secs(*seconds)))
+            .collect(),
+    }
 }
 
 /// The compaction budgets the settings name, ordinary and per model, each model's falling back

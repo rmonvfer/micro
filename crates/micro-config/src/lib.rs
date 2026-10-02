@@ -188,6 +188,19 @@ pub enum Mermaid {
     Streaming,
 }
 
+/// When micro keeps a provider's prompt cache from expiring.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum CacheWarming {
+    /// Never.
+    Off,
+    /// While a run is going, such as during a long tool call.
+    #[default]
+    Streaming,
+    /// While a run is going and between runs.
+    Idle,
+}
+
 /// The config file, as it is written on disk.
 #[derive(Debug, Clone, Default, PartialEq, Serialize)]
 pub struct Config {
@@ -301,6 +314,12 @@ pub struct Config {
     /// How large an image a model is sent, with per-model overrides.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub image_limits: Option<ImageLimitSettings>,
+    /// When to keep a provider's prompt cache from expiring.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cache_warming: Option<CacheWarming>,
+    /// How many seconds a provider keeps a prompt cache, keyed by `provider/model` or provider.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt_cache_lifetimes: Option<BTreeMap<String, u64>>,
     /// Warn that Anthropic subscription auth bills per token in a third-party harness.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub anthropic_extra_usage: Option<bool>,
@@ -377,6 +396,8 @@ pub struct Settings {
     pub default_tools: Option<Vec<String>>,
     pub compaction: CompactionSettings,
     pub image_limits: ImageLimitSettings,
+    pub cache_warming: CacheWarming,
+    pub prompt_cache_lifetimes: BTreeMap<String, u64>,
     pub anthropic_extra_usage: bool,
     pub transport: String,
     /// The sandbox policy the user settled on, if they settled on one.
@@ -441,6 +462,8 @@ impl Default for Settings {
             default_tools: None,
             compaction: CompactionSettings::default(),
             image_limits: ImageLimitSettings::default(),
+            cache_warming: CacheWarming::default(),
+            prompt_cache_lifetimes: BTreeMap::new(),
             anthropic_extra_usage: true,
             transport: DEFAULT_TRANSPORT.to_string(),
             sandbox: None,
@@ -634,6 +657,8 @@ impl Config {
             default_tools: self.default_tools.clone(),
             compaction: self.compaction.clone().unwrap_or_default(),
             image_limits: self.image_limits.clone().unwrap_or_default(),
+            cache_warming: self.cache_warming.unwrap_or_default(),
+            prompt_cache_lifetimes: self.prompt_cache_lifetimes.clone().unwrap_or_default(),
             anthropic_extra_usage: self
                 .anthropic_extra_usage
                 .unwrap_or(defaults.anthropic_extra_usage),
@@ -695,6 +720,8 @@ impl Config {
             default_tools: take(&mut fields, "default_tools", path)?,
             compaction: take(&mut fields, "compaction", path)?,
             image_limits: take(&mut fields, "image_limits", path)?,
+            cache_warming: take(&mut fields, "cache_warming", path)?,
+            prompt_cache_lifetimes: take(&mut fields, "prompt_cache_lifetimes", path)?,
             anthropic_extra_usage: take(&mut fields, "anthropic_extra_usage", path)?,
             transport: take(&mut fields, "transport", path)?,
             sandbox: take(&mut fields, "sandbox", path)?,
@@ -1017,6 +1044,25 @@ mod tests {
                 ..ImageLimitValues::default()
             }
         );
+    }
+
+    #[test]
+    fn cache_warming_runs_during_streaming_unless_told_otherwise() {
+        assert_eq!(Settings::default().cache_warming, CacheWarming::Streaming);
+
+        let directory = scratch("cache-warming");
+        let path = directory.join(FILE_NAME);
+        fs::write(
+            &path,
+            r#"{"cache_warming":"idle","prompt_cache_lifetimes":{"openai":600}}"#,
+        )
+        .unwrap();
+        let settings = Config::load_from(&path)
+            .unwrap()
+            .resolve(&Overrides::default(), no_environment)
+            .unwrap();
+        assert_eq!(settings.cache_warming, CacheWarming::Idle);
+        assert_eq!(settings.prompt_cache_lifetimes["openai"], 600);
     }
 
     #[test]

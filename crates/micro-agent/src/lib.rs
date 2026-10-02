@@ -2,6 +2,10 @@
 //! asking for tools.
 
 mod summarizer;
+mod warming;
+
+pub use warming::CacheWarming;
+pub use warming::CacheWarmingMode;
 
 pub use summarizer::ProviderSummarizer;
 
@@ -312,6 +316,9 @@ pub struct Agent {
     /// How large an image each model may be sent; images are fitted once, as they join the
     /// conversation.
     image_limits: ImageLimitTable,
+    /// When to keep a prompt cache from expiring, and for how long each model holds one.
+    cache_warming: CacheWarming,
+    warmer: warming::Warmer,
     context_window: usize,
     /// The rates in force for requests made with the current model.
     model_cost: Option<ModelCost>,
@@ -361,6 +368,8 @@ impl Agent {
             compaction: Some(CompactionConfig::default()),
             compaction_budgets: CompactionBudgets::default(),
             image_limits: ImageLimitTable::default(),
+            cache_warming: CacheWarming::default(),
+            warmer: warming::Warmer::default(),
             context_window: DEFAULT_CONTEXT_WINDOW,
             model_cost: None,
             steering: Steering::default(),
@@ -398,6 +407,7 @@ impl Agent {
 
     /// Point the agent at a different model, keeping the conversation.
     pub fn set_model(&mut self, swap: ModelSwap) {
+        self.warmer.stop();
         self.provider = swap.provider;
         self.model = swap.model;
         self.api_key = swap.api_key;
@@ -466,6 +476,12 @@ impl Agent {
     /// Compaction budgets in tokens, ordinary and per model, in place of the policy's fractions.
     pub fn with_compaction_budgets(mut self, budgets: CompactionBudgets) -> Self {
         self.compaction_budgets = budgets;
+        self
+    }
+
+    /// When to keep a prompt cache from expiring between requests.
+    pub fn with_cache_warming(mut self, warming: CacheWarming) -> Self {
+        self.cache_warming = warming;
         self
     }
 
@@ -624,12 +640,14 @@ impl Agent {
         let summary = compacted.messages[0].clone();
         self.record_compaction(&compacted);
         self.charge(compacted.cost.usage);
+        self.warmer.stop();
         self.messages = compacted.messages;
         Ok(summary)
     }
 
     /// Put the agent in a different conversation.
     pub fn set_messages(&mut self, messages: Vec<Message>) {
+        self.warmer.stop();
         self.messages = messages;
 
         self.repairs = answer_abandoned_calls(&mut self.messages);
@@ -943,6 +961,7 @@ impl Agent {
         }
 
         let mut settle = SettleGuard::armed(events.clone_for_updates());
+        let _running = self.warmer.run_started();
         let prompt = match &self.hooks {
             Some(hooks) => hooks.before_agent_start(&prompt).await.unwrap_or(prompt),
             None => prompt,
@@ -1173,6 +1192,7 @@ impl Agent {
         let summary = compacted.messages[0].clone();
         self.record_compaction(&compacted);
         self.charge(compacted.cost.usage);
+        self.warmer.stop();
         self.messages = compacted.messages;
 
         events.send(AgentEvent::MessageStart {
@@ -1185,6 +1205,7 @@ impl Agent {
     /// Issue one model request, forwarding stream events and retrying transient failures that
     /// happen before any content is shown.
     async fn stream_once(&mut self, events: &Fan<'_>) -> AssistantMessage {
+        self.warmer.stop();
         let context = self
             .prefix
             .ahead_of(self.messages.clone(), self.cache_key.clone());
@@ -1279,6 +1300,7 @@ impl Agent {
                         model: message.model.clone(),
                     });
                     self.charge(message.usage);
+                    self.keep_warm(&context, turn, message.usage);
                     events.send(AgentEvent::MessageEnd {
                         message: Message::Assistant(message.clone()),
                     });
@@ -1314,6 +1336,26 @@ impl Agent {
                 }
             }
         }
+    }
+
+    /// Keep the cache entry the request just answered warm until the next one is sent.
+    fn keep_warm(&mut self, context: &Context, turn: u64, usage: Usage) {
+        let Some(cost) = self.model_cost.clone() else {
+            return;
+        };
+        self.warmer.start(
+            &self.cache_warming,
+            warming::WarmRequest {
+                provider: Arc::clone(&self.provider),
+                model: self.model.clone(),
+                context: context.clone(),
+                api_key: self.api_key.clone(),
+                turn,
+                usage,
+                cost,
+                recorder: self.recorder.clone(),
+            },
+        );
     }
 
     fn empty_assistant(&self, stop_reason: StopReason, error: Option<String>) -> AssistantMessage {
@@ -1832,6 +1874,84 @@ mod tests {
         let fitted = image::load_from_memory(&bytes).unwrap();
         assert_eq!((fitted.width(), fitted.height()), (50, 25));
         assert!(content[2].as_text().contains("original 200x100"));
+    }
+
+    fn warm_request(
+        provider: &RecordingProvider,
+        recorder: UnboundedSender<Record>,
+    ) -> warming::WarmRequest {
+        warming::WarmRequest {
+            provider: Arc::new(provider.clone()),
+            model: plain_model("anthropic", "claude"),
+            context: Context::default(),
+            api_key: "key".into(),
+            turn: 3,
+            usage: Usage {
+                input: 200_000,
+                ..Usage::default()
+            },
+            cost: ModelCost {
+                input: 3.0,
+                output: 15.0,
+                cache_read: 0.3,
+                cache_write: 3.75,
+                ..ModelCost::default()
+            },
+            recorder: Some(recorder),
+        }
+    }
+
+    fn short_lived(mode: CacheWarmingMode) -> CacheWarming {
+        CacheWarming {
+            mode,
+            lifetimes: [("anthropic".to_string(), Duration::from_secs(11))].into(),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_cache_is_kept_warm_while_the_run_is_going_and_not_after() {
+        let provider = RecordingProvider::new("anthropic");
+        let (recorder, mut recorded) = tokio::sync::mpsc::unbounded_channel();
+        let mut warmer = warming::Warmer::default();
+        let running = warmer.run_started();
+        warmer.start(
+            &short_lived(CacheWarmingMode::Streaming),
+            warm_request(&provider, recorder),
+        );
+
+        tokio::time::sleep(Duration::from_millis(1_500)).await;
+        let calls = provider.calls();
+        assert_eq!(calls.len(), 1, "one refresh before the cache expired");
+        assert_eq!(calls[0].0.max_tokens, 1);
+        assert!(matches!(
+            recorded.try_recv(),
+            Ok(Record::Event {
+                event: LedgerEvent::CacheWarm { turn: 3, .. },
+                ..
+            })
+        ));
+
+        drop(running);
+        tokio::time::sleep(Duration::from_millis(1_500)).await;
+        assert_eq!(
+            provider.calls().len(),
+            1,
+            "nothing is warmed once the run is over"
+        );
+        assert!(!warmer.is_running());
+    }
+
+    #[tokio::test]
+    async fn warming_that_is_off_sends_nothing() {
+        let provider = RecordingProvider::new("anthropic");
+        let (recorder, _recorded) = tokio::sync::mpsc::unbounded_channel();
+        let mut warmer = warming::Warmer::default();
+        let _running = warmer.run_started();
+        warmer.start(
+            &short_lived(CacheWarmingMode::Off),
+            warm_request(&provider, recorder),
+        );
+        assert!(!warmer.is_running());
     }
 
     #[test]

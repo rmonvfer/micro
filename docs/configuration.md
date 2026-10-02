@@ -118,6 +118,8 @@ Command-line options take precedence over environment variables, which take prec
 | `default_tools` | unset | Built-in tools a session starts with; `+name` and `-name` adjust the defaults. See [Tools](tools.md#select-tools). |
 | `compaction` | unset | Compaction budgets in tokens, with per-model overrides. |
 | `image_limits` | 2000×2000, 4.5 MiB | Size limits for images sent to a model, with per-model overrides. |
+| `cache_warming` | `streaming` | `off`, `streaming`, or `idle`: when to keep a provider's prompt cache from expiring. |
+| `prompt_cache_lifetimes` | `{}` | Prompt cache lifetimes in seconds, keyed by `provider/model` or provider. |
 | `anthropic_extra_usage` | `true` | Warn about per-token use of Anthropic subscription credentials in a third-party client. |
 | `transport` | `sse` | `sse` or `auto` for the ChatGPT Codex backend. |
 | `sandbox` | unset | Command policy; runtime default is `workspace-write`. |
@@ -231,6 +233,18 @@ Each image is fitted once and stored fitted in the session, so switching models 
     }
   }
 }
+```
+
+### cache_warming
+
+A provider's prompt cache expires a few minutes after its last use, so a tool that runs longer than that makes the next request pay to write the whole prompt again. With `streaming`, micro replays the last request with a one-token output cap shortly before the cache would expire, for as long as the run is going. `idle` also keeps warming between runs, for up to 30 minutes; `off` never warms.
+
+A refresh goes out at 90% of the cache lifetime, leaving at least ten seconds of margin, and only when it is expected to save at least $0.05: the extra cost of a cache miss, weighted by the chance that another request comes before expiry (certain while a run is going, 15% while idle), less the cost of the refresh. Warming stops after an hour, when a new request is sent, when the conversation is compacted or replaced, or when the model changes. Anthropic requests with extended thinking are never replayed, because the output cap changes the thinking budget their cache is keyed on.
+
+A model is eligible only when its cache lifetime is known. Anthropic's five-minute lifetime is built in; `prompt_cache_lifetimes` declares others, keyed by exact `provider/model` or by provider. Each refresh is recorded in the session ledger as `cache_warm` and counts toward the session bill, but never enters the conversation.
+
+```json
+{ "cache_warming": "idle", "prompt_cache_lifetimes": { "openai": 300 } }
 ```
 
 ### http_proxy

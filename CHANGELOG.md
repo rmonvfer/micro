@@ -12,6 +12,7 @@
 - Add the `default_tools` setting (user and trusted project) with `+name`/`-name` entries; `/reload` turns on tools newly added to it, and `--tools` still overrides it.
 - Add `compaction` token budgets (`reserve_tokens`, `keep_recent_tokens`) with per-model overrides.
 - Fit attached, `read`, and tool-result images to per-model `image_limits` once as they join the conversation, so history and prompt caches stay stable across model switches.
+- Keep valuable prompt caches warm during long tool runs, and optionally between runs, with cost-aware one-token refreshes (`cache_warming`, default `streaming`; `prompt_cache_lifetimes`). Refreshes are recorded as `cache_warm` ledger events and billed.
 
 ## [0.1.13] - 2026-09-04
 
