@@ -293,11 +293,65 @@ enum SandboxAction {
 #[derive(Subcommand)]
 enum AuthAction {
     /// Sign in to a provider.
-    Login { provider: String },
+    Login {
+        provider: String,
+        /// How to sign in: oauth, api_key, browser, copy_code or device_code.
+        #[arg(long, value_name = "METHOD")]
+        method: Option<String>,
+    },
     /// Remove a stored credential.
     Logout { provider: String },
     /// Show which providers are configured.
     Status,
+    /// Check that a provider's or a model's credential resolves; prints ready, not_ready or
+    /// invalid and exits 0, 1 or 2.
+    Check {
+        #[command(flatten)]
+        target: AuthTargetArgs,
+        /// Write the result as JSON.
+        #[arg(long)]
+        json: bool,
+        /// Emit the resolved credential when ready.
+        #[arg(long)]
+        credentials: bool,
+        /// Leave an expired OAuth credential as it is instead of refreshing it.
+        #[arg(long = "no-refresh")]
+        no_refresh: bool,
+    },
+    /// Print the API key a provider resolves to.
+    PrintApiKey {
+        #[command(flatten)]
+        target: AuthTargetArgs,
+    },
+    /// Print a provider's OAuth bearer token, refreshed first when it would lapse too soon.
+    PrintBearerToken {
+        #[command(flatten)]
+        target: AuthTargetArgs,
+        /// How long the token must stay valid, such as 30m or 1h.
+        #[arg(long = "min-expiry", value_name = "DURATION")]
+        min_expiry: Option<String>,
+    },
+}
+
+/// Which credential an auth command is about: a provider, a model, or a name that is either.
+#[derive(clap::Args)]
+struct AuthTargetArgs {
+    /// A provider, or a model whose provider is meant.
+    target: Option<String>,
+    #[arg(long)]
+    provider: Option<String>,
+    #[arg(long)]
+    model: Option<String>,
+}
+
+impl AuthTargetArgs {
+    fn target(&self) -> subcommands::AuthTarget {
+        subcommands::AuthTarget {
+            name: self.target.clone(),
+            provider: self.provider.clone(),
+            model: self.model.clone(),
+        }
+    }
 }
 
 #[derive(Subcommand)]
@@ -511,9 +565,35 @@ async fn main() -> Result<()> {
     match &cli.command {
         Some(Command::Auth { action }) => {
             return match action {
-                AuthAction::Login { provider } => subcommands::auth_login(provider).await,
+                AuthAction::Login { provider, method } => {
+                    subcommands::auth_login(provider, method.as_deref()).await
+                }
                 AuthAction::Logout { provider } => subcommands::auth_logout(provider).await,
                 AuthAction::Status => subcommands::auth_status().await,
+                AuthAction::Check {
+                    target,
+                    json,
+                    credentials,
+                    no_refresh,
+                } => {
+                    let code = subcommands::auth_check(
+                        &target.target(),
+                        subcommands::CheckOptions {
+                            json: *json,
+                            credentials: *credentials,
+                            refresh: !*no_refresh,
+                        },
+                    )
+                    .await;
+                    std::process::exit(code)
+                }
+                AuthAction::PrintApiKey { target } => {
+                    subcommands::auth_print_api_key(&target.target()).await
+                }
+                AuthAction::PrintBearerToken { target, min_expiry } => {
+                    subcommands::auth_print_bearer_token(&target.target(), min_expiry.as_deref())
+                        .await
+                }
             }
         }
         Some(Command::Models { query, live }) => {

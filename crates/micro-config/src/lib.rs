@@ -297,6 +297,9 @@ pub struct Config {
     /// Extensions to load beyond the ones found in the project and the home directory.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub extensions: Option<Vec<String>>,
+    /// This installation's stable UUID, created the first time a sign-in needs one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub device_id: Option<String>,
 
     /// Keys written by a version that knew more than this one.
     #[serde(flatten)]
@@ -503,6 +506,28 @@ impl Config {
         })
     }
 
+    /// This installation's stable id, written to the config at `path` the first time it is asked
+    /// for, with `generate` making it.
+    pub fn device_id_at(
+        path: impl AsRef<Path>,
+        generate: impl FnOnce() -> String,
+    ) -> Result<String> {
+        let path = path.as_ref();
+        let mut config = Config::load_from(path)?;
+        if let Some(id) = config.device_id.as_ref().filter(|id| !id.trim().is_empty()) {
+            return Ok(id.clone());
+        }
+        let id = generate();
+        config.device_id = Some(id.clone());
+        config.save_to(path)?;
+        Ok(id)
+    }
+
+    /// This installation's stable id, kept in the global config.
+    pub fn device_id(generate: impl FnOnce() -> String) -> Result<String> {
+        Config::device_id_at(default_path()?, generate)
+    }
+
     /// The settings in force, reading overrides from the process environment.
     pub fn resolve_from_env(&self, arguments: &Overrides) -> Result<Settings> {
         self.resolve(arguments, |variable| std::env::var(variable).ok())
@@ -663,6 +688,7 @@ impl Config {
             sandbox: take(&mut fields, "sandbox", path)?,
             budget: take(&mut fields, "budget", path)?,
             extensions: take(&mut fields, "extensions", path)?,
+            device_id: take(&mut fields, "device_id", path)?,
             extra: fields,
         };
         Ok(config)
@@ -813,6 +839,21 @@ mod tests {
 
     fn no_environment(_: &str) -> Option<String> {
         None
+    }
+
+    #[test]
+    fn the_device_id_is_made_once_and_kept_beside_the_other_settings() {
+        let path = scratch("device-id").join("config.json");
+        fs::write(&path, r#"{ "theme": "dark" }"#).unwrap();
+
+        let first =
+            Config::device_id_at(&path, || "0f8fad5b-d9cb-469f-a165-70867728950e".into()).unwrap();
+        let second = Config::device_id_at(&path, || panic!("an id already exists")).unwrap();
+
+        assert_eq!(first, second);
+        let saved = Config::load_from(&path).unwrap();
+        assert_eq!(saved.device_id.as_deref(), Some(first.as_str()));
+        assert_eq!(saved.theme.as_deref(), Some("dark"));
     }
 
     #[test]

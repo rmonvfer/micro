@@ -10,6 +10,14 @@
 - Name MCP tools with `-` written as `_` (`mcp__my_server__x`), give colliding tool names a hash suffix, and reject server names that differ only in `-` and `_`.
 - Connect MCP servers side by side; servers with `"exposure": "deferred"` connect in the background and `tool_search` waits for them. An `mcp_servers` system prompt section lists servers whose tools are not declared.
 - Title MCP tool calls `server/tool`.
+- Sign in to Anthropic with a Claude Pro/Max subscription, by browser or by pasting the code Anthropic shows when the browser runs elsewhere.
+- Sign in with ChatGPT for the `openai` provider, and sign in to `openai-codex` by browser or device code.
+- Sign in to OpenRouter (pasting the redirect URL over SSH), xAI with SuperGrok or X Premium, and Kimi Code.
+- Refresh expiring OAuth tokens under the credential file lock.
+- Open Anthropic subscription requests with Claude Code's identity.
+- Use Anthropic workload identity federation from `ANTHROPIC_FEDERATION_RULE_ID`, `ANTHROPIC_ORGANIZATION_ID` and `ANTHROPIC_IDENTITY_TOKEN_FILE`.
+- Add `micro auth check`, `micro auth print-api-key` and `micro auth print-bearer-token`.
+- Label `/login` and `/logout` entries as `not configured`, or as an API key, `subscription` or `account`.
 
 ## [0.1.13] - 2026-09-04
 

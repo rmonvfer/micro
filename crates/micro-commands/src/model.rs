@@ -213,6 +213,7 @@ fn credential_note(provider: &str, context: &CommandContext<'_>) -> String {
     match status.source {
         micro_auth::CredentialSource::Stored => "signed in".to_string(),
         micro_auth::CredentialSource::Environment { variable } => format!("via {variable}"),
+        micro_auth::CredentialSource::Federation => "via workload identity federation".to_string(),
         micro_auth::CredentialSource::Missing => "not signed in".to_string(),
     }
 }

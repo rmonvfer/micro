@@ -5,12 +5,15 @@ use crate::CommandOutcome;
 use crate::Picker;
 use crate::PickerItem;
 use micro_auth::canonical_provider;
+use micro_auth::AuthMethod;
 use micro_auth::CredentialSource;
 use micro_auth::LoginFlow;
+use micro_auth::LoginOptions;
 use micro_auth::ProviderStatus;
+use micro_auth::METHOD_API_KEY;
 
 pub(crate) async fn login(argument: Option<&str>, context: &CommandContext<'_>) -> CommandOutcome {
-    let Some(name) = argument else {
+    let Some(argument) = argument else {
         return CommandOutcome::Choose(
             Picker::new(
                 "Select provider to configure:",
@@ -19,7 +22,7 @@ pub(crate) async fn login(argument: Option<&str>, context: &CommandContext<'_>) 
                     .map(|entry| {
                         PickerItem::new(
                             entry.id.clone(),
-                            describe(&context.auth.status_of(&entry.id)),
+                            login_note(&context.auth.status_of(&entry.id)),
                             format!("/login {}", entry.id),
                         )
                         .current(entry.id == context.provider)
@@ -30,11 +33,32 @@ pub(crate) async fn login(argument: Option<&str>, context: &CommandContext<'_>) 
         );
     };
 
+    let mut words = argument.split_whitespace();
+    let name = words.next().unwrap_or_default();
+    let method = words.next();
     let Some(provider) = known(name) else {
         return CommandOutcome::error(unknown_provider(name));
     };
 
-    match context.auth.begin_login(provider).await {
+    let options = match needs_device_id(provider, method) {
+        true => match micro_config::Config::device_id(micro_auth::oauth::random_uuid) {
+            Ok(device_id) => LoginOptions {
+                device_id: Some(device_id),
+            },
+            Err(error) => {
+                return CommandOutcome::error(format!(
+                    "could not record this installation's device id: {error}"
+                ))
+            }
+        },
+        false => LoginOptions::default(),
+    };
+
+    match context
+        .auth
+        .begin_login_with(provider, method, &options)
+        .await
+    {
         Ok(LoginFlow::ApiKey {
             provider,
             env_names,
@@ -42,11 +66,36 @@ pub(crate) async fn login(argument: Option<&str>, context: &CommandContext<'_>) 
             provider,
             env_names,
         },
+        Ok(LoginFlow::Choose {
+            provider,
+            title,
+            options,
+        }) => CommandOutcome::Choose(Picker::new(
+            title,
+            options
+                .into_iter()
+                .map(|option| {
+                    PickerItem::new(
+                        option.label,
+                        String::new(),
+                        format!("/login {provider} {}", option.id),
+                    )
+                })
+                .collect(),
+        )),
         Ok(LoginFlow::DeviceCode(pending)) => CommandOutcome::DeviceLogin {
+            pending: Box::new(pending),
+        },
+        Ok(LoginFlow::Browser(pending)) => CommandOutcome::BrowserLogin {
             pending: Box::new(pending),
         },
         Err(error) => CommandOutcome::error(format!("could not start the login: {error}")),
     }
+}
+
+/// Sign in with ChatGPT registers this installation, so it is the one login that needs its id.
+fn needs_device_id(provider: &str, method: Option<&str>) -> bool {
+    provider == micro_auth::OPENAI && method.is_some_and(|method| method != METHOD_API_KEY)
 }
 
 pub(crate) fn logout(argument: Option<&str>, context: &CommandContext<'_>) -> CommandOutcome {
@@ -59,7 +108,10 @@ pub(crate) fn logout(argument: Option<&str>, context: &CommandContext<'_>) -> Co
             .map(|status| {
                 PickerItem::new(
                     status.provider.clone(),
-                    describe(&status),
+                    micro_auth::credential_kind(
+                        &status.provider,
+                        status.method == AuthMethod::OAuth,
+                    ),
                     format!("/logout {}", status.provider),
                 )
             })
@@ -119,7 +171,21 @@ fn describe(status: &ProviderStatus) -> String {
         }
         CredentialSource::Stored => "signed in".to_string(),
         CredentialSource::Environment { variable } => format!("signed in via {variable}"),
+        CredentialSource::Federation => "signed in via workload identity federation".to_string(),
         CredentialSource::Missing => "not signed in".to_string(),
+    }
+}
+
+/// How a provider stands, as the login picker says it: whether it is configured, and with what.
+fn login_note(status: &ProviderStatus) -> String {
+    match &status.source {
+        CredentialSource::Stored => format!(
+            "{} configured",
+            micro_auth::credential_kind(&status.provider, status.method == AuthMethod::OAuth)
+        ),
+        CredentialSource::Environment { variable } => format!("env: {variable}"),
+        CredentialSource::Federation => "workload identity federation".to_string(),
+        CredentialSource::Missing => "not configured".to_string(),
     }
 }
 
@@ -166,7 +232,7 @@ mod tests {
     #[tokio::test]
     async fn logging_in_to_a_key_provider_asks_for_the_key() {
         let harness = Harness::new("login-key");
-        let outcome = dispatch("/login openrouter", &harness.context())
+        let outcome = dispatch("/login openrouter api_key", &harness.context())
             .await
             .unwrap();
 
@@ -179,6 +245,103 @@ mod tests {
         };
         assert_eq!(provider, "openrouter");
         assert_eq!(env_names, vec!["OPENROUTER_API_KEY"]);
+    }
+
+    #[tokio::test]
+    async fn a_provider_with_an_account_and_a_key_asks_which_to_use() {
+        let harness = Harness::new("login-choose");
+        let outcome = dispatch("/login openrouter", &harness.context())
+            .await
+            .unwrap();
+        let choices = picker(&outcome);
+
+        let labels: Vec<&str> = choices
+            .items
+            .iter()
+            .map(|item| item.label.as_str())
+            .collect();
+        assert_eq!(
+            labels,
+            vec!["Sign in with OpenRouter", "Sign in with an API key"]
+        );
+        assert_eq!(choices.command_at(0), Some("/login openrouter oauth"));
+        assert_eq!(choices.command_at(1), Some("/login openrouter api_key"));
+
+        let outcome = dispatch("/login anthropic oauth", &harness.context())
+            .await
+            .unwrap();
+        let methods = picker(&outcome);
+        assert_eq!(methods.command_at(0), Some("/login anthropic browser"));
+        assert_eq!(methods.command_at(1), Some("/login anthropic copy_code"));
+    }
+
+    #[tokio::test]
+    async fn a_method_a_provider_does_not_have_is_refused() {
+        let harness = Harness::new("login-bad-method");
+        let outcome = dispatch("/login github-copilot api_key", &harness.context())
+            .await
+            .unwrap();
+        assert!(outcome.is_error(), "{outcome:?}");
+    }
+
+    #[tokio::test]
+    async fn the_login_picker_says_what_is_configured_and_with_what() {
+        let harness = Harness::new("login-notes");
+        harness.auth.store_api_key("openrouter", "sk-or").unwrap();
+        harness
+            .auth
+            .set(
+                "xai",
+                Credential::OAuth(micro_auth::OAuthCredential {
+                    access_token: "xa".into(),
+                    refresh_token: "xr".into(),
+                    expires: i64::MAX / 2,
+                    client_id: None,
+                }),
+            )
+            .unwrap();
+
+        let outcome = dispatch("/login", &harness.context()).await.unwrap();
+        let picker = picker(&outcome);
+        let note = |id: &str| {
+            picker
+                .items
+                .iter()
+                .find(|item| item.label == id)
+                .map(|item| item.detail.clone())
+                .unwrap()
+        };
+        assert_eq!(note("openrouter"), "API key configured");
+        assert_eq!(note("xai"), "subscription configured");
+        assert_eq!(note("mistral"), "not configured");
+    }
+
+    #[tokio::test]
+    async fn the_logout_picker_names_the_kind_of_credential() {
+        let harness = Harness::new("logout-kinds");
+        harness
+            .auth
+            .set(
+                "openrouter",
+                Credential::OAuth(micro_auth::OAuthCredential {
+                    access_token: "sk-or-v1".into(),
+                    refresh_token: String::new(),
+                    expires: micro_auth::openrouter::NEVER_EXPIRES,
+                    client_id: None,
+                }),
+            )
+            .unwrap();
+        harness.auth.store_api_key("mistral", "key").unwrap();
+
+        let outcome = dispatch("/logout", &harness.context()).await.unwrap();
+        let picker = picker(&outcome);
+        let details: Vec<(&str, &str)> = picker
+            .items
+            .iter()
+            .map(|item| (item.label.as_str(), item.detail.as_str()))
+            .collect();
+        assert!(details.contains(&("openrouter", "account")), "{details:?}");
+        assert!(details.contains(&("mistral", "API key")), "{details:?}");
     }
 
     #[tokio::test]
@@ -270,6 +433,7 @@ mod tests {
                     access_token: "stale".into(),
                     refresh_token: "gho".into(),
                     expires: 1,
+                    client_id: None,
                 }),
             )
             .unwrap();

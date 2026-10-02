@@ -59,10 +59,15 @@ With no subcommand, micro opens the terminal interface. A prompt on the command 
 ### Authentication
 
 ```bash
-micro auth login <PROVIDER>
+micro auth login <PROVIDER> [--method <METHOD>]
 micro auth logout <PROVIDER>
 micro auth status
+micro auth check [PROVIDER|MODEL] [--provider <P>] [--model <M>] [--json] [--credentials] [--no-refresh]
+micro auth print-api-key [PROVIDER|MODEL] [--provider <P>] [--model <M>]
+micro auth print-bearer-token [PROVIDER|MODEL] [--provider <P>] [--model <M>] [--min-expiry <DURATION>]
 ```
+
+See [Providers](providers.md#authenticate) for the sign-in methods and what each command prints.
 
 ### Models
 

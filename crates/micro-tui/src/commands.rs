@@ -1,6 +1,7 @@
 //! The seam between a slash command and the state it changes.
 
 use async_trait::async_trait;
+use micro_auth::PendingBrowserLogin;
 use micro_auth::PendingDeviceLogin;
 use micro_commands::CommandOutcome;
 use micro_types::Message;
@@ -165,6 +166,14 @@ pub trait Commands: Send {
     async fn store_api_key(&mut self, provider: String, key: String) -> Applied;
 
     async fn finish_device_login(&mut self, pending: Box<PendingDeviceLogin>) -> Applied;
+
+    /// Wait for the browser to return, or for `pasted` to deliver what the user pasted from it;
+    /// `pasted` closes unsent when the user dismissed the prompt.
+    async fn finish_browser_login(
+        &mut self,
+        pending: Box<PendingBrowserLogin>,
+        pasted: tokio::sync::oneshot::Receiver<String>,
+    ) -> Applied;
 }
 
 #[cfg(test)]

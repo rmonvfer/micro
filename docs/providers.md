@@ -4,13 +4,16 @@ micro ships with a model catalog and clients for the wire protocols used by its 
 
 ## Common providers
 
-| Provider ID      | Service        | Authentication                         |
-| ---------------- | -------------- | -------------------------------------- |
-| `anthropic`      | Anthropic      | API key or supported stored credential |
-| `openai`         | OpenAI         | API key                                |
-| `google`         | Google Gemini  | API key                                |
-| `openrouter`     | OpenRouter     | API key                                |
-| `github-copilot` | GitHub Copilot | Device-code login or token             |
+| Provider ID      | Service         | Authentication                                          |
+| ---------------- | --------------- | ------------------------------------------------------- |
+| `anthropic`      | Anthropic       | Claude Pro/Max sign-in, API key, or identity federation |
+| `openai`         | OpenAI          | Sign in with ChatGPT or API key                         |
+| `openai-codex`   | OpenAI Codex    | ChatGPT Plus/Pro sign-in                                |
+| `google`         | Google Gemini   | API key                                                 |
+| `openrouter`     | OpenRouter      | OpenRouter sign-in or API key                           |
+| `xai`            | xAI             | SuperGrok or X Premium sign-in, or API key              |
+| `kimi-coding`    | Kimi For Coding | Kimi Code sign-in or API key                            |
+| `github-copilot` | GitHub Copilot  | Device-code login or token                              |
 
 The bundled catalog also includes cloud platform endpoints, inference hosts, model vendors, and gateways.
 
@@ -24,11 +27,18 @@ micro models
 
 ```bash
 micro auth login anthropic
+micro auth login anthropic --method copy_code
 micro auth login github-copilot
 micro auth status
 ```
 
-API-key logins read the key from the terminal. Device-code logins open the provider's browser flow. `micro auth logout <provider>` removes a stored credential.
+A provider that takes both an account sign-in and an API key asks which to use; `--method` answers in advance with `oauth`, `api_key`, `browser`, `copy_code` or `device_code`. Inside the interface, `/login` offers the same choices and labels each provider as `not configured`, or configured with an API key, a `subscription`, or an `account` (OpenRouter's sign-in is an account, not a subscription). `micro auth logout <provider>` and `/logout` remove a stored credential.
+
+Browser sign-ins open the provider's page and wait for it to redirect to a listener on `127.0.0.1` (set `MICRO_OAUTH_CALLBACK_HOST` to listen elsewhere). When the browser runs on another machine, as over SSH, paste the final redirect URL or the code at the prompt instead. Anthropic's `copy_code` method is made for that case: Anthropic shows a `code#state` value to paste back. OpenAI Codex's `device_code` method and the xAI, Kimi Code and GitHub Copilot sign-ins show a code to enter on a page opened anywhere.
+
+Sign in with ChatGPT registers this installation with OpenAI under a stable `device_id`, a UUID micro creates in the global config the first time it is needed. OpenRouter's sign-in yields a permanent API key that it stores like any other credential.
+
+Expiring tokens are refreshed before a request needs them, while `auth.json` is locked, so two micro processes never spend the same rotating refresh token. Anthropic subscription requests are sent as Claude Code sends them; Anthropic bills that usage as extra usage rather than against plan limits.
 
 Stored credentials are checked first. If none exists, micro checks environment variables:
 
@@ -41,6 +51,19 @@ Stored credentials are checked first. If none exists, micro checks environment v
 | `github-copilot` | `COPILOT_GITHUB_TOKEN`                                               |
 
 Other providers use the conventional `<PROVIDER>_API_KEY` name unless their catalog entry specifies another variable.
+
+With no Anthropic key or token set, micro uses workload identity federation when `ANTHROPIC_FEDERATION_RULE_ID`, `ANTHROPIC_ORGANIZATION_ID` and `ANTHROPIC_IDENTITY_TOKEN_FILE` are all set. It exchanges the identity token for a short-lived access token and exchanges again shortly before that token expires, reading the identity token file each time, so keep the file fresh for long sessions. `ANTHROPIC_SERVICE_ACCOUNT_ID` and `ANTHROPIC_WORKSPACE_ID` are sent with the exchange when set.
+
+## Use credentials from other programs
+
+```bash
+micro auth check anthropic
+micro auth check --model sonnet --json
+micro auth print-api-key openrouter
+micro auth print-bearer-token openai-codex --min-expiry 1h
+```
+
+`micro auth check` takes a provider or a model and prints `ready`, `not_ready` or `invalid`, exiting with `0`, `1` or `2`. It refreshes an expired OAuth credential unless given `--no-refresh`; `--credentials` prints the resolved credential instead of the status, and `--json` writes the whole result. `print-api-key` prints a provider's API key, and `print-bearer-token` prints its OAuth access token after refreshing any token with less than `--min-expiry` (30 minutes by default) left. Both write secrets to standard output.
 
 ## Select a model
 

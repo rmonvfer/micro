@@ -1,5 +1,6 @@
 //! GitHub Copilot authentication.
 
+use crate::oauth::DeviceAuthorization;
 use crate::AuthError;
 use crate::OAuthCredential;
 use crate::Result;
@@ -30,16 +31,6 @@ const SLOW_DOWN_PENALTY_SECS: u64 = 5;
 
 /// Used when the exchange response omits both an expiry and a refresh hint.
 const DEFAULT_TOKEN_LIFETIME_MS: i64 = 25 * 60 * 1000;
-
-/// A pending device authorization.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DeviceAuthorization {
-    pub verification_uri: String,
-    pub user_code: String,
-    pub device_code: String,
-    pub interval_secs: u64,
-    pub expires_in_secs: u64,
-}
 
 /// Ask GitHub for a device code.
 pub async fn start_device_flow(http: &reqwest::Client) -> Result<DeviceAuthorization> {
@@ -298,6 +289,7 @@ fn parse_api_token(body: &Value, github_token: &str, now_ms: i64) -> Result<OAut
         access_token: token.to_string(),
         refresh_token: github_token.to_string(),
         expires,
+        client_id: None,
     })
 }
 

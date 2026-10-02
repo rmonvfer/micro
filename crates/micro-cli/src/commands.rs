@@ -1274,6 +1274,19 @@ impl Commands for CliCommands {
         self.signed_in(&provider).await
     }
 
+    async fn finish_browser_login(
+        &mut self,
+        pending: Box<micro_auth::PendingBrowserLogin>,
+        pasted: tokio::sync::oneshot::Receiver<String>,
+    ) -> Applied {
+        let provider = pending.provider.clone();
+        let manual = async move { pasted.await.ok() };
+        if let Err(error) = self.auth.complete_browser_login(&pending, manual).await {
+            return Applied::error(format!("Sign-in failed: {error}"));
+        }
+        self.signed_in(&provider).await
+    }
+
     async fn store_api_key(&mut self, provider: String, key: String) -> Applied {
         if let Err(error) = self.auth.store_api_key(&provider, &key) {
             return Applied::error(error.to_string());
