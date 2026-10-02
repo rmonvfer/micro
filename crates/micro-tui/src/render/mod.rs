@@ -709,6 +709,7 @@ fn footer_for(app: &App) -> status::Footer<'_> {
         context_window: app.context_window,
         model: app.model_id(),
         thinking: Some(crate::app::thinking_name(app.thinking)),
+        routed: app.routed_model(),
         attachments: app.attachments(),
         cost: app.session_cost(),
         subscription: app.subscription,

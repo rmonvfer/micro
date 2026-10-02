@@ -61,6 +61,8 @@ pub struct Footer<'a> {
     pub model: &'a str,
     /// Reasoning budget, `"off"` included.
     pub thinking: Option<&'a str>,
+    /// The physical model a virtual model sent the latest response to, as `provider/id`.
+    pub routed: Option<&'a str>,
     /// Images waiting to go with the next prompt.
     pub attachments: usize,
     /// What the session has cost so far, in dollars.
@@ -271,10 +273,14 @@ impl<'a> Footer<'a> {
             ),
             None => model.to_string(),
         };
-        match self.thinking.filter(|level| !level.is_empty()) {
+        let selected = match self.thinking.filter(|level| !level.is_empty()) {
             Some("off") => format!("{model} • thinking off"),
             Some(level) => format!("{model} • {level}"),
             None => model,
+        };
+        match self.routed.filter(|routed| !routed.is_empty()) {
+            Some(routed) => format!("{selected} → {routed}"),
+            None => selected,
         }
     }
 }
@@ -610,6 +616,19 @@ mod tests {
         assert!(
             rendered(&footer.rows(&Theme::dark(), 60)[1]).ends_with("claude-opus-5 • thinking off")
         );
+    }
+
+    /// A virtual model is shown with the model it routed the latest response to.
+    #[test]
+    fn a_routed_model_follows_the_selection() {
+        let footer = Footer {
+            model: "router/auto",
+            thinking: Some("high"),
+            routed: Some("openai-codex/gpt-5.6-luna"),
+            ..footer()
+        };
+        assert!(rendered(&footer.rows(&Theme::dark(), 80)[1])
+            .ends_with("router/auto • high → openai-codex/gpt-5.6-luna"));
     }
 
     #[test]
