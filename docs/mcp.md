@@ -119,4 +119,6 @@ Only the global `mcp.json` may use it, so a repository cannot choose where your 
 
 In a session, `/mcp` lists the servers with their state, servers that need attention first. Selecting one offers to sign in, sign out, or reconnect. A server signed in or reconnected during a session offers its tools through `tool_search`, so the tools declared to the model, and the cached prompt, stay as they were.
 
+Log messages servers send, and what stdio servers write to their standard error, are appended to `mcp.log` in micro's data directory as `<time> [<server>] <level> <logger>: <message>`, with `stderr` as the level for standard error. The file moves to `mcp.log.1` once it grows past 5 MB. A server that fails to start also shows the end of its standard error in the error.
+
 Tool calls are shown as `server/tool`. MCP servers are programs you configured and do not run inside the command sandbox.

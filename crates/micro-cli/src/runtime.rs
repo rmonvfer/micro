@@ -1224,6 +1224,10 @@ fn mcp_servers(
     let servers = micro_mcp::Servers::new(micro_mcp::config::load(root, trusted), root)
         .with_providers(Arc::clone(store))
         .with_tool_filter(selection.tools.clone(), selection.exclude_tools.clone());
+    let servers = match micro_mcp::ServerLog::in_data_dir() {
+        Some(log) => servers.with_log(log),
+        None => servers,
+    };
     match micro_mcp::oauth::CredentialStore::open() {
         Some(credentials) => servers.with_credentials(credentials),
         None => servers,

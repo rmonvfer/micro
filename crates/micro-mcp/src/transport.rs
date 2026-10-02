@@ -101,12 +101,15 @@ pub struct StdioTransport {
 }
 
 impl StdioTransport {
+    /// Start `command`. What it writes to its standard error is kept to explain a failure and,
+    /// when `log` names a log and the server, appended to that log.
     pub fn spawn(
         command: &str,
         args: &[String],
         env: &BTreeMap<String, String>,
         cwd: Option<&std::path::Path>,
         incoming: UnboundedSender<Value>,
+        log: Option<(Arc<crate::ServerLog>, String)>,
     ) -> std::io::Result<StdioTransport> {
         let mut process = tokio::process::Command::new(command);
         process
@@ -154,6 +157,9 @@ impl StdioTransport {
             use tokio::io::AsyncBufReadExt as _;
             let mut lines = tokio::io::BufReader::new(stderr).lines();
             while let Ok(Some(line)) = lines.next_line().await {
+                if let Some((log, server)) = &log {
+                    log.stderr(server, &line);
+                }
                 let mut tail = writing
                     .lock()
                     .unwrap_or_else(|poisoned| poisoned.into_inner());

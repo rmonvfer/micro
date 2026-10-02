@@ -1,6 +1,7 @@
 //! Tools a separate program provides, over the Model Context Protocol.
 
 pub mod config;
+mod log;
 pub mod names;
 pub mod oauth;
 mod servers;
@@ -10,6 +11,7 @@ pub use config::Exposure;
 pub use config::LoadedConfig;
 pub use config::ServerConfig;
 pub use config::ServerEntry;
+pub use log::ServerLog;
 pub use servers::ProviderAuthorizer;
 pub use servers::ServerReport;
 pub use servers::Servers;
@@ -129,12 +131,14 @@ pub struct Client {
 }
 
 impl Client {
-    /// Shake hands over a transport whose incoming messages arrive on `incoming`.
+    /// Shake hands over a transport whose incoming messages arrive on `incoming`. Log messages
+    /// the server sends are appended to `log`.
     async fn connect(
         name: &str,
         transport: Arc<dyn Transport>,
         mut incoming: tokio::sync::mpsc::UnboundedReceiver<Value>,
         timeout: Option<Duration>,
+        log: Option<Arc<ServerLog>>,
     ) -> Result<Arc<Client>> {
         let pending: Waiting = Arc::default();
 
@@ -144,9 +148,18 @@ impl Client {
         tokio::spawn(async move {
             while let Some(message) = incoming.recv().await {
                 if let Some(method) = message.get("method").and_then(Value::as_str) {
-                    if let (Some(id), Some(transport)) = (message.get("id"), replies.upgrade()) {
-                        let reply = answer_server_request(id, method);
-                        let _ = transport.send(&reply).await;
+                    match (message.get("id"), replies.upgrade()) {
+                        (Some(id), Some(transport)) => {
+                            let reply = answer_server_request(id, method);
+                            let _ = transport.send(&reply).await;
+                        }
+                        (None, _) if method == "notifications/message" => {
+                            if let Some(log) = &log {
+                                let params = message.get("params").cloned().unwrap_or(Value::Null);
+                                log.message(&reader_name, &params);
+                            }
+                        }
+                        _ => {}
                     }
                     continue;
                 }
@@ -653,6 +666,48 @@ mod tests {
         let servers = servers(vec![entry("demo", config)]);
         let tools = servers.connect("demo").await.unwrap();
         assert_eq!(tools[0].exposure(), ToolExposure::Direct);
+    }
+
+    /// What a server logs, and what it writes to its standard error, end up in the log file.
+    #[tokio::test]
+    async fn a_servers_log_messages_and_standard_error_are_kept() {
+        let chatty = ServerConfig::stdio(
+            "bash",
+            vec![
+                "-c".to_string(),
+                r#"
+                while IFS= read -r line; do
+                  id=$(printf '%s' "$line" | sed -n 's/.*"id":\([0-9]*\).*/\1/p')
+                  case "$line" in
+                    *'"initialize"'*)
+                      echo 'warming up' >&2
+                      printf '{"jsonrpc":"2.0","method":"notifications/message","params":{"level":"notice","data":"index ready"}}\n'
+                      printf '{"jsonrpc":"2.0","id":%s,"result":{"protocolVersion":"2025-06-18"}}\n' "$id" ;;
+                    *'"tools/list"'*)
+                      printf '{"jsonrpc":"2.0","id":%s,"result":{"tools":[]}}\n' "$id" ;;
+                  esac
+                done
+                "#
+                .to_string(),
+            ],
+        );
+        let directory =
+            std::env::temp_dir().join(format!("micro-mcp-server-log-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&directory);
+        let path = directory.join("mcp.log");
+        let servers = servers(vec![entry("chatty", chatty)]).with_log(ServerLog::new(&path));
+        servers.connect("chatty").await.unwrap();
+
+        let mut logged = String::new();
+        for _ in 0..50 {
+            logged = std::fs::read_to_string(&path).unwrap_or_default();
+            if logged.contains("warming up") && logged.contains("index ready") {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        assert!(logged.contains("[chatty] stderr warming up"), "{logged}");
+        assert!(logged.contains("[chatty] notice index ready"), "{logged}");
     }
 
     #[test]

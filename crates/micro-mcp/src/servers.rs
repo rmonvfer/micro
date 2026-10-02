@@ -17,6 +17,7 @@ use crate::transport::TransportError;
 use crate::Client;
 use crate::McpError;
 use crate::Result;
+use crate::ServerLog;
 use async_trait::async_trait;
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -119,6 +120,8 @@ struct Inner {
     errors: Vec<String>,
     states: Mutex<BTreeMap<String, State>>,
     arrivals: micro_tools::Arrivals,
+    /// Where servers' log messages and standard error are appended.
+    log: Option<Arc<ServerLog>>,
 }
 
 impl Servers {
@@ -155,6 +158,7 @@ impl Servers {
                 errors: config.errors,
                 states: Mutex::new(states),
                 arrivals: micro_tools::Arrivals::default(),
+                log: None,
             }),
         }
     }
@@ -182,6 +186,11 @@ impl Servers {
             inner.allowed = allowed;
             inner.excluded = excluded;
         })
+    }
+
+    /// Append what servers log, and what stdio servers write to their standard error, to `log`.
+    pub fn with_log(self, log: ServerLog) -> Servers {
+        self.configure(|inner| inner.log = Some(Arc::new(log)))
     }
 
     /// Where the tools of servers that connect in the background are delivered.
@@ -388,12 +397,18 @@ impl Servers {
                 let cwd = cwd
                     .as_deref()
                     .map(|cwd| self.inner.workspace.join(expand_home(cwd)));
-                let spawned = StdioTransport::spawn(&command, &args, &env, cwd.as_deref(), sender)
-                    .map_err(|error| McpError::Start {
-                        server: name.to_string(),
-                        command: command.clone(),
-                        message: error.to_string(),
-                    })?;
+                let log = self
+                    .inner
+                    .log
+                    .as_ref()
+                    .map(|log| (Arc::clone(log), name.to_string()));
+                let spawned =
+                    StdioTransport::spawn(&command, &args, &env, cwd.as_deref(), sender, log)
+                        .map_err(|error| McpError::Start {
+                            server: name.to_string(),
+                            command: command.clone(),
+                            message: error.to_string(),
+                        })?;
                 Arc::new(spawned)
             }
             Configured::Http {
@@ -439,7 +454,14 @@ impl Servers {
             }
         };
 
-        Client::connect(name, transport, incoming, entry.config.timeout).await
+        Client::connect(
+            name,
+            transport,
+            incoming,
+            entry.config.timeout,
+            self.inner.log.clone(),
+        )
+        .await
     }
 
     /// Every server and where it stands, servers that need attention first.

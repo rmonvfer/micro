@@ -57,6 +57,10 @@ async fn trusted(root: &Path) -> bool {
 fn servers(root: &Path, loaded: config::LoadedConfig) -> Result<Servers> {
     let providers = Arc::new(micro_auth::AuthStore::open()?);
     let servers = Servers::new(loaded, root).with_providers(providers);
+    let servers = match micro_mcp::ServerLog::in_data_dir() {
+        Some(log) => servers.with_log(log),
+        None => servers,
+    };
     Ok(match micro_mcp::oauth::CredentialStore::open() {
         Some(credentials) => servers.with_credentials(credentials),
         None => servers,
