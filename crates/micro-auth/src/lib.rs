@@ -1,7 +1,7 @@
 //! Credentials for the providers micro talks to.
 
 pub mod copilot;
-mod lockfile;
+pub mod lockfile;
 
 use serde::Deserialize;
 use serde::Serialize;
@@ -592,28 +592,35 @@ fn load(path: &Path) -> Result<BTreeMap<String, Credential>> {
 
 /// Write the store through a temporary file created owner-only.
 fn save(path: &Path, credentials: &BTreeMap<String, Credential>) -> Result<()> {
-    let directory = path.parent().unwrap_or_else(|| Path::new("."));
-    fs::create_dir_all(directory).map_err(|error| storage_error(path, error))?;
-    restrict_directory(directory);
-
     let contents =
         serde_json::to_string_pretty(credentials).map_err(|error| AuthError::Storage {
             path: path.display().to_string(),
             message: format!("could not be encoded: {error}"),
         })?;
 
-    let temporary = directory.join(format!(".{FILE_NAME}.{}.tmp", std::process::id()));
+    write_private(path, contents.as_bytes()).map_err(|error| storage_error(path, error))
+}
+
+/// Replace a file that holds secrets: written through a temporary file only its owner can read,
+/// in a directory only its owner can list, then moved into place.
+pub fn write_private(path: &Path, contents: &[u8]) -> std::io::Result<()> {
+    let directory = path.parent().unwrap_or_else(|| Path::new("."));
+    fs::create_dir_all(directory)?;
+    restrict_directory(directory);
+
+    let name = path
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_else(|| FILE_NAME.to_string());
+    let temporary = directory.join(format!(".{name}.{}.tmp", std::process::id()));
     let _ = fs::remove_file(&temporary);
 
-    let mut file = create_owner_only(&temporary).map_err(|error| storage_error(path, error))?;
-    file.write_all(contents.as_bytes())
-        .and_then(|()| file.sync_all())
-        .map_err(|error| storage_error(path, error))?;
+    let mut file = create_owner_only(&temporary)?;
+    file.write_all(contents).and_then(|()| file.sync_all())?;
     drop(file);
 
-    fs::rename(&temporary, path).map_err(|error| {
+    fs::rename(&temporary, path).inspect_err(|_| {
         let _ = fs::remove_file(&temporary);
-        storage_error(path, error)
     })
 }
 
