@@ -71,6 +71,8 @@ A response cut off by the output-token limit does not execute incomplete tool ca
 
 Transient provider failures may be retried before any output is shown. Once content has streamed to the user, micro does not issue the same request again automatically.
 
+A transient failure is a 408, 409, 425, 429, 500, 502, 503, or 504 response, retried up to five attempts. micro waits as long as the provider asks through `retry-after-ms` or `Retry-After` (seconds or an HTTP date); when the header is absent or unreadable it backs off exponentially from one second up to thirty. A provider that asks for more than sixty seconds is not waited out, and the failure is reported with the wait it asked for.
+
 ## Streaming
 
 `StreamEvent` carries deltas rather than rebuilt partial messages. Consumers that need the response-so-far use `PartialResponse` to accumulate them.

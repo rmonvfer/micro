@@ -2432,6 +2432,7 @@ dependencies = [
  "async-trait",
  "futures",
  "hmac",
+ "httpdate",
  "micro-auth",
  "micro-models",
  "micro-tools",

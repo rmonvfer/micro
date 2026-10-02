@@ -7,6 +7,7 @@
 - Save truncated `bash` output in full to a private temporary file and name its path in the result.
 - Read `AGENTS.override.md` in place of a directory's `AGENTS.md` and `CLAUDE.md`, keeping instructions from other directories.
 - Add a global `http_proxy` setting applied as `HTTP_PROXY` and `HTTPS_PROXY` to micro's HTTP clients.
+- Honor `Retry-After` (seconds or HTTP date) and `retry-after-ms` when retrying provider requests, falling back to exponential backoff when absent or unreadable.
 
 ## [0.1.13] - 2026-09-04
 

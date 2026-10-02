@@ -42,6 +42,9 @@ use tokio::sync::mpsc::UnboundedSender;
 
 const MAX_ATTEMPTS: u32 = 5;
 const MAX_RETRY_DELAY_MS: u64 = 30_000;
+/// The longest wait a provider may ask for before a retry; a request told to wait longer fails
+/// instead of waiting it out.
+const MAX_REQUESTED_DELAY_MS: u64 = 60_000;
 
 const RETRYABLE_STATUSES: [u16; 8] = [408, 409, 425, 429, 500, 502, 503, 504];
 
@@ -1235,8 +1238,9 @@ impl Agent {
                     let retryable =
                         !emitted_content && attempt < MAX_ATTEMPTS && is_retryable(&error);
 
-                    if retryable {
-                        let delay_ms = retry_delay_ms(attempt);
+                    if let Some(delay_ms) =
+                        retryable.then(|| retry_delay_ms(attempt, &error)).flatten()
+                    {
                         events.send(AgentEvent::Retry {
                             attempt,
                             max_attempts: MAX_ATTEMPTS,
@@ -1390,8 +1394,20 @@ fn is_retryable(error: &str) -> bool {
         .unwrap_or(false)
 }
 
+/// How long to wait before trying again: what the provider asked for when it said, otherwise
+/// exponential backoff. Nothing when the provider asked for longer than is worth waiting.
+fn retry_delay_ms(attempt: u32, error: &str) -> Option<u64> {
+    match micro_provider::requested_retry_delay(error) {
+        Some(requested) => {
+            let requested_ms = u64::try_from(requested.as_millis()).unwrap_or(u64::MAX);
+            (requested_ms <= MAX_REQUESTED_DELAY_MS).then_some(requested_ms)
+        }
+        None => Some(backoff_ms(attempt)),
+    }
+}
+
 /// Exponential backoff: 1s, 2s, 4s, … capped at 30s.
-fn retry_delay_ms(attempt: u32) -> u64 {
+fn backoff_ms(attempt: u32) -> u64 {
     (1000u64 << (attempt.saturating_sub(1)).min(20)).min(MAX_RETRY_DELAY_MS)
 }
 
@@ -1644,10 +1660,26 @@ mod tests {
 
     #[test]
     fn backoff_doubles_and_is_capped() {
-        assert_eq!(retry_delay_ms(1), 1_000);
-        assert_eq!(retry_delay_ms(2), 2_000);
-        assert_eq!(retry_delay_ms(3), 4_000);
-        assert_eq!(retry_delay_ms(20), MAX_RETRY_DELAY_MS);
+        assert_eq!(backoff_ms(1), 1_000);
+        assert_eq!(backoff_ms(2), 2_000);
+        assert_eq!(backoff_ms(3), 4_000);
+        assert_eq!(backoff_ms(20), MAX_RETRY_DELAY_MS);
+    }
+
+    #[test]
+    fn a_requested_wait_replaces_the_backoff() {
+        let asked = "Anthropic returned 429: slow down [retry after 7000ms]";
+        assert_eq!(retry_delay_ms(1, asked), Some(7_000));
+        assert_eq!(
+            retry_delay_ms(3, "Anthropic returned 429: slow down"),
+            Some(4_000)
+        );
+    }
+
+    #[test]
+    fn a_wait_longer_than_is_worth_it_is_not_retried() {
+        let asked = "Anthropic returned 429: slow down [retry after 600000ms]";
+        assert_eq!(retry_delay_ms(1, asked), None);
     }
 
     #[test]

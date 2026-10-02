@@ -180,14 +180,8 @@ async fn run(
         .await
         .map_err(|error| format!("Anthropic request failed: {error}"))?;
 
-    let status = response.status();
-    if !status.is_success() {
-        let body = response.text().await.unwrap_or_default();
-        return Err(format!(
-            "Anthropic returned {}: {}",
-            status.as_u16(),
-            body.trim()
-        ));
+    if !response.status().is_success() {
+        return Err(crate::retry::refusal("Anthropic", response).await);
     }
 
     let mut state = Accumulator::new(&model, &context.tools, subscription);
