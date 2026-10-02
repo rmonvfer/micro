@@ -34,6 +34,10 @@ const DOCUMENTS: &[Document] = &[
         content: include_str!("../../../docs/tools.md"),
     },
     Document {
+        path: "docs/codemode.md",
+        content: include_str!("../../../docs/codemode.md"),
+    },
+    Document {
         path: "docs/sandbox.md",
         content: include_str!("../../../docs/sandbox.md"),
     },

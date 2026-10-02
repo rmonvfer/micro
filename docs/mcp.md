@@ -48,13 +48,17 @@ Server names may use letters, digits, `_`, and `-`. Tools are named `mcp__<serve
 
 ## Control exposure
 
-Without `exposure`, a server's tools are declared to the model until the session holds more than `tool_search_threshold` tools beyond the built-in ones; past that they are left for `tool_search` to find. `"exposure": "direct"` always declares them. `"exposure": "deferred"` never does: the server connects in the background, so the first prompt does not wait for it, and `tool_search` waits for it when it runs.
+A server's `exposure` decides how the model reaches its tools. With `codemode`, the default, the tools are callable from [`codemode`](codemode.md) scripts, which find them with `searchTools()` or `describeNamespace()`, but they are neither declared to the model nor listed in the `codemode` description; micro offers `codemode` whenever such a server is enabled. `codemode-deferred` is another name for `codemode`. With `deferred`, `tool_search` finds the tools and the model then calls them by name. With `direct`, the tools are declared like built-in ones, and the first prompt waits for the server. With `hidden`, the server is not connected at all.
+
+Servers with `codemode` or `deferred` exposure connect in the background, so the first prompt does not wait for them; `tool_search` waits for them when it runs, and so does a script that mentions `mcp__` or searches for tools. Their tools are reachable both ways: scripts call them, and `tool_search` finds them.
 
 Servers whose tools are not declared are listed in the system prompt with one line each, from `description` or, once connected, from the first line of what the server says about itself.
 
 ```json
 { "mcpServers": { "github": { "url": "https://api.githubcopilot.com/mcp/", "exposure": "deferred" } } }
 ```
+
+Scripts receive the whole `CallToolResult`, `content`, `structuredContent`, and `isError` included, and `describeNamespace("mcp__<server>")` returns the server's instructions and tool names. A result with `isError` resolves inside a script but reaches the model as an error when called directly.
 
 ## Authenticate with OAuth
 

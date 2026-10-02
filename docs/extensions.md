@@ -95,6 +95,40 @@ export default (micro) => {
 
 Registered tools are offered to the model unless the active tool allowlist excludes them.
 
+### Tool exposure
+
+`exposure` controls how the model reaches a tool. "Callable" means callable from other tools through `ctx.executeTool()`, as [`codemode`](codemode.md) scripts call them. `direct`, the default, is declared to the model and callable. `model-only` is declared but never callable, for tools that orchestrate other tools or ask the user. `codemode` is callable and listed in the `codemode` description, but not declared. `deferred` is callable and found by `tool_search` or a script's `searchTools()`, but never listed. `hidden` is registered but unreachable.
+
+`namespace: { name, description, instructions }` groups related tools under one heading in the `codemode` description; scripts read `instructions` with `describeNamespace(name)`. `annotations` carry the MCP hints `readOnlyHint`, `destructiveHint`, `idempotentHint`, and `openWorldHint`; they are not verified, and `getAllTools()` reports them with each tool's exposure and namespace.
+
+A tool that declares `outputSchema` returns its answer as data in `structuredContent`, which scripts receive instead of the text. A result with `isError: true` reaches the model as an error while the call itself succeeded.
+
+```ts
+micro.registerTool({
+  name: "issue_count",
+  description: "Count open issues",
+  parameters: Type.Object({ label: Type.String() }),
+  exposure: "codemode",
+  namespace: { name: "tracker", description: "The issue tracker" },
+  outputSchema: { type: "object", properties: { open: { type: "number" } }, required: ["open"] },
+  async execute(_callId, params) {
+    const open = await countIssues(params.label);
+    return { content: [{ type: "text", text: `${open} open` }], structuredContent: { open } };
+  },
+});
+```
+
+### Call other tools
+
+A tool's `ctx.tools` lists the tools it may call, and `ctx.executeTool(name, args)` calls one through the same checks as a call the model makes: `tool_call` and `tool_result` handlers, the sandbox, and approval. It resolves to `{ toolCall, result, isError }` and does not throw when the tool fails. Each nested call emits `tool_execution_start` and `tool_execution_end` with `parentToolCallId`, and the calling tool's result records the calls as `nestedCalls`, bounded to 256 calls and 32 KiB of arguments. Tokens a nested call reports in `usage` are added to the calling tool's result.
+
+```ts
+async execute(_callId, params, _signal, _onUpdate, ctx) {
+  const { result, isError } = await ctx.executeTool("read", { path: params.path });
+  return { content: isError ? [{ type: "text", text: "unreadable" }] : result.content };
+}
+```
+
 ## Run commands
 
 `micro.exec` runs a command through micro's command sandbox:

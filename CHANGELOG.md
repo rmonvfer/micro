@@ -10,6 +10,12 @@
 - Name MCP tools with `-` written as `_` (`mcp__my_server__x`), give colliding tool names a hash suffix, and reject server names that differ only in `-` and `_`.
 - Connect MCP servers side by side; servers with `"exposure": "deferred"` connect in the background and `tool_search` waits for them. An `mcp_servers` system prompt section lists servers whose tools are not declared.
 - Title MCP tool calls `server/tool`.
+- Add the `codemode` tool: the model writes JavaScript that runs in an embedded QuickJS sandbox and calls the other tools, side by side with `Promise.all`, and only the script's output reaches the model. Scripts get `text()`, `image()`, `console.*`, `exit()`, `store()`/`load()` kept per branch, `ALL_TOOLS`, `searchTools()`, `describeTool()`, and `describeNamespace()`, an `// @options:` line for `max_output_tokens` and `timeout_ms`, and errors that name close matches. Offer it with `--tools`; configure it with `codemode.mode` and `codemode.inline_budget`.
+- Add tool exposure levels `direct`, `model-only`, `codemode`, `deferred`, and `hidden`, with tool namespaces, annotations, `outputSchema` with `structuredContent`, and `isError` results, for extension tools as well as built-in and MCP ones.
+- Make `codemode` the default MCP exposure: servers connect in the background and their tools are called from scripts, which search for them. `codemode-deferred` is another name for it, and `hidden` leaves a server unconnected.
+- Let tools call other tools while they run, through `ctx.executeTool()` for extensions. Nested calls go through the same hooks and checks, are reported with their parent's id, are recorded on the calling tool's result, and add their usage to it.
+- Give scripts `bash` output as data: `{ output, truncated, full_output_path?, exit_code, wall_time_seconds }`, up to 1 MiB with the first and last 512 KiB of longer output.
+- Draw `codemode` calls with their script, the calls they make as they run, and output cut by wrapped lines while collapsed.
 
 ## [0.1.13] - 2026-09-04
 
