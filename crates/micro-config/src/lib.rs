@@ -187,6 +187,31 @@ pub enum Mermaid {
     Streaming,
 }
 
+/// How the `codemode` tool presents the other tools while it is offered.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum CodemodeMode {
+    /// Declared tools stay declared, and their descriptions say how scripts call them.
+    #[default]
+    On,
+    /// Declared tools are left out of requests and listed in the `codemode` description instead.
+    Only,
+}
+
+/// The `codemode` settings, as written.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CodemodeConfig {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mode: Option<CodemodeMode>,
+    /// Estimated tokens the tool declarations in the `codemode` description may use.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub inline_budget: Option<usize>,
+}
+
+/// The token budget for tool declarations in the `codemode` description when nothing says.
+pub const DEFAULT_CODEMODE_INLINE_BUDGET: usize = 3000;
+
 /// The config file, as it is written on disk.
 #[derive(Debug, Clone, Default, PartialEq, Serialize)]
 pub struct Config {
@@ -294,6 +319,9 @@ pub struct Config {
     /// What one session may spend before it stops, in US dollars.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub budget: Option<f64>,
+    /// How the `codemode` tool behaves.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub codemode: Option<CodemodeConfig>,
     /// Extensions to load beyond the ones found in the project and the home directory.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub extensions: Option<Vec<String>>,
@@ -360,6 +388,10 @@ pub struct Settings {
     /// What one session may spend before it stops, in US dollars.
     pub budget: f64,
     pub extensions: Vec<String>,
+    /// How `codemode` presents the other tools while it is offered.
+    pub codemode_mode: CodemodeMode,
+    /// Estimated tokens the tool declarations in the `codemode` description may use.
+    pub codemode_inline_budget: usize,
 }
 
 /// The widest an image is drawn when nothing says otherwise.
@@ -418,6 +450,8 @@ impl Default for Settings {
             sandbox: None,
             budget: 0.0,
             extensions: Vec::new(),
+            codemode_mode: CodemodeMode::default(),
+            codemode_inline_budget: DEFAULT_CODEMODE_INLINE_BUDGET,
         }
     }
 }
@@ -611,6 +645,16 @@ impl Config {
 
             budget: self.budget.unwrap_or(defaults.budget).max(0.0),
             extensions: self.extensions.clone().unwrap_or(defaults.extensions),
+            codemode_mode: self
+                .codemode
+                .as_ref()
+                .and_then(|codemode| codemode.mode)
+                .unwrap_or(defaults.codemode_mode),
+            codemode_inline_budget: self
+                .codemode
+                .as_ref()
+                .and_then(|codemode| codemode.inline_budget)
+                .unwrap_or(defaults.codemode_inline_budget),
         })
     }
 
@@ -662,6 +706,7 @@ impl Config {
             transport: take(&mut fields, "transport", path)?,
             sandbox: take(&mut fields, "sandbox", path)?,
             budget: take(&mut fields, "budget", path)?,
+            codemode: take(&mut fields, "codemode", path)?,
             extensions: take(&mut fields, "extensions", path)?,
             extra: fields,
         };
@@ -856,6 +901,27 @@ mod tests {
         assert_eq!(config.theme.as_deref(), Some("light"));
         assert_eq!(config.live_models, Some(true));
         assert!(config.extra.is_empty());
+    }
+
+    #[test]
+    fn codemode_settings_are_read_and_default_when_absent() {
+        let defaults = Config::default()
+            .resolve(&Overrides::default(), |_| None)
+            .unwrap();
+        assert_eq!(defaults.codemode_mode, CodemodeMode::On);
+        assert_eq!(defaults.codemode_inline_budget, DEFAULT_CODEMODE_INLINE_BUDGET);
+
+        let path = scratch("codemode").join("config.json");
+        fs::write(&path, r#"{"codemode": {"mode": "only", "inline_budget": 500}}"#).unwrap();
+        let settings = Config::load_from(&path)
+            .unwrap()
+            .resolve(&Overrides::default(), |_| None)
+            .unwrap();
+        assert_eq!(settings.codemode_mode, CodemodeMode::Only);
+        assert_eq!(settings.codemode_inline_budget, 500);
+
+        fs::write(&path, r#"{"codemode": {"mode": "sometimes"}}"#).unwrap();
+        assert!(Config::load_from(&path).is_err());
     }
 
     #[test]

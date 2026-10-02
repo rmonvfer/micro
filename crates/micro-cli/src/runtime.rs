@@ -97,7 +97,7 @@ pub struct Runtime {
     /// Every tool the model may call, by name, for whoever asks what is available.
     pub tool_names: Vec<String>,
 
-    pub tool_definitions: Vec<micro_types::ToolDefinition>,
+    pub tool_definitions: Vec<micro_tools::CallableTool>,
     /// Which tools the model is told about, when an extension has narrowed them.
     pub offered_tools: Arc<std::sync::RwLock<Option<Vec<String>>>>,
 
@@ -374,11 +374,7 @@ pub async fn build(
                 self_framed_tools.insert(tool.name.clone());
             }
             tools.push(Arc::new(micro_extensions::ExtensionTool::new(
-                tool.name,
-                tool.description,
-                tool.parameters,
-                tool.constrained_sampling,
-                tool.execution_mode,
+                tool,
                 Arc::clone(host),
             )));
         }
@@ -388,6 +384,12 @@ pub async fn build(
     let (mut kept, mcp_notices) = connect_mcp(&mcp, &mut tools).await;
     kept.extend(builtin.iter().cloned());
 
+    let codemode = crate::codemode::wanted(&selection.tools, &selection.exclude_tools, &mcp);
+    if codemode {
+        tools.push(crate::codemode::tool(settings, Arc::clone(&session)));
+        kept.push(micro_codemode::CODEMODE_TOOL_NAME.to_string());
+    }
+
     let tools = offered(tools, &selection.tools, &selection.exclude_tools);
     let tools = searchable_beyond(
         tools,
@@ -395,12 +397,14 @@ pub async fn build(
         settings.tool_search_threshold,
         &mcp.arrivals(),
     );
-    let mcp_section = mcp.prompt_section(&undeclared_servers(&mcp, &tools));
+    let mcp_section = mcp.prompt_section(&undeclared_servers(&mcp, &tools), codemode);
 
     let tool_names: Vec<String> = tools.iter().map(|tool| tool.definition().name).collect();
 
-    let tool_definitions: Vec<micro_types::ToolDefinition> =
-        tools.iter().map(|tool| tool.definition()).collect();
+    let tool_definitions: Vec<micro_tools::CallableTool> = tools
+        .iter()
+        .map(|tool| micro_tools::CallableTool::of(tool.as_ref()))
+        .collect();
 
     let context = load_context(
         root,
@@ -499,7 +503,7 @@ pub async fn build(
     .with_context_window(model.context_window as usize)
     .with_recorder(recorder)
     .with_observer(watching)
-    .with_cache_key(session.id());
+    .with_cache_key(session_id.clone());
 
     let agent = match recorded_model_cost {
         Some(cost) => agent.with_model_cost(cost),
@@ -523,7 +527,7 @@ pub async fn build(
         false => agent.without_compaction(),
     };
 
-    let agent = match spending_limit(settings, &sessions, &catalog, session.id(), &model).await {
+    let agent = match spending_limit(settings, &sessions, &catalog, &session_id, &model).await {
         Some(budget) => agent.with_budget(budget),
         None => agent,
     };
@@ -1077,10 +1081,10 @@ fn mcp_servers(
     }
 }
 
-/// Connect the configured servers side by side. Servers whose tools are deferred connect in the
-/// background, so the first prompt does not wait for them; the rest are waited for, and their
-/// tools join `tools`. Says which tools must stay declared whatever the threshold, and what went
-/// wrong.
+/// Connect the configured servers side by side. Servers whose tools are declared up front are
+/// waited for, and their tools join `tools`; the rest connect in the background, so the first
+/// prompt does not wait for them, and hidden ones are not connected at all. Says which tools must
+/// stay declared whatever the threshold, and what went wrong.
 async fn connect_mcp(
     mcp: &micro_mcp::Servers,
     tools: &mut Vec<Arc<dyn micro_tools::Tool>>,
@@ -1094,16 +1098,17 @@ async fn connect_mcp(
 
     let mut waited = Vec::new();
     for entry in &enabled {
-        match entry.config.exposure {
-            Some(micro_mcp::Exposure::Deferred) => mcp.connect_in_background(&entry.name),
-            _ => waited.push(entry.name.clone()),
+        match entry.config.exposure() {
+            micro_mcp::Exposure::Hidden => {}
+            exposure if exposure.is_waited_for() => waited.push(entry.name.clone()),
+            _ => mcp.connect_in_background(&entry.name),
         }
     }
     let (found, problems) = mcp.connect_each(&waited).await;
 
     let direct: Vec<String> = enabled
         .iter()
-        .filter(|entry| entry.config.exposure == Some(micro_mcp::Exposure::Direct))
+        .filter(|entry| entry.config.exposure() == micro_mcp::Exposure::Direct)
         .map(|entry| format!("{}__", micro_mcp::names::namespace(&entry.name)))
         .collect();
     let kept = found
@@ -1124,7 +1129,8 @@ async fn connect_mcp(
 }
 
 /// The servers whose tools the model is not told about up front: those connecting in the
-/// background, and those whose tools the threshold left for the search.
+/// background, and those whose tools the threshold left for the search. Hidden servers are not
+/// reachable at all, so they are not among them.
 fn undeclared_servers(
     mcp: &micro_mcp::Servers,
     tools: &[Arc<dyn micro_tools::Tool>],
@@ -1132,9 +1138,10 @@ fn undeclared_servers(
     mcp.entries()
         .into_iter()
         .filter(|entry| entry.config.enabled)
+        .filter(|entry| entry.config.exposure() != micro_mcp::Exposure::Hidden)
         .filter(|entry| {
             let prefix = format!("{}__", micro_mcp::names::namespace(&entry.name));
-            entry.config.exposure == Some(micro_mcp::Exposure::Deferred)
+            !entry.config.exposure().is_waited_for()
                 || tools.iter().any(|tool| {
                     tool.exposure().is_searchable() && tool.definition().name.starts_with(&prefix)
                 })
