@@ -1247,23 +1247,20 @@ async fn connect_mcp(
 
     let mut waited = Vec::new();
     for entry in &enabled {
-        match entry.config.exposure() {
-            micro_mcp::Exposure::Hidden => {}
-            exposure if exposure.is_waited_for() => waited.push(entry.name.clone()),
-            _ => mcp.connect_in_background(&entry.name),
+        if !entry.config.is_reachable() {
+            continue;
+        }
+        match entry.config.is_waited_for() {
+            true => waited.push(entry.name.clone()),
+            false => mcp.connect_in_background(&entry.name),
         }
     }
     let (found, problems) = mcp.connect_each(&waited).await;
 
-    let direct: Vec<String> = enabled
-        .iter()
-        .filter(|entry| entry.config.exposure() == micro_mcp::Exposure::Direct)
-        .map(|entry| format!("{}__", micro_mcp::names::namespace(&entry.name)))
-        .collect();
     let kept = found
         .iter()
+        .filter(|tool| tool.exposure() == micro_types::ToolExposure::Direct)
         .map(|tool| tool.definition().name)
-        .filter(|name| direct.iter().any(|prefix| name.starts_with(prefix)))
         .collect();
     tools.extend(found);
 
@@ -1287,10 +1284,9 @@ fn undeclared_servers(
     mcp.entries()
         .into_iter()
         .filter(|entry| entry.config.enabled)
-        .filter(|entry| entry.config.exposure() != micro_mcp::Exposure::Hidden)
         .filter(|entry| {
             let prefix = format!("{}__", micro_mcp::names::namespace(&entry.name));
-            !entry.config.exposure().is_waited_for()
+            entry.config.has_undeclared_tools()
                 || tools.iter().any(|tool| {
                     tool.exposure().is_searchable() && tool.definition().name.starts_with(&prefix)
                 })

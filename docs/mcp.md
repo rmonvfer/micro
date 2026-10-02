@@ -58,6 +58,20 @@ Servers whose tools are not declared are listed in the system prompt with one li
 { "mcpServers": { "github": { "url": "https://api.githubcopilot.com/mcp/", "exposure": "deferred" } } }
 ```
 
+`toolExposure` sets the exposure of single tools over the server's. Keys are the server's names for its tools, or patterns in which `*` stands for any characters; an exact name wins over a pattern, and a longer pattern over a shorter one. A `hidden` server can offer just the tools it names, and a server is waited for at the first prompt when any of its tools is `direct`:
+
+```json
+{
+  "mcpServers": {
+    "github": {
+      "url": "https://api.githubcopilot.com/mcp/",
+      "exposure": "hidden",
+      "toolExposure": { "search_issues": "direct", "get_*": "deferred" }
+    }
+  }
+}
+```
+
 Scripts receive the whole `CallToolResult`, `content`, `structuredContent`, and `isError` included, and `describeNamespace("mcp__<server>")` returns the server's instructions and tool names. A result with `isError` resolves inside a script but reaches the model as an error when called directly.
 
 ## Authenticate with OAuth

@@ -238,7 +238,10 @@ impl Servers {
         let connected = self.open(&entry).await;
         let tools = match connected {
             Ok(client) => match client
-                .tools(entry.config.exposure(), entry.config.description.clone())
+                .tools(
+                    |tool| entry.config.exposure_of(tool),
+                    entry.config.description.clone(),
+                )
                 .await
             {
                 Ok(tools) => Ok((client, tools)),

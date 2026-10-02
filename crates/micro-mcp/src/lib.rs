@@ -213,11 +213,12 @@ impl Client {
         self.instructions.as_deref()
     }
 
-    /// The tools this server offers, each ready to be called and exposed as `exposure` says.
-    /// `description` says what the server offers, when its configuration says.
+    /// The tools this server offers, each ready to be called and exposed as `exposure_of` says
+    /// for the server's name for it. `description` says what the server offers, when its
+    /// configuration says.
     pub async fn tools(
         self: &Arc<Self>,
-        exposure: Exposure,
+        exposure_of: impl Fn(&str) -> Exposure,
         description: Option<String>,
     ) -> Result<Vec<Arc<dyn micro_tools::Tool>>> {
         let mut listed: Vec<Value> = Vec::new();
@@ -277,7 +278,7 @@ impl Client {
             .map(|((remote, tool), name)| {
                 Arc::new(RemoteTool {
                     client: Arc::clone(self),
-                    exposure: exposure.tool_exposure(),
+                    exposure: exposure_of(&remote).tool_exposure(),
                     namespace: namespace.clone(),
                     annotations: ToolAnnotations::from_wire(tool.get("annotations")),
                     output_schema: call_tool_result_schema(tool.get("outputSchema")),
@@ -627,6 +628,17 @@ mod tests {
             output.structured.unwrap()["content"][0]["text"],
             "heard hello"
         );
+    }
+
+    /// A tool named in `toolExposure` is exposed as it says, whatever the server's exposure.
+    #[tokio::test]
+    async fn a_tool_can_be_exposed_apart_from_its_server() {
+        let mut config = echo_server();
+        config.exposure = Some(Exposure::Hidden);
+        config.tool_exposure = [("ec*".to_string(), Exposure::Direct)].into();
+        let servers = servers(vec![entry("demo", config)]);
+        let tools = servers.connect("demo").await.unwrap();
+        assert_eq!(tools[0].exposure(), ToolExposure::Direct);
     }
 
     #[test]

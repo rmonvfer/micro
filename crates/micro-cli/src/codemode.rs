@@ -73,7 +73,7 @@ pub fn wanted(allowed: &[String], excluded: &[String], mcp: &micro_mcp::Servers)
     }
     allowed.is_empty()
         && mcp.entries().iter().any(|entry| {
-            entry.config.enabled && entry.config.exposure() == micro_mcp::Exposure::Codemode
+            entry.config.enabled && entry.config.exposes(micro_mcp::Exposure::Codemode)
         })
 }
 
