@@ -63,6 +63,9 @@ pub struct ToolView {
     pub collapsed_rows: usize,
     /// Trailing remarks the tool appended, kept out of the collapsible body.
     pub notes: Vec<String>,
+    /// One `key: value` line per argument, shown under the title once the call is expanded, for a
+    /// tool with no view of its own.
+    pub arguments: Vec<String>,
 }
 
 impl ToolView {
@@ -118,6 +121,22 @@ impl ToolView {
 
 /// Interpret one tool result.
 pub fn view(name: &str, arguments: &Value, output: Option<&str>, is_error: bool) -> ToolView {
+    let mut view = built_in_view(name, arguments, output, is_error);
+    if !has_own_view(name) {
+        view.arguments = argument_lines(arguments);
+    }
+    view
+}
+
+/// Tools whose title names their subject and whose body is drawn their own way.
+fn has_own_view(name: &str) -> bool {
+    matches!(
+        name,
+        "read" | "write" | "edit" | "multi_edit" | "ls" | "bash" | "grep" | "find"
+    )
+}
+
+fn built_in_view(name: &str, arguments: &Value, output: Option<&str>, is_error: bool) -> ToolView {
     let subject = subject(name, arguments);
 
     let Some(output) = output else {
@@ -127,6 +146,7 @@ pub fn view(name: &str, arguments: &Value, output: Option<&str>, is_error: bool)
             body: Body::Empty,
             collapsed_rows: 0,
             notes: Vec::new(),
+            arguments: Vec::new(),
         };
     };
 
@@ -161,6 +181,7 @@ fn failure(name: &str, subject: String, output: &str) -> ToolView {
         body: Body::Text(text_lines(body)),
         collapsed_rows: COLLAPSED_ERROR_ROWS,
         notes: Vec::new(),
+        arguments: Vec::new(),
     }
 }
 
@@ -216,6 +237,7 @@ fn file_change(name: &str, subject: String, arguments: &Value) -> ToolView {
         },
         collapsed_rows: COLLAPSED_DIFF_ROWS,
         notes: Vec::new(),
+        arguments: Vec::new(),
     }
 }
 
@@ -227,6 +249,7 @@ fn read(subject: String, output: &str) -> ToolView {
             body: Body::Empty,
             collapsed_rows: 0,
             notes: vec![note],
+            arguments: Vec::new(),
         };
     }
     let lines = text_lines(output);
@@ -236,6 +259,7 @@ fn read(subject: String, output: &str) -> ToolView {
         body: Body::Text(lines),
         collapsed_rows: COLLAPSED_READ_ROWS,
         notes: Vec::new(),
+        arguments: Vec::new(),
     }
 }
 
@@ -250,6 +274,7 @@ fn command(subject: String, output: &str) -> ToolView {
         body: Body::Text(lines),
         collapsed_rows: COLLAPSED_OUTPUT_ROWS,
         notes: Vec::new(),
+        arguments: Vec::new(),
     }
 }
 
@@ -261,6 +286,7 @@ fn search(subject: String, arguments: &Value, output: &str) -> ToolView {
             body: Body::Empty,
             collapsed_rows: 0,
             notes: vec![note],
+            arguments: Vec::new(),
         };
     }
 
@@ -294,6 +320,7 @@ fn search(subject: String, arguments: &Value, output: &str) -> ToolView {
         body,
         collapsed_rows: COLLAPSED_LIST_ROWS,
         notes,
+        arguments: Vec::new(),
     }
 }
 
@@ -305,6 +332,7 @@ fn listing(subject: String, output: &str, noun: &str) -> ToolView {
             body: Body::Empty,
             collapsed_rows: 0,
             notes: vec![note],
+            arguments: Vec::new(),
         };
     }
     let (paths, notes) = split_notes(output);
@@ -314,6 +342,7 @@ fn listing(subject: String, output: &str, noun: &str) -> ToolView {
         body: Body::Paths(paths),
         collapsed_rows: COLLAPSED_LIST_ROWS,
         notes,
+        arguments: Vec::new(),
     }
 }
 
@@ -325,6 +354,7 @@ fn plain(subject: String, output: &str) -> ToolView {
         body: Body::Text(lines),
         collapsed_rows: COLLAPSED_OUTPUT_ROWS,
         notes: Vec::new(),
+        arguments: Vec::new(),
     }
 }
 
@@ -344,11 +374,65 @@ fn subject_text(name: &str, arguments: &Value) -> String {
             }
         }
         "grep" | "find" => field(arguments, "pattern").to_string(),
-        _ => match arguments {
-            Value::Null => String::new(),
-            Value::Object(map) if map.is_empty() => String::new(),
-            other => other.to_string(),
-        },
+        _ => argument_pairs(arguments),
+    }
+}
+
+/// Characters the collapsed `key=value` summary is cut to.
+const COLLAPSED_ARGUMENT_CHARS: usize = 100;
+
+/// Every argument as `key=value` on one line, values written as JSON, cut to fit a title.
+fn argument_pairs(arguments: &Value) -> String {
+    let pairs = argument_entries(arguments)
+        .into_iter()
+        .map(|(key, value)| format!("{key}={value}"))
+        .collect::<Vec<_>>()
+        .join(" ");
+    match pairs.chars().count() > COLLAPSED_ARGUMENT_CHARS {
+        true => {
+            let kept: String = pairs.chars().take(COLLAPSED_ARGUMENT_CHARS - 3).collect();
+            format!("{kept}...")
+        }
+        false => pairs,
+    }
+}
+
+/// Every argument as `key: value`, strings written raw and continuation lines indented under it.
+fn argument_lines(arguments: &Value) -> Vec<String> {
+    let entries: Vec<(String, &Value)> = match arguments {
+        Value::Null => Vec::new(),
+        Value::Object(map) => map
+            .iter()
+            .map(|(key, value)| (key.clone(), value))
+            .collect(),
+        other => vec![("args".to_string(), other)],
+    };
+    entries
+        .into_iter()
+        .flat_map(|(key, value)| {
+            let text = match value {
+                Value::String(text) => text.clone(),
+                other => serde_json::to_string_pretty(other).unwrap_or_default(),
+            };
+            let text = text.replace('\t', "   ").replace('\r', "");
+            let mut lines = text.split('\n');
+            let first = format!("{key}: {}", lines.next().unwrap_or_default());
+            std::iter::once(first)
+                .chain(lines.map(|line| format!("  {line}")))
+                .collect::<Vec<_>>()
+        })
+        .collect()
+}
+
+/// Each argument's name beside its value written as JSON.
+fn argument_entries(arguments: &Value) -> Vec<(String, String)> {
+    match arguments {
+        Value::Null => Vec::new(),
+        Value::Object(map) => map
+            .iter()
+            .map(|(key, value)| (key.clone(), value.to_string()))
+            .collect(),
+        other => vec![("args".to_string(), other.to_string())],
     }
 }
 
@@ -723,11 +807,53 @@ mod tests {
     #[test]
     fn an_unknown_tool_shows_its_output_as_text() {
         let view = view("mystery", &json!({ "a": 1 }), Some("some output"), false);
-        assert_eq!(view.subject, r#"{"a":1}"#);
+        assert_eq!(view.subject, "a=1");
         assert_eq!(
             rows_of(&view, false),
             vec![Row::Plain("some output".into())]
         );
+    }
+
+    /// A tool with no view of its own is titled by its arguments as `key=value`, and lists them as
+    /// `key: value` lines for when it is opened.
+    #[test]
+    fn an_unknown_tool_shows_its_arguments_as_pairs_and_lines() {
+        let view = view(
+            "lookup",
+            &json!({ "query": "rust tui", "limit": 5, "note": "first\nsecond" }),
+            None,
+            false,
+        );
+        assert_eq!(
+            view.subject,
+            r#"limit=5 note="first\nsecond" query="rust tui""#
+        );
+        assert_eq!(
+            view.arguments,
+            vec!["limit: 5", "note: first", "  second", "query: rust tui"]
+        );
+    }
+
+    #[test]
+    fn a_long_argument_summary_is_cut_to_fit_a_title() {
+        let long = "x".repeat(200);
+        let view = view("lookup", &json!({ "query": long }), None, false);
+        assert_eq!(view.subject.chars().count(), 100);
+        assert!(view.subject.ends_with("..."));
+    }
+
+    #[test]
+    fn a_built_in_tool_lists_no_argument_lines() {
+        let view = view("read", &json!({ "path": "a.rs" }), None, false);
+        assert_eq!(view.subject, "a.rs");
+        assert!(view.arguments.is_empty());
+    }
+
+    #[test]
+    fn a_call_without_arguments_has_an_empty_title() {
+        let view = view("ping", &json!({}), None, false);
+        assert_eq!(view.subject, "");
+        assert!(view.arguments.is_empty());
     }
 
     #[test]

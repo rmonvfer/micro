@@ -2,6 +2,7 @@
 
 ## [Unreleased]
 
+- Show the arguments of tool calls without a custom renderer as `key=value` pairs when collapsed and `key: value` lines when expanded.
 - Complete slash commands when the prompt starts with whitespace.
 
 ## [0.1.13] - 2026-09-04

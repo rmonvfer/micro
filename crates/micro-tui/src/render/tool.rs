@@ -33,7 +33,20 @@ pub fn lines(tool: &ToolEntry, focused: bool, theme: &Theme, width: usize) -> Ve
         tool.is_error,
     );
 
-    let mut rows = header(tool, &view, width, theme);
+    let listed = tool.expanded && !view.arguments.is_empty();
+    let mut rows = header(tool, &view, !listed, width, theme);
+    if listed {
+        for argument in &view.arguments {
+            rows.extend(wrap_spans_hard(
+                &[Span::styled(
+                    format!("{}{argument}", " ".repeat(INDENT)),
+                    Style::new().fg(theme.dim),
+                )],
+                width,
+                INDENT * 2,
+            ));
+        }
+    }
     let (body, hidden) = view.visible(tool.expanded);
     rows.extend(body_lines(&body, &view, theme, width, 0));
     if hidden > 0 {
@@ -81,10 +94,12 @@ fn ground(tool: &ToolEntry, focused: bool, theme: &Theme) -> Color {
     }
 }
 
-/// What ran, what it acted on, and how it went, on one line.
+/// What ran, what it acted on, and how it went, on one line. The subject is left off when the
+/// arguments are listed beneath instead.
 fn header(
     tool: &ToolEntry,
     view: &tools::ToolView,
+    with_subject: bool,
     width: usize,
     theme: &Theme,
 ) -> Vec<Line<'static>> {
@@ -95,7 +110,7 @@ fn header(
             .add_modifier(Modifier::BOLD),
     )];
 
-    if !view.subject.is_empty() {
+    if with_subject && !view.subject.is_empty() {
         spans.push(Span::raw(" "));
         spans.push(Span::styled(
             view.subject.clone(),
@@ -445,6 +460,22 @@ mod tests {
         assert_eq!(out.len(), 3);
         assert!(out[1].contains("one"));
         assert!(!out.iter().any(|line| line.contains("+2 lines")));
+    }
+
+    #[test]
+    fn an_unknown_tool_opens_to_one_line_per_argument() {
+        let theme = Theme::dark();
+        let mut tool = entry("lookup", json!({ "query": "tui", "limit": 5 }), None);
+        assert_eq!(
+            rendered(&lines(&tool, false, &theme, 60)),
+            vec![r#"lookup limit=5 query="tui" …"#]
+        );
+
+        tool.expanded = true;
+        assert_eq!(
+            rendered(&lines(&tool, false, &theme, 60)),
+            vec!["lookup …", "  limit: 5", "  query: tui"]
+        );
     }
 
     #[test]
