@@ -419,6 +419,12 @@ impl Accumulator {
     }
 
     fn handle(&mut self, event_type: &str, event: &Value, sender: &UnboundedSender<StreamEvent>) {
+        crate::observe::parsed(
+            &self.provider,
+            "bedrock-converse-stream",
+            &self.model_id,
+            &serde_json::json!({ event_type: event }),
+        );
         match event_type {
             "contentBlockStart" => {
                 if let Some(tool) = event.pointer("/start/toolUse") {

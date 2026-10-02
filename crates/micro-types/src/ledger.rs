@@ -113,6 +113,20 @@ pub enum LedgerEvent {
     },
     /// A run stopped because it had spent what it was allowed to.
     BudgetStop { limit: f64, spent: f64 },
+    /// A request to an image or classifier model, made outside the conversation by an extension
+    /// or a script, and what it was billed for.
+    ModelCall {
+        /// `generate_images` or `classify`.
+        operation: String,
+        /// Who asked: an extension's name, or the tool a script ran in.
+        requested_by: String,
+        provider: String,
+        model: String,
+        usage: Usage,
+        /// The rates in force when the request was made.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pricing: Option<ModelPricing>,
+    },
     /// Anything else worth recording, for a fact that has not earned a kind of its own.
     Marker {
         #[serde(default)]
@@ -421,6 +435,23 @@ mod tests {
             LedgerEvent::BudgetStop {
                 limit: 5.0,
                 spent: 5.2,
+            },
+            LedgerEvent::ModelCall {
+                operation: "generate_images".into(),
+                requested_by: "painter".into(),
+                provider: "openrouter".into(),
+                model: "google/gemini-2.5-flash-image".into(),
+                usage: Usage {
+                    input: 12,
+                    output: 1290,
+                    cache_read: 0,
+                    cache_write: 0,
+                },
+                pricing: Some(ModelPricing {
+                    input: 0.3,
+                    output: 30.0,
+                    ..ModelPricing::default()
+                }),
             },
             LedgerEvent::Marker {
                 data: serde_json::json!({ "note": "sandbox off" }),

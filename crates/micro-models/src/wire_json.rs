@@ -19,6 +19,7 @@ pub fn wire_api_name(api: WireApi) -> &'static str {
         WireApi::TypesafeSystemOne => "typesafe-system-one",
         WireApi::CloudflareWorkersAiSystemOne => "cloudflare-workers-ai-system-one",
         WireApi::LlamaCppClassify => "llama-cpp-classify",
+        WireApi::Virtual => "virtual",
     }
 }
 

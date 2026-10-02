@@ -69,7 +69,8 @@ pub fn client_for(api: WireApi, provider: &str) -> Arc<dyn Provider> {
         WireApi::OpenrouterImages
         | WireApi::TypesafeSystemOne
         | WireApi::CloudflareWorkersAiSystemOne
-        | WireApi::LlamaCppClassify => Arc::new(NotForChat {
+        | WireApi::LlamaCppClassify
+        | WireApi::Virtual => Arc::new(NotForChat {
             provider: provider.to_string(),
             api,
         }),
@@ -94,15 +95,16 @@ impl Provider for NotForChat {
         _context: micro_types::Context,
         _api_key: String,
     ) -> tokio::sync::mpsc::UnboundedReceiver<micro_types::StreamEvent> {
-        crate::error_stream(format!(
-            "{}/{} is {} model, not a chat model",
-            model.provider,
-            model.id,
-            match self.api.model_type() {
-                micro_models::ModelType::Image => "an image",
-                _ => "a classifier",
+        let qualified = format!("{}/{}", model.provider, model.id);
+        crate::error_stream(match (self.api, self.api.model_type()) {
+            (WireApi::Virtual, _) => format!(
+                "{qualified} is a virtual model, and the extension that routes it is not loaded"
+            ),
+            (_, micro_models::ModelType::Image) => {
+                format!("{qualified} is an image model, not a chat model")
             }
-        ))
+            _ => format!("{qualified} is a classifier model, not a chat model"),
+        })
     }
 
     fn payload(

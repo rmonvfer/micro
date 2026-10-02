@@ -633,6 +633,7 @@ impl Accumulator {
         let Ok(value) = serde_json::from_str::<Value>(&event.data) else {
             return;
         };
+        crate::observe::parsed(&self.provider, "openai-responses", &self.model, &value);
         let kind = value
             .get("type")
             .and_then(Value::as_str)

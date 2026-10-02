@@ -35,6 +35,8 @@ pub enum WireApi {
     CloudflareWorkersAiSystemOne,
     /// Classification by a llama.cpp chat model, read from next-token label probabilities.
     LlamaCppClassify,
+    /// A model an extension registered that sends each request to a physical model of its choice.
+    Virtual,
 }
 
 impl WireApi {

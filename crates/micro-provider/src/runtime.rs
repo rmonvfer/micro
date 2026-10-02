@@ -27,6 +27,35 @@ pub struct ModelRuntime {
     http: reqwest::Client,
 }
 
+impl std::fmt::Debug for ModelRuntime {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ModelRuntime").finish_non_exhaustive()
+    }
+}
+
+/// The ledger entry that bills one image or classifier request to the session, at the rates of
+/// the model that served it.
+pub fn model_call_event(
+    operation: &str,
+    requested_by: &str,
+    model: &ModelDef,
+    usage: &crate::typed::PricedUsage,
+) -> micro_types::LedgerEvent {
+    micro_types::LedgerEvent::ModelCall {
+        operation: operation.to_string(),
+        requested_by: requested_by.to_string(),
+        provider: model.provider.clone(),
+        model: model.id.clone(),
+        usage: micro_types::Usage {
+            input: usage.input.min(u32::MAX as u64) as u32,
+            output: usage.output.min(u32::MAX as u64) as u32,
+            cache_read: usage.cache_read.min(u32::MAX as u64) as u32,
+            cache_write: usage.cache_write.min(u32::MAX as u64) as u32,
+        },
+        pricing: Some((&model.cost).into()),
+    }
+}
+
 impl ModelRuntime {
     pub fn new(catalog: Catalog, store: Arc<AuthStore>) -> ModelRuntime {
         ModelRuntime {

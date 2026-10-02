@@ -304,6 +304,11 @@ impl Accumulator {
         let Ok(chunk) = serde_json::from_str::<Value>(data) else {
             return;
         };
+        let api = match self.provider == "google-vertex" {
+            true => "google-vertex",
+            false => "google-generative-ai",
+        };
+        crate::observe::parsed(&self.provider, api, &self.model_id, &chunk);
 
         if let Some(reason) = chunk
             .pointer("/promptFeedback/blockReason")

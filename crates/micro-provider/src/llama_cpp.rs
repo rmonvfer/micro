@@ -540,28 +540,18 @@ pub fn chat_model(
             thinking.insert(level.to_string(), value.map(str::to_string));
         }
     }
-    let mut compat: micro_models::CompatOverrides = serde_json::from_value(json!({
-        "supportsStore": false,
-        "supportsDeveloperRole": false,
-        "supportsReasoningEffort": false,
-        "supportsUsageInStreaming": true,
-        "supportsStrictMode": false,
-        "maxTokensField": "max_tokens",
-    }))
-    .unwrap_or_default();
-    if reasoning {
-        if let Ok(with_thinking) = serde_json::from_value(json!({
-            "supportsStore": false,
-            "supportsDeveloperRole": false,
-            "supportsReasoningEffort": false,
-            "supportsUsageInStreaming": true,
-            "supportsStrictMode": false,
-            "maxTokensField": "max_tokens",
-            "thinkingFormat": "qwen-chat-template",
-        })) {
-            compat = with_thinking;
-        }
-    }
+    // llama-server takes `max_tokens`, reports usage while streaming, and switches thinking through
+    // the chat template rather than a reasoning effort.
+    let compat = micro_models::CompatOverrides {
+        supports_store: Some(false),
+        supports_developer_role: Some(false),
+        supports_reasoning_effort: Some(false),
+        supports_usage_in_streaming: Some(true),
+        supports_strict_mode: Some(false),
+        max_tokens_field: Some(micro_types::MaxTokensField::MaxTokens),
+        thinking_format: reasoning.then_some(micro_types::ThinkingFormat::QwenChatTemplate),
+        ..Default::default()
+    };
     ModelDef {
         id: model.id.clone(),
         name: model.id.clone(),
