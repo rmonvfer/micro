@@ -26,6 +26,61 @@ pub enum WireApi {
     BedrockConverseStream,
     /// Google Vertex AI: the Gemini shape, addressed under a project and a location.
     GoogleVertex,
+    /// Image generation over OpenRouter's chat completions endpoint.
+    OpenrouterImages,
+    /// TypeSafe's System One classification protocol, which OpenRouter, Vercel AI Gateway and
+    /// OpenCode also serve.
+    TypesafeSystemOne,
+    /// System One wrapped in Cloudflare Workers AI's run envelope.
+    CloudflareWorkersAiSystemOne,
+    /// Classification by a llama.cpp chat model, read from next-token label probabilities.
+    LlamaCppClassify,
+}
+
+impl WireApi {
+    /// What a model speaking this protocol is for.
+    pub fn model_type(self) -> ModelType {
+        match self {
+            WireApi::OpenrouterImages => ModelType::Image,
+            WireApi::TypesafeSystemOne
+            | WireApi::CloudflareWorkersAiSystemOne
+            | WireApi::LlamaCppClassify => ModelType::Classifier,
+            _ => ModelType::Chat,
+        }
+    }
+}
+
+/// What a catalog entry is for, which decides the operation that accepts it.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ModelType {
+    /// A conversation partner: the models `/model` offers.
+    #[default]
+    Chat,
+    /// Generates images from a prompt and optional input images.
+    Image,
+    /// Answers typed questions about JSON state with probabilities.
+    Classifier,
+}
+
+impl ModelType {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ModelType::Chat => "chat",
+            ModelType::Image => "image",
+            ModelType::Classifier => "classifier",
+        }
+    }
+
+    /// Read the name [`ModelType::as_str`] gives.
+    pub fn parse(name: &str) -> Option<ModelType> {
+        match name {
+            "chat" => Some(ModelType::Chat),
+            "image" => Some(ModelType::Image),
+            "classifier" => Some(ModelType::Classifier),
+            _ => None,
+        }
+    }
 }
 
 /// A kind of content a model accepts as input.
@@ -178,6 +233,9 @@ pub struct ModelDef {
     pub reasoning: bool,
     #[serde(default)]
     pub input: Vec<Modality>,
+    /// What an image model returns: always images, and text when it can also write.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub output: Vec<Modality>,
     /// Extra headers this model requires, on top of authentication.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub headers: BTreeMap<String, String>,
@@ -202,6 +260,11 @@ impl ModelDef {
 
     pub fn accepts(&self, modality: Modality) -> bool {
         self.input.contains(&modality)
+    }
+
+    /// What this model is for, which its protocol decides.
+    pub fn kind(&self) -> ModelType {
+        self.api.model_type()
     }
 
     /// Price a single request against this model.
@@ -238,7 +301,10 @@ impl From<&ModelDef> for micro_types::Model {
 
 #[derive(Debug, Clone, Default)]
 pub struct Catalog {
+    /// The chat models, which is what everything that offers a conversation partner reads.
     models: Vec<ModelDef>,
+    /// Image and classifier models, which only their own operations accept.
+    typed: Vec<ModelDef>,
 }
 
 impl Catalog {
@@ -259,11 +325,54 @@ impl Catalog {
     /// A catalog holding exactly these models, for a caller that has already decided which ones a
     /// workspace may use.
     pub fn from_models(models: Vec<ModelDef>) -> Self {
-        Catalog { models }
+        let (models, typed) = models
+            .into_iter()
+            .partition(|model| model.kind() == ModelType::Chat);
+        Catalog { models, typed }
     }
 
+    /// The chat models.
     pub fn models(&self) -> &[ModelDef] {
         &self.models
+    }
+
+    /// The models of one type, in presentation order.
+    pub fn models_of_type(&self, kind: ModelType) -> Vec<&ModelDef> {
+        match kind {
+            ModelType::Chat => self.models.iter().collect(),
+            _ => self.typed.iter().filter(|m| m.kind() == kind).collect(),
+        }
+    }
+
+    /// Every model of every type: chat models first, then image and classifier models.
+    pub fn all_models(&self) -> impl Iterator<Item = &ModelDef> {
+        self.models.iter().chain(self.typed.iter())
+    }
+
+    /// A model of one type. A provider may list the same upstream id once per type.
+    pub fn get_of_type(&self, kind: ModelType, provider: &str, id: &str) -> Option<&ModelDef> {
+        match kind {
+            ModelType::Chat => self.get(provider, id),
+            _ => self
+                .typed
+                .iter()
+                .find(|m| m.kind() == kind && m.provider == provider && m.id == id),
+        }
+    }
+
+    /// Where a model of this type is kept.
+    fn shelf(&mut self, kind: ModelType) -> &mut Vec<ModelDef> {
+        match kind {
+            ModelType::Chat => &mut self.models,
+            _ => &mut self.typed,
+        }
+    }
+
+    /// Where an entry of this type, provider and id sits on its shelf.
+    fn position_of(&mut self, kind: ModelType, provider: &str, id: &str) -> Option<usize> {
+        self.shelf(kind)
+            .iter()
+            .position(|m| m.kind() == kind && m.provider == provider && m.id == id)
     }
 
     pub fn len(&self) -> usize {
@@ -305,6 +414,7 @@ impl Catalog {
             max_output_tokens: self.least(provider, |model| model.max_output_tokens),
             reasoning: false,
             input: known.input.clone(),
+            output: Vec::new(),
             headers: known.headers.clone(),
             aliases: Vec::new(),
             cost: ModelCost::default(),
@@ -342,17 +452,21 @@ impl Catalog {
     /// Drop every model whose provider is not in `keep`.
     pub fn retain_providers(&mut self, keep: &[&str]) {
         self.models.retain(|m| keep.contains(&m.provider.as_str()));
+        self.typed.retain(|m| keep.contains(&m.provider.as_str()));
     }
 
-    /// Insert a model, replacing any existing entry with the same `provider`/`id`.
+    /// Drop every model of `provider`, of every type.
+    pub fn remove_provider(&mut self, provider: &str) {
+        self.models.retain(|m| m.provider != provider);
+        self.typed.retain(|m| m.provider != provider);
+    }
+
+    /// Insert a model, replacing any existing entry with the same type, `provider` and `id`.
     pub fn upsert(&mut self, model: ModelDef) {
-        match self
-            .models
-            .iter()
-            .position(|m| m.provider == model.provider && m.id == model.id)
-        {
-            Some(index) => self.models[index] = model,
-            None => self.models.push(model),
+        let kind = model.kind();
+        match self.position_of(kind, &model.provider, &model.id) {
+            Some(index) => self.shelf(kind)[index] = model,
+            None => self.shelf(kind).push(model),
         }
         self.sort();
     }
@@ -360,7 +474,8 @@ impl Catalog {
     /// Merge models discovered from a live provider listing.
     pub fn merge_listing(&mut self, listing: impl IntoIterator<Item = ModelDef>) {
         for mut incoming in listing {
-            if let Some(existing) = self.get(&incoming.provider, &incoming.id) {
+            let kind = incoming.kind();
+            if let Some(existing) = self.get_of_type(kind, &incoming.provider, &incoming.id) {
                 if incoming.headers.is_empty() {
                     incoming.headers = existing.headers.clone();
                 }
@@ -384,13 +499,9 @@ impl Catalog {
                 incoming.max_output_tokens = DEFAULT_MAX_OUTPUT_TOKENS;
             }
 
-            match self
-                .models
-                .iter()
-                .position(|m| m.provider == incoming.provider && m.id == incoming.id)
-            {
-                Some(index) => self.models[index] = incoming,
-                None => self.models.push(incoming),
+            match self.position_of(kind, &incoming.provider, &incoming.id) {
+                Some(index) => self.shelf(kind)[index] = incoming,
+                None => self.shelf(kind).push(incoming),
             }
         }
         self.sort();
@@ -419,6 +530,14 @@ impl Catalog {
             }
             model.headers.extend(entry.headers.clone());
         }
+        // A provider's chat protocol says nothing about how its image or classifier models are
+        // reached, but where it is and what it wants to be told apply to all of them.
+        for model in self.typed.iter_mut().filter(|m| m.provider == provider) {
+            if let Some(base_url) = &entry.base_url {
+                model.base_url = base_url.clone();
+            }
+            model.headers.extend(entry.headers.clone());
+        }
 
         let defaults = self.provider_defaults(provider, &entry);
         for model in entry.models {
@@ -428,7 +547,11 @@ impl Catalog {
     }
 
     fn provider_defaults(&self, provider: &str, entry: &ProviderEntry) -> ProviderDefaults {
-        let existing = self.models.iter().find(|m| m.provider == provider);
+        let existing = self
+            .models
+            .iter()
+            .chain(self.typed.iter())
+            .find(|m| m.provider == provider);
         let mut headers = existing.map(|m| m.headers.clone()).unwrap_or_default();
         headers.extend(entry.headers.clone());
         ProviderDefaults {
@@ -447,12 +570,13 @@ impl Catalog {
         defaults: &ProviderDefaults,
         entry: ModelEntry,
     ) -> Result<()> {
-        if let Some(index) = self
-            .models
-            .iter()
-            .position(|m| m.provider == provider && m.id == entry.id)
-        {
-            let model = &mut self.models[index];
+        let kind = entry
+            .api
+            .map(WireApi::model_type)
+            .or(entry.kind)
+            .unwrap_or_default();
+        if let Some(index) = self.position_of(kind, provider, &entry.id) {
+            let model = &mut self.shelf(kind)[index];
             if let Some(name) = entry.name {
                 model.name = name;
             }
@@ -474,6 +598,9 @@ impl Catalog {
             if let Some(input) = entry.input {
                 model.input = input;
             }
+            if let Some(output) = entry.output {
+                model.output = output;
+            }
             if let Some(cost) = entry.cost {
                 model.cost = cost;
             }
@@ -490,8 +617,11 @@ impl Catalog {
             return Ok(());
         }
 
+        // A provider's default protocol is a chat protocol, so an image or classifier entry names
+        // its own.
+        let default_api = defaults.api.filter(|api| api.model_type() == kind);
         let (Some(api), Some(base_url)) = (
-            entry.api.or(defaults.api),
+            entry.api.or(default_api),
             entry.base_url.clone().or_else(|| defaults.base_url.clone()),
         ) else {
             return Err(Error::IncompleteModel {
@@ -503,7 +633,12 @@ impl Catalog {
         let mut headers = defaults.headers.clone();
         headers.extend(entry.headers);
 
-        self.models.push(ModelDef {
+        let output = match (entry.output, kind) {
+            (Some(output), _) => output,
+            (None, ModelType::Image) => vec![Modality::Image],
+            (None, _) => Vec::new(),
+        };
+        self.shelf(kind).push(ModelDef {
             name: entry.name.unwrap_or_else(|| entry.id.clone()),
             id: entry.id,
             provider: provider.to_string(),
@@ -513,6 +648,7 @@ impl Catalog {
             max_output_tokens: entry.max_output_tokens.unwrap_or(DEFAULT_MAX_OUTPUT_TOKENS),
             reasoning: entry.reasoning.unwrap_or(false),
             input: entry.input.unwrap_or_else(|| vec![Modality::Text]),
+            output,
             headers,
             aliases: entry.aliases.unwrap_or_default(),
             cost: entry.cost.unwrap_or_default(),
@@ -530,11 +666,13 @@ impl Catalog {
                 .position(|p| *p == provider)
                 .unwrap_or(PROVIDER_ORDER.len())
         };
-        self.models.sort_by(|a, b| {
+        let order = |a: &ModelDef, b: &ModelDef| {
             rank(&a.provider)
                 .cmp(&rank(&b.provider))
                 .then_with(|| a.provider.cmp(&b.provider))
-        });
+        };
+        self.models.sort_by(order);
+        self.typed.sort_by(order);
     }
 }
 
@@ -573,6 +711,9 @@ struct ProviderEntry {
 #[derive(Debug, Deserialize)]
 struct ModelEntry {
     id: String,
+    /// What the entry is for, when its protocol does not already say.
+    #[serde(default, rename = "type")]
+    kind: Option<ModelType>,
     #[serde(default)]
     name: Option<String>,
     #[serde(default)]
@@ -587,6 +728,8 @@ struct ModelEntry {
     reasoning: Option<bool>,
     #[serde(default)]
     input: Option<Vec<Modality>>,
+    #[serde(default)]
+    output: Option<Vec<Modality>>,
     #[serde(default)]
     headers: BTreeMap<String, String>,
     #[serde(default)]
@@ -926,6 +1069,7 @@ mod tests {
             max_output_tokens: 64_000,
             reasoning: true,
             input: vec![Modality::Text],
+            output: Vec::new(),
             headers: BTreeMap::new(),
             aliases: Vec::new(),
             cost: ModelCost::default(),
@@ -954,6 +1098,7 @@ mod tests {
             max_output_tokens: 8_192,
             reasoning: false,
             input: vec![Modality::Text],
+            output: Vec::new(),
             headers: BTreeMap::new(),
             aliases: Vec::new(),
             cost: ModelCost::default(),

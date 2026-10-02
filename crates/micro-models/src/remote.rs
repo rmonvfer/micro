@@ -33,10 +33,28 @@ fn copilot_editor_headers() -> BTreeMap<String, String> {
 const LISTING_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Fetch OpenRouter's model list.
+///
+/// The plain listing leaves out models that only return images or decisions, so those are asked
+/// for by what they return.
 pub async fn fetch_openrouter(client: &reqwest::Client) -> Result<Vec<ModelDef>> {
     let url = format!("{OPENROUTER_BASE_URL}/models");
-    let body = get(client, &url, OPENROUTER_PROVIDER, &[]).await?;
-    parse_openrouter(&body)
+    let mut models = parse_openrouter(&get(client, &url, OPENROUTER_PROVIDER, &[]).await?)?;
+    for query in ["?output_modalities=image", "?output_modalities=decisions"] {
+        let url = format!("{OPENROUTER_BASE_URL}/models{query}");
+        // The chat listing is what a session depends on; these only add to it.
+        let Ok(body) = get(client, &url, OPENROUTER_PROVIDER, &[]).await else {
+            continue;
+        };
+        for model in parse_openrouter(&body).unwrap_or_default() {
+            let listed = models
+                .iter()
+                .any(|known| known.kind() == model.kind() && known.id == model.id);
+            if !listed {
+                models.push(model);
+            }
+        }
+    }
+    Ok(models)
 }
 
 /// Fetch the models the given Copilot token is entitled to.
@@ -92,7 +110,9 @@ async fn get(
     })
 }
 
-/// Parse an OpenRouter `/models` response, keeping the tool-capable models.
+/// Parse an OpenRouter `/models` response: a chat entry for each tool-capable model, and an image
+/// entry for each model that can return images. A model that does both is listed twice, once per
+/// type, under the same id.
 pub fn parse_openrouter(body: &str) -> Result<Vec<ModelDef>> {
     let envelope: OpenRouterEnvelope =
         serde_json::from_str(body).map_err(|error| Error::ListingShape {
@@ -100,47 +120,67 @@ pub fn parse_openrouter(body: &str) -> Result<Vec<ModelDef>> {
             reason: error.to_string(),
         })?;
 
-    let models = envelope
-        .data
-        .into_iter()
-        .filter(|model| model.supported_parameters.iter().any(|p| p == "tools"))
-        .map(|model| {
-            let pricing = model.pricing.unwrap_or_default();
-            let top = model.top_provider.unwrap_or_default();
-            ModelDef {
-                name: model.name.unwrap_or_else(|| model.id.clone()),
-                id: model.id,
-                provider: OPENROUTER_PROVIDER.to_string(),
-                api: WireApi::OpenaiCompletions,
-                base_url: OPENROUTER_BASE_URL.to_string(),
-                context_window: top
-                    .context_length
-                    .or(model.context_length)
-                    .unwrap_or(UNKNOWN_LIMIT),
-                max_output_tokens: top.max_completion_tokens.unwrap_or(UNKNOWN_LIMIT),
-                reasoning: model.supported_parameters.iter().any(|p| p == "reasoning"),
-                input: modalities(
-                    model
-                        .architecture
-                        .unwrap_or_default()
-                        .input_modalities
-                        .iter()
-                        .map(String::as_str),
-                ),
-                headers: BTreeMap::new(),
-                aliases: Vec::new(),
-                cost: ModelCost {
-                    input: per_million(pricing.prompt.as_deref()),
-                    output: per_million(pricing.completion.as_deref()),
-                    cache_read: per_million(pricing.input_cache_read.as_deref()),
-                    cache_write: per_million(pricing.input_cache_write.as_deref()),
-                    tiers: Vec::new(),
-                },
-                compat: Default::default(),
-                thinking: Default::default(),
+    let mut models = Vec::new();
+    for model in envelope.data {
+        let architecture = model.architecture.unwrap_or_default();
+        let pricing = model.pricing.unwrap_or_default();
+        let top = model.top_provider.unwrap_or_default();
+        let input = modalities(architecture.input_modalities.iter().map(String::as_str));
+        let cost = ModelCost {
+            input: per_million(pricing.prompt.as_deref()),
+            output: per_million(pricing.completion.as_deref()),
+            cache_read: per_million(pricing.input_cache_read.as_deref()),
+            cache_write: per_million(pricing.input_cache_write.as_deref()),
+            tiers: Vec::new(),
+        };
+        let listed = ModelDef {
+            name: model.name.unwrap_or_else(|| model.id.clone()),
+            id: model.id,
+            provider: OPENROUTER_PROVIDER.to_string(),
+            api: WireApi::OpenaiCompletions,
+            base_url: OPENROUTER_BASE_URL.to_string(),
+            context_window: top
+                .context_length
+                .or(model.context_length)
+                .unwrap_or(UNKNOWN_LIMIT),
+            max_output_tokens: top.max_completion_tokens.unwrap_or(UNKNOWN_LIMIT),
+            reasoning: model.supported_parameters.iter().any(|p| p == "reasoning"),
+            input,
+            output: Vec::new(),
+            headers: BTreeMap::new(),
+            aliases: Vec::new(),
+            cost,
+            compat: Default::default(),
+            thinking: Default::default(),
+        };
+
+        if architecture.output_modalities.iter().any(|m| m == "image") {
+            let mut output = vec![Modality::Image];
+            if architecture.output_modalities.iter().any(|m| m == "text") {
+                output.push(Modality::Text);
             }
-        })
-        .collect();
+            models.push(ModelDef {
+                api: WireApi::OpenrouterImages,
+                reasoning: false,
+                output,
+                ..listed.clone()
+            });
+        }
+        if architecture
+            .output_modalities
+            .iter()
+            .any(|m| m == "decisions")
+        {
+            models.push(ModelDef {
+                api: WireApi::TypesafeSystemOne,
+                reasoning: false,
+                ..listed.clone()
+            });
+        }
+        if model.supported_parameters.iter().any(|p| p == "tools") {
+            models.push(listed);
+        }
+    }
 
     Ok(models)
 }
@@ -176,6 +216,7 @@ pub fn parse_copilot(body: &str, base_url: &str) -> Result<Vec<ModelDef>> {
                 max_output_tokens: limits.max_output_tokens.unwrap_or(UNKNOWN_LIMIT),
                 reasoning: false,
                 input,
+                output: Vec::new(),
 
                 headers: copilot_editor_headers(),
                 aliases: Vec::new(),
@@ -338,6 +379,8 @@ struct OpenRouterModel {
 struct OpenRouterArchitecture {
     #[serde(default)]
     input_modalities: Vec<String>,
+    #[serde(default)]
+    output_modalities: Vec<String>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -476,10 +519,47 @@ mod tests {
         assert!(
             !models
                 .iter()
-                .any(|m| m.id == "google/gemini-3.1-flash-lite-image"),
+                .any(|m| m.id == "google/gemini-3.1-flash-lite-image"
+                    && m.kind() == crate::ModelType::Chat),
             "an image model with no tool support should not be offered to the agent"
         );
-        assert_eq!(models.len(), 2);
+        assert_eq!(
+            models
+                .iter()
+                .filter(|m| m.kind() == crate::ModelType::Chat)
+                .count(),
+            2
+        );
+    }
+
+    /// A model that returns images is listed as an image model under the same provider, so it
+    /// shares the credential its chat models use.
+    #[test]
+    fn an_openrouter_model_that_returns_images_is_an_image_model() {
+        let models = parse_openrouter(OPENROUTER_SAMPLE).unwrap();
+        let painter = models
+            .iter()
+            .find(|m| m.id == "google/gemini-3.1-flash-lite-image")
+            .expect("the image model is listed");
+
+        assert_eq!(painter.kind(), crate::ModelType::Image);
+        assert_eq!(painter.api, WireApi::OpenrouterImages);
+        assert_eq!(painter.provider, OPENROUTER_PROVIDER);
+        assert_eq!(painter.output, vec![Modality::Image, Modality::Text]);
+        assert_close(painter.cost.output, 1.5);
+
+        let mut catalog = Catalog::default();
+        catalog.merge_listing(models);
+        assert!(catalog
+            .get("openrouter", "google/gemini-3.1-flash-lite-image")
+            .is_none());
+        assert!(catalog
+            .get_of_type(
+                crate::ModelType::Image,
+                "openrouter",
+                "google/gemini-3.1-flash-lite-image"
+            )
+            .is_some());
     }
 
     #[test]
