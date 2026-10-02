@@ -10,6 +10,7 @@ mod gemini;
 mod json;
 mod openai;
 mod registry;
+mod retry;
 mod sigv4;
 mod sse;
 mod vertex;
@@ -28,6 +29,8 @@ pub use registry::resolve;
 pub use registry::ProviderInfo;
 pub use registry::ResolveError;
 pub use registry::ResolvedProvider;
+pub use retry::requested_retry_delay;
+pub use retry::retry_after;
 pub use sse::SseEvent;
 
 /// Re-exported so a caller that renders a provider picker needs only this crate.

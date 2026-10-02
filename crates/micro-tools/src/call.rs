@@ -167,17 +167,28 @@ pub struct LoadoutChanges {
     pub hidden: Vec<String>,
 }
 
-/// Write `text` to a file of its own in the temporary directory, for output too long to hand
-/// over whole. Says where it went.
-pub fn spill(prefix: &str, text: &str) -> Result<PathBuf, String> {
+/// Write `text` to a private file of its own in the temporary directory, for output too long to
+/// hand over whole. Says where it went.
+pub async fn spill(prefix: &str, text: &str) -> Result<PathBuf, String> {
+    use tokio::io::AsyncWriteExt as _;
     static NEXT: AtomicU64 = AtomicU64::new(0);
     let path = std::env::temp_dir().join(format!(
-        "{prefix}-{}-{}-{}.txt",
+        "{prefix}-{}-{}-{}.log",
         std::process::id(),
         micro_types::now_ms(),
         NEXT.fetch_add(1, Ordering::Relaxed)
     ));
-    std::fs::write(&path, text)
+    let written = async {
+        let mut options = tokio::fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        options.mode(0o600);
+        let mut file = options.open(&path).await?;
+        file.write_all(text.as_bytes()).await?;
+        file.flush().await
+    };
+    written
+        .await
         .map(|()| path)
         .map_err(|error| error.to_string())
 }
@@ -198,9 +209,9 @@ mod tests {
         assert_eq!(failed.structured, None);
     }
 
-    #[test]
-    fn spilled_text_can_be_read_back() {
-        let path = spill("micro-tools-test", "all of it").unwrap();
+    #[tokio::test]
+    async fn spilled_text_can_be_read_back() {
+        let path = spill("micro-tools-test", "all of it").await.unwrap();
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "all of it");
         let _ = std::fs::remove_file(path);
     }

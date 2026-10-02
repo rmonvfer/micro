@@ -1,9 +1,12 @@
 //! Entry point.
 
 mod access;
+mod archive;
+mod bug_report;
 mod capabilities;
 mod codemode;
 mod commands;
+mod default_tools;
 mod extension_broker;
 mod extensions;
 mod headless;
@@ -63,6 +66,18 @@ struct Cli {
     /// Resume the most recent session for this workspace.
     #[arg(long = "continue", conflicts_with = "resume")]
     continue_latest: bool,
+
+    /// Resume this workspace's session with exactly this id, or start one under it.
+    #[arg(
+        long = "session-id",
+        value_name = "ID",
+        conflicts_with_all = ["resume", "continue_latest"]
+    )]
+    session_id: Option<String>,
+
+    /// Name the session from the start.
+    #[arg(short = 'n', long = "name", value_name = "NAME")]
+    name: Option<String>,
 
     /// Suppress tool progress on stderr.
     #[arg(short, long)]
@@ -294,11 +309,65 @@ enum SandboxAction {
 #[derive(Subcommand)]
 enum AuthAction {
     /// Sign in to a provider.
-    Login { provider: String },
+    Login {
+        provider: String,
+        /// How to sign in: oauth, api_key, browser, copy_code or device_code.
+        #[arg(long, value_name = "METHOD")]
+        method: Option<String>,
+    },
     /// Remove a stored credential.
     Logout { provider: String },
     /// Show which providers are configured.
     Status,
+    /// Check that a provider's or a model's credential resolves; prints ready, not_ready or
+    /// invalid and exits 0, 1 or 2.
+    Check {
+        #[command(flatten)]
+        target: AuthTargetArgs,
+        /// Write the result as JSON.
+        #[arg(long)]
+        json: bool,
+        /// Emit the resolved credential when ready.
+        #[arg(long)]
+        credentials: bool,
+        /// Leave an expired OAuth credential as it is instead of refreshing it.
+        #[arg(long = "no-refresh")]
+        no_refresh: bool,
+    },
+    /// Print the API key a provider resolves to.
+    PrintApiKey {
+        #[command(flatten)]
+        target: AuthTargetArgs,
+    },
+    /// Print a provider's OAuth bearer token, refreshed first when it would lapse too soon.
+    PrintBearerToken {
+        #[command(flatten)]
+        target: AuthTargetArgs,
+        /// How long the token must stay valid, such as 30m or 1h.
+        #[arg(long = "min-expiry", value_name = "DURATION")]
+        min_expiry: Option<String>,
+    },
+}
+
+/// Which credential an auth command is about: a provider, a model, or a name that is either.
+#[derive(clap::Args)]
+struct AuthTargetArgs {
+    /// A provider, or a model whose provider is meant.
+    target: Option<String>,
+    #[arg(long)]
+    provider: Option<String>,
+    #[arg(long)]
+    model: Option<String>,
+}
+
+impl AuthTargetArgs {
+    fn target(&self) -> subcommands::AuthTarget {
+        subcommands::AuthTarget {
+            name: self.target.clone(),
+            provider: self.provider.clone(),
+            model: self.model.clone(),
+        }
+    }
 }
 
 #[derive(Subcommand)]
@@ -471,6 +540,7 @@ fn settled(cli: &Cli) -> micro_config::Settings {
             config.resolve_from_env(&micro_config::Overrides {
                 model: cli.model.clone(),
                 provider: cli.provider.clone(),
+                theme: cli.theme.clone(),
                 ..micro_config::Overrides::default()
             })
         })
@@ -508,13 +578,45 @@ async fn main() -> Result<()> {
         &valued.iter().map(String::as_str).collect::<Vec<_>>(),
     );
     let cli = Cli::parse_from(mine);
+    micro_config::apply_http_proxy(
+        micro_config::Config::load()
+            .ok()
+            .and_then(|config| config.http_proxy)
+            .as_deref(),
+    );
 
     match &cli.command {
         Some(Command::Auth { action }) => {
             return match action {
-                AuthAction::Login { provider } => subcommands::auth_login(provider).await,
+                AuthAction::Login { provider, method } => {
+                    subcommands::auth_login(provider, method.as_deref()).await
+                }
                 AuthAction::Logout { provider } => subcommands::auth_logout(provider).await,
                 AuthAction::Status => subcommands::auth_status().await,
+                AuthAction::Check {
+                    target,
+                    json,
+                    credentials,
+                    no_refresh,
+                } => {
+                    let code = subcommands::auth_check(
+                        &target.target(),
+                        subcommands::CheckOptions {
+                            json: *json,
+                            credentials: *credentials,
+                            refresh: !*no_refresh,
+                        },
+                    )
+                    .await;
+                    std::process::exit(code)
+                }
+                AuthAction::PrintApiKey { target } => {
+                    subcommands::auth_print_api_key(&target.target()).await
+                }
+                AuthAction::PrintBearerToken { target, min_expiry } => {
+                    subcommands::auth_print_bearer_token(&target.target(), min_expiry.as_deref())
+                        .await
+                }
             }
         }
         Some(Command::Models { query, live }) => {
@@ -664,10 +766,14 @@ async fn main() -> Result<()> {
         exclude_tools: cli.exclude_tools.clone(),
     };
 
-    let resume = match (&cli.resume, cli.continue_latest) {
-        (Some(id), _) => Some(id.clone()),
-        (None, true) => Some(subcommands::latest_session(&root).await?),
-        (None, false) => None,
+    let opening = runtime::Opening {
+        resume: match (&cli.resume, cli.continue_latest) {
+            (Some(id), _) => Some(id.clone()),
+            (None, true) => Some(subcommands::latest_session(&root).await?),
+            (None, false) => None,
+        },
+        session_id: cli.session_id.clone(),
+        name: cli.name.clone(),
     };
 
     let has_ui = !cli.print && !cli.rpc;
@@ -691,7 +797,7 @@ async fn main() -> Result<()> {
     let mut built = runtime::build(
         &root,
         &selection,
-        resume.as_deref(),
+        &opening,
         &settings,
         trusted,
         has_ui,
@@ -713,7 +819,7 @@ async fn main() -> Result<()> {
     if let Some(host) = extensions.as_ref() {
         let started = serde_json::json!({
 
-            "reason": if resume.is_some() { "resume" } else { "startup" },
+            "reason": if built.resumed { "resume" } else { "startup" },
         });
         let _ = host.notify("session_start", started).await;
     }
@@ -796,7 +902,6 @@ async fn main() -> Result<()> {
     }
 
     let session = std::sync::Arc::clone(&built.session);
-    let session_id = session.lock().await.id().to_string();
     let writer = runtime::persist(built.session, built.recorder);
     let forwarder = built.forwarder;
     let prompt = cli.prompt.join(" ");
@@ -931,18 +1036,19 @@ async fn main() -> Result<()> {
             },
         };
 
-        let ran = micro_tui::run_with(built.agent, built.history, options)
+        micro_tui::run_with(built.agent, built.history, options)
             .await
-            .map(|_| ());
-
-        if ran.is_ok() {
-            say_how_to_resume(&session_id);
-        }
-        ran
+            .map(|_| ())
     };
 
     finish_forwarder(forwarder).await;
     writer.finish().await;
+    if !cli.print && result.is_ok() {
+        let held = session.lock().await;
+        if held.is_saved() {
+            say_how_to_resume(held.id());
+        }
+    }
     shut_down_extensions(extensions).await;
     result
 }

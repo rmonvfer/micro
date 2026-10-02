@@ -218,7 +218,12 @@ impl Tool for Codemode {
     }
 
     fn prepare_loadout(&self, loadout: &Loadout) -> LoadoutChanges {
-        description::prepare_loadout(loadout, self.mode, self.inline_budget, &self.extra_globals())
+        description::prepare_loadout(
+            loadout,
+            self.mode,
+            self.inline_budget,
+            &self.extra_globals(),
+        )
     }
 
     async fn execute(&self, _arguments: &Value) -> Result<String, String> {
@@ -286,7 +291,8 @@ impl Tool for Codemode {
                 .max_output_tokens
                 .unwrap_or(DEFAULT_MAX_OUTPUT_TOKENS),
             started,
-        );
+        )
+        .await;
         if let Err(error) = kept {
             output.content.push(ContentBlock::text(format!(
                 "Note: the values this script stored were not kept: {error}"
@@ -343,9 +349,9 @@ impl<'a> ScriptHost<'a> {
     }
 
     fn find(&self, name: &str) -> Option<&CallableTool> {
-        self.callable.iter().find(|tool| {
-            tool.definition.name == name || identifier(&tool.definition.name) == name
-        })
+        self.callable
+            .iter()
+            .find(|tool| tool.definition.name == name || identifier(&tool.definition.name) == name)
     }
 
     /// `{ name, description }` as `ALL_TOOLS` lists a tool.
@@ -457,12 +463,19 @@ fn is_namespace_name(namespace: &str, query: &str) -> bool {
 
 #[async_trait]
 impl sandbox::Host for ScriptHost<'_> {
-    async fn call_tool(&self, name: &str, arguments: Option<Value>) -> Result<Option<Value>, String> {
+    async fn call_tool(
+        &self,
+        name: &str,
+        arguments: Option<Value>,
+    ) -> Result<Option<Value>, String> {
         let (Some(caller), Some(tool)) = (self.caller, self.find(name)) else {
             return Err(format!("Unknown tool \"{name}\""));
         };
         let outcome = caller
-            .call(&tool.definition.name, arguments.unwrap_or_else(|| json!({})))
+            .call(
+                &tool.definition.name,
+                arguments.unwrap_or_else(|| json!({})),
+            )
             .await;
         script_value(tool, outcome.output).map(Some)
     }
@@ -542,7 +555,7 @@ fn failure_text(failure: &Failure, calls: &[sandbox::CallRecord]) -> String {
 
 /// The tool's answer: a header, the script's output within its token budget, and the error of a
 /// failed script.
-fn answer(execution: Execution, max_output_tokens: u64, started: Instant) -> ToolOutput {
+async fn answer(execution: Execution, max_output_tokens: u64, started: Instant) -> ToolOutput {
     let mut items: Vec<ContentBlock> = execution
         .output
         .into_iter()
@@ -564,7 +577,7 @@ fn answer(execution: Execution, max_output_tokens: u64, started: Instant) -> Too
         ))),
     }
 
-    let items = truncate(items, max_output_tokens);
+    let items = truncate(items, max_output_tokens).await;
     let header = format!(
         "{}\nWall time {:.1} seconds\nOutput:\n",
         match failed {
@@ -584,7 +597,7 @@ fn answer(execution: Execution, max_output_tokens: u64, started: Instant) -> Too
 
 /// Keep the text within the token budget: when the combined text is longer, it becomes one block
 /// that keeps its start and end, followed by the images. The full text goes to a temporary file.
-fn truncate(items: Vec<ContentBlock>, max_tokens: u64) -> Vec<ContentBlock> {
+async fn truncate(items: Vec<ContentBlock>, max_tokens: u64) -> Vec<ContentBlock> {
     let texts: Vec<&str> = items
         .iter()
         .filter(|item| matches!(item, ContentBlock::Text { .. }))
@@ -607,7 +620,7 @@ fn truncate(items: Vec<ContentBlock>, max_tokens: u64) -> Vec<ContentBlock> {
         combined.split('\n').count(),
         removed.div_ceil(CHARS_PER_TOKEN),
     );
-    match micro_tools::spill("micro-codemode", &combined) {
+    match micro_tools::spill("micro-codemode", &combined).await {
         Ok(path) => text.push_str(&format!(
             "\n\n[Full output: {} (read with offset/limit)]",
             path.display()

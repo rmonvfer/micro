@@ -53,9 +53,45 @@ impl Capabilities {
     }
 }
 
-/// Work out what this terminal supports.
-pub fn detect() -> Capabilities {
-    detect_from(&Environment::current())
+/// What the user said about the terminal, in place of what it is detected to support.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Overrides {
+    pub hyperlinks: micro_config::Capability,
+    pub images: micro_config::ImageProtocolSetting,
+    pub true_color: micro_config::Capability,
+}
+
+impl Overrides {
+    pub fn from_settings(settings: &micro_config::Settings) -> Self {
+        Overrides {
+            hyperlinks: settings.terminal_hyperlinks,
+            images: settings.terminal_images,
+            true_color: settings.terminal_true_color,
+        }
+    }
+}
+
+impl Capabilities {
+    /// What is in force once the user's overrides are laid over what was detected.
+    pub fn overridden(self, overrides: &Overrides) -> Capabilities {
+        use micro_config::ImageProtocolSetting;
+
+        Capabilities {
+            images: match overrides.images {
+                ImageProtocolSetting::Auto => self.images,
+                ImageProtocolSetting::Kitty => Some(ImageProtocol::Kitty),
+                ImageProtocolSetting::ITerm2 => Some(ImageProtocol::ITerm2),
+                ImageProtocolSetting::Off => None,
+            },
+            true_color: overrides.true_color.applied_to(self.true_color),
+            hyperlinks: overrides.hyperlinks.applied_to(self.hyperlinks),
+        }
+    }
+}
+
+/// Work out what this terminal supports, then apply what the user said about it.
+pub fn detect(overrides: &Overrides) -> Capabilities {
+    detect_from(&Environment::current()).overridden(overrides)
 }
 
 /// The environment variables terminals identify themselves by, gathered so the detection can be
@@ -101,8 +137,9 @@ impl Environment {
 }
 
 pub fn detect_from(environment: &Environment) -> Capabilities {
-    let true_color_hint =
-        environment.color_term == "truecolor" || environment.color_term == "24bit";
+    let true_color_hint = environment.color_term == "truecolor"
+        || environment.color_term == "24bit"
+        || environment.term.ends_with("-direct");
 
     if environment.tmux {
         return Capabilities::text_only(true_color_hint, environment.tmux_forwards_hyperlinks);
@@ -219,6 +256,42 @@ mod tests {
         assert_eq!(capabilities.images, None);
         assert!(!capabilities.hyperlinks);
         assert!(!capabilities.true_color);
+    }
+
+    #[test]
+    fn a_direct_color_terminfo_counts_as_truecolor() {
+        let capabilities = detect_from(&Environment {
+            term: "xterm-direct".into(),
+            ..Environment::default()
+        });
+        assert!(capabilities.true_color);
+    }
+
+    #[test]
+    fn overrides_replace_what_was_detected() {
+        use micro_config::Capability;
+        use micro_config::ImageProtocolSetting;
+
+        let detected = detect_from(&environment("kitty"));
+        assert_eq!(detected.overridden(&Overrides::default()), detected);
+
+        let forced = detected.overridden(&Overrides {
+            hyperlinks: Capability::Off,
+            images: ImageProtocolSetting::ITerm2,
+            true_color: Capability::Off,
+        });
+        assert!(!forced.hyperlinks);
+        assert!(!forced.true_color);
+        assert_eq!(forced.images, Some(ImageProtocol::ITerm2));
+
+        let plain = detect_from(&Environment::default()).overridden(&Overrides {
+            hyperlinks: Capability::On,
+            images: ImageProtocolSetting::Off,
+            true_color: Capability::On,
+        });
+        assert!(plain.hyperlinks);
+        assert!(plain.true_color);
+        assert_eq!(plain.images, None);
     }
 
     #[test]

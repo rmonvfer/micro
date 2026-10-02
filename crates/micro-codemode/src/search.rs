@@ -65,7 +65,12 @@ fn schema_text(schema: &Value, parts: &mut Vec<String>) {
         schema_text(items, parts);
     }
     for key in ["anyOf", "oneOf", "allOf"] {
-        for variant in object.get(key).and_then(Value::as_array).into_iter().flatten() {
+        for variant in object
+            .get(key)
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+        {
             schema_text(variant, parts);
         }
     }
@@ -77,7 +82,11 @@ fn stem(term: &str) -> String {
     if length > 4 && term.ends_with("ies") {
         return format!("{}y", &term[..term.len() - 3]);
     }
-    if length > 4 && ["ches", "shes", "sses", "xes", "zes"].iter().any(|end| term.ends_with(end)) {
+    if length > 4
+        && ["ches", "shes", "sses", "xes", "zes"]
+            .iter()
+            .any(|end| term.ends_with(end))
+    {
         return term[..term.len() - 2].to_string();
     }
     if length > 3 && term.ends_with('s') && !term.ends_with("ss") {
@@ -95,9 +104,8 @@ pub fn tokenize(text: &str) -> Vec<String> {
         let previous = index.checked_sub(1).map(|at| characters[at]);
         let next = characters.get(index + 1).copied();
         let lower_to_upper = character.is_ascii_uppercase()
-            && previous.is_some_and(|previous| {
-                previous.is_ascii_lowercase() || previous.is_ascii_digit()
-            });
+            && previous
+                .is_some_and(|previous| previous.is_ascii_lowercase() || previous.is_ascii_digit());
         let acronym_end = character.is_ascii_uppercase()
             && previous.is_some_and(|previous| previous.is_ascii_uppercase())
             && next.is_some_and(|next| next.is_ascii_lowercase());
@@ -150,7 +158,10 @@ pub fn rank(query: &str, documents: &[Document], limit: usize) -> Vec<String> {
     let idf: Vec<f64> = terms
         .iter()
         .map(|term| {
-            let frequency = counts.iter().filter(|counts| counts.contains_key(term)).count() as f64;
+            let frequency = counts
+                .iter()
+                .filter(|counts| counts.contains_key(term))
+                .count() as f64;
             (1.0 + (total - frequency + 0.5) / (frequency + 0.5)).ln()
         })
         .collect();
@@ -189,7 +200,10 @@ mod tests {
             tokenize("listPullRequests for the HTTPServer"),
             vec!["list", "pull", "request", "http", "server"]
         );
-        assert_eq!(tokenize("issues searches boxes"), vec!["issue", "search", "box"]);
+        assert_eq!(
+            tokenize("issues searches boxes"),
+            vec!["issue", "search", "box"]
+        );
     }
 
     #[test]
@@ -201,7 +215,12 @@ mod tests {
                 &json!({}),
                 None,
             ),
-            document("mcp__github__list_pulls", "List pull requests", &json!({}), None),
+            document(
+                "mcp__github__list_pulls",
+                "List pull requests",
+                &json!({}),
+                None,
+            ),
             document(
                 "mcp__notes__append",
                 "Add a line to today's note",
@@ -224,7 +243,12 @@ mod tests {
             description: Some("Bug tracker".into()),
             instructions: None,
         };
-        let documents = vec![document("mcp__tracker__get", "Get one", &json!({}), Some(&namespace))];
+        let documents = vec![document(
+            "mcp__tracker__get",
+            "Get one",
+            &json!({}),
+            Some(&namespace),
+        )];
         assert_eq!(rank("bug", &documents, 8), vec!["mcp__tracker__get"]);
     }
 }

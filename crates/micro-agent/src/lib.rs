@@ -3,10 +3,15 @@
 
 mod nested;
 mod summarizer;
+mod warming;
+
+pub use warming::CacheWarming;
+pub use warming::CacheWarmingMode;
 
 pub use summarizer::ProviderSummarizer;
 
 use micro_context::Compacted;
+use micro_context::CompactionBudgets;
 use micro_context::CompactionConfig;
 use micro_context::Compactor;
 use micro_context::Summarizer;
@@ -14,6 +19,7 @@ use micro_models::ModelCost;
 use micro_models::TokenUsage;
 use micro_provider::ApiKey;
 use micro_provider::Provider;
+use micro_tools::images::ImageLimitTable;
 use micro_tools::CallableTool;
 use micro_tools::Loadout;
 use micro_tools::Tool;
@@ -48,6 +54,9 @@ use tokio::sync::mpsc::UnboundedSender;
 
 const MAX_ATTEMPTS: u32 = 5;
 const MAX_RETRY_DELAY_MS: u64 = 30_000;
+/// The longest wait a provider may ask for before a retry; a request told to wait longer fails
+/// instead of waiting it out.
+const MAX_REQUESTED_DELAY_MS: u64 = 60_000;
 
 const RETRYABLE_STATUSES: [u16; 8] = [408, 409, 425, 429, 500, 502, 503, 504];
 
@@ -183,6 +192,16 @@ impl Steering {
         all
     }
 
+    /// Take everything waiting, steering messages and follow-ups apart, for a caller handing the
+    /// queue back to whoever wrote it.
+    pub fn take_queued(&self) -> (Vec<Message>, Vec<Message>) {
+        let mut held = self.lock();
+        (
+            std::mem::take(&mut held.steering),
+            std::mem::take(&mut held.follow_up),
+        )
+    }
+
     fn take_steering(&self) -> Vec<Message> {
         std::mem::take(&mut self.lock().steering)
     }
@@ -298,6 +317,14 @@ pub struct Agent {
     cache_key: Option<String>,
     summarizer: Arc<dyn Summarizer>,
     compaction: Option<CompactionConfig>,
+    /// Compaction budgets in tokens, ordinary and per model, laid over the compaction policy.
+    compaction_budgets: CompactionBudgets,
+    /// How large an image each model may be sent; images are fitted once, as they join the
+    /// conversation.
+    image_limits: ImageLimitTable,
+    /// When to keep a prompt cache from expiring, and for how long each model holds one.
+    cache_warming: CacheWarming,
+    warmer: warming::Warmer,
     context_window: usize,
     /// The rates in force for requests made with the current model.
     model_cost: Option<ModelCost>,
@@ -349,6 +376,10 @@ impl Agent {
             cache_key: None,
             summarizer,
             compaction: Some(CompactionConfig::default()),
+            compaction_budgets: CompactionBudgets::default(),
+            image_limits: ImageLimitTable::default(),
+            cache_warming: CacheWarming::default(),
+            warmer: warming::Warmer::default(),
             context_window: DEFAULT_CONTEXT_WINDOW,
             model_cost: None,
             steering: Steering::default(),
@@ -388,6 +419,7 @@ impl Agent {
 
     /// Point the agent at a different model, keeping the conversation.
     pub fn set_model(&mut self, swap: ModelSwap) {
+        self.warmer.stop();
         self.provider = swap.provider;
         self.model = swap.model;
         self.api_key = swap.api_key;
@@ -451,6 +483,40 @@ impl Agent {
         }
         self.summarizer = self.provider_summarizer();
         self
+    }
+
+    /// Compaction budgets in tokens, ordinary and per model, in place of the policy's fractions.
+    pub fn with_compaction_budgets(mut self, budgets: CompactionBudgets) -> Self {
+        self.compaction_budgets = budgets;
+        self
+    }
+
+    /// When to keep a prompt cache from expiring between requests.
+    pub fn with_cache_warming(mut self, warming: CacheWarming) -> Self {
+        self.cache_warming = warming;
+        self
+    }
+
+    /// How large an image each model may be sent.
+    pub fn with_image_limits(mut self, limits: ImageLimitTable) -> Self {
+        self.image_limits = limits;
+        self
+    }
+
+    /// The `provider/model` the run is using now, which per-model settings are keyed by.
+    fn qualified_model(&self) -> String {
+        format!("{}/{}", self.model.provider, self.model.id)
+    }
+
+    /// The compaction policy in force for the current model.
+    fn compaction_for_model(&self, config: CompactionConfig) -> CompactionConfig {
+        config.with_budget(self.compaction_budgets.for_model(&self.qualified_model()))
+    }
+
+    /// A message from outside the model with its images fitted to the current model's limits.
+    async fn fitted(&self, message: Message) -> Message {
+        let limits = self.image_limits.for_model(&self.qualified_model());
+        micro_tools::images::fit_message(message, limits).await
     }
 
     pub fn with_compaction(mut self, config: CompactionConfig) -> Self {
@@ -575,10 +641,14 @@ impl Agent {
     /// Summarize the conversation now, whether or not it has grown enough to trigger on its own,
     /// and continue from the summary.
     pub async fn compact_now(&mut self) -> std::result::Result<Message, CompactionRefusal> {
-        let config = self.compaction.unwrap_or_default();
+        let config = self.compaction_for_model(self.compaction.unwrap_or_default());
+        let keep_recent_tokens = config
+            .budget
+            .keep_recent_tokens
+            .unwrap_or(MANUAL_COMPACTION_KEEP_RECENT_TOKENS);
         let compactor = Compactor::new(self.summarizer.clone(), config);
         let compacted = compactor
-            .compact_with_keep_recent_tokens(&self.messages, MANUAL_COMPACTION_KEEP_RECENT_TOKENS)
+            .compact_with_keep_recent_tokens(&self.messages, keep_recent_tokens)
             .await
             .map_err(|error| match error {
                 micro_context::ContextError::NothingToCompact => CompactionRefusal::TooSmall,
@@ -588,12 +658,14 @@ impl Agent {
         let summary = compacted.messages[0].clone();
         self.record_compaction(&compacted);
         self.charge(compacted.cost.usage);
+        self.warmer.stop();
         self.messages = compacted.messages;
         Ok(summary)
     }
 
     /// Put the agent in a different conversation.
     pub fn set_messages(&mut self, messages: Vec<Message>) {
+        self.warmer.stop();
         self.messages = messages;
 
         self.repairs = answer_abandoned_calls(&mut self.messages);
@@ -605,6 +677,26 @@ impl Agent {
             let _ = recorder.send(Record::Message(message.clone()));
         }
         self.messages.push(message);
+    }
+
+    /// Add what the user queued for after the run to the conversation, saying whether there was
+    /// anything.
+    async fn commit_follow_ups(&mut self, events: &Fan<'_>, produced: &mut Vec<Message>) -> bool {
+        let queued = self.steering.take_follow_up();
+        if queued.is_empty() {
+            return false;
+        }
+        for said in queued {
+            let said = self.fitted(said).await;
+            events.send(AgentEvent::MessageStart {
+                message: said.clone(),
+            });
+            events.send(AgentEvent::MessageEnd {
+                message: said.clone(),
+            });
+            self.commit(said, produced);
+        }
+        true
     }
 
     /// What anything watching the run has decided about this call.
@@ -687,7 +779,7 @@ impl Agent {
             is_error,
         });
 
-        Message::ToolResult {
+        self.fitted(Message::ToolResult {
             tool_call_id: id,
             tool_name: name,
             content,
@@ -695,7 +787,8 @@ impl Agent {
             timestamp: now_ms(),
             nested_calls,
             usage,
-        }
+        })
+        .await
     }
 
     /// Both places an event goes, as one thing to send to.
@@ -1020,10 +1113,12 @@ impl Agent {
         }
 
         let mut settle = SettleGuard::armed(events.clone_for_updates());
+        let _running = self.warmer.run_started();
         let prompt = match &self.hooks {
             Some(hooks) => hooks.before_agent_start(&prompt).await.unwrap_or(prompt),
             None => prompt,
         };
+        let prompt = self.fitted(prompt).await;
         let mut produced = Vec::new();
 
         let installed = std::mem::take(&mut self.repairs);
@@ -1045,6 +1140,7 @@ impl Agent {
 
         loop {
             for said in self.steering.take_steering() {
+                let said = self.fitted(said).await;
                 events.send(AgentEvent::MessageStart {
                     message: said.clone(),
                 });
@@ -1110,18 +1206,8 @@ impl Agent {
                     messages: produced.clone(),
                 });
 
-                let queued = self.steering.take_follow_up();
-                if queued.is_empty() {
+                if !self.commit_follow_ups(events, &mut produced).await {
                     break;
-                }
-                for said in queued {
-                    events.send(AgentEvent::MessageStart {
-                        message: said.clone(),
-                    });
-                    events.send(AgentEvent::MessageEnd {
-                        message: said.clone(),
-                    });
-                    self.commit(said, &mut produced);
                 }
                 continue;
             }
@@ -1135,6 +1221,7 @@ impl Agent {
             });
 
             let mut prepared = Vec::with_capacity(calls.len());
+            let mut terminating = !truncated;
             for (id, name, arguments) in calls {
                 let mut arguments = arguments;
                 let mut settled = None;
@@ -1149,8 +1236,10 @@ impl Agent {
                         true,
                     ));
                 } else {
-                    match self.decide(&id, &name, &arguments).await {
-                        ToolDecision::Refuse(reason) => {
+                    let decision = self.decide(&id, &name, &arguments).await;
+                    terminating &= matches!(decision, ToolDecision::Terminate(_));
+                    match decision {
+                        ToolDecision::Refuse(reason) | ToolDecision::Terminate(reason) => {
                             self.record_event(LedgerEvent::ToolDenied {
                                 tool: name.clone(),
                                 reason: reason.clone(),
@@ -1216,6 +1305,10 @@ impl Agent {
             events.send(AgentEvent::TurnEnd {
                 messages: produced.clone(),
             });
+
+            if terminating && !self.commit_follow_ups(events, &mut produced).await {
+                break;
+            }
         }
 
         events.send(AgentEvent::AgentEnd {
@@ -1233,6 +1326,7 @@ impl Agent {
         let Some(config) = self.compaction else {
             return Ok(());
         };
+        let config = self.compaction_for_model(config);
 
         let compactor = Compactor::new(self.summarizer.clone(), config);
         let Some(compacted) = compactor
@@ -1246,6 +1340,7 @@ impl Agent {
         let summary = compacted.messages[0].clone();
         self.record_compaction(&compacted);
         self.charge(compacted.cost.usage);
+        self.warmer.stop();
         self.messages = compacted.messages;
 
         events.send(AgentEvent::MessageStart {
@@ -1258,6 +1353,7 @@ impl Agent {
     /// Issue one model request, forwarding stream events and retrying transient failures that
     /// happen before any content is shown.
     async fn stream_once(&mut self, events: &Fan<'_>) -> AssistantMessage {
+        self.warmer.stop();
         let context = self
             .prefix
             .ahead_of(self.messages.clone(), self.cache_key.clone());
@@ -1352,6 +1448,7 @@ impl Agent {
                         model: message.model.clone(),
                     });
                     self.charge(message.usage);
+                    self.keep_warm(&context, turn, message.usage);
                     events.send(AgentEvent::MessageEnd {
                         message: Message::Assistant(message.clone()),
                     });
@@ -1367,8 +1464,9 @@ impl Agent {
                     let retryable =
                         !emitted_content && attempt < MAX_ATTEMPTS && is_retryable(&error);
 
-                    if retryable {
-                        let delay_ms = retry_delay_ms(attempt);
+                    if let Some(delay_ms) =
+                        retryable.then(|| retry_delay_ms(attempt, &error)).flatten()
+                    {
                         events.send(AgentEvent::Retry {
                             attempt,
                             max_attempts: MAX_ATTEMPTS,
@@ -1386,6 +1484,26 @@ impl Agent {
                 }
             }
         }
+    }
+
+    /// Keep the cache entry the request just answered warm until the next one is sent.
+    fn keep_warm(&mut self, context: &Context, turn: u64, usage: Usage) {
+        let Some(cost) = self.model_cost.clone() else {
+            return;
+        };
+        self.warmer.start(
+            &self.cache_warming,
+            warming::WarmRequest {
+                provider: Arc::clone(&self.provider),
+                model: self.model.clone(),
+                context: context.clone(),
+                api_key: self.api_key.clone(),
+                turn,
+                usage,
+                cost,
+                recorder: self.recorder.clone(),
+            },
+        );
     }
 
     fn empty_assistant(&self, stop_reason: StopReason, error: Option<String>) -> AssistantMessage {
@@ -1522,8 +1640,20 @@ fn is_retryable(error: &str) -> bool {
         .unwrap_or(false)
 }
 
+/// How long to wait before trying again: what the provider asked for when it said, otherwise
+/// exponential backoff. Nothing when the provider asked for longer than is worth waiting.
+fn retry_delay_ms(attempt: u32, error: &str) -> Option<u64> {
+    match micro_provider::requested_retry_delay(error) {
+        Some(requested) => {
+            let requested_ms = u64::try_from(requested.as_millis()).unwrap_or(u64::MAX);
+            (requested_ms <= MAX_REQUESTED_DELAY_MS).then_some(requested_ms)
+        }
+        None => Some(backoff_ms(attempt)),
+    }
+}
+
 /// Exponential backoff: 1s, 2s, 4s, … capped at 30s.
-fn retry_delay_ms(attempt: u32) -> u64 {
+fn backoff_ms(attempt: u32) -> u64 {
     (1000u64 << (attempt.saturating_sub(1)).min(20)).min(MAX_RETRY_DELAY_MS)
 }
 
@@ -1776,10 +1906,26 @@ mod tests {
 
     #[test]
     fn backoff_doubles_and_is_capped() {
-        assert_eq!(retry_delay_ms(1), 1_000);
-        assert_eq!(retry_delay_ms(2), 2_000);
-        assert_eq!(retry_delay_ms(3), 4_000);
-        assert_eq!(retry_delay_ms(20), MAX_RETRY_DELAY_MS);
+        assert_eq!(backoff_ms(1), 1_000);
+        assert_eq!(backoff_ms(2), 2_000);
+        assert_eq!(backoff_ms(3), 4_000);
+        assert_eq!(backoff_ms(20), MAX_RETRY_DELAY_MS);
+    }
+
+    #[test]
+    fn a_requested_wait_replaces_the_backoff() {
+        let asked = "Anthropic returned 429: slow down [retry after 7000ms]";
+        assert_eq!(retry_delay_ms(1, asked), Some(7_000));
+        assert_eq!(
+            retry_delay_ms(3, "Anthropic returned 429: slow down"),
+            Some(4_000)
+        );
+    }
+
+    #[test]
+    fn a_wait_longer_than_is_worth_it_is_not_retried() {
+        let asked = "Anthropic returned 429: slow down [retry after 600000ms]";
+        assert_eq!(retry_delay_ms(1, asked), None);
     }
 
     #[test]
@@ -1800,6 +1946,188 @@ mod tests {
             written.try_recv().unwrap(),
             Record::Message(agent.messages()[0].clone())
         );
+    }
+
+    fn plain_model(provider: &str, id: &str) -> Model {
+        Model {
+            id: id.into(),
+            provider: provider.into(),
+            base_url: "https://example.invalid".into(),
+            max_tokens: 1_000,
+            thinking: ThinkingLevel::Off,
+            reasoning: false,
+            compat: Default::default(),
+            headers: Default::default(),
+        }
+    }
+
+    fn png(width: u32, height: u32) -> String {
+        let pixels = image::RgbImage::from_fn(width, height, |x, y| {
+            image::Rgb([(x % 256) as u8, (y % 256) as u8, ((x * y) % 256) as u8])
+        });
+        let mut bytes = Vec::new();
+        image::DynamicImage::ImageRgb8(pixels)
+            .write_to(
+                &mut std::io::Cursor::new(&mut bytes),
+                image::ImageFormat::Png,
+            )
+            .unwrap();
+        base64::Engine::encode(&base64::engine::general_purpose::STANDARD, bytes)
+    }
+
+    #[tokio::test]
+    async fn an_attached_image_is_fitted_to_the_models_limits_as_it_joins() {
+        let provider = RecordingProvider::new("acme");
+        let small = micro_tools::images::ImageLimits {
+            max_width: 50,
+            max_height: 50,
+            ..Default::default()
+        };
+        let mut agent = Agent::new(
+            Arc::new(provider),
+            Vec::new(),
+            plain_model("acme", "vision"),
+            "key",
+        )
+        .with_image_limits(ImageLimitTable {
+            ordinary: Default::default(),
+            models: [("acme/vision".to_string(), small)].into(),
+        });
+
+        let (events, _ignored) = tokio::sync::mpsc::unbounded_channel();
+        agent
+            .run(
+                Message::User {
+                    content: vec![
+                        ContentBlock::text("what is this"),
+                        ContentBlock::Image {
+                            data: png(200, 100),
+                            mime_type: "image/png".into(),
+                        },
+                    ],
+                    timestamp: 0,
+                },
+                &events,
+            )
+            .await;
+
+        let Message::User { content, .. } = &agent.messages()[0] else {
+            panic!("the prompt comes first");
+        };
+        let ContentBlock::Image { data, .. } = &content[1] else {
+            panic!("the image is kept");
+        };
+        let bytes =
+            base64::Engine::decode(&base64::engine::general_purpose::STANDARD, data).unwrap();
+        let fitted = image::load_from_memory(&bytes).unwrap();
+        assert_eq!((fitted.width(), fitted.height()), (50, 25));
+        assert!(content[2].as_text().contains("original 200x100"));
+    }
+
+    fn warm_request(
+        provider: &RecordingProvider,
+        recorder: UnboundedSender<Record>,
+    ) -> warming::WarmRequest {
+        warming::WarmRequest {
+            provider: Arc::new(provider.clone()),
+            model: plain_model("anthropic", "claude"),
+            context: Context::default(),
+            api_key: "key".into(),
+            turn: 3,
+            usage: Usage {
+                input: 200_000,
+                ..Usage::default()
+            },
+            cost: ModelCost {
+                input: 3.0,
+                output: 15.0,
+                cache_read: 0.3,
+                cache_write: 3.75,
+                ..ModelCost::default()
+            },
+            recorder: Some(recorder),
+        }
+    }
+
+    fn short_lived(mode: CacheWarmingMode) -> CacheWarming {
+        CacheWarming {
+            mode,
+            lifetimes: [("anthropic".to_string(), Duration::from_secs(11))].into(),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_cache_is_kept_warm_while_the_run_is_going_and_not_after() {
+        let provider = RecordingProvider::new("anthropic");
+        let (recorder, mut recorded) = tokio::sync::mpsc::unbounded_channel();
+        let mut warmer = warming::Warmer::default();
+        let running = warmer.run_started();
+        warmer.start(
+            &short_lived(CacheWarmingMode::Streaming),
+            warm_request(&provider, recorder),
+        );
+
+        tokio::time::sleep(Duration::from_millis(1_500)).await;
+        let calls = provider.calls();
+        assert_eq!(calls.len(), 1, "one refresh before the cache expired");
+        assert_eq!(calls[0].0.max_tokens, 1);
+        assert!(matches!(
+            recorded.try_recv(),
+            Ok(Record::Event {
+                event: LedgerEvent::CacheWarm { turn: 3, .. },
+                ..
+            })
+        ));
+
+        drop(running);
+        tokio::time::sleep(Duration::from_millis(1_500)).await;
+        assert_eq!(
+            provider.calls().len(),
+            1,
+            "nothing is warmed once the run is over"
+        );
+        assert!(!warmer.is_running());
+    }
+
+    #[tokio::test]
+    async fn warming_that_is_off_sends_nothing() {
+        let provider = RecordingProvider::new("anthropic");
+        let (recorder, _recorded) = tokio::sync::mpsc::unbounded_channel();
+        let mut warmer = warming::Warmer::default();
+        let _running = warmer.run_started();
+        warmer.start(
+            &short_lived(CacheWarmingMode::Off),
+            warm_request(&provider, recorder),
+        );
+        assert!(!warmer.is_running());
+    }
+
+    #[test]
+    fn compaction_budgets_follow_the_current_model() {
+        let agent = Agent::new(
+            Arc::new(NoProvider),
+            Vec::new(),
+            plain_model("acme", "big-model"),
+            "key",
+        )
+        .with_compaction_budgets(CompactionBudgets {
+            ordinary: micro_context::CompactionBudget {
+                reserve_tokens: Some(16_384),
+                keep_recent_tokens: Some(20_000),
+            },
+            models: [(
+                "acme/big-model".to_string(),
+                micro_context::CompactionBudget {
+                    reserve_tokens: Some(400_000),
+                    keep_recent_tokens: None,
+                },
+            )]
+            .into(),
+        });
+
+        let config = agent.compaction_for_model(CompactionConfig::default());
+        assert_eq!(config.trigger_tokens(1_000_000), 600_000);
+        assert_eq!(config.keep_recent_tokens(1_000_000), 20_000);
     }
 
     #[tokio::test]
@@ -2035,6 +2363,9 @@ pub enum ToolDecision {
     Rewrite(Value),
     /// Do not run it.
     Refuse(String),
+    /// Do not run it, and when every call in its batch is stopped this way, end the run instead of
+    /// asking the model again.
+    Terminate(String),
 }
 
 #[async_trait::async_trait]

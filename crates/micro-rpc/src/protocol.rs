@@ -37,6 +37,11 @@ pub enum Command {
         #[serde(default)]
         id: Option<String>,
     },
+    /// Take back every queued steering and follow-up message, unsent.
+    ClearQueue {
+        #[serde(default)]
+        id: Option<String>,
+    },
     NewSession {
         #[serde(default)]
         id: Option<String>,
@@ -159,6 +164,7 @@ impl Command {
             | Command::Steer { id, .. }
             | Command::FollowUp { id, .. }
             | Command::Abort { id }
+            | Command::ClearQueue { id }
             | Command::NewSession { id }
             | Command::GetState { id }
             | Command::SetModel { id, .. }
@@ -191,6 +197,7 @@ impl Command {
             Command::Steer { .. } => "steer",
             Command::FollowUp { .. } => "follow_up",
             Command::Abort { .. } => "abort",
+            Command::ClearQueue { .. } => "clear_queue",
             Command::NewSession { .. } => "new_session",
             Command::GetState { .. } => "get_state",
             Command::SetModel { .. } => "set_model",

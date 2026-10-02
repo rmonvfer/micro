@@ -384,7 +384,11 @@ fn object_type(schema: &serde_json::Map<String, Value>, context: &mut SchemaCont
     let mut members: Vec<String> = names
         .iter()
         .map(|name| {
-            let optional = if required.contains(name.as_str()) { "" } else { "?" };
+            let optional = if required.contains(name.as_str()) {
+                ""
+            } else {
+                "?"
+            };
             format!(
                 "{}{optional}: {};",
                 property_key(name),
@@ -439,7 +443,10 @@ mod tests {
     #[test]
     fn primitive_and_compound_types_render() {
         assert_eq!(schema_to_type(&json!({ "type": "string" }), None), "string");
-        assert_eq!(schema_to_type(&json!({ "type": "integer" }), None), "number");
+        assert_eq!(
+            schema_to_type(&json!({ "type": "integer" }), None),
+            "number"
+        );
         assert_eq!(
             schema_to_type(&json!({ "type": ["string", "null"] }), None),
             "string | null"
@@ -449,7 +456,10 @@ mod tests {
             "\"a\" | \"b\""
         );
         assert_eq!(
-            schema_to_type(&json!({ "type": "array", "items": { "type": "number" } }), None),
+            schema_to_type(
+                &json!({ "type": "array", "items": { "type": "number" } }),
+                None
+            ),
             "Array<number>"
         );
         assert_eq!(

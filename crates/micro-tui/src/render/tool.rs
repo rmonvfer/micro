@@ -2,6 +2,8 @@
 
 use crate::diff;
 use crate::diff::DiffLine;
+use crate::render::links::file_url;
+use crate::render::links::Links;
 use crate::render::transcript::band;
 use crate::theme::Theme;
 use crate::tools;
@@ -14,6 +16,7 @@ use ratatui::style::Modifier;
 use ratatui::style::Style;
 use ratatui::text::Line;
 use ratatui::text::Span;
+use std::path::Path;
 
 /// Columns a row is inset by when it is drawn under a heading of its own, as it is inside an
 /// approval prompt.
@@ -21,12 +24,26 @@ const INDENT: usize = 2;
 /// Width of the line-number column beside a search hit.
 const NUMBER_WIDTH: usize = 5;
 
-pub fn lines(tool: &ToolEntry, focused: bool, theme: &Theme, width: usize) -> Vec<Line<'static>> {
+/// What a call is drawn among: where clickable paths are recorded, what relative ones are resolved
+/// against, and the ground either side of its band.
+pub struct Surroundings<'a> {
+    pub links: &'a mut Links,
+    pub workspace: &'a Path,
+    pub pad: usize,
+}
+
+pub fn lines(
+    tool: &ToolEntry,
+    focused: bool,
+    theme: &Theme,
+    width: usize,
+    surroundings: &mut Surroundings<'_>,
+) -> Vec<Line<'static>> {
     if tool.has_custom_render() {
-        return custom_lines(tool, focused, theme, width);
+        return custom_lines(tool, focused, theme, width, surroundings.pad);
     }
     if tool.name == "codemode" {
-        return super::codemode::lines(tool, focused, theme, width);
+        return super::codemode::lines(tool, focused, theme, width, surroundings.pad);
     }
 
     let view = tools::view(
@@ -36,7 +53,20 @@ pub fn lines(tool: &ToolEntry, focused: bool, theme: &Theme, width: usize) -> Ve
         tool.is_error,
     );
 
-    let mut rows = header(tool, &view, width, theme);
+    let listed = tool.expanded && !view.arguments.is_empty();
+    let mut rows = header(tool, &view, !listed, width, theme, surroundings);
+    if listed {
+        for argument in &view.arguments {
+            rows.extend(wrap_spans_hard(
+                &[Span::styled(
+                    format!("{}{argument}", " ".repeat(INDENT)),
+                    Style::new().fg(theme.dim),
+                )],
+                width,
+                INDENT * 2,
+            ));
+        }
+    }
     let (body, hidden) = view.visible(tool.expanded);
     rows.extend(body_lines(&body, &view, theme, width, 0));
     if hidden > 0 {
@@ -50,7 +80,7 @@ pub fn lines(tool: &ToolEntry, focused: bool, theme: &Theme, width: usize) -> Ve
         ));
     }
 
-    band(rows, width, ground(tool, focused, theme))
+    band(rows, width, surroundings.pad, ground(tool, focused, theme))
 }
 
 /// A call an extension is drawing itself, through renderCall/renderResult.
@@ -59,6 +89,7 @@ fn custom_lines(
     focused: bool,
     theme: &Theme,
     width: usize,
+    pad: usize,
 ) -> Vec<Line<'static>> {
     let rows: Vec<Line<'static>> = tool
         .render_lines()
@@ -70,7 +101,7 @@ fn custom_lines(
         return std::iter::once(Line::default()).chain(rows).collect();
     }
 
-    band(rows, width, ground(tool, focused, theme))
+    band(rows, width, pad, ground(tool, focused, theme))
 }
 
 pub(super) fn ground(tool: &ToolEntry, focused: bool, theme: &Theme) -> Color {
@@ -84,12 +115,15 @@ pub(super) fn ground(tool: &ToolEntry, focused: bool, theme: &Theme) -> Color {
     }
 }
 
-/// What ran, what it acted on, and how it went, on one line.
+/// What ran, what it acted on, and how it went, on one line. The subject is left off when the
+/// arguments are listed beneath instead.
 fn header(
     tool: &ToolEntry,
     view: &tools::ToolView,
+    with_subject: bool,
     width: usize,
     theme: &Theme,
+    surroundings: &mut Surroundings<'_>,
 ) -> Vec<Line<'static>> {
     let mut spans = vec![Span::styled(
         tools::title(&tool.name),
@@ -98,12 +132,16 @@ fn header(
             .add_modifier(Modifier::BOLD),
     )];
 
-    if !view.subject.is_empty() {
+    if with_subject && !view.subject.is_empty() {
+        let style = Style::new().fg(theme.accent);
+        let style = match tools::names_a_file(&tool.name) {
+            true => surroundings
+                .links
+                .mark(style, file_url(&view.subject, surroundings.workspace)),
+            false => style,
+        };
         spans.push(Span::raw(" "));
-        spans.push(Span::styled(
-            view.subject.clone(),
-            Style::new().fg(theme.accent),
-        ));
+        spans.push(Span::styled(view.subject.clone(), style));
     }
     let output = Style::new().fg(theme.tool_output);
     match &view.detail {
@@ -225,6 +263,59 @@ mod tests {
     use super::*;
     use crate::wrap::text_width;
     use serde_json::json;
+
+    /// The call drawn for a terminal that takes no hyperlinks.
+    fn lines(tool: &ToolEntry, focused: bool, theme: &Theme, width: usize) -> Vec<Line<'static>> {
+        super::lines(
+            tool,
+            focused,
+            theme,
+            width,
+            &mut Surroundings {
+                links: &mut Links::disabled(),
+                workspace: Path::new("/work"),
+                pad: crate::render::transcript::PADDING,
+            },
+        )
+    }
+
+    #[test]
+    fn a_file_tool_links_its_path_and_other_tools_do_not() {
+        let theme = Theme::dark();
+        let mut links = Links::new();
+        let tool = entry("read", json!({ "path": "src/a.rs" }), Some("one"));
+        let out = super::lines(
+            &tool,
+            false,
+            &theme,
+            60,
+            &mut Surroundings {
+                links: &mut links,
+                workspace: Path::new("/work"),
+                pad: crate::render::transcript::PADDING,
+            },
+        );
+        assert_eq!(links.url(0), Some("file:///work/src/a.rs"));
+        assert!(out
+            .iter()
+            .flat_map(|line| &line.spans)
+            .any(|span| span.content == "src/a.rs" && span.style.underline_color.is_some()));
+
+        let mut links = Links::new();
+        let tool = entry("bash", json!({ "command": "ls" }), Some("a"));
+        super::lines(
+            &tool,
+            false,
+            &theme,
+            60,
+            &mut Surroundings {
+                links: &mut links,
+                workspace: Path::new("/work"),
+                pad: crate::render::transcript::PADDING,
+            },
+        );
+        assert!(links.is_empty());
+    }
 
     fn entry(name: &str, arguments: serde_json::Value, output: Option<&str>) -> ToolEntry {
         ToolEntry {
@@ -453,6 +544,22 @@ mod tests {
         assert_eq!(out.len(), 3);
         assert!(out[1].contains("one"));
         assert!(!out.iter().any(|line| line.contains("+2 lines")));
+    }
+
+    #[test]
+    fn an_unknown_tool_opens_to_one_line_per_argument() {
+        let theme = Theme::dark();
+        let mut tool = entry("lookup", json!({ "query": "tui", "limit": 5 }), None);
+        assert_eq!(
+            rendered(&lines(&tool, false, &theme, 60)),
+            vec![r#"lookup limit=5 query="tui" …"#]
+        );
+
+        tool.expanded = true;
+        assert_eq!(
+            rendered(&lines(&tool, false, &theme, 60)),
+            vec!["lookup …", "  limit: 5", "  query: tui"]
+        );
     }
 
     #[test]

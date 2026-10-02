@@ -386,14 +386,9 @@ pub fn parse_server(name: &str, value: &Value) -> Result<ServerConfig, String> {
     };
     let exposure = match object.get("exposure") {
         None => None,
-        Some(value) => Some(
-            value
-                .as_str()
-                .and_then(Exposure::parse)
-                .ok_or_else(|| {
-                    problem("exposure must be \"direct\", \"codemode\", \"deferred\", or \"hidden\"")
-                })?,
-        ),
+        Some(value) => Some(value.as_str().and_then(Exposure::parse).ok_or_else(|| {
+            problem("exposure must be \"direct\", \"codemode\", \"deferred\", or \"hidden\"")
+        })?),
     };
 
     let kind = optional_string(object, "type").map_err(|error| problem(&error))?;

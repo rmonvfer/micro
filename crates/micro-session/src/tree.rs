@@ -550,13 +550,19 @@ mod tests {
         tree.push(user("right"));
         tree.push_custom("note", serde_json::json!("on the right"));
 
-        let seen: Vec<&serde_json::Value> =
-            tree.customs_on_path().iter().map(|custom| &custom.data).collect();
+        let seen: Vec<&serde_json::Value> = tree
+            .customs_on_path()
+            .iter()
+            .map(|custom| &custom.data)
+            .collect();
         assert_eq!(seen, vec!["before anything", "on the right"]);
 
         tree.branch_from("2");
-        let seen: Vec<&serde_json::Value> =
-            tree.customs_on_path().iter().map(|custom| &custom.data).collect();
+        let seen: Vec<&serde_json::Value> = tree
+            .customs_on_path()
+            .iter()
+            .map(|custom| &custom.data)
+            .collect();
         assert_eq!(seen, vec!["before anything", "on the left"]);
     }
 

@@ -719,9 +719,7 @@ mod tests {
         );
         assert!(!section.contains("Second line"), "{section}");
         assert!(servers.prompt_section(&[], false).is_none());
-        let scripted = servers
-            .prompt_section(&["docs".to_string()], true)
-            .unwrap();
+        let scripted = servers.prompt_section(&["docs".to_string()], true).unwrap();
         assert!(scripted.contains("`codemode` scripts"), "{scripted}");
         assert!(scripted.contains("`searchTools()`"), "{scripted}");
     }

@@ -157,7 +157,11 @@ pub struct Setup {
 pub trait Host: Send + Sync {
     /// Run a tool for the script. `Ok` is the JSON the call resolves to, `None` for `undefined`;
     /// `Err` rejects it with that message.
-    async fn call_tool(&self, name: &str, arguments: Option<Value>) -> Result<Option<Value>, String>;
+    async fn call_tool(
+        &self,
+        name: &str,
+        arguments: Option<Value>,
+    ) -> Result<Option<Value>, String>;
 
     /// Run one of the globals, with every argument the script passed as one array.
     async fn call_global(&self, name: &str, arguments: Value) -> Result<Option<Value>, String>;
@@ -388,9 +392,7 @@ fn run_vm(
     runtime.set_max_stack_size(MAX_STACK_BYTES);
     {
         let interrupted = Arc::clone(&interrupted);
-        runtime.set_interrupt_handler(Some(Box::new(move || {
-            interrupted.load(Ordering::Relaxed)
-        })));
+        runtime.set_interrupt_handler(Some(Box::new(move || interrupted.load(Ordering::Relaxed))));
     }
     let context = Context::full(&runtime).map_err(|error| error.to_string())?;
 
@@ -505,7 +507,10 @@ fn drain(runtime: &Runtime, context: &Context, api: &Api, interrupted: &AtomicBo
 }
 
 /// The function the prelude reaches the host through. It only ever receives primitives.
-fn bridge<'js>(ctx: &Ctx<'js>, to_host: UnboundedSender<FromScript>) -> Result<Function<'js>, String> {
+fn bridge<'js>(
+    ctx: &Ctx<'js>,
+    to_host: UnboundedSender<FromScript>,
+) -> Result<Function<'js>, String> {
     Function::new(ctx.clone(), move |arguments: Rest<JsValue<'js>>| {
         let arguments = arguments.0;
         let at = |index: usize| arguments.get(index).filter(|value| !value.is_undefined());

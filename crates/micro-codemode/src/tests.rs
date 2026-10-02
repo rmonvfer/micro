@@ -148,7 +148,10 @@ async fn output_returns_and_logs_come_back_in_order() {
     let output = run("console.log('one', 2); text({ three: 3 }); return [4];").await;
     assert!(!output.is_error, "{output:?}");
     let header = output.content[0].as_text();
-    assert!(header.starts_with("Script completed\nWall time "), "{header}");
+    assert!(
+        header.starts_with("Script completed\nWall time "),
+        "{header}"
+    );
     assert!(header.ends_with(" seconds\nOutput:\n"), "{header}");
     assert_eq!(said(&output), "one 2\n{\"three\":3}\n[4]");
 }
@@ -166,7 +169,8 @@ async fn tools_are_called_and_a_failure_rejects_with_its_text() {
 
 #[tokio::test]
 async fn a_tool_with_an_output_schema_resolves_to_its_data_even_when_it_failed() {
-    let output = run("const ran = await tools.bash({}); return ran.exit_code + ' ' + ran.output;").await;
+    let output =
+        run("const ran = await tools.bash({}); return ran.exit_code + ' ' + ran.output;").await;
     assert_eq!(said(&output), "2 boom\n");
 }
 
@@ -196,7 +200,10 @@ async fn calls_still_running_when_the_script_ends_are_cancelled() {
     )
     .await;
     assert_eq!(said(&output), "left early");
-    assert!(tools.abandoned.load(Ordering::SeqCst), "the slow call was dropped");
+    assert!(
+        tools.abandoned.load(Ordering::SeqCst),
+        "the slow call was dropped"
+    );
 }
 
 #[tokio::test]
@@ -204,7 +211,10 @@ async fn a_misspelled_tool_names_the_close_match() {
     let output = run("await tools.Read({ path: 'x' });").await;
     assert!(output.is_error);
     let said = said(&output);
-    assert!(said.contains("tools.Read does not exist. Did you mean tools.read?"), "{said}");
+    assert!(
+        said.contains("tools.Read does not exist. Did you mean tools.read?"),
+        "{said}"
+    );
     assert!(said.contains("No tool calls were made."), "{said}");
     assert!(output.content[0].as_text().starts_with("Script failed"));
 }
@@ -237,7 +247,10 @@ async fn a_thrown_error_keeps_the_output_before_it_and_lists_the_calls() {
     .await;
     assert!(output.is_error);
     let said = said(&output);
-    assert!(said.starts_with("before\nScript error:\nRangeError: too far"), "{said}");
+    assert!(
+        said.starts_with("before\nScript error:\nRangeError: too far"),
+        "{said}"
+    );
     assert!(said.contains("they are not undone): read (ok)"), "{said}");
     assert!(!said.contains("codemode-prelude"), "{said}");
 }
@@ -246,7 +259,11 @@ async fn a_thrown_error_keeps_the_output_before_it_and_lists_the_calls() {
 async fn a_script_past_its_deadline_is_stopped() {
     let output = run("// @options: {\"timeout_ms\": 200}\nwhile (true) {}").await;
     assert!(output.is_error);
-    assert!(said(&output).contains("Script timed out"), "{}", said(&output));
+    assert!(
+        said(&output).contains("Script timed out"),
+        "{}",
+        said(&output)
+    );
 }
 
 #[tokio::test]
@@ -254,7 +271,11 @@ async fn a_promise_that_can_never_settle_fails_at_once() {
     let started = Instant::now();
     let output = run("await new Promise(() => {}); return 'never';").await;
     assert!(output.is_error);
-    assert!(said(&output).contains("can never settle"), "{}", said(&output));
+    assert!(
+        said(&output).contains("can never settle"),
+        "{}",
+        said(&output)
+    );
     assert!(started.elapsed() < Duration::from_secs(5));
 }
 
@@ -267,7 +288,9 @@ async fn exit_ends_the_script_successfully() {
 
 #[tokio::test]
 async fn there_are_no_timers_or_node_apis() {
-    let output = run("return [typeof setTimeout, typeof require, typeof process, typeof fetch].join();").await;
+    let output =
+        run("return [typeof setTimeout, typeof require, typeof process, typeof fetch].join();")
+            .await;
     assert_eq!(said(&output), "undefined,undefined,undefined,undefined");
 }
 
@@ -286,13 +309,23 @@ async fn images_are_checked_before_they_are_shown() {
             _ => None,
         })
         .collect();
-    assert_eq!(images, vec!["image/png", "image/png"], "the detected type wins");
+    assert_eq!(
+        images,
+        vec!["image/png", "image/png"],
+        "the detected type wins"
+    );
 
     for (bad, why) in [
         ("'https://example.com/a.png'", "remote image URLs"),
         ("'data:image/png;base64,abc'", "not valid base64"),
-        ("'data:image/png;base64,AAAA'", "not a PNG, JPEG, GIF, or WebP"),
-        ("{ type: 'text', text: 'x' }", "only accepts MCP image blocks"),
+        (
+            "'data:image/png;base64,AAAA'",
+            "not a PNG, JPEG, GIF, or WebP",
+        ),
+        (
+            "{ type: 'text', text: 'x' }",
+            "only accepts MCP image blocks",
+        ),
     ] {
         let output = run(&format!("image({bad});")).await;
         assert!(output.is_error, "{bad}");
@@ -302,10 +335,18 @@ async fn images_are_checked_before_they_are_shown() {
 
 #[tokio::test]
 async fn long_output_keeps_both_ends_and_the_rest_goes_to_a_file() {
-    let output = run("// @options: {\"max_output_tokens\": 10}\ntext('a'.repeat(100) + 'z'.repeat(100));").await;
+    let output =
+        run("// @options: {\"max_output_tokens\": 10}\ntext('a'.repeat(100) + 'z'.repeat(100));")
+            .await;
     let said = said(&output);
-    assert!(said.starts_with("Warning: truncated output (original token count: 50)"), "{said}");
-    assert!(said.contains("aaaaaaaaaaaaaaaaaaaa…40 tokens truncated…zzzzzzzzzzzzzzzzzzzz"), "{said}");
+    assert!(
+        said.starts_with("Warning: truncated output (original token count: 50)"),
+        "{said}"
+    );
+    assert!(
+        said.contains("aaaaaaaaaaaaaaaaaaaa…40 tokens truncated…zzzzzzzzzzzzzzzzzzzz"),
+        "{said}"
+    );
     let path = said
         .split("[Full output: ")
         .nth(1)
@@ -321,9 +362,19 @@ async fn stored_values_last_across_scripts_but_only_from_scripts_that_succeed() 
     let codemode = Codemode::new().with_store(store.clone());
     let tools = Tools::default();
 
-    run_with(&codemode, &tools, "store('cursor', { page: 2 }); store('gone', 1);").await;
+    run_with(
+        &codemode,
+        &tools,
+        "store('cursor', { page: 2 }); store('gone', 1);",
+    )
+    .await;
     run_with(&codemode, &tools, "store('gone', undefined);").await;
-    run_with(&codemode, &tools, "store('cursor', 'lost'); throw new Error('no');").await;
+    run_with(
+        &codemode,
+        &tools,
+        "store('cursor', 'lost'); throw new Error('no');",
+    )
+    .await;
     let output = run_with(
         &codemode,
         &tools,
@@ -339,7 +390,11 @@ async fn stored_values_last_across_scripts_but_only_from_scripts_that_succeed() 
         &format!("store('big', 'x'.repeat({MAX_STORE_VALUE_CHARS}));"),
     )
     .await;
-    assert!(said(&too_big).contains("store() is for small state"), "{}", said(&too_big));
+    assert!(
+        said(&too_big).contains("store() is for small state"),
+        "{}",
+        said(&too_big)
+    );
 }
 
 #[tokio::test]
@@ -358,11 +413,15 @@ async fn scripts_find_tools_that_are_not_listed() {
         };
     "#)
     .await;
-    let value: Value = serde_json::from_str(&said(&output)).expect(&said(&output));
+    let value: Value =
+        serde_json::from_str(&said(&output)).unwrap_or_else(|_| panic!("{}", said(&output)));
     assert_eq!(value["found"], json!(["mcp__docs_site__search"]));
     assert_eq!(value["namespace"]["name"], "mcp__docs-site");
     assert_eq!(value["namespace"]["instructions"], "Search before reading.");
-    assert_eq!(value["namespace"]["tools"], json!(["mcp__docs_site__search"]));
+    assert_eq!(
+        value["namespace"]["tools"],
+        json!(["mcp__docs_site__search"])
+    );
     assert_eq!(value["described"], true);
     assert_eq!(value["missing"], true);
     assert_eq!(value["all"], 5);
@@ -371,7 +430,12 @@ async fn scripts_find_tools_that_are_not_listed() {
 #[tokio::test]
 async fn bad_input_is_explained_without_running_anything() {
     let tools = Tools::default();
-    let output = run_with(&Codemode::new(), &tools, "// @options: {\"what\": 1}\nreturn 1;").await;
+    let output = run_with(
+        &Codemode::new(),
+        &tools,
+        "// @options: {\"what\": 1}\nreturn 1;",
+    )
+    .await;
     assert!(output.is_error);
     assert!(output.text_content().contains("`what`"));
     assert_eq!(tools.calls.load(Ordering::SeqCst), 0);
@@ -407,11 +471,23 @@ impl ScriptGlobals for Echo {
 #[tokio::test]
 async fn further_globals_are_reachable_and_guarded() {
     let codemode = Codemode::new().with_globals(Arc::new(Echo)).unwrap();
-    let output = run_with(&codemode, &Tools::default(), "return await helpers.echo(1, 'two');").await;
+    let output = run_with(
+        &codemode,
+        &Tools::default(),
+        "return await helpers.echo(1, 'two');",
+    )
+    .await;
     assert_eq!(said(&output), "[1,\"two\"]");
     let missing = run_with(&codemode, &Tools::default(), "helpers.ecko();").await;
-    assert!(said(&missing).contains("Did you mean helpers.echo?"), "{}", said(&missing));
-    assert!(codemode.definition().description.contains("`helpers.echo(...values)`"));
+    assert!(
+        said(&missing).contains("Did you mean helpers.echo?"),
+        "{}",
+        said(&missing)
+    );
+    assert!(codemode
+        .definition()
+        .description
+        .contains("`helpers.echo(...values)`"));
 
     struct Shadowing;
     #[async_trait]
@@ -432,7 +508,10 @@ async fn further_globals_are_reachable_and_guarded() {
 #[test]
 fn store_entries_apply_in_order_and_odd_ones_are_ignored() {
     let mut store = Map::new();
-    apply_store_entry(&mut store, &json!({ "set": { "a": 1, "b": 2 }, "delete": [] }));
+    apply_store_entry(
+        &mut store,
+        &json!({ "set": { "a": 1, "b": 2 }, "delete": [] }),
+    );
     apply_store_entry(&mut store, &json!({ "set": { "c": 3 }, "delete": ["a"] }));
     apply_store_entry(&mut store, &json!({ "set": "nonsense" }));
     assert_eq!(Value::Object(store), json!({ "b": 2, "c": 3 }));
@@ -440,7 +519,12 @@ fn store_entries_apply_in_order_and_odd_ones_are_ignored() {
 
 #[test]
 fn namespaces_are_named_in_every_spelling() {
-    for query in ["mcp__dev-radius", "mcp__dev_radius", "dev-radius", "dev_radius"] {
+    for query in [
+        "mcp__dev-radius",
+        "mcp__dev_radius",
+        "dev-radius",
+        "dev_radius",
+    ] {
         assert!(is_namespace_name("mcp__dev-radius", query), "{query}");
     }
     assert!(!is_namespace_name("mcp__dev-radius", "radius"));

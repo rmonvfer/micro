@@ -25,7 +25,23 @@ micro --continue
 
 `--continue` selects the latest session for the current workspace.
 
+A session file is written when the first message is sent, so leaving micro before saying anything leaves nothing behind.
+
+Scripts can pin a session to an id of their choosing. `--session-id` resumes this workspace's session with that exact id, or starts one under it when none exists; an id that belongs to another workspace is refused.
+
+```bash
+micro -p --session-id nightly-review "Summarize today's changes"
+```
+
 Inside the interface, use `/sessions`, `/resume`, `/tree`, `/fork`, and `/clone` to navigate or branch a conversation.
+
+## Naming sessions
+
+`--name` (or `-n`) gives the session its display name from the start, in the interface, `--print`, and `--rpc` alike. `/name` renames it later.
+
+```bash
+micro -n "Release prep"
+```
 
 ## Inspect a session
 
@@ -59,6 +75,14 @@ Inside an interactive session, `/export [path]` writes a readable Markdown trans
 `/share` uploads a transcript as a secret GitHub gist. It reads `GITHUB_TOKEN`, then `GH_TOKEN`; the token needs the `gist` scope. A secret gist is unlisted, not access-controlled, so anyone with the URL can read it.
 
 These commands are explicit. micro does not upload sessions automatically.
+
+## Report a bug
+
+`/bug [description]` writes a bug report to `micro-bug-report-<id>.zip` in the workspace and prints its path. It first asks whether to include the session transcript; the choice is also available directly as `/bug --transcript` or `/bug --no-transcript`, followed by the description.
+
+The report holds micro's version, the platform and terminal, the model and thinking level, the tools offered, loaded extensions and the ones that failed to load, and the failed replies and request attempts this session recorded, without conversation content. Global and project settings are included with secret-looking values replaced by `<redacted>` (keys such as `api_key`, `token`, `secret`, `password` or `authorization`, plus credentials in URLs) and the installation's `device_id` removed. Paths under the home directory are written with `~`. A transcript, when included, is the raw session log, so review it before sharing.
+
+micro uploads nothing. Attach the archive to an issue at `https://github.com/rmonvfer/micro/issues/new`; `/bug --open-issue` opens that page in the browser.
 
 ## Billing
 

@@ -197,6 +197,15 @@ pub fn picker_lines(
     if picker.titled() {
         tail.insert(1, hint("↑↓ navigate · enter select · esc cancel", theme));
     }
+    if picker
+        .selected_item()
+        .is_some_and(|item| item.save.is_some())
+    {
+        tail.insert(
+            1,
+            hint("enter use for this session · ctrl+s set as default", theme),
+        );
+    }
 
     if let Some((text, ok)) = picker.status() {
         let style = match ok {

@@ -79,6 +79,8 @@ pub struct CompactionConfig {
     pub trigger_fraction: f64,
     /// Share of the context window kept verbatim afterwards.
     pub keep_recent_fraction: f64,
+    /// Token budgets that, where set, take the place of the fractions.
+    pub budget: CompactionBudget,
 }
 
 impl Default for CompactionConfig {
@@ -86,7 +88,47 @@ impl Default for CompactionConfig {
         CompactionConfig {
             trigger_fraction: 0.8,
             keep_recent_fraction: 0.3,
+            budget: CompactionBudget::default(),
         }
+    }
+}
+
+/// Compaction budgets in tokens rather than shares of the context window.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct CompactionBudget {
+    /// Tokens kept free below the context window: compaction fires once the conversation needs
+    /// more than the window less this.
+    pub reserve_tokens: Option<usize>,
+    /// Tokens of the most recent conversation kept verbatim.
+    pub keep_recent_tokens: Option<usize>,
+}
+
+impl CompactionBudget {
+    /// Each budget this one sets, and `fallback`'s where it sets none.
+    pub fn or(self, fallback: CompactionBudget) -> CompactionBudget {
+        CompactionBudget {
+            reserve_tokens: self.reserve_tokens.or(fallback.reserve_tokens),
+            keep_recent_tokens: self.keep_recent_tokens.or(fallback.keep_recent_tokens),
+        }
+    }
+}
+
+/// Compaction budgets for every model: the ordinary ones, and those particular models override,
+/// keyed by `provider/model`.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct CompactionBudgets {
+    pub ordinary: CompactionBudget,
+    pub models: std::collections::BTreeMap<String, CompactionBudget>,
+}
+
+impl CompactionBudgets {
+    /// The budgets in force for one model: its own where it has them, the ordinary ones otherwise.
+    pub fn for_model(&self, qualified_id: &str) -> CompactionBudget {
+        self.models
+            .get(qualified_id)
+            .copied()
+            .unwrap_or_default()
+            .or(self.ordinary)
     }
 }
 
@@ -111,15 +153,28 @@ impl CompactionConfig {
         Ok(CompactionConfig {
             trigger_fraction,
             keep_recent_fraction,
+            budget: CompactionBudget::default(),
         })
     }
 
+    /// The same policy with token budgets in place of the fractions they set.
+    pub fn with_budget(mut self, budget: CompactionBudget) -> Self {
+        self.budget = budget;
+        self
+    }
+
     pub fn trigger_tokens(&self, context_window: usize) -> usize {
-        (context_window as f64 * self.trigger_fraction) as usize
+        match self.budget.reserve_tokens {
+            Some(reserve) => context_window.saturating_sub(reserve),
+            None => (context_window as f64 * self.trigger_fraction) as usize,
+        }
     }
 
     pub fn keep_recent_tokens(&self, context_window: usize) -> usize {
-        (context_window as f64 * self.keep_recent_fraction) as usize
+        match self.budget.keep_recent_tokens {
+            Some(keep) => keep,
+            None => (context_window as f64 * self.keep_recent_fraction) as usize,
+        }
     }
 }
 
@@ -704,6 +759,49 @@ mod tests {
         );
         assert!(compacted.tokens_after < compacted.tokens_before);
         assert!(is_self_contained(&compacted.messages));
+    }
+
+    #[test]
+    fn token_budgets_replace_the_fractions_they_set() {
+        let config = CompactionConfig::default().with_budget(CompactionBudget {
+            reserve_tokens: Some(400_000),
+            keep_recent_tokens: None,
+        });
+        assert_eq!(config.trigger_tokens(1_000_000), 600_000);
+        assert_eq!(config.keep_recent_tokens(1_000_000), 300_000);
+
+        let kept = CompactionConfig::default().with_budget(CompactionBudget {
+            reserve_tokens: None,
+            keep_recent_tokens: Some(20_000),
+        });
+        assert_eq!(kept.trigger_tokens(100_000), 80_000);
+        assert_eq!(kept.keep_recent_tokens(100_000), 20_000);
+    }
+
+    #[test]
+    fn a_model_override_falls_back_field_by_field() {
+        let budgets = CompactionBudgets {
+            ordinary: CompactionBudget {
+                reserve_tokens: Some(16_384),
+                keep_recent_tokens: Some(20_000),
+            },
+            models: [(
+                "some-provider/big-model".to_string(),
+                CompactionBudget {
+                    reserve_tokens: Some(400_000),
+                    keep_recent_tokens: None,
+                },
+            )]
+            .into(),
+        };
+        assert_eq!(
+            budgets.for_model("some-provider/big-model"),
+            CompactionBudget {
+                reserve_tokens: Some(400_000),
+                keep_recent_tokens: Some(20_000),
+            }
+        );
+        assert_eq!(budgets.for_model("other/model"), budgets.ordinary);
     }
 
     #[tokio::test]

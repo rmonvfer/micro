@@ -28,7 +28,13 @@ const COLLAPSED_ARGUMENT_CHARS: usize = 80;
 /// Columns a row is inset by under the header.
 const INDENT: usize = 2;
 
-pub fn lines(tool: &ToolEntry, focused: bool, theme: &Theme, width: usize) -> Vec<Line<'static>> {
+pub fn lines(
+    tool: &ToolEntry,
+    focused: bool,
+    theme: &Theme,
+    width: usize,
+    pad: usize,
+) -> Vec<Line<'static>> {
     let script = tool
         .arguments
         .get("code")
@@ -39,7 +45,13 @@ pub fn lines(tool: &ToolEntry, focused: bool, theme: &Theme, width: usize) -> Ve
     let mut rows = header(tool, outcome.as_ref(), theme, width);
 
     let script = script_lines(script, theme, width);
-    rows.extend(limited(script, tool.expanded, SCRIPT_PREVIEW_LINES, focused, theme));
+    rows.extend(limited(
+        script,
+        tool.expanded,
+        SCRIPT_PREVIEW_LINES,
+        focused,
+        theme,
+    ));
 
     if !tool.nested.is_empty() {
         rows.push(Line::default());
@@ -68,7 +80,13 @@ pub fn lines(tool: &ToolEntry, focused: bool, theme: &Theme, width: usize) -> Ve
                 })
                 .collect();
             rows.push(Line::default());
-            rows.extend(limited(output, tool.expanded, OUTPUT_PREVIEW_LINES, focused, theme));
+            rows.extend(limited(
+                output,
+                tool.expanded,
+                OUTPUT_PREVIEW_LINES,
+                focused,
+                theme,
+            ));
             // The collapsed preview hides the note at the end that names the file.
             if let Some(path) = outcome.full_output_path.as_ref().filter(|_| !tool.expanded) {
                 rows.extend(wrap_spans(
@@ -83,7 +101,7 @@ pub fn lines(tool: &ToolEntry, focused: bool, theme: &Theme, width: usize) -> Ve
         }
     }
 
-    band(rows, width, ground(tool, focused, theme))
+    band(rows, width, pad, ground(tool, focused, theme))
 }
 
 /// What a finished script said, read back out of its result.
@@ -327,14 +345,29 @@ mod tests {
 
     #[test]
     fn a_running_script_shows_its_code_and_its_calls_so_far() {
-        let mut tool = codemode("const a = await tools.read({ path: 'x' });\nreturn a;", None);
-        tool.nested = vec![row("read", NestedState::Ok), row("mcp__docs__search", NestedState::Running)];
-        let drawn = text(&lines(&tool, false, &Theme::dark(), 80));
+        let mut tool = codemode(
+            "const a = await tools.read({ path: 'x' });\nreturn a;",
+            None,
+        );
+        tool.nested = vec![
+            row("read", NestedState::Ok),
+            row("mcp__docs__search", NestedState::Running),
+        ];
+        let drawn = text(&lines(&tool, false, &Theme::dark(), 80, 0));
         assert!(drawn.contains(&"codemode …".to_string()), "{drawn:?}");
         assert!(drawn.contains(&"const a = await tools.read({ path: 'x' });".to_string()));
-        assert!(drawn.contains(&"✓ read {\"path\":\"read\"} 1.5s".to_string()), "{drawn:?}");
-        assert!(drawn.iter().any(|line| line.starts_with("… docs/search")), "{drawn:?}");
-        assert!(!drawn.iter().any(|line| line.contains("it broke")), "errors wait for expansion");
+        assert!(
+            drawn.contains(&"✓ read {\"path\":\"read\"} 1.5s".to_string()),
+            "{drawn:?}"
+        );
+        assert!(
+            drawn.iter().any(|line| line.starts_with("… docs/search")),
+            "{drawn:?}"
+        );
+        assert!(
+            !drawn.iter().any(|line| line.contains("it broke")),
+            "errors wait for expansion"
+        );
     }
 
     #[test]
@@ -342,14 +375,22 @@ mod tests {
         let long = "x".repeat(400);
         let tool = codemode(
             "return 1;",
-            Some(&format!("Script completed\nWall time 0.3 seconds\nOutput:\n\n{long}")),
+            Some(&format!(
+                "Script completed\nWall time 0.3 seconds\nOutput:\n\n{long}"
+            )),
         );
-        let drawn = text(&lines(&tool, false, &Theme::dark(), 40));
-        assert!(drawn.iter().any(|line| line == "codemode  0.3s"), "{drawn:?}");
+        let drawn = text(&lines(&tool, false, &Theme::dark(), 40, 0));
+        assert!(
+            drawn.iter().any(|line| line == "codemode  0.3s"),
+            "{drawn:?}"
+        );
         assert!(!drawn.iter().any(|line| line.contains("Script completed")));
         let output_rows = drawn.iter().filter(|line| line.starts_with("xxxx")).count();
         assert_eq!(output_rows, OUTPUT_PREVIEW_LINES, "{drawn:?}");
-        assert!(drawn.iter().any(|line| line.starts_with("… +")), "{drawn:?}");
+        assert!(
+            drawn.iter().any(|line| line.starts_with("… +")),
+            "{drawn:?}"
+        );
     }
 
     #[test]
@@ -361,22 +402,36 @@ mod tests {
                 Some("Script failed\nWall time 1.0 seconds\nOutput:\n\nWarning: truncated\n[Full output: /tmp/out.txt (read with offset/limit)]"),
             )
         };
-        let drawn = text(&lines(&tool, false, &Theme::dark(), 80));
-        assert!(drawn.iter().any(|line| line == "codemode  failed, 1.0s"), "{drawn:?}");
-        assert!(drawn.contains(&"Full output: /tmp/out.txt".to_string()), "{drawn:?}");
+        let drawn = text(&lines(&tool, false, &Theme::dark(), 80, 0));
+        assert!(
+            drawn.iter().any(|line| line == "codemode  failed, 1.0s"),
+            "{drawn:?}"
+        );
+        assert!(
+            drawn.contains(&"Full output: /tmp/out.txt".to_string()),
+            "{drawn:?}"
+        );
     }
 
     #[test]
     fn collapsed_calls_show_the_latest_and_count_the_rest() {
-        let mut tool = codemode("x", Some("Script completed\nWall time 0.1 seconds\nOutput:\n"));
-        tool.nested = (0..12).map(|n| row(&format!("t{n}"), NestedState::Error)).collect();
-        let drawn = text(&lines(&tool, false, &Theme::dark(), 80));
-        assert!(drawn.contains(&"… 4 earlier calls".to_string()), "{drawn:?}");
+        let mut tool = codemode(
+            "x",
+            Some("Script completed\nWall time 0.1 seconds\nOutput:\n"),
+        );
+        tool.nested = (0..12)
+            .map(|n| row(&format!("t{n}"), NestedState::Error))
+            .collect();
+        let drawn = text(&lines(&tool, false, &Theme::dark(), 80, 0));
+        assert!(
+            drawn.contains(&"… 4 earlier calls".to_string()),
+            "{drawn:?}"
+        );
         assert!(drawn.iter().any(|line| line.starts_with("✗ t11")));
         assert!(!drawn.iter().any(|line| line.starts_with("✗ t3 ")));
 
         tool.expanded = true;
-        let drawn = text(&lines(&tool, false, &Theme::dark(), 80));
+        let drawn = text(&lines(&tool, false, &Theme::dark(), 80, 0));
         assert!(drawn.iter().any(|line| line.starts_with("✗ t0")));
         assert!(drawn.contains(&"it broke".to_string()), "{drawn:?}");
     }

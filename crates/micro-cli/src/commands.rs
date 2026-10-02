@@ -75,6 +75,12 @@ pub struct CliCommands {
     mcp_section: Option<String>,
     /// Where something finished in the background, such as a sign-in, is announced.
     notifier: Option<micro_tui::UiAsker>,
+    /// Every tool the agent has, offered or not.
+    available_tools: Vec<String>,
+    /// What the `default_tools` setting selected, so `/reload` can turn on what it newly names.
+    default_tools: crate::default_tools::DefaultTools,
+    /// The agent's list of the tools it offers the model.
+    offered_tools: Arc<std::sync::RwLock<Option<Vec<String>>>>,
     /// The policy that commands in this session currently use.
     sandbox: micro_tools::Guard,
     /// Whether this workspace was trusted when the session started.
@@ -110,6 +116,9 @@ pub struct HostParts {
     pub tool_names: Vec<String>,
     pub mcp: micro_mcp::Servers,
     pub mcp_section: Option<String>,
+    pub available_tools: Vec<String>,
+    pub default_tools: crate::default_tools::DefaultTools,
+    pub offered_tools: Arc<std::sync::RwLock<Option<Vec<String>>>>,
     pub sandbox: micro_tools::Guard,
     pub project_trusted: bool,
     pub sandbox_overridden: bool,
@@ -155,6 +164,9 @@ impl CliCommands {
             mcp: parts.mcp,
             mcp_section: parts.mcp_section,
             notifier: None,
+            available_tools: parts.available_tools,
+            default_tools: parts.default_tools,
+            offered_tools: parts.offered_tools,
             sandbox: parts.sandbox,
             project_trusted: parts.project_trusted,
             sandbox_overridden: parts.sandbox_overridden,
@@ -426,7 +438,7 @@ impl CliCommands {
             == micro_auth::canonical_provider(&self.model.provider)
         {
             let model = self.model.clone();
-            return match self.swap_to(&model).await {
+            return match self.swap_to(&model, false).await {
                 Applied::Model { swap, .. } => Applied::Model {
                     swap,
                     note: Some(format!("Signed in to {provider}.")),
@@ -440,7 +452,8 @@ impl CliCommands {
         ))
     }
 
-    async fn swap_to(&mut self, model: &ModelDef) -> Applied {
+    /// Switch the session to `model`, and make it the default for later sessions when `save` is set.
+    async fn swap_to(&mut self, model: &ModelDef, save: bool) -> Applied {
         let resolved = match micro_provider::resolve(&self.auth, model).await {
             Ok(resolved) => resolved,
             Err(error) => {
@@ -469,7 +482,10 @@ impl CliCommands {
             return Applied::error(format!("Could not update the session model: {error}"));
         }
 
-        let remembered = self.remember_model(model);
+        let remembered = match save {
+            true => self.remember_model(model),
+            false => Ok(()),
+        };
 
         if previous_model.qualified_id() != model.qualified_id() {
             crate::extensions::announce(
@@ -488,8 +504,10 @@ impl CliCommands {
             Some(warning) => format!("Model: {}\n{warning}", model.qualified_id()),
             None => format!("Model: {}", model.qualified_id()),
         };
-        if let Err(error) = remembered {
-            note.push_str(&format!("\nIt was not remembered for next time: {error}"));
+        match remembered {
+            Ok(()) if save => note.push_str("\nSaved as the default model."),
+            Ok(()) => {}
+            Err(error) => note.push_str(&format!("\nIt was not saved as the default: {error}")),
         }
 
         Applied::Model {
@@ -786,6 +804,9 @@ impl CliCommands {
 
         let loaded = match self.sessions.load(&self.session_id).await {
             Ok(loaded) => loaded,
+            Err(micro_session::SessionError::NotFound(_)) => {
+                return Applied::error("Nothing said yet.")
+            }
             Err(error) => return Applied::error(format!("Cannot read the session: {error}")),
         };
         if loaded.messages.is_empty() {
@@ -803,8 +824,109 @@ impl CliCommands {
         }
     }
 
+    /// Write a bug report beside the workspace, or open the page an issue is filed on. Nothing is
+    /// uploaded: the user attaches the archive themselves.
+    async fn report_bug(&mut self, action: micro_commands::BugReportAction) -> Applied {
+        let (transcript, description) = match action {
+            micro_commands::BugReportAction::OpenIssue => {
+                return match micro_auth::oauth::open_browser(micro_commands::ISSUES_URL) {
+                    true => Applied::note(format!("Opened {}", micro_commands::ISSUES_URL)),
+                    false => Applied::warning(format!(
+                        "Could not open a browser. File the issue at {}",
+                        micro_commands::ISSUES_URL
+                    )),
+                };
+            }
+            micro_commands::BugReportAction::Export {
+                transcript,
+                description,
+            } => (transcript, description),
+        };
+
+        let loaded = match self.sessions.load(&self.session_id).await {
+            Ok(loaded) => loaded,
+            Err(error) => return Applied::error(format!("Cannot read the session: {error}")),
+        };
+        let log = match transcript {
+            true => match self.sessions.raw_log(&self.session_id).await {
+                Ok(log) => Some(log),
+                Err(error) => {
+                    return Applied::error(format!("Cannot read the session log: {error}"))
+                }
+            },
+            false => None,
+        };
+
+        let home = std::env::var_os("HOME").map(PathBuf::from);
+        let report = crate::bug_report::build(crate::bug_report::ReportInputs {
+            description: description.as_deref(),
+            session_id: &self.session_id,
+            workspace: &self.workspace,
+            model: &self.model,
+            thinking: self.thinking,
+            tool_names: &self.tool_names,
+            extensions: self
+                .extensions
+                .as_deref()
+                .map(micro_extensions::Host::loaded),
+            messages: &loaded.messages,
+            events: loaded.session.events(),
+            global_settings: &self.config_home.join(micro_config::FILE_NAME),
+            project_settings: &micro_config::ProjectConfig::path(&self.workspace),
+            transcript: log,
+            home: home.as_deref(),
+            now: std::time::SystemTime::now(),
+        });
+
+        let path = match report.write_to(&self.workspace) {
+            Ok(path) => path,
+            Err(error) => {
+                return Applied::error(format!("Failed to write the bug report: {error}"))
+            }
+        };
+        let _ = self
+            .session
+            .lock()
+            .await
+            .append_custom(
+                crate::bug_report::SESSION_ENTRY_TYPE,
+                report.session_entry(&path),
+            )
+            .await;
+
+        let mut note = format!(
+            "Bug report written to {}\nReport ID: {}\nAttach it to an issue at {}, or run /bug --open-issue to open that page.",
+            path.display(),
+            report.id,
+            micro_commands::ISSUES_URL
+        );
+        if report.transcript.is_some() {
+            note.push_str(
+                "\nThe archive includes the session transcript; review it before sharing.",
+            );
+        }
+        Applied::note(note)
+    }
+
     /// Read the instruction files and skills again, and tell the model what they say now.
     async fn reload(&mut self) -> Applied {
+        let user_tools =
+            micro_config::Config::load_from(self.config_home.join(micro_config::FILE_NAME))
+                .ok()
+                .and_then(|config| config.default_tools);
+        let enabled = self.default_tools.reload(
+            user_tools,
+            &self.workspace,
+            self.project_trusted,
+            &self.offered_tools,
+            &self.available_tools,
+        );
+        for name in &enabled {
+            if !self.tool_names.contains(name) {
+                self.tool_names.push(name.clone());
+            }
+        }
+
         let context = crate::runtime::load_context(
             &self.workspace,
             self.skills_enabled,
@@ -822,6 +944,9 @@ impl CliCommands {
             counted(context.instruction_files.len(), "context file"),
             counted(context.skills.len(), "skill")
         );
+        if !enabled.is_empty() {
+            note.push_str(&format!("\nEnabled tools: {}.", enabled.join(", ")));
+        }
         for diagnostic in &context.diagnostics {
             note.push('\n');
             note.push_str(diagnostic);
@@ -1036,11 +1161,13 @@ impl Commands for CliCommands {
         true
     }
 
-    async fn thinking_changed(&mut self, level: micro_types::ThinkingLevel) {
+    async fn thinking_changed(&mut self, level: micro_types::ThinkingLevel, save: bool) {
         let previous_level = self.thinking;
         self.thinking = level;
-        if let Err(error) = self.remember_thinking(level) {
-            eprintln!("note: thinking level was not remembered for next time: {error}");
+        if save {
+            if let Err(error) = self.remember_thinking(level) {
+                eprintln!("note: thinking level was not saved as the default: {error}");
+            }
         }
         crate::extensions::announce(
             self.extensions.as_ref(),
@@ -1237,9 +1364,11 @@ impl Commands for CliCommands {
 
             CommandOutcome::Share => self.share().await,
 
+            CommandOutcome::ReportBug(action) => self.report_bug(action).await,
+
             CommandOutcome::RemoteControl { action } => self.remote(action).await,
 
-            CommandOutcome::SetModel { model } => self.swap_to(&model).await,
+            CommandOutcome::SetModel { model, save } => self.swap_to(&model, save).await,
 
             CommandOutcome::SetProvider { provider } => {
                 let canonical = micro_auth::canonical_provider(provider).to_string();
@@ -1250,7 +1379,7 @@ impl Commands for CliCommands {
                     .find(|model| model.provider == canonical)
                     .cloned()
                 {
-                    Some(model) => self.swap_to(&model).await,
+                    Some(model) => self.swap_to(&model, false).await,
                     None => Applied::error(format!("No models are known for {provider}.")),
                 }
             }
@@ -1269,6 +1398,19 @@ impl Commands for CliCommands {
     ) -> Applied {
         let provider = pending.provider.clone();
         if let Err(error) = self.auth.complete_device_login(&pending).await {
+            return Applied::error(format!("Sign-in failed: {error}"));
+        }
+        self.signed_in(&provider).await
+    }
+
+    async fn finish_browser_login(
+        &mut self,
+        pending: Box<micro_auth::PendingBrowserLogin>,
+        pasted: tokio::sync::oneshot::Receiver<String>,
+    ) -> Applied {
+        let provider = pending.provider.clone();
+        let manual = async move { pasted.await.ok() };
+        if let Err(error) = self.auth.complete_browser_login(&pending, manual).await {
             return Applied::error(format!("Sign-in failed: {error}"));
         }
         self.signed_in(&provider).await
@@ -1382,6 +1524,15 @@ mod tests {
             tool_names: Vec::new(),
             mcp: micro_mcp::Servers::new(Default::default(), &root),
             mcp_section: None,
+            available_tools: Vec::new(),
+            default_tools: crate::default_tools::DefaultTools::new(
+                Vec::new(),
+                None,
+                &root,
+                false,
+                false,
+            ),
+            offered_tools: Default::default(),
             sandbox,
 
             project_trusted: false,
@@ -1496,22 +1647,35 @@ mod tests {
         );
     }
 
-    /// Choosing a model is a decision about how to work, so the next run starts on it.
+    /// Choosing a model changes this session; saving it as the default is what the next run starts
+    /// on.
     #[tokio::test]
-    async fn switching_model_is_remembered_for_next_time() {
+    async fn switching_model_is_saved_for_next_time_only_when_asked() {
         let (mut host, root) = host("remember-model").await;
         host.auth.store_api_key("anthropic", "sk-ant-test").unwrap();
+        let settings = root.join("home").join(micro_config::FILE_NAME);
 
         let outcome = host
-            .dispatch("/model anthropic/claude-sonnet-5", state(0))
+            .dispatch("/model anthropic/claude-opus-5", state(0))
+            .await
+            .expect("a command");
+        let applied = host.apply(outcome).await;
+        assert!(!applied.is_error(), "{applied:?}");
+        let unsaved = micro_config::Config::load_from(&settings).expect("readable settings");
+        assert_eq!(unsaved.model, None, "a switch is for this session");
+        assert_eq!(
+            host.session.lock().await.meta().model_id,
+            "anthropic/claude-opus-5"
+        );
+
+        let outcome = host
+            .dispatch("/model --default anthropic/claude-sonnet-5", state(0))
             .await
             .expect("a command");
         let applied = host.apply(outcome).await;
         assert!(!applied.is_error(), "{applied:?}");
 
-        let saved =
-            micro_config::Config::load_from(root.join("home").join(micro_config::FILE_NAME))
-                .expect("the settings were written");
+        let saved = micro_config::Config::load_from(&settings).expect("the settings were written");
         assert_eq!(saved.model.as_deref(), Some("anthropic/claude-sonnet-5"));
         assert_eq!(saved.provider.as_deref(), Some("anthropic"));
         assert_eq!(
@@ -1578,15 +1742,18 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn cycling_thinking_is_remembered_for_next_time() {
+    async fn a_thinking_level_is_saved_only_when_asked() {
         let (mut host, root) = host("remember-thinking").await;
+        let settings = root.join("home").join(micro_config::FILE_NAME);
 
-        host.thinking_changed(micro_types::ThinkingLevel::High)
+        host.thinking_changed(micro_types::ThinkingLevel::Low, false)
             .await;
+        let unsaved = micro_config::Config::load_from(&settings).expect("readable settings");
+        assert_eq!(unsaved.thinking, None, "cycling is for this session");
 
-        let saved =
-            micro_config::Config::load_from(root.join("home").join(micro_config::FILE_NAME))
-                .expect("the settings were written");
+        host.thinking_changed(micro_types::ThinkingLevel::High, true)
+            .await;
+        let saved = micro_config::Config::load_from(&settings).expect("the settings were written");
         assert_eq!(saved.thinking, Some(micro_config::Thinking::High));
     }
 
@@ -1899,6 +2066,97 @@ mod tests {
             .await
             .expect("an unknown command response");
         assert!(removed.is_error());
+    }
+
+    /// `/bug` writes an archive into the workspace, keeps the transcript out unless asked, and
+    /// leaves secrets in the settings behind.
+    #[tokio::test]
+    async fn a_bug_report_is_written_beside_the_workspace() {
+        let (mut host, root) = host("bug").await;
+        std::fs::create_dir_all(root.join("home")).unwrap();
+        std::fs::write(
+            root.join("home").join(micro_config::FILE_NAME),
+            r#"{"theme":"dark","device_id":"dev-1234","openai_api_key":"sk-hidden"}"#,
+        )
+        .unwrap();
+        host.session
+            .lock()
+            .await
+            .append(&micro_types::Message::user("a private request"))
+            .await
+            .unwrap();
+
+        let applied = host
+            .apply(CommandOutcome::ReportBug(
+                micro_commands::BugReportAction::Export {
+                    transcript: false,
+                    description: Some("the editor froze".into()),
+                },
+            ))
+            .await;
+        let text = note(&applied).to_string();
+        assert!(!applied.is_error(), "{text}");
+        assert!(text.contains(micro_commands::ISSUES_URL), "{text}");
+
+        let archive = std::fs::read_dir(&host.workspace)
+            .unwrap()
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .find(|path| {
+                path.file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name.starts_with("micro-bug-report-"))
+            })
+            .expect("an archive in the workspace");
+        assert!(text.contains(&archive.display().to_string()), "{text}");
+
+        let files = crate::archive::reading::unzip(&std::fs::read(&archive).unwrap());
+        let names: Vec<&str> = files.iter().map(|(name, _)| name.as_str()).collect();
+        assert_eq!(names, ["report.json", "diagnostics.json"]);
+        let report: String = files
+            .iter()
+            .map(|(_, contents)| String::from_utf8_lossy(contents).into_owned())
+            .collect();
+        assert!(report.contains("the editor froze"));
+        assert!(report.contains("\"dark\""));
+        assert!(!report.contains("sk-hidden"));
+        assert!(!report.contains("dev-1234"));
+        assert!(!report.contains("a private request"));
+    }
+
+    /// Asking for the transcript puts the session log in the archive beside the diagnostics.
+    #[tokio::test]
+    async fn a_bug_report_can_carry_the_transcript() {
+        let (mut host, _root) = host("bug-transcript").await;
+        host.session
+            .lock()
+            .await
+            .append(&micro_types::Message::user("what broke"))
+            .await
+            .unwrap();
+
+        let applied = host
+            .apply(CommandOutcome::ReportBug(
+                micro_commands::BugReportAction::Export {
+                    transcript: true,
+                    description: None,
+                },
+            ))
+            .await;
+        let text = note(&applied).to_string();
+        assert!(text.contains("review it before sharing"), "{text}");
+
+        let archive = text
+            .lines()
+            .find_map(|line| line.strip_prefix("Bug report written to "))
+            .map(PathBuf::from)
+            .expect("the note names the archive");
+        let files = crate::archive::reading::unzip(&std::fs::read(&archive).unwrap());
+        let transcript = files
+            .iter()
+            .find(|(name, _)| name == "session.jsonl")
+            .expect("the transcript is in the archive");
+        assert!(String::from_utf8_lossy(&transcript.1).contains("what broke"));
     }
 
     #[tokio::test]

@@ -68,6 +68,27 @@ fn timeout_for(arguments: &Value) -> Result<Option<u64>, String> {
     Ok(Some(milliseconds))
 }
 
+/// What the model is shown of a command's output: all of it when it fits, otherwise its head and
+/// tail with the whole of it kept in a file the model can read. `saved` is a file already holding
+/// the whole output, when there is one.
+async fn shown(output: &str, saved: Option<&Path>) -> String {
+    if output.chars().count() <= crate::MAX_OUTPUT_CHARS {
+        return output.to_string();
+    }
+    let truncated = truncate(output);
+    let saved = match saved {
+        Some(path) => Ok(path.to_path_buf()),
+        None => crate::spill("micro-bash", output).await,
+    };
+    match saved {
+        Ok(path) => format!(
+            "{truncated}\n\n[Output truncated. Full output: {}]",
+            path.display()
+        ),
+        Err(error) => format!("{truncated}\n\n[Output truncated. Full output not saved: {error}]"),
+    }
+}
+
 pub struct Bash {
     root: PathBuf,
     guard: Guard,
@@ -186,11 +207,12 @@ impl Bash {
     }
 
     /// What the model reads of a command that ran: its output, and how it failed if it did.
-    fn answer(&self, ran: &Ran) -> Result<String, String> {
+    /// `saved` is a file already holding the whole output, when there is one.
+    async fn answer(&self, ran: &Ran, saved: Option<&Path>) -> Result<String, String> {
         let body = if ran.combined.trim().is_empty() {
             "(no output)".to_string()
         } else {
-            truncate(ran.combined.trim_end())
+            shown(ran.combined.trim_end(), saved).await
         };
 
         let failure = match ran.status.code() {
@@ -274,7 +296,7 @@ impl Tool for Bash {
         progress: &crate::Progress,
     ) -> Result<String, String> {
         let ran = self.run(arguments, progress).await?;
-        self.answer(&ran)
+        self.answer(&ran, None).await
     }
 
     fn output_schema(&self) -> Option<Value> {
@@ -312,12 +334,16 @@ impl Tool for Bash {
             "exit_code": ran.status.code(),
             "wall_time_seconds": (ran.elapsed.as_secs_f64() * 10.0).round() / 10.0,
         });
-        if truncated {
-            if let Ok(path) = crate::spill("micro-bash", &ran.combined) {
-                structured["full_output_path"] = json!(path.display().to_string());
-            }
+        let saved = match truncated {
+            true => crate::spill("micro-bash", ran.combined.trim_end())
+                .await
+                .ok(),
+            false => None,
+        };
+        if let Some(path) = &saved {
+            structured["full_output_path"] = json!(path.display().to_string());
         }
-        let output = match self.answer(&ran) {
+        let output = match self.answer(&ran, saved.as_deref()).await {
             Ok(text) => ToolOutput::text(text),
             Err(failure) => ToolOutput::error(failure),
         };
@@ -342,6 +368,38 @@ mod tests {
     fn unconfined(root: PathBuf) -> Bash {
         let guard = Guard::new(Sandbox::new(SandboxPolicy::Full, root.clone()));
         Bash::new(root, guard)
+    }
+
+    #[tokio::test]
+    async fn long_output_keeps_its_ends_and_saves_the_whole_of_it() {
+        let output = unconfined(scratch("long"))
+            .execute(&json!({ "command": "echo first; seq 1 20000; echo last" }))
+            .await
+            .unwrap();
+        assert!(output.starts_with("first\n"), "{}", &output[..40]);
+        assert!(output.contains("characters omitted"));
+        let marker = "[Output truncated. Full output: ";
+        let start = output.find(marker).expect("the full output is named") + marker.len();
+        let path = output[start..].trim_end_matches(']');
+        let saved = std::fs::read_to_string(path).unwrap();
+        assert!(saved.starts_with("first\n1\n2\n"));
+        assert!(saved.ends_with("20000\nlast"));
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            let mode = std::fs::metadata(path).unwrap().permissions().mode();
+            assert_eq!(mode & 0o777, 0o600);
+        }
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[tokio::test]
+    async fn short_output_names_no_file() {
+        let output = unconfined(scratch("short"))
+            .execute(&json!({ "command": "echo brief" }))
+            .await
+            .unwrap();
+        assert!(!output.contains("Full output"));
     }
 
     #[tokio::test]

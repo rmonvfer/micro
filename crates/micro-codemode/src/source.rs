@@ -45,9 +45,11 @@ pub struct ParsedSource {
 /// Split an optional first-line `// @options: {...}` from the script.
 pub fn parse(input: &str) -> Result<ParsedSource, String> {
     if input.trim().is_empty() {
-        return Err("Expected JavaScript source text (non-empty). Provide JS only, optionally \
+        return Err(
+            "Expected JavaScript source text (non-empty). Provide JS only, optionally \
              with a first line `// @options: {\"max_output_tokens\": 1000}`."
-            .to_string());
+                .to_string(),
+        );
     }
     let (first_line, rest) = match input.find('\n') {
         Some(newline) => (&input[..newline], &input[newline..]),
@@ -73,7 +75,8 @@ pub fn parse(input: &str) -> Result<ParsedSource, String> {
 }
 
 fn parse_options(directive: &str) -> Result<SourceOptions, String> {
-    let shape = || format!("@options must be a JSON object with supported fields {SUPPORTED_FIELDS}");
+    let shape =
+        || format!("@options must be a JSON object with supported fields {SUPPORTED_FIELDS}");
     if directive.is_empty() {
         return Err(shape());
     }
@@ -137,7 +140,9 @@ mod tests {
     #[test]
     fn bad_options_are_explained() {
         assert!(parse("").unwrap_err().contains("non-empty"));
-        assert!(parse("// @options: {}").unwrap_err().contains("followed by"));
+        assert!(parse("// @options: {}")
+            .unwrap_err()
+            .contains("followed by"));
         assert!(parse("// @options: nope\nx")
             .unwrap_err()
             .contains("valid JSON"));

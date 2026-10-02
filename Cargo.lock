@@ -2263,7 +2263,9 @@ name = "micro-agent"
 version = "0.1.13"
 dependencies = [
  "async-trait",
+ "base64",
  "futures",
+ "image",
  "micro-context",
  "micro-models",
  "micro-provider",
@@ -2277,10 +2279,13 @@ dependencies = [
 name = "micro-auth"
 version = "0.1.13"
 dependencies = [
+ "base64",
  "micro-dirs",
+ "rand 0.8.7",
  "reqwest",
  "serde",
  "serde_json",
+ "sha2",
  "thiserror 2.0.20",
  "tokio",
 ]
@@ -2292,11 +2297,14 @@ dependencies = [
  "anyhow",
  "async-trait",
  "clap",
+ "crc32fast",
+ "flate2",
  "fs2",
  "futures",
  "libc",
  "micro-agent",
  "micro-auth",
+ "micro-codemode",
  "micro-commands",
  "micro-config",
  "micro-context",
@@ -2388,6 +2396,7 @@ name = "micro-extensions"
 version = "0.1.13"
 dependencies = [
  "async-trait",
+ "futures",
  "micro-models",
  "micro-sandbox",
  "micro-tools",
@@ -2452,6 +2461,7 @@ dependencies = [
  "async-trait",
  "futures",
  "hmac",
+ "httpdate",
  "micro-auth",
  "micro-models",
  "micro-tools",
@@ -2568,6 +2578,7 @@ dependencies = [
  "async-trait",
  "base64",
  "ignore",
+ "image",
  "micro-sandbox",
  "micro-types",
  "regex",

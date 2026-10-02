@@ -7,6 +7,7 @@ pub mod links;
 mod menu;
 mod overlay;
 pub mod pictures;
+mod search;
 pub mod selection;
 pub mod status;
 mod tool;
@@ -61,13 +62,17 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     let content_width = content_width(area.width, content_padding);
 
     app.set_frame(content_width as usize, area.height);
+    let output_pad = app.settings().output_pad;
+    app.set_transcript_width(area.width.saturating_sub(output_pad * 2) as usize);
     let chrome = chrome(app, &theme, area.width, area.height);
     let transcript_rows = area.height.saturating_sub(chrome.rows());
     app.set_viewport(transcript_rows as usize);
 
     app.refresh_lines();
+    app.refresh_search();
 
-    let opening = match app.lines().is_empty() && !app.settings().quiet_startup {
+    let quiet = app.settings().quiet_startup;
+    let opening = match app.lines().is_empty() && quiet.shows_header() {
         true => match app.header_override() {
             Some(lines) => lines
                 .iter()
@@ -77,7 +82,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
                 &theme,
                 content_width as usize,
                 app.startup_expanded(),
-                app.resources(),
+                quiet.lists_resources().then(|| app.resources()),
             ),
         },
         false => Vec::new(),
@@ -93,6 +98,15 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     let widgets_below = chrome.widgets_below;
 
     draw_transcript(frame, transcript_area, app, &opening, &theme);
+    if let Some(found) = app.search() {
+        search::highlight(frame, transcript_area, app, found, &theme);
+        search::draw_box(frame, transcript_area, found, &theme);
+    }
+    let jump_label = match app.is_scrolled_up() {
+        true => draw_jump_label(frame, transcript_area, &theme),
+        false => None,
+    };
+    app.set_jump_label(jump_label);
     draw_rows(
         frame,
         overlay_area,
@@ -159,18 +173,15 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     }
     draw_status(frame, inset_by(status_area, content_padding), app, &theme);
 
-    app.links().apply(frame.buffer_mut(), area);
-
     if let Some(selection) = app.selection().copied() {
-        if selection.copy_pending {
+        if selection.copy_pending.is_some() {
             let text = selection::extract_text(frame.buffer_mut(), &selection);
-            if !text.is_empty() {
-                crate::clipboard::write_text(&text);
-            }
-            app.clear_copy_pending();
+            app.copy_selection(&text);
         }
         selection::apply_selection(frame.buffer_mut(), &selection);
     }
+
+    app.links().apply(frame.buffer_mut(), area);
 
     let first_visible = app
         .lines()
@@ -449,6 +460,39 @@ fn draw_transcript(
     );
 }
 
+/// What the label offering to return to the latest message says.
+const JUMP_LABEL: &str = "↓ Jump to latest message";
+
+/// The label on the transcript's bottom row that returns to the latest message, and where it went.
+fn draw_jump_label(frame: &mut Frame, area: Rect, theme: &Theme) -> Option<Rect> {
+    if area.width == 0 || area.height == 0 {
+        return None;
+    }
+    let key = hints::key_text("end");
+    let full = format!(" {JUMP_LABEL}  {key} ");
+    let text = match text_width(&full) <= area.width as usize {
+        true => full,
+        false => crate::wrap::truncate(&format!(" {JUMP_LABEL} "), area.width as usize),
+    };
+    let width = text_width(&text) as u16;
+    let label = Rect {
+        x: area.x + (area.width - width) / 2,
+        y: area.y + area.height - 1,
+        width,
+        height: 1,
+    };
+    frame.buffer_mut().set_string(
+        label.x,
+        label.y,
+        &text,
+        Style::new()
+            .fg(theme.accent)
+            .bg(theme.selected_bg)
+            .add_modifier(Modifier::BOLD),
+    );
+    Some(label)
+}
+
 /// How far through the conversation the window is, drawn down the right edge.
 fn draw_scrollbar(
     frame: &mut Frame,
@@ -546,7 +590,7 @@ const HINTS: [(&str, &str); 5] = [
 ];
 
 /// Every key, for the reader who asked for all of them.
-const ALL_HINTS: [(&str, &str); 19] = [
+const ALL_HINTS: [(&str, &str); 21] = [
     ("escape", "to interrupt"),
     ("ctrl+c", "to clear"),
     ("ctrl+c twice", "to exit"),
@@ -559,6 +603,8 @@ const ALL_HINTS: [(&str, &str); 19] = [
     ("ctrl+o", "to expand tools"),
     ("ctrl+t", "to expand thinking"),
     ("ctrl+g", "for external editor"),
+    ("ctrl+f", "to search the transcript"),
+    ("ctrl+x", "to copy the selection or last answer"),
     ("/", "for commands"),
     ("!", "to run bash"),
     ("!!", "to run bash (no context)"),
@@ -568,11 +614,13 @@ const ALL_HINTS: [(&str, &str); 19] = [
     ("drop files", "to attach"),
 ];
 
+/// The opening screen: the name and version, the keys worth knowing, and, when they are given,
+/// what was loaded.
 fn intro(
     theme: &Theme,
     width: usize,
     expanded: bool,
-    resources: &crate::app::Resources,
+    resources: Option<&crate::app::Resources>,
 ) -> Vec<Line<'static>> {
     let dim = Style::new().fg(theme.dim);
 
@@ -598,12 +646,13 @@ fn intro(
     match expanded {
         false => {
             out.extend(wrap_spans(&hints::hints(&HINTS, theme), width, 0));
+            let more = match resources {
+                Some(_) => "full startup help and loaded resources",
+                None => "full startup help",
+            };
             out.extend(wrap_spans(
                 &[Span::styled(
-                    format!(
-                        "Press {} to show full startup help and loaded resources.",
-                        hints::key_text("ctrl+o")
-                    ),
+                    format!("Press {} to show {more}.", hints::key_text("ctrl+o")),
                     dim,
                 )],
                 width,
@@ -617,9 +666,11 @@ fn intro(
         }
     }
 
-    out.push(Line::default());
-    out.extend(wrap_spans(&onboarding, width, 0));
-    out.extend(resource_lines(resources, theme, width, expanded));
+    if let Some(resources) = resources {
+        out.push(Line::default());
+        out.extend(wrap_spans(&onboarding, width, 0));
+        out.extend(resource_lines(resources, theme, width, expanded));
+    }
     out
 }
 
@@ -960,6 +1011,63 @@ mod tests {
                     .to_string()
             })
             .collect()
+    }
+
+    #[test]
+    fn a_scrolled_up_transcript_offers_to_jump_to_the_latest_message() {
+        let mut app = App::new(&[], TuiOptions::default());
+        app.set_tui_mode(crate::TuiMode::Fullscreen);
+        for index in 0..40 {
+            app.transcript.push_user(format!("prompt {index}"));
+        }
+        let mut terminal = Terminal::new(TestBackend::new(60, 20)).expect("backend");
+        terminal.draw(|frame| draw(frame, &mut app)).expect("draws");
+        assert!(!screen(&terminal).join("\n").contains("Jump to latest"));
+
+        app.handle(Action::PageUp);
+        terminal.draw(|frame| draw(frame, &mut app)).expect("draws");
+        let rows = screen(&terminal);
+        let row = rows
+            .iter()
+            .position(|row| row.contains("Jump to latest message"))
+            .expect("the label is drawn");
+        let column = rows[row].find("Jump").unwrap() as u16;
+
+        app.handle(Action::SelectStart {
+            col: column,
+            row: row as u16,
+        });
+        assert_eq!(
+            app.scroll(),
+            0,
+            "a click on it returns to the latest message"
+        );
+    }
+
+    #[test]
+    fn a_header_only_start_keeps_the_version_and_keys_and_drops_the_rest() {
+        let mut resources = crate::app::Resources::default();
+        resources.add("Skills", vec!["humanizer".into()], vec!["~/h.md".into()]);
+        let draw_with = |quiet: micro_config::QuietStartup| {
+            let mut options = TuiOptions {
+                resources: resources.clone(),
+                ..TuiOptions::default()
+            };
+            options.settings.quiet_startup = quiet;
+            let mut app = App::new(&[], options);
+            let mut terminal = Terminal::new(TestBackend::new(70, 30)).expect("backend");
+            terminal.draw(|frame| draw(frame, &mut app)).expect("draws");
+            screen(&terminal).join("\n")
+        };
+
+        let header = draw_with(micro_config::QuietStartup::Header);
+        assert!(header.contains(env!("CARGO_PKG_VERSION")), "{header}");
+        assert!(header.contains("commands"), "{header}");
+        assert!(!header.contains("[Skills]"), "{header}");
+        assert!(!header.contains("can explain"), "{header}");
+
+        let silent = draw_with(micro_config::QuietStartup::On);
+        assert!(!silent.contains(env!("CARGO_PKG_VERSION")), "{silent}");
     }
 
     #[test]

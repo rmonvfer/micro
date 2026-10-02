@@ -125,7 +125,8 @@ pub(crate) struct NestedRequest {
 }
 
 /// Where the nested calls of each running tool call are handed to it, by host call id.
-type NestedRequests = Arc<Mutex<HashMap<String, tokio::sync::mpsc::UnboundedSender<NestedRequest>>>>;
+type NestedRequests =
+    Arc<Mutex<HashMap<String, tokio::sync::mpsc::UnboundedSender<NestedRequest>>>>;
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct RegisteredCommand {

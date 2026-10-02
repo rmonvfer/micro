@@ -25,7 +25,7 @@ Reading a PNG, JPEG, GIF, WebP, or BMP hands the picture to the model rather tha
 
 Interactive sessions may also expose `request_sandbox_access`. After a denial, the model can ask for network access or temporary-directory writes for one exact command or the rest of the session. Noninteractive modes do not provide this tool because they cannot show its approval dialog.
 
-Tool output longer than 30,000 characters is truncated in the middle before it is returned to the model.
+Tool output longer than 30,000 characters is truncated in the middle before it is returned to the model. When `bash` output is truncated, its full output is saved to a private `micro-bash-*.log` file in the temporary directory and the result ends with `[Output truncated. Full output: <path>]`, so the model can read or search the omitted part.
 
 ## Select tools
 
@@ -42,6 +42,14 @@ micro --exclude-tools write,edit,multi_edit,bash
 ```
 
 Names are matched exactly. The allowlist is applied first; the denylist then removes names from the result.
+
+The `default_tools` setting chooses the built-in tools a session starts with, in `config.json` or in a trusted project's `.micro/settings.json`. Plain names replace the full built-in set; `+name` adds a tool and `-name` removes one. A project list made only of `+name` and `-name` entries applies on top of the user's list, while a project list with plain names replaces it. An empty list turns every built-in tool off. Extension and MCP tools are not affected.
+
+```json
+{ "default_tools": ["-bash", "-write"] }
+```
+
+`/reload` turns on tools newly added to `default_tools`. Tools removed from it stay on, and a tool turned off during the session stays off unless it is newly added. `--tools` overrides the setting, also on reload, and tools removed with `--exclude-tools` cannot be turned on.
 
 Inside an interactive session, `/tools` may be provided by an extension, but the built-in command-line flags remain the startup control.
 
@@ -91,6 +99,8 @@ Built-in tools are never deferred, and neither are the tools of an MCP server wi
 Extensions register tools through the host API. They are filtered by the same `--tools` and `--exclude-tools` options as built-ins and MCP tools, and an extension tool's `exposure` decides whether it is declared, searched for, or only called from other tools.
 
 An extension needs the `tools` capability to register one. See [Extensions](extensions.md).
+
+A call to a tool without its own renderer, MCP tools included, is titled by its arguments. Collapsed, they follow the tool name as `key=value` pairs cut to 100 characters; expanded with `ctrl+o`, each argument gets its own `key: value` line, with strings written as they are.
 
 ## Mermaid diagrams
 

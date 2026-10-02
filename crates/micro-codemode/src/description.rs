@@ -189,7 +189,12 @@ pub fn description(
         declarations.push(declaration);
     }
     groups[1..].sort_by(|left, right| {
-        let name = |group: &Group| group.namespace.as_ref().map(|namespace| namespace.name.clone());
+        let name = |group: &Group| {
+            group
+                .namespace
+                .as_ref()
+                .map(|namespace| namespace.name.clone())
+        };
         name(left).cmp(&name(right))
     });
     let shown = select(&groups, inline_budget);
@@ -305,8 +310,7 @@ pub fn prepare_loadout(
         .iter()
         .filter(|tool| tool.definition.name != CODEMODE_TOOL_NAME)
         .collect();
-    let is_callable =
-        |name: &str| callable.iter().any(|tool| tool.definition.name == name);
+    let is_callable = |name: &str| callable.iter().any(|tool| tool.definition.name == name);
     let mut changes = LoadoutChanges::default();
     if mode == Mode::On {
         for tool in &loadout.declared {
@@ -330,7 +334,9 @@ pub fn prepare_loadout(
         changes.hidden = loadout
             .declared
             .iter()
-            .filter(|tool| tool.exposure == ToolExposure::Direct && is_callable(&tool.definition.name))
+            .filter(|tool| {
+                tool.exposure == ToolExposure::Direct && is_callable(&tool.definition.name)
+            })
             .map(|tool| tool.definition.name.clone())
             .collect();
     }
@@ -383,7 +389,10 @@ mod tests {
     #[test]
     fn namespaces_get_one_heading_and_odd_names_their_identifier() {
         let described = description(
-            &[in_namespace(tool("mcp__my-server__x", ToolExposure::Codemode), "mcp__my-server")],
+            &[in_namespace(
+                tool("mcp__my-server__x", ToolExposure::Codemode),
+                "mcp__my-server",
+            )],
             None,
             &[],
         );
@@ -401,20 +410,34 @@ mod tests {
             Some(60),
             &[],
         );
-        assert!(described.contains("## one (some tools not listed)"), "{described}");
-        let nothing = description(&[in_namespace(tool("a", ToolExposure::Codemode), "one")], Some(0), &[]);
+        assert!(
+            described.contains("## one (some tools not listed)"),
+            "{described}"
+        );
+        let nothing = description(
+            &[in_namespace(tool("a", ToolExposure::Codemode), "one")],
+            Some(0),
+            &[],
+        );
         assert!(nothing.contains("## one (tools not listed)"), "{nothing}");
     }
 
     #[test]
     fn on_mode_keeps_declared_tools_and_says_how_scripts_call_them() {
         let loadout = Loadout {
-            declared: vec![tool("read", ToolExposure::Direct), tool(CODEMODE_TOOL_NAME, ToolExposure::ModelOnly)],
-            callable: vec![tool("read", ToolExposure::Direct), tool("helper", ToolExposure::Codemode)],
+            declared: vec![
+                tool("read", ToolExposure::Direct),
+                tool(CODEMODE_TOOL_NAME, ToolExposure::ModelOnly),
+            ],
+            callable: vec![
+                tool("read", ToolExposure::Direct),
+                tool("helper", ToolExposure::Codemode),
+            ],
         };
         let changes = prepare_loadout(&loadout, Mode::On, None, &[]);
         assert!(changes.hidden.is_empty());
-        assert!(changes.descriptions["read"].ends_with("Codemode: `tools.read(args)` resolves to a string."));
+        assert!(changes.descriptions["read"]
+            .ends_with("Codemode: `tools.read(args)` resolves to a string."));
         let codemode = &changes.descriptions[CODEMODE_TOOL_NAME];
         assert!(codemode.contains("### `helper`"));
         assert!(!codemode.contains("### `read`"));
@@ -423,7 +446,10 @@ mod tests {
     #[test]
     fn only_mode_hides_declared_tools_and_lists_them_instead() {
         let loadout = Loadout {
-            declared: vec![tool("read", ToolExposure::Direct), tool(CODEMODE_TOOL_NAME, ToolExposure::ModelOnly)],
+            declared: vec![
+                tool("read", ToolExposure::Direct),
+                tool(CODEMODE_TOOL_NAME, ToolExposure::ModelOnly),
+            ],
             callable: vec![tool("read", ToolExposure::Direct)],
         };
         let changes = prepare_loadout(&loadout, Mode::Only, None, &[]);
@@ -446,9 +472,18 @@ mod tests {
             "required": ["output"],
         });
         let described = describe_output(Some(&schema));
-        assert!(described.starts_with("`{ ") && described.ends_with(" }`"), "{described}");
+        assert!(
+            described.starts_with("`{ ") && described.ends_with(" }`"),
+            "{described}"
+        );
         assert!(described.contains("full_output_path?"), "{described}");
-        assert!(described.contains("output,") || described.ends_with("output }`"), "{described}");
-        assert_eq!(describe_output(Some(&json!({ "type": "string" }))), "a string");
+        assert!(
+            described.contains("output,") || described.ends_with("output }`"),
+            "{described}"
+        );
+        assert_eq!(
+            describe_output(Some(&json!({ "type": "string" }))),
+            "a string"
+        );
     }
 }

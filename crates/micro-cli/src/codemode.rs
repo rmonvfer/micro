@@ -99,7 +99,10 @@ mod tests {
     }
 
     fn none() -> micro_mcp::Servers {
-        micro_mcp::Servers::new(micro_mcp::LoadedConfig::default(), std::path::Path::new("."))
+        micro_mcp::Servers::new(
+            micro_mcp::LoadedConfig::default(),
+            std::path::Path::new("."),
+        )
     }
 
     #[test]
@@ -107,8 +110,15 @@ mod tests {
         let codemode = vec![CODEMODE_TOOL_NAME.to_string()];
         assert!(wanted(&codemode, &[], &none()));
         assert!(!wanted(&[], &[], &none()));
-        assert!(wanted(&[], &[], &servers(None)), "codemode is the default exposure");
-        assert!(!wanted(&[], &[], &servers(Some(micro_mcp::Exposure::Deferred))));
+        assert!(
+            wanted(&[], &[], &servers(None)),
+            "codemode is the default exposure"
+        );
+        assert!(!wanted(
+            &[],
+            &[],
+            &servers(Some(micro_mcp::Exposure::Deferred))
+        ));
         assert!(!wanted(&[], &codemode, &servers(None)), "withheld");
         assert!(
             !wanted(&["read".to_string()], &[], &servers(None)),
