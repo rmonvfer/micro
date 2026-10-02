@@ -214,7 +214,12 @@ enum SandboxAction {
 #[derive(Subcommand)]
 enum AuthAction {
     /// Sign in to a provider.
-    Login { provider: String },
+    Login {
+        provider: String,
+        /// How to sign in: oauth, api_key, browser, copy_code or device_code.
+        #[arg(long, value_name = "METHOD")]
+        method: Option<String>,
+    },
     /// Remove a stored credential.
     Logout { provider: String },
     /// Show which providers are configured.
@@ -419,7 +424,9 @@ async fn main() -> Result<()> {
     match &cli.command {
         Some(Command::Auth { action }) => {
             return match action {
-                AuthAction::Login { provider } => subcommands::auth_login(provider).await,
+                AuthAction::Login { provider, method } => {
+                    subcommands::auth_login(provider, method.as_deref()).await
+                }
                 AuthAction::Logout { provider } => subcommands::auth_logout(provider).await,
                 AuthAction::Status => subcommands::auth_status().await,
             }

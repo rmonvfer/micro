@@ -1573,6 +1573,11 @@ impl App {
         });
     }
 
+    /// Close the prompt without taking what was typed.
+    pub fn dismiss_key_prompt(&mut self) {
+        self.key_prompt = None;
+    }
+
     /// The credential, once the user has finished typing it.
     pub fn take_key_prompt(&mut self) -> Option<(String, String)> {
         let finished = self

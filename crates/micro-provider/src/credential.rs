@@ -156,6 +156,7 @@ mod tests {
                     access_token: "expired".into(),
                     refresh_token: String::new(),
                     expires: 1,
+                    client_id: None,
                 }),
             )
             .unwrap();

@@ -39,6 +39,7 @@ pub async fn auth_status() -> Result<()> {
         let source = match &status.source {
             micro_auth::CredentialSource::Stored => "stored".to_string(),
             micro_auth::CredentialSource::Environment { variable } => format!("${variable}"),
+            micro_auth::CredentialSource::Federation => "workload identity federation".to_string(),
             micro_auth::CredentialSource::Missing => String::new(),
         };
         println!("{:<width$}  {:<14} {source}", status.provider, state);
@@ -46,36 +47,126 @@ pub async fn auth_status() -> Result<()> {
     Ok(())
 }
 
-pub async fn auth_login(provider: &str) -> Result<()> {
+pub async fn auth_login(provider: &str, method: Option<&str>) -> Result<()> {
     let store = AuthStore::open()?;
-    match store.begin_login(provider).await? {
-        LoginFlow::ApiKey {
-            provider,
-            env_names,
-        } => {
-            if !env_names.is_empty() {
-                println!("Or set one of: {}", env_names.join(", "));
+    let mut method = method.map(str::to_string);
+    loop {
+        let options = login_options(provider, method.as_deref())?;
+        match store
+            .begin_login_with(provider, method.as_deref(), &options)
+            .await?
+        {
+            LoginFlow::Choose { title, options, .. } => {
+                method = Some(choose(&title, &options)?);
             }
-            print!("Paste your {provider} API key: ");
-            std::io::stdout().flush()?;
-            let mut key = String::new();
-            std::io::stdin().lock().read_line(&mut key)?;
-            let key = key.trim();
-            if key.is_empty() {
-                bail!("no key entered");
+            LoginFlow::ApiKey {
+                provider,
+                env_names,
+            } => {
+                if !env_names.is_empty() {
+                    println!("Or set one of: {}", env_names.join(", "));
+                }
+                print!("Paste your {provider} API key: ");
+                std::io::stdout().flush()?;
+                let mut key = String::new();
+                std::io::stdin().lock().read_line(&mut key)?;
+                let key = key.trim();
+                if key.is_empty() {
+                    bail!("no key entered");
+                }
+                store.store_api_key(&provider, key)?;
+                println!("Stored a credential for {provider}.");
+                return Ok(());
             }
-            store.store_api_key(&provider, key)?;
-            println!("Stored a credential for {provider}.");
-        }
-        LoginFlow::DeviceCode(pending) => {
-            println!("Open {}", pending.verification_uri());
-            println!("Enter the code: {}", pending.user_code());
-            println!("Waiting for authorization…");
-            store.complete_device_login(&pending).await?;
-            println!("Signed in to {}.", pending.provider);
+            LoginFlow::DeviceCode(pending) => {
+                println!("Open {}", pending.verification_uri());
+                println!("Enter the code: {}", pending.user_code());
+                println!("Waiting for authorization…");
+                store.complete_device_login(&pending).await?;
+                println!("Signed in to {}.", pending.provider);
+                return Ok(());
+            }
+            LoginFlow::Browser(pending) => {
+                if let Some(note) = pending.note() {
+                    println!("{note}");
+                }
+                match micro_auth::oauth::open_browser(pending.url()) {
+                    true => println!("Opened your browser at:\n{}", pending.url()),
+                    false => println!("Open this page to sign in:\n{}", pending.url()),
+                }
+                println!("{}", pending.instructions());
+                print!("{} ", pending.prompt());
+                std::io::stdout().flush()?;
+                store
+                    .complete_browser_login(&pending, read_pasted_line())
+                    .await?;
+                println!();
+                println!("Signed in to {}.", pending.provider);
+                return Ok(());
+            }
         }
     }
-    Ok(())
+}
+
+/// Sign in with ChatGPT registers this installation, so it is the one login that needs its id.
+fn login_options(provider: &str, method: Option<&str>) -> Result<micro_auth::LoginOptions> {
+    let wants_device_id = micro_auth::canonical_provider(provider) == micro_auth::OPENAI
+        && method.is_some_and(|method| method != micro_auth::METHOD_API_KEY);
+    if !wants_device_id {
+        return Ok(micro_auth::LoginOptions::default());
+    }
+    let device_id = micro_config::Config::device_id(micro_auth::oauth::random_uuid)
+        .context("could not record this installation's device id")?;
+    Ok(micro_auth::LoginOptions {
+        device_id: Some(device_id),
+    })
+}
+
+/// Ask which option to take, by number; an empty answer takes the first.
+fn choose(title: &str, options: &[micro_auth::LoginOption]) -> Result<String> {
+    println!("{title}");
+    for (index, option) in options.iter().enumerate() {
+        println!("  {}. {}", index + 1, option.label);
+    }
+    print!("Choose [1]: ");
+    std::io::stdout().flush()?;
+    let mut answer = String::new();
+    std::io::stdin().lock().read_line(&mut answer)?;
+    pick(answer.trim(), options)
+        .map(str::to_string)
+        .with_context(|| format!("\"{}\" is not one of the options", answer.trim()))
+}
+
+/// The option an answer names, by number or by id.
+fn pick<'a>(answer: &str, options: &'a [micro_auth::LoginOption]) -> Option<&'a str> {
+    if answer.is_empty() {
+        return options.first().map(|option| option.id.as_str());
+    }
+    if let Ok(number) = answer.parse::<usize>() {
+        return number
+            .checked_sub(1)
+            .and_then(|index| options.get(index))
+            .map(|option| option.id.as_str());
+    }
+    options
+        .iter()
+        .find(|option| option.id.eq_ignore_ascii_case(answer))
+        .map(|option| option.id.as_str())
+}
+
+/// One line from the terminal, or nothing at the end of input, read off the async runtime so the
+/// browser can finish the sign-in meanwhile.
+async fn read_pasted_line() -> Option<String> {
+    tokio::task::spawn_blocking(|| {
+        let mut line = String::new();
+        match std::io::stdin().lock().read_line(&mut line) {
+            Ok(0) | Err(_) => None,
+            Ok(_) => Some(line.trim().to_string()).filter(|line| !line.is_empty()),
+        }
+    })
+    .await
+    .ok()
+    .flatten()
 }
 
 pub async fn auth_logout(provider: &str) -> Result<()> {

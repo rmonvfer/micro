@@ -1,5 +1,6 @@
 //! What a command asks the caller to do.
 
+use micro_auth::PendingBrowserLogin;
 use micro_auth::PendingDeviceLogin;
 use micro_models::ModelDef;
 use std::fmt;
@@ -117,6 +118,11 @@ pub enum CommandOutcome {
     /// [`micro_auth::AuthStore::complete_device_login`].
     DeviceLogin {
         pending: Box<PendingDeviceLogin>,
+    },
+    /// Open the sign-in page, offer to take what the browser shows instead, then await
+    /// [`micro_auth::AuthStore::complete_browser_login`].
+    BrowserLogin {
+        pending: Box<PendingBrowserLogin>,
     },
     /// Load this session's history in place of the current conversation.
     Resume {
@@ -418,6 +424,10 @@ impl fmt::Debug for CommandOutcome {
                 .debug_struct("DeviceLogin")
                 .field("provider", &pending.provider)
                 .field("verification_uri", &pending.verification_uri())
+                .finish(),
+            CommandOutcome::BrowserLogin { pending } => formatter
+                .debug_tuple("BrowserLogin")
+                .field(pending)
                 .finish(),
             CommandOutcome::Resume { session_id } => formatter
                 .debug_struct("Resume")

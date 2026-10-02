@@ -836,6 +836,41 @@ async fn apply_outcome(
             }
         }
 
+        CommandOutcome::BrowserLogin { pending } => {
+            if let Some(note) = pending.note() {
+                app.notice(note.to_string(), MessageKind::Info);
+            }
+            let opened = micro_auth::oauth::open_browser(pending.url());
+            app.notice(
+                format!(
+                    "{} {}\n{}",
+                    match opened {
+                        true => "Opened your browser at",
+                        false => "Open this page to sign in:",
+                    },
+                    pending.url(),
+                    pending.instructions()
+                ),
+                MessageKind::Info,
+            );
+            app.open_input(
+                pending.prompt().to_string(),
+                Some(pending.placeholder().to_string()),
+            );
+            app.busy("waiting for sign-in");
+            screen.render(app)?;
+
+            let (pasted, receiver) = tokio::sync::oneshot::channel();
+            let work = commands.finish_browser_login(pending, receiver);
+            let applied = await_browser_login(screen, app, input, work, pasted).await?;
+            app.dismiss_key_prompt();
+            app.idle();
+            match applied {
+                Some(applied) => apply_applied(app, agent, applied),
+                None => app.notice("Sign-in cancelled", MessageKind::Error),
+            }
+        }
+
         CommandOutcome::SetThinking { level } => {
             agent.set_thinking(level);
             app.set_thinking(level);
@@ -946,7 +981,9 @@ fn summary_text(message: &Message) -> String {
 fn label_for(outcome: &CommandOutcome) -> &'static str {
     match outcome {
         CommandOutcome::Resume { .. } | CommandOutcome::Fork { .. } => "loading",
-        CommandOutcome::DeviceLogin { .. } => "waiting for sign-in",
+        CommandOutcome::DeviceLogin { .. } | CommandOutcome::BrowserLogin { .. } => {
+            "waiting for sign-in"
+        }
         _ => "working",
     }
 }
@@ -962,6 +999,60 @@ where
     F: Future<Output = Applied>,
 {
     await_work(screen, app, input, work).await
+}
+
+/// Await a browser sign-in while the prompt for a pasted code stays live: what the user submits is
+/// handed to the sign-in, and dismissing the prompt leaves the browser to finish it.
+async fn await_browser_login<F>(
+    screen: &mut Screen,
+    app: &mut App,
+    input: &mut EventStream,
+    work: F,
+    pasted: tokio::sync::oneshot::Sender<String>,
+) -> Result<Option<Applied>>
+where
+    F: Future<Output = Applied>,
+{
+    let mut work = Box::pin(work);
+    let mut pasted = Some(pasted);
+    let mut ticker = tokio::time::interval(TICK);
+    ticker.set_missed_tick_behavior(MissedTickBehavior::Delay);
+    let mut painted = Instant::now() - FRAME;
+
+    loop {
+        if painted.elapsed() >= FRAME {
+            screen.render(app)?;
+            painted = Instant::now();
+        }
+
+        tokio::select! {
+            biased;
+            event = input.next() => match event {
+                Some(Ok(event)) => match handle(app, event) {
+                    Outcome::Quit => {
+                        app.should_quit = true;
+                        return Ok(None);
+                    }
+                    Outcome::Interrupt => return Ok(None),
+                    _ => {
+                        if let Some((_, text)) = app.take_key_prompt() {
+                            if let Some(sender) = pasted.take() {
+                                let _ = sender.send(text);
+                            }
+                        } else if app.key_prompt().is_none() {
+                            pasted = None;
+                        }
+                    }
+                },
+                Some(Err(_)) | None => {
+                    app.should_quit = true;
+                    return Ok(None);
+                }
+            },
+            done = &mut work => return Ok(Some(done)),
+            _ = ticker.tick() => app.tick = app.tick.wrapping_add(1),
+        }
+    }
 }
 
 async fn await_command<F>(
