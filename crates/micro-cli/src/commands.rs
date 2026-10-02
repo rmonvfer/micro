@@ -770,6 +770,9 @@ impl CliCommands {
 
         let loaded = match self.sessions.load(&self.session_id).await {
             Ok(loaded) => loaded,
+            Err(micro_session::SessionError::NotFound(_)) => {
+                return Applied::error("Nothing said yet.")
+            }
             Err(error) => return Applied::error(format!("Cannot read the session: {error}")),
         };
         if loaded.messages.is_empty() {

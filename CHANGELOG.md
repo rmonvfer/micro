@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- Write the session file when the first message is sent, so leaving before saying anything leaves no file.
+
 ## [0.1.13] - 2026-09-04
 
 - Show `micro — <workspace>` in terminal tabs and name Bun extension host processes.
