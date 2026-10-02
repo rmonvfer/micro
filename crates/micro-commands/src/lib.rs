@@ -308,6 +308,19 @@ pub struct CommandContext<'a> {
     pub scoped_models: &'a [String],
     /// What the conversation tree shows before anything is asked of it.
     pub tree_filter: micro_config::TreeFilter,
+    /// What the prompt-cache warmer is doing, when one is running.
+    pub cache_warming: Option<CacheWarmingReport>,
+}
+
+/// What `/session` says about keeping the prompt cache warm.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CacheWarmingReport {
+    /// `off`, `streaming`, or `idle`.
+    pub mode: String,
+    /// The warmer's state on one line.
+    pub status: String,
+    /// What losing the cache entry would cost, and what refreshing it costs, when known.
+    pub costs: Option<(f64, f64)>,
 }
 
 /// Run a submitted line.
@@ -1541,6 +1554,7 @@ pub(crate) mod testing {
                 collapse_changelog: false,
                 scoped_models: &[],
                 tree_filter: Default::default(),
+                cache_warming: None,
             }
         }
     }
@@ -1663,6 +1677,7 @@ mod tests {
             collapse_changelog: false,
             scoped_models: &[],
             tree_filter: Default::default(),
+            cache_warming: None,
         };
 
         let argument_for = |name: &str| match name {
@@ -1784,6 +1799,7 @@ mod tests {
             collapse_changelog: false,
             scoped_models: &[],
             tree_filter: Default::default(),
+            cache_warming: None,
         };
 
         let CommandOutcome::Choose(picker) = settings(&context) else {
@@ -1939,6 +1955,7 @@ mod tests {
             collapse_changelog: false,
             scoped_models: &[],
             tree_filter: Default::default(),
+            cache_warming: None,
             ..harness.context()
         };
         assert!(matches!(

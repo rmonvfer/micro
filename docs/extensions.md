@@ -59,7 +59,7 @@ tools              commands           events
 exec               builtin_tools      provider_stream
 send_user_message  send_message       session_write
 session_control    context            ui
-providers          flags
+providers          flags              mcp_servers
 ```
 
 Read-only getters do not require a capability. Host operations outside the declared set return a named error. The session continues and the request is recorded as an `extension_crossing` event.
@@ -129,6 +129,17 @@ async execute(_callId, params, _signal, _onUpdate, ctx) {
 }
 ```
 
+## Add MCP servers
+
+`micro.registerMcpServer(name, config)` adds an [MCP server](mcp.md) for the current session, with `config` in the shape of an `mcpServers` entry. Unlike a project `mcp.json`, it may use `"auth": { "provider": "<name>" }`. The extension needs the `mcp_servers` capability, since these servers run, or are reached, outside the command sandbox.
+
+```ts
+micro.registerMcpServer("jira", { url: "https://mcp.example.com/jira", exposure: "deferred" });
+micro.unregisterMcpServer("jira");
+```
+
+Servers registered while the extension loads connect with the `mcp.json` servers. Servers registered later connect right away, and their tools are reached through `tool_search` or `codemode` when the session offers them; `unregisterMcpServer()` makes a server's tools unreachable. Registrations are not saved, so register again on every load. An `mcp.json` entry of the same name takes precedence, a name another extension registered throws, and `micro.getMcpServers()` lists every registration with the extension that made it.
+
 ## Run commands
 
 `micro.exec` runs a command through micro's command sandbox:
@@ -168,6 +179,12 @@ micro.on("tool_call", (event) => {
 ```
 
 `provider_stream_event` fires for each provider stream event as micro parsed it, before micro reads it into its own events: an SSE frame's JSON, or a Bedrock event keyed by its type. The event names the `provider`, `api` and `model`, and `event.data` holds the parsed value, which can carry fields micro does not read, such as a gateway's per-request cost. It is not the original bytes. The event is notification-only, arrives in stream order, and is not persisted; micro forwards them only when an extension listens.
+
+A `cache_warming_decision` handler runs before each [prompt-cache refresh](configuration.md#cache_warming) with micro's decision in `action` and its inputs `warmCost`, `missCost`, and `continuationProbability`. Returning `{ action: "warm" }` or `{ action: "stop" }` overrides it; `stop` ends warming until the next request, and the last handler that returns an action wins. The extension needs the `events` capability.
+
+```ts
+micro.on("cache_warming_decision", (event) => (event.missCost > 1 ? { action: "warm" } : undefined));
+```
 
 ## Models
 

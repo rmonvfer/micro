@@ -68,11 +68,6 @@ impl Exposure {
             Exposure::Hidden => micro_types::ToolExposure::Hidden,
         }
     }
-
-    /// Whether the first prompt waits for the server, because its tools are declared in it.
-    pub fn is_waited_for(self) -> bool {
-        self == Exposure::Direct
-    }
 }
 
 /// OAuth client settings, for servers that need more than dynamic client registration with
@@ -132,12 +127,53 @@ pub struct ServerConfig {
     pub timeout: Option<Duration>,
     /// Unset is `codemode`.
     pub exposure: Option<Exposure>,
+    /// Exposures for single tools, keyed by the server's name for a tool or by a pattern in which
+    /// `*` stands for any characters.
+    pub tool_exposure: BTreeMap<String, Exposure>,
 }
 
 impl ServerConfig {
     /// How the server's tools reach the model, whether or not the entry says.
     pub fn exposure(&self) -> Exposure {
         self.exposure.unwrap_or_default()
+    }
+
+    /// How one tool reaches the model, by the server's name for it: an exact `toolExposure` key
+    /// first, then the longest matching pattern, then the server's exposure.
+    pub fn exposure_of(&self, tool: &str) -> Exposure {
+        if let Some(exposure) = self.tool_exposure.get(tool) {
+            return *exposure;
+        }
+        self.tool_exposure
+            .iter()
+            .filter(|(pattern, _)| pattern.contains('*') && matches_pattern(pattern, tool))
+            .max_by_key(|(pattern, _)| pattern.len())
+            .map(|(_, exposure)| *exposure)
+            .unwrap_or_else(|| self.exposure())
+    }
+
+    /// Whether any of the server's tools may be exposed as `exposure`.
+    pub fn exposes(&self, exposure: Exposure) -> bool {
+        self.exposure() == exposure || self.tool_exposure.values().any(|each| *each == exposure)
+    }
+
+    /// Whether any of the server's tools is reachable, so the server is worth connecting.
+    pub fn is_reachable(&self) -> bool {
+        self.exposes(Exposure::Direct)
+            || self.exposes(Exposure::Codemode)
+            || self.exposes(Exposure::Deferred)
+    }
+
+    /// Whether the first prompt waits for the server, because some of its tools are declared in
+    /// it.
+    pub fn is_waited_for(&self) -> bool {
+        self.exposes(Exposure::Direct)
+    }
+
+    /// Whether some of the server's tools are reached without being declared, from `codemode`
+    /// scripts or through `tool_search`.
+    pub fn has_undeclared_tools(&self) -> bool {
+        self.exposes(Exposure::Codemode) || self.exposes(Exposure::Deferred)
     }
 
     /// A stdio server running `command`.
@@ -153,6 +189,7 @@ impl ServerConfig {
             enabled: true,
             timeout: None,
             exposure: None,
+            tool_exposure: BTreeMap::new(),
         }
     }
 
@@ -169,6 +206,7 @@ impl ServerConfig {
             enabled: true,
             timeout: None,
             exposure: None,
+            tool_exposure: BTreeMap::new(),
         }
     }
 
@@ -208,17 +246,19 @@ impl ServerConfig {
     }
 }
 
-/// Which file an entry came from.
+/// Where an entry came from: one of the files, or an extension that registered it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Scope {
     Global,
     Project,
+    Extension,
 }
 
 impl Scope {
     pub fn name(self) -> &'static str {
         match self {
             Scope::Global => "global",
+            Scope::Extension => "extension",
             Scope::Project => "project",
         }
     }
@@ -244,6 +284,43 @@ impl LoadedConfig {
     pub fn get(&self, name: &str) -> Option<&ServerEntry> {
         self.servers.iter().find(|entry| entry.name == name)
     }
+
+    /// Add a server an extension registered. A configuration file's entry of the same name takes
+    /// precedence, so the registration is left out.
+    pub fn add_registered(&mut self, entry: ServerEntry) {
+        if self.get(&entry.name).is_some() {
+            return;
+        }
+        match clash(&self.servers, &entry.name) {
+            Some(clash) => self.errors.push(format!(
+                "{}: server \"{}\" conflicts with \"{clash}\"",
+                entry.source.display(),
+                entry.name
+            )),
+            None => self.servers.push(entry),
+        }
+    }
+}
+
+/// The server already among `servers` whose name differs from `name` only in `-` and `_`.
+pub fn clash(servers: &[ServerEntry], name: &str) -> Option<String> {
+    servers
+        .iter()
+        .find(|other| other.name != name && names::namespace(&other.name) == names::namespace(name))
+        .map(|other| other.name.clone())
+}
+
+/// A server an extension registered: the `mcpServers` shape, where `auth.provider` is allowed as
+/// in the global file, since only extensions the user installed run.
+pub fn registered(name: &str, value: &Value, extension: &Path) -> Result<ServerEntry, String> {
+    let config =
+        parse_server(name, value).map_err(|error| format!("{}: {error}", extension.display()))?;
+    Ok(ServerEntry {
+        name: name.to_string(),
+        config,
+        source: extension.to_path_buf(),
+        scope: Scope::Extension,
+    })
 }
 
 /// The global `mcp.json`, in micro's configuration directory.
@@ -317,14 +394,10 @@ fn read_file(path: &Path, scope: Scope, loaded: &mut LoadedConfig) {
             ));
             continue;
         }
-        let clash = loaded.servers.iter().find(|other| {
-            other.name != name && names::namespace(&other.name) == names::namespace(&name)
-        });
-        if let Some(clash) = clash {
+        if let Some(clash) = clash(&loaded.servers, &name) {
             loaded.errors.push(format!(
-                "{}: server \"{name}\" conflicts with \"{}\"",
-                path.display(),
-                clash.name
+                "{}: server \"{name}\" conflicts with \"{clash}\"",
+                path.display()
             ));
             continue;
         }
@@ -390,6 +463,25 @@ pub fn parse_server(name: &str, value: &Value) -> Result<ServerConfig, String> {
             problem("exposure must be \"direct\", \"codemode\", \"deferred\", or \"hidden\"")
         })?),
     };
+    let tool_exposure = match object.get("toolExposure") {
+        None => BTreeMap::new(),
+        Some(Value::Object(tools)) => tools
+            .iter()
+            .map(|(tool, value)| {
+                if tool.trim().is_empty() {
+                    return Err(problem("toolExposure keys must name a tool or a pattern"));
+                }
+                let exposure = value.as_str().and_then(Exposure::parse).ok_or_else(|| {
+                    problem(&format!(
+                        "toolExposure \"{tool}\" must be \"direct\", \"codemode\", \"deferred\", \
+                         or \"hidden\""
+                    ))
+                })?;
+                Ok((tool.clone(), exposure))
+            })
+            .collect::<Result<_, _>>()?,
+        Some(_) => return Err(problem("toolExposure must map tool names to exposures")),
+    };
 
     let kind = optional_string(object, "type").map_err(|error| problem(&error))?;
     if kind.as_deref() == Some("sse") {
@@ -423,7 +515,28 @@ pub fn parse_server(name: &str, value: &Value) -> Result<ServerConfig, String> {
         enabled,
         timeout,
         exposure,
+        tool_exposure,
     })
+}
+
+/// Whether `name` matches `pattern`, in which `*` stands for any characters, none included.
+fn matches_pattern(pattern: &str, name: &str) -> bool {
+    let mut parts = pattern.split('*');
+    let first = parts.next().unwrap_or_default();
+    let Some(mut rest) = name.strip_prefix(first) else {
+        return false;
+    };
+    let parts: Vec<&str> = parts.collect();
+    let Some((last, middle)) = parts.split_last() else {
+        return rest.is_empty();
+    };
+    for part in middle {
+        match rest.find(part) {
+            Some(index) => rest = &rest[index + part.len()..],
+            None => return false,
+        }
+    }
+    rest.len() >= last.len() && rest.ends_with(last)
 }
 
 fn stdio_transport(object: &Map<String, Value>, command: &str) -> Result<Transport, String> {
@@ -742,8 +855,9 @@ mod tests {
             micro_types::ToolExposure::Deferred,
             "codemode tools are found by searching, not listed"
         );
-        assert!(Exposure::Direct.is_waited_for());
-        assert!(!Exposure::Codemode.is_waited_for());
+        let direct = parse_server("s", &json!({ "command": "x", "exposure": "direct" })).unwrap();
+        assert!(direct.is_waited_for());
+        assert!(!plain.is_waited_for());
     }
 
     #[test]
@@ -871,5 +985,51 @@ mod tests {
         assert_eq!(resolve_value("!echo hello").unwrap(), "hello");
         assert!(resolve_value("${MICRO_MCP_TEST_NOT_SET_ANYWHERE}").is_err());
         assert_eq!(resolve_value("plain").unwrap(), "plain");
+    }
+
+    #[test]
+    fn single_tools_can_be_exposed_apart_from_their_server() {
+        let config = parse_server(
+            "gh",
+            &json!({
+                "command": "gh-mcp",
+                "exposure": "hidden",
+                "toolExposure": {
+                    "search_issues": "direct",
+                    "get_*": "deferred",
+                    "get_issue*": "codemode",
+                    "*": "hidden",
+                },
+            }),
+        )
+        .unwrap();
+        assert_eq!(config.exposure_of("search_issues"), Exposure::Direct);
+        assert_eq!(config.exposure_of("get_issue_comments"), Exposure::Codemode);
+        assert_eq!(config.exposure_of("get_pull"), Exposure::Deferred);
+        assert_eq!(config.exposure_of("delete_repo"), Exposure::Hidden);
+        assert!(config.is_reachable());
+        assert!(config.is_waited_for());
+        assert!(config.has_undeclared_tools());
+
+        let hidden =
+            parse_server("gh", &json!({ "command": "gh-mcp", "exposure": "hidden" })).unwrap();
+        assert!(!hidden.is_reachable());
+
+        let wrong = parse_server(
+            "gh",
+            &json!({ "command": "gh-mcp", "toolExposure": { "x": "everywhere" } }),
+        )
+        .unwrap_err();
+        assert!(wrong.contains("toolExposure \"x\""), "{wrong}");
+    }
+
+    #[test]
+    fn a_pattern_star_stands_for_any_characters() {
+        assert!(matches_pattern("get_*", "get_"));
+        assert!(matches_pattern("*_issue_*", "list_issue_comments"));
+        assert!(matches_pattern("a*b*c", "abc"));
+        assert!(!matches_pattern("a*b*c", "acb"));
+        assert!(!matches_pattern("get_*", "list_get_x"));
+        assert!(!matches_pattern("*ab", "a"));
     }
 }

@@ -68,6 +68,8 @@ interface Registration {
 	shortcuts: Map<string, { description?: string; handler: (ctx: unknown) => unknown }>;
 	providers: Map<string, Json>;
 	virtualModels: Map<string, VirtualModelDefinition>;
+	/** MCP servers, by name, in the shape of an `mcpServers` entry. */
+	mcpServers: Map<string, Json>;
 	renderers: Map<string, (data: unknown, options: { width: number }) => unknown>;
 	markdownTransformers: Array<(markdown: string, context: Json) => string>;
 }
@@ -101,6 +103,16 @@ const events = {
 /** Where this host is running, for the context handed to every handler. */
 const loaded: Registration[] = [];
 const failures: Array<{ path: string; error: string }> = [];
+/** Whether micro has been told what loading registered, so later changes are sent as they happen. */
+let described = false;
+
+/** The names an MCP server may have, as in `mcp.json`. */
+const MCP_SERVER_NAME = /^[A-Za-z0-9_-]+$/;
+
+/** The extension other than `registration` that registered an MCP server called `name`, if any. */
+function mcpServerOwner(registration: Registration, name: string): Registration | undefined {
+	return loaded.find((other) => other !== registration && other.mcpServers.has(name));
+}
 const flagValues = new Map<string, boolean | string>();
 
 /** The API an extension is handed. */
@@ -181,6 +193,41 @@ function apiFor(registration: Registration) {
 
 		unregisterVirtualModel(provider: string, id: string): void {
 			registration.virtualModels.delete(`${provider}/${id}`);
+		},
+
+		/** Add an MCP server for this session, in the shape of an `mcpServers` entry. */
+		registerMcpServer(name: string, config: Json): void {
+			if (typeof name !== "string" || !MCP_SERVER_NAME.test(name)) {
+				throw new Error(`invalid MCP server name "${name}" (use letters, digits, "_" and "-")`);
+			}
+			if (typeof config !== "object" || config === null || Array.isArray(config)) {
+				throw new Error(`MCP server "${name}" must be configured with an object`);
+			}
+			const owner = mcpServerOwner(registration, name);
+			if (owner) {
+				throw new Error(`MCP server "${name}" is already registered by ${owner.path}`);
+			}
+			registration.mcpServers.set(name, config);
+			if (described) {
+				send({ type: "action", action: "register_mcp_server", name, config });
+			}
+		},
+
+		/** Take away an MCP server this extension registered, closing its connection. */
+		unregisterMcpServer(name: string): void {
+			if (!registration.mcpServers.delete(name)) {
+				return;
+			}
+			if (described) {
+				send({ type: "action", action: "unregister_mcp_server", name });
+			}
+		},
+
+		/** Every MCP server the extensions registered, with the extension that registered it. */
+		getMcpServers(): Json[] {
+			return loaded.flatMap((owner) =>
+				[...owner.mcpServers.entries()].map(([name, config]) => ({ name, config, extension: owner.path })),
+			);
 		},
 
 		
@@ -300,6 +347,7 @@ async function load(path: string): Promise<void> {
 		shortcuts: new Map(),
 		providers: new Map(),
 		virtualModels: new Map(),
+		mcpServers: new Map(),
 		renderers: new Map(),
 		markdownTransformers: [],
 	};
@@ -404,6 +452,7 @@ function describe(): Json {
 				maxTokens: model.maxTokens ?? null,
 				input: model.input ?? ["text", "image"],
 			})),
+			mcp_servers: [...registration.mcpServers.entries()].map(([name, config]) => ({ name, config })),
 			renderers: [...registration.renderers.keys()],
 		})),
 		errors: failures,
@@ -610,6 +659,7 @@ async function handle(line: string): Promise<void> {
 			for (const path of paths) {
 				await load(path);
 			}
+			described = true;
 			send(describe());
 			return;
 		}

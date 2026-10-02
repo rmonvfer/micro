@@ -17,6 +17,12 @@
 - Add the `provider_stream_event` extension event with each parsed provider stream event before micro normalizes it.
 - Give `codemode` scripts a `models` global: list models by type and availability, classify and generate images with the session's credentials, at most four calls at a time. Malformed calls say what was expected, each call's cost is listed in the result, and unshown generated images are pointed out.
 - Count what tools spend on models, including `codemode` model calls and nested `ctx.executeTool()` calls that report a cost, toward the session cost as `tool_cost` ledger events.
+- Expose single MCP tools apart from their server with `toolExposure`, keyed by tool name or `*` pattern.
+- Check the `mcp_servers` system prompt section at the start of each prompt, and add a changed section to the conversation instead of rewriting the system prompt, so the cached prefix survives.
+- Keep deferred MCP tools that `tool_search` found callable after resuming a session: a call waits for its server to reconnect, and `default_tools` no longer hides tools that arrive from servers connecting in the background.
+- Let extensions add MCP servers with `micro.registerMcpServer()`, remove them with `unregisterMcpServer()`, and list them with `getMcpServers()`, under the `mcp_servers` capability. Registered servers may use `auth.provider`, which project `mcp.json` files may not.
+- Append MCP servers' log messages and stdio servers' standard error to `mcp.log` in the data directory, rotated at 5 MB.
+- Retry connecting to an HTTP MCP server twice after a network failure or a transient status (408, 429, 5xx), and resume an answer stream that breaks off from its last event.
 - Add the `codemode` tool: the model writes JavaScript that runs in an embedded QuickJS sandbox and calls the other tools, side by side with `Promise.all`, and only the script's output reaches the model. Scripts get `text()`, `image()`, `console.*`, `exit()`, `store()`/`load()` kept per branch, `ALL_TOOLS`, `searchTools()`, `describeTool()`, and `describeNamespace()`, an `// @options:` line for `max_output_tokens` and `timeout_ms`, and errors that name close matches. Offer it with `--tools`; configure it with `codemode.mode` and `codemode.inline_budget`.
 - Add tool exposure levels `direct`, `model-only`, `codemode`, `deferred`, and `hidden`, with tool namespaces, annotations, `outputSchema` with `structuredContent`, and `isError` results, for extension tools as well as built-in and MCP ones.
 - Make `codemode` the default MCP exposure: servers connect in the background and their tools are called from scripts, which search for them. `codemode-deferred` is another name for it, and `hidden` leaves a server unconnected.
@@ -55,6 +61,7 @@
 - Add `compaction` token budgets (`reserve_tokens`, `keep_recent_tokens`) with per-model overrides.
 - Fit attached, `read`, and tool-result images to per-model `image_limits` once as they join the conversation, so history and prompt caches stay stable across model switches.
 - Keep valuable prompt caches warm during long tool runs, and optionally between runs, with cost-aware one-token refreshes (`cache_warming`, default `streaming`; `prompt_cache_lifetimes`). Refreshes are recorded as `cache_warm` ledger events and billed.
+- Show cache warming in `/session`: the mode, the next decision with its economics, or why nothing is being warmed. With `cache_miss_notices` on, the transcript shows each refresh with its cost, and extensions can override each decision with the `cache_warming_decision` event.
 - Add `/bug` to write a ZIP bug report with redacted settings, environment, extensions and recorded failures, optionally with the session transcript, for attaching to a GitHub issue.
 - Let an extension's `tool_call` handler return `terminate: true` with a block, ending the run without another model call when every call in the batch was blocked that way.
 

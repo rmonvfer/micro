@@ -123,6 +123,7 @@ pub(crate) fn action_needs(action: &str) -> Option<Capability> {
         "send_user_message" => Some(Capability::SendUserMessage),
         "send_message" => Some(Capability::SendMessage),
         "set_active_tools" => Some(Capability::Context),
+        "register_mcp_server" | "unregister_mcp_server" => Some(Capability::McpServers),
         "append_entry" | "set_label" | "set_session_name" => Some(Capability::SessionWrite),
         "set_thinking_level" | "set_model" | "shutdown" | "compact" | "abort" => {
             Some(Capability::SessionControl)

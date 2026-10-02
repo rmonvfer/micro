@@ -1915,6 +1915,41 @@ done
         .expect("make it runnable");
 }
 
+/// An extension adds an MCP server while it loads, and the server's tools are offered like
+/// those of a configured one.
+#[test]
+fn an_extension_can_add_an_mcp_server() {
+    if which_bun().is_none() {
+        return;
+    }
+    let api = FakeApi::start([Reply::text("done")]);
+    let fixture = Fixture::new(&api);
+    let server = fixture.workspace().join("registered.sh");
+    many_tool_server(&server, 1);
+    fixture.write(
+        ".micro/extensions/servers.ts",
+        &format!(
+            r#"
+export const capabilities = ["mcp_servers"];
+export default (micro) => {{
+    micro.registerMcpServer("from-ext", {{ command: {:?}, exposure: "direct" }});
+}};
+"#,
+            server.to_string_lossy()
+        ),
+    );
+
+    fixture
+        .print(&["-m", "test", "use the tool"])
+        .expect_success("micro --print");
+
+    let tools = offered_tools(&api.request(0));
+    assert!(
+        tools.contains(&"mcp__from_ext__thing0".to_string()),
+        "{tools:?}"
+    );
+}
+
 /// Configure MCP servers in the global `mcp.json`.
 fn write_mcp_servers(fixture: &Fixture, servers: serde_json::Value) {
     std::fs::write(

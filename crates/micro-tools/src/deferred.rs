@@ -182,6 +182,23 @@ impl Arrivals {
         read(&self.inner.groups).is_empty() && read(&self.inner.tools).is_empty()
     }
 
+    /// The tool called `name`, waiting for it when the group it belongs to (`<group>__…`) is
+    /// still on its way, such as a server reconnecting after the session was resumed.
+    pub async fn arriving(&self, name: &str) -> Option<Arc<dyn Tool>> {
+        if let Some(tool) = self.find(name) {
+            return Some(tool);
+        }
+        let expected = self
+            .groups()
+            .iter()
+            .any(|group| name.starts_with(&format!("{group}__")));
+        if !expected || *self.inner.pending.borrow() == 0 {
+            return None;
+        }
+        self.settled(ARRIVAL_WAIT).await;
+        self.find(name)
+    }
+
     /// Wait until no source is still on its way, or `within` has passed.
     pub async fn settled(&self, within: Duration) {
         let mut pending = self.inner.pending.subscribe();

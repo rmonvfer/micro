@@ -64,6 +64,9 @@ pub struct Registered {
     /// Models that route each request to a physical model the extension picks.
     #[serde(default)]
     pub virtual_models: Vec<RegisteredVirtualModel>,
+    /// MCP servers the extension added while it loaded.
+    #[serde(default)]
+    pub mcp_servers: Vec<RegisteredMcpServer>,
     /// The custom types this extension draws itself.
     #[serde(default)]
     pub renderers: Vec<String>,
@@ -71,6 +74,14 @@ pub struct Registered {
     /// beside its default one.
     #[serde(default)]
     pub capabilities: Option<Vec<String>>,
+}
+
+/// An MCP server an extension added.
+#[derive(Debug, Clone, Deserialize)]
+pub struct RegisteredMcpServer {
+    pub name: String,
+    /// The server in the shape of an `mcpServers` entry of `mcp.json`.
+    pub config: Value,
 }
 
 /// A provider an extension declared, or one it changed.
@@ -505,6 +516,16 @@ impl Host {
                         .collect(),
                 );
             }
+            if !grant.allows(crate::Capability::McpServers) {
+                refuse(
+                    "mcp_servers",
+                    extension
+                        .mcp_servers
+                        .drain(..)
+                        .map(|server| server.name)
+                        .collect(),
+                );
+            }
         }
         refused
     }
@@ -515,6 +536,20 @@ impl Host {
             .extensions
             .iter()
             .flat_map(|extension| extension.tools.iter().cloned())
+            .collect()
+    }
+
+    /// Every MCP server the extensions added while they loaded, with the extension that added it.
+    pub fn mcp_servers(&self) -> Vec<(String, RegisteredMcpServer)> {
+        self.loaded
+            .extensions
+            .iter()
+            .flat_map(|extension| {
+                extension
+                    .mcp_servers
+                    .iter()
+                    .map(|server| (extension.path.clone(), server.clone()))
+            })
             .collect()
     }
 

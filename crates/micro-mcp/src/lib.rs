@@ -1,6 +1,7 @@
 //! Tools a separate program provides, over the Model Context Protocol.
 
 pub mod config;
+mod log;
 pub mod names;
 pub mod oauth;
 mod servers;
@@ -10,6 +11,7 @@ pub use config::Exposure;
 pub use config::LoadedConfig;
 pub use config::ServerConfig;
 pub use config::ServerEntry;
+pub use log::ServerLog;
 pub use servers::ProviderAuthorizer;
 pub use servers::ServerReport;
 pub use servers::Servers;
@@ -61,6 +63,10 @@ pub enum McpError {
     #[error("{server}: {message}")]
     Protocol { server: String, message: String },
 
+    /// The network failed, or the server answered with a status worth another attempt.
+    #[error("{server}: {message}")]
+    Unavailable { server: String, message: String },
+
     #[error("{server}: stopped answering")]
     Closed { server: String },
 
@@ -79,6 +85,7 @@ impl McpError {
         match self {
             McpError::Start { server, .. }
             | McpError::Protocol { server, .. }
+            | McpError::Unavailable { server, .. }
             | McpError::Closed { server }
             | McpError::TimedOut { server, .. }
             | McpError::AuthRequired { server }
@@ -86,14 +93,23 @@ impl McpError {
         }
     }
 
+    /// Whether connecting again may succeed.
+    pub fn is_transient(&self) -> bool {
+        matches!(self, McpError::Unavailable { .. })
+    }
+
     fn carrying(server: &str, error: TransportError) -> McpError {
         let server = server.to_string();
+        let transient = error.is_transient();
         match error {
             TransportError::Closed => McpError::Closed { server },
             TransportError::AuthRequired(_) => McpError::AuthRequired { server },
-            TransportError::Http { message, .. } | TransportError::Other(message) => {
-                McpError::Protocol { server, message }
-            }
+            TransportError::Http { message, .. }
+            | TransportError::Network(message)
+            | TransportError::Other(message) => match transient {
+                true => McpError::Unavailable { server, message },
+                false => McpError::Protocol { server, message },
+            },
         }
     }
 }
@@ -115,12 +131,14 @@ pub struct Client {
 }
 
 impl Client {
-    /// Shake hands over a transport whose incoming messages arrive on `incoming`.
+    /// Shake hands over a transport whose incoming messages arrive on `incoming`. Log messages
+    /// the server sends are appended to `log`.
     async fn connect(
         name: &str,
         transport: Arc<dyn Transport>,
         mut incoming: tokio::sync::mpsc::UnboundedReceiver<Value>,
         timeout: Option<Duration>,
+        log: Option<Arc<ServerLog>>,
     ) -> Result<Arc<Client>> {
         let pending: Waiting = Arc::default();
 
@@ -130,9 +148,18 @@ impl Client {
         tokio::spawn(async move {
             while let Some(message) = incoming.recv().await {
                 if let Some(method) = message.get("method").and_then(Value::as_str) {
-                    if let (Some(id), Some(transport)) = (message.get("id"), replies.upgrade()) {
-                        let reply = answer_server_request(id, method);
-                        let _ = transport.send(&reply).await;
+                    match (message.get("id"), replies.upgrade()) {
+                        (Some(id), Some(transport)) => {
+                            let reply = answer_server_request(id, method);
+                            let _ = transport.send(&reply).await;
+                        }
+                        (None, _) if method == "notifications/message" => {
+                            if let Some(log) = &log {
+                                let params = message.get("params").cloned().unwrap_or(Value::Null);
+                                log.message(&reader_name, &params);
+                            }
+                        }
+                        _ => {}
                     }
                     continue;
                 }
@@ -213,11 +240,12 @@ impl Client {
         self.instructions.as_deref()
     }
 
-    /// The tools this server offers, each ready to be called and exposed as `exposure` says.
-    /// `description` says what the server offers, when its configuration says.
+    /// The tools this server offers, each ready to be called and exposed as `exposure_of` says
+    /// for the server's name for it. `description` says what the server offers, when its
+    /// configuration says.
     pub async fn tools(
         self: &Arc<Self>,
-        exposure: Exposure,
+        exposure_of: impl Fn(&str) -> Exposure,
         description: Option<String>,
     ) -> Result<Vec<Arc<dyn micro_tools::Tool>>> {
         let mut listed: Vec<Value> = Vec::new();
@@ -277,7 +305,7 @@ impl Client {
             .map(|((remote, tool), name)| {
                 Arc::new(RemoteTool {
                     client: Arc::clone(self),
-                    exposure: exposure.tool_exposure(),
+                    exposure: exposure_of(&remote).tool_exposure(),
                     namespace: namespace.clone(),
                     annotations: ToolAnnotations::from_wire(tool.get("annotations")),
                     output_schema: call_tool_result_schema(tool.get("outputSchema")),
@@ -628,6 +656,111 @@ mod tests {
             output.structured.unwrap()["content"][0]["text"],
             "heard hello"
         );
+    }
+
+    /// A tool named in `toolExposure` is exposed as it says, whatever the server's exposure.
+    #[tokio::test]
+    async fn a_tool_can_be_exposed_apart_from_its_server() {
+        let mut config = echo_server();
+        config.exposure = Some(Exposure::Hidden);
+        config.tool_exposure = [("ec*".to_string(), Exposure::Direct)].into();
+        let servers = servers(vec![entry("demo", config)]);
+        let tools = servers.connect("demo").await.unwrap();
+        assert_eq!(tools[0].exposure(), ToolExposure::Direct);
+    }
+
+    /// What a server logs, and what it writes to its standard error, end up in the log file.
+    #[tokio::test]
+    async fn a_servers_log_messages_and_standard_error_are_kept() {
+        let chatty = ServerConfig::stdio(
+            "bash",
+            vec![
+                "-c".to_string(),
+                r#"
+                while IFS= read -r line; do
+                  id=$(printf '%s' "$line" | sed -n 's/.*"id":\([0-9]*\).*/\1/p')
+                  case "$line" in
+                    *'"initialize"'*)
+                      echo 'warming up' >&2
+                      printf '{"jsonrpc":"2.0","method":"notifications/message","params":{"level":"notice","data":"index ready"}}\n'
+                      printf '{"jsonrpc":"2.0","id":%s,"result":{"protocolVersion":"2025-06-18"}}\n' "$id" ;;
+                    *'"tools/list"'*)
+                      printf '{"jsonrpc":"2.0","id":%s,"result":{"tools":[]}}\n' "$id" ;;
+                  esac
+                done
+                "#
+                .to_string(),
+            ],
+        );
+        let directory =
+            std::env::temp_dir().join(format!("micro-mcp-server-log-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&directory);
+        let path = directory.join("mcp.log");
+        let servers = servers(vec![entry("chatty", chatty)]).with_log(ServerLog::new(&path));
+        servers.connect("chatty").await.unwrap();
+
+        let mut logged = String::new();
+        for _ in 0..50 {
+            logged = std::fs::read_to_string(&path).unwrap_or_default();
+            if logged.contains("warming up") && logged.contains("index ready") {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        assert!(logged.contains("[chatty] stderr warming up"), "{logged}");
+        assert!(logged.contains("[chatty] notice index ready"), "{logged}");
+    }
+
+    /// A server an extension adds while the session runs connects in the background, and taking
+    /// it away takes its tools; a configured server of the same name is left alone.
+    #[tokio::test]
+    async fn an_extension_adds_and_takes_away_a_server() {
+        let servers = servers(vec![entry("configured", echo_server())]);
+        let registered = config::registered(
+            "added",
+            &json!({ "command": "bash", "args": ["-c", "exit 1"], "exposure": "deferred" }),
+            Path::new("/x/ext.ts"),
+        )
+        .unwrap();
+        assert_eq!(registered.scope, config::Scope::Extension);
+        let mut echo = registered.clone();
+        echo.config = echo_server();
+        echo.config.exposure = Some(Exposure::Deferred);
+        servers.register(echo).unwrap();
+
+        let arrivals = servers.arrivals();
+        arrivals.settled(Duration::from_secs(10)).await;
+        assert!(arrivals.find("mcp__added__echo").is_some());
+
+        servers.unregister("added");
+        assert!(arrivals.find("mcp__added__echo").is_none());
+        assert!(servers.entry("added").is_none());
+
+        let mut clashing = registered;
+        clashing.name = "configured".into();
+        assert!(servers.register(clashing).is_err());
+        servers.unregister("configured");
+        assert!(servers.entry("configured").is_some());
+    }
+
+    /// An extension may send a provider credential, which a project file may not.
+    #[test]
+    fn a_registration_may_name_a_provider_and_yields_to_the_files() {
+        let auth =
+            json!({ "url": "https://mcp.example.com/mcp", "auth": { "provider": "openai" } });
+        let entry = config::registered("hosted", &auth, Path::new("/x/ext.ts")).unwrap();
+        let mut loaded = LoadedConfig {
+            servers: vec![self::entry("hosted", echo_server())],
+            errors: Vec::new(),
+        };
+        loaded.add_registered(entry.clone());
+        assert_eq!(loaded.servers.len(), 1);
+        assert_eq!(loaded.servers[0].scope, config::Scope::Global);
+
+        let mut renamed = entry;
+        renamed.name = "other".into();
+        loaded.add_registered(renamed);
+        assert_eq!(loaded.servers[1].scope, config::Scope::Extension);
     }
 
     #[test]

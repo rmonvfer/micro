@@ -148,6 +148,78 @@ async fn a_provider_credential_is_sent_as_the_bearer_token() {
     assert_eq!(tools.len(), 1);
 }
 
+/// A server that is briefly unavailable is tried again; one that refuses outright is not.
+#[tokio::test]
+async fn connecting_retries_a_server_that_is_briefly_unavailable() {
+    let refused = Arc::new(Mutex::new(0));
+    let counted = Arc::clone(&refused);
+    let server = TestServer::start(move |request| {
+        if request.body.contains("\"initialize\"") {
+            let mut refused = counted.lock().unwrap();
+            if *refused < 2 {
+                *refused += 1;
+                return Response::status(503);
+            }
+        }
+        speak_mcp(request, false)
+    })
+    .await;
+    let servers = servers_with("flaky", ServerConfig::http(server.url("/mcp")));
+
+    let tools = servers
+        .connect("flaky")
+        .await
+        .expect("the third attempt connects");
+    assert_eq!(tools.len(), 1);
+    assert_eq!(*refused.lock().unwrap(), 2);
+
+    let broken = TestServer::start(|_| Response::status(400)).await;
+    let servers = servers_with("broken", ServerConfig::http(broken.url("/mcp")));
+    assert!(servers.connect("broken").await.is_err());
+    assert_eq!(broken.requests().len(), 1, "a refusal is not retried");
+}
+
+/// An answer stream that breaks off is resumed from its last event, past a transient failure.
+#[tokio::test]
+async fn a_broken_answer_stream_is_resumed_from_its_last_event() {
+    let reopened = Arc::new(Mutex::new(0));
+    let counted = Arc::clone(&reopened);
+    let server = TestServer::start(move |request| {
+        let stream = |body: String| Response {
+            status: 200,
+            headers: vec![("Content-Type".into(), "text/event-stream".into())],
+            body,
+        };
+        if request.method == "GET" {
+            if request.header("last-event-id") != Some("e1") {
+                return Response::status(405);
+            }
+            let mut reopened = counted.lock().unwrap();
+            *reopened += 1;
+            if *reopened == 1 {
+                return Response::status(503);
+            }
+            let answer = json!({
+                "jsonrpc": "2.0",
+                "id": 3,
+                "result": { "content": [{ "type": "text", "text": "resumed" }] },
+            });
+            return stream(format!("id: e2\nevent: message\ndata: {answer}\n\n"));
+        }
+        if request.body.contains("tools/call") {
+            return stream("id: e1\ndata: \n\n".to_string());
+        }
+        speak_mcp(request, false)
+    })
+    .await;
+    let servers = servers_with("resuming", ServerConfig::http(server.url("/mcp")));
+    let tools = servers.connect("resuming").await.unwrap();
+
+    let said = tools[0].execute(&json!({ "q": "x" })).await.unwrap();
+    assert_eq!(said, "resumed");
+    assert_eq!(*reopened.lock().unwrap(), 2);
+}
+
 /// An authorization server and resource that sign micro in, recording what it was sent.
 struct OAuthWorld {
     server: TestServer,

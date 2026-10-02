@@ -37,6 +37,7 @@ pub use host::Loaded;
 pub use host::Registered;
 pub use host::RegisteredCommand;
 pub use host::RegisteredFlag;
+pub use host::RegisteredMcpServer;
 pub use host::RegisteredProvider;
 pub use host::RegisteredShortcut;
 pub use host::RegisteredTool;

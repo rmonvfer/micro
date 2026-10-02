@@ -37,6 +37,8 @@ pub enum Capability {
     Providers,
     /// Declare a command-line flag.
     Flags,
+    /// Add an MCP server, which runs or is reached outside the command sandbox.
+    McpServers,
 }
 
 impl Capability {
@@ -56,6 +58,7 @@ impl Capability {
         Capability::Ui,
         Capability::Providers,
         Capability::Flags,
+        Capability::McpServers,
     ];
 
     /// What this is called in a manifest and in the ledger.
@@ -75,6 +78,7 @@ impl Capability {
             Capability::Ui => "ui",
             Capability::Providers => "providers",
             Capability::Flags => "flags",
+            Capability::McpServers => "mcp_servers",
         }
     }
 
@@ -184,6 +188,9 @@ pub fn derived(registered: &crate::Registered) -> BTreeSet<Capability> {
     if !registered.providers.is_empty() {
         allowed.insert(Capability::Providers);
     }
+    if !registered.mcp_servers.is_empty() {
+        allowed.insert(Capability::McpServers);
+    }
     allowed.extend([
         Capability::Exec,
         Capability::BuiltinTools,
@@ -254,6 +261,21 @@ fn in_manifest(path: &Path) -> Option<Vec<String>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_extension_that_adds_mcp_servers_needs_the_capability_for_it() {
+        let registered: crate::Registered = serde_json::from_value(serde_json::json!({
+            "path": "/x/servers.ts",
+            "mcp_servers": [{ "name": "docs", "config": { "url": "https://x/mcp" } }],
+        }))
+        .unwrap();
+        assert_eq!(registered.mcp_servers[0].name, "docs");
+        assert!(derived(&registered).contains(&Capability::McpServers));
+        assert_eq!(
+            Capability::parse("mcpServers"),
+            Some(Capability::McpServers)
+        );
+    }
 
     #[test]
     fn every_capability_reads_back_from_the_name_it_is_written_as() {

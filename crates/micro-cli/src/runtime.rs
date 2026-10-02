@@ -123,6 +123,8 @@ pub struct Runtime {
     /// What was loaded before the session started, for the first screen to name.
     pub resources: micro_tui::Resources,
 
+    /// The session's MCP servers, which extensions may add to while it runs.
+    pub mcp: micro_mcp::Servers,
     pub system_prompt: String,
 
     pub custom_prompt: Option<String>,
@@ -414,7 +416,7 @@ pub async fn build(
         }
     }
 
-    let mcp = mcp_servers(root, trusted, &store, selection);
+    let mcp = mcp_servers(root, trusted, &store, selection, extensions.as_deref());
     let (mut kept, mcp_notices) = connect_mcp(&mcp, &mut tools).await;
     kept.extend(builtin.iter().cloned());
 
@@ -435,7 +437,9 @@ pub async fn build(
         settings.tool_search_threshold,
         &mcp.arrivals(),
     );
-    let mcp_section = mcp.prompt_section(&undeclared_servers(&mcp, &tools), codemode);
+    let undeclared = undeclared_servers(&mcp, &tools);
+    let mcp_section = mcp.prompt_section(&undeclared, codemode);
+    let servers_section = crate::mcp::ServersSection::new(mcp.clone(), undeclared, codemode);
 
     let available_tools: Vec<String> = tools.iter().map(|tool| tool.definition().name).collect();
     let default_tools = crate::default_tools::DefaultTools::new(
@@ -547,6 +551,7 @@ pub async fn build(
     )
     .with_offered_tools(Arc::clone(&offered_tools))
     .with_arrivals(mcp.arrivals())
+    .with_live_section(Arc::new(servers_section), mcp_section.clone())
     .with_prefix_spans(context.prefix_spans)
     .with_system_prompt(context.system_prompt)
     .with_history(history.clone())
@@ -564,6 +569,7 @@ pub async fn build(
     };
 
     let prefix = agent.prefix_control();
+    let cache_warming = agent.cache_warming_watch();
 
     let agent = match extensions.as_ref() {
         Some(host) => agent.with_hooks(Arc::new(crate::extensions::ExtensionHooks::new(
@@ -626,6 +632,7 @@ pub async fn build(
         scoped_models: settings.scoped_models.clone(),
         resources: selection.resources.clone(),
         tree_filter: settings.tree_filter_mode,
+        cache_warming: cache_warming.clone(),
         skills_enabled: settings.skill_commands,
         collapse_changelog: settings.collapse_changelog,
         thinking: selection.thinking,
@@ -669,6 +676,7 @@ pub async fn build(
         recorder: receiver,
         forwarder,
         commands,
+        mcp,
         system_prompt,
         custom_prompt,
         appended_prompt,
@@ -1252,16 +1260,32 @@ fn searchable_beyond(
     tools
 }
 
-/// The MCP servers `mcp.json` describes: the global file, and the project's once it is trusted.
+/// The MCP servers `mcp.json` describes, the global file and the project's once it is trusted,
+/// and those the extensions registered while they loaded.
 fn mcp_servers(
     root: &Path,
     trusted: bool,
     store: &Arc<AuthStore>,
     selection: &Selection,
+    extensions: Option<&micro_extensions::Host>,
 ) -> micro_mcp::Servers {
-    let servers = micro_mcp::Servers::new(micro_mcp::config::load(root, trusted), root)
+    let mut loaded = micro_mcp::config::load(root, trusted);
+    for (extension, server) in extensions
+        .map(micro_extensions::Host::mcp_servers)
+        .unwrap_or_default()
+    {
+        match micro_mcp::config::registered(&server.name, &server.config, Path::new(&extension)) {
+            Ok(entry) => loaded.add_registered(entry),
+            Err(error) => loaded.errors.push(error),
+        }
+    }
+    let servers = micro_mcp::Servers::new(loaded, root)
         .with_providers(Arc::clone(store))
         .with_tool_filter(selection.tools.clone(), selection.exclude_tools.clone());
+    let servers = match micro_mcp::ServerLog::in_data_dir() {
+        Some(log) => servers.with_log(log),
+        None => servers,
+    };
     match micro_mcp::oauth::CredentialStore::open() {
         Some(credentials) => servers.with_credentials(credentials),
         None => servers,
@@ -1285,23 +1309,20 @@ async fn connect_mcp(
 
     let mut waited = Vec::new();
     for entry in &enabled {
-        match entry.config.exposure() {
-            micro_mcp::Exposure::Hidden => {}
-            exposure if exposure.is_waited_for() => waited.push(entry.name.clone()),
-            _ => mcp.connect_in_background(&entry.name),
+        if !entry.config.is_reachable() {
+            continue;
+        }
+        match entry.config.is_waited_for() {
+            true => waited.push(entry.name.clone()),
+            false => mcp.connect_in_background(&entry.name),
         }
     }
     let (found, problems) = mcp.connect_each(&waited).await;
 
-    let direct: Vec<String> = enabled
-        .iter()
-        .filter(|entry| entry.config.exposure() == micro_mcp::Exposure::Direct)
-        .map(|entry| format!("{}__", micro_mcp::names::namespace(&entry.name)))
-        .collect();
     let kept = found
         .iter()
+        .filter(|tool| tool.exposure() == micro_types::ToolExposure::Direct)
         .map(|tool| tool.definition().name)
-        .filter(|name| direct.iter().any(|prefix| name.starts_with(prefix)))
         .collect();
     tools.extend(found);
 
@@ -1325,10 +1346,9 @@ fn undeclared_servers(
     mcp.entries()
         .into_iter()
         .filter(|entry| entry.config.enabled)
-        .filter(|entry| entry.config.exposure() != micro_mcp::Exposure::Hidden)
         .filter(|entry| {
             let prefix = format!("{}__", micro_mcp::names::namespace(&entry.name));
-            !entry.config.exposure().is_waited_for()
+            entry.config.has_undeclared_tools()
                 || tools.iter().any(|tool| {
                     tool.exposure().is_searchable() && tool.definition().name.starts_with(&prefix)
                 })

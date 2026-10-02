@@ -1034,6 +1034,11 @@ fn model_catalog(payload: &Value) -> Value {
     micro_models::catalog_json(&catalog, provider_filter)
 }
 
+/// The session's MCP servers, when there is a session to have them.
+async fn mcp_of(state: Option<&Arc<tokio::sync::RwLock<State>>>) -> Option<micro_mcp::Servers> {
+    state?.read().await.mcp.clone()
+}
+
 /// Something an extension asked to have done.
 #[allow(clippy::too_many_arguments)]
 async fn carry_out(
@@ -1135,6 +1140,41 @@ async fn carry_out(
             };
             if let Err(error) = session.lock().await.rename(name).await {
                 eprintln!("note: an extension could not name the session: {error}");
+            }
+        }
+
+        "register_mcp_server" => {
+            let Some(servers) = mcp_of(state).await else {
+                return;
+            };
+            let (Some(name), Some(config), Some(extension)) = (
+                payload.get("name").and_then(Value::as_str),
+                payload.get("config"),
+                extension,
+            ) else {
+                return;
+            };
+            let registered =
+                micro_mcp::config::registered(name, config, std::path::Path::new(extension))
+                    .and_then(|entry| servers.register(entry));
+            if let Err(error) = registered {
+                eprintln!("note: an extension could not add the MCP server {name}: {error}");
+            }
+        }
+        "unregister_mcp_server" => {
+            let Some(servers) = mcp_of(state).await else {
+                return;
+            };
+            let (Some(name), Some(extension)) =
+                (payload.get("name").and_then(Value::as_str), extension)
+            else {
+                return;
+            };
+            let owned = servers
+                .entry(name)
+                .is_some_and(|entry| entry.source == std::path::Path::new(extension));
+            if owned {
+                servers.unregister(name);
             }
         }
 
@@ -1612,6 +1652,8 @@ pub struct State {
     pub prompt_guidelines: Vec<String>,
     /// Every model of every type, and the credentials to call them with.
     pub models: Option<micro_provider::ModelRuntime>,
+    /// The session's MCP servers, which extensions may add to while it runs.
+    pub mcp: Option<micro_mcp::Servers>,
 }
 
 /// Tell the extensions something happened somewhere other than inside a turn.
@@ -1906,11 +1948,62 @@ impl Hooks for ExtensionHooks {
         }
         context
     }
+
+    async fn cache_warming_decision(
+        &self,
+        decision: &micro_agent::WarmingDecision,
+    ) -> Option<micro_agent::WarmingAction> {
+        let answers = self
+            .host
+            .ask_event_attributed(
+                "cache_warming_decision",
+                json!({
+                    "type": "cache_warming_decision",
+                    "warmCost": decision.warm_cost,
+                    "missCost": decision.miss_cost,
+                    "continuationProbability": decision.continuation_probability,
+                    "action": decision.action().as_str(),
+                }),
+            )
+            .await
+            .ok()?;
+        warming_action(
+            self.broker
+                .heeded(answers, Capability::Events, "cache_warming_decision"),
+        )
+    }
+}
+
+/// The action the last answer to `cache_warming_decision` named, when any did.
+fn warming_action(answers: Vec<Value>) -> Option<micro_agent::WarmingAction> {
+    answers
+        .iter()
+        .filter_map(
+            |answer| match answer.get("action").and_then(Value::as_str) {
+                Some("warm") => Some(micro_agent::WarmingAction::Warm),
+                Some("stop") => Some(micro_agent::WarmingAction::Stop),
+                _ => None,
+            },
+        )
+        .next_back()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_last_extension_to_name_a_warming_action_wins() {
+        assert_eq!(
+            warming_action(vec![
+                json!({ "action": "stop" }),
+                json!({ "action": "warm" }),
+                json!({ "action": "maybe" }),
+            ]),
+            Some(micro_agent::WarmingAction::Warm)
+        );
+        assert_eq!(warming_action(vec![json!({})]), None);
+    }
 
     /// The policy these tests hand over.
     fn unconfined() -> micro_sandbox::Sandbox {
@@ -2127,6 +2220,7 @@ mod tests {
             tool_snippets: json!({}),
             prompt_guidelines: Vec::new(),
             models: None,
+            mcp: None,
         }));
         let session = scratch_session().await;
         let workspace = std::env::temp_dir();

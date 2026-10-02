@@ -17,12 +17,18 @@ use crate::transport::TransportError;
 use crate::Client;
 use crate::McpError;
 use crate::Result;
+use crate::ServerLog;
 use async_trait::async_trait;
 use std::collections::BTreeMap;
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::Mutex;
+use std::time::Duration;
+
+/// How long to wait before each further attempt to connect to an HTTP server that failed in a
+/// way another attempt may not.
+const CONNECT_RETRY_DELAYS: [Duration; 2] = [Duration::from_millis(250), Duration::from_secs(1)];
 
 /// Characters of one server's summary in the system prompt.
 const MAX_SUMMARY_CHARS: usize = 250;
@@ -105,6 +111,12 @@ pub struct Servers {
     inner: Arc<Inner>,
 }
 
+impl std::fmt::Debug for Servers {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.debug_list().entries(self.lock().keys()).finish()
+    }
+}
+
 struct Inner {
     workspace: PathBuf,
     credentials: Option<CredentialStore>,
@@ -114,6 +126,8 @@ struct Inner {
     errors: Vec<String>,
     states: Mutex<BTreeMap<String, State>>,
     arrivals: micro_tools::Arrivals,
+    /// Where servers' log messages and standard error are appended.
+    log: Option<Arc<ServerLog>>,
 }
 
 impl Servers {
@@ -150,6 +164,7 @@ impl Servers {
                 errors: config.errors,
                 states: Mutex::new(states),
                 arrivals: micro_tools::Arrivals::default(),
+                log: None,
             }),
         }
     }
@@ -177,6 +192,11 @@ impl Servers {
             inner.allowed = allowed;
             inner.excluded = excluded;
         })
+    }
+
+    /// Append what servers log, and what stdio servers write to their standard error, to `log`.
+    pub fn with_log(self, log: ServerLog) -> Servers {
+        self.configure(|inner| inner.log = Some(Arc::new(log)))
     }
 
     /// Where the tools of servers that connect in the background are delivered.
@@ -235,16 +255,20 @@ impl Servers {
         }
         self.update(name, |state| state.status = Status::Connecting);
 
-        let connected = self.open(&entry).await;
-        let tools = match connected {
-            Ok(client) => match client
-                .tools(entry.config.exposure(), entry.config.description.clone())
-                .await
-            {
-                Ok(tools) => Ok((client, tools)),
-                Err(error) => Err(error),
-            },
-            Err(error) => Err(error),
+        let retries: &[Duration] = match entry.config.url() {
+            Some(_) => &CONNECT_RETRY_DELAYS,
+            None => &[],
+        };
+        let mut attempt = 0;
+        let tools = loop {
+            let tools = self.open_with_tools(&entry).await;
+            match (&tools, retries.get(attempt)) {
+                (Err(error), Some(delay)) if error.is_transient() => {
+                    attempt += 1;
+                    tokio::time::sleep(*delay).await;
+                }
+                _ => break tools,
+            }
         };
 
         match tools {
@@ -274,6 +298,21 @@ impl Servers {
                 Err(error)
             }
         }
+    }
+
+    /// Connect once, and list the server's tools.
+    async fn open_with_tools(
+        &self,
+        entry: &ServerEntry,
+    ) -> Result<(Arc<Client>, Vec<Arc<dyn micro_tools::Tool>>)> {
+        let client = self.open(entry).await?;
+        let tools = client
+            .tools(
+                |tool| entry.config.exposure_of(tool),
+                entry.config.description.clone(),
+            )
+            .await?;
+        Ok((client, tools))
     }
 
     fn offers(&self, tool: &str) -> bool {
@@ -310,6 +349,71 @@ impl Servers {
         (tools, problems)
     }
 
+    /// Add a server an extension registered while the session runs, replacing that extension's
+    /// earlier registration of the name, and connect it in the background when it is enabled and
+    /// any of its tools is reachable. A configuration file's entry of the same name takes
+    /// precedence.
+    pub fn register(&self, entry: ServerEntry) -> std::result::Result<(), String> {
+        {
+            let mut states = self.lock();
+            if let Some(held) = states.get(&entry.name) {
+                if held.entry.scope != config::Scope::Extension {
+                    return Err(format!(
+                        "{} configures a server called {} already",
+                        held.entry.source.display(),
+                        entry.name
+                    ));
+                }
+            }
+            let held: Vec<ServerEntry> = states.values().map(|state| state.entry.clone()).collect();
+            if let Some(clash) = config::clash(&held, &entry.name) {
+                return Err(format!(
+                    "server \"{}\" conflicts with \"{clash}\"",
+                    entry.name
+                ));
+            }
+            let status = match entry.config.enabled {
+                true => Status::Connecting,
+                false => Status::Disabled,
+            };
+            states.insert(
+                entry.name.clone(),
+                State {
+                    entry: entry.clone(),
+                    status,
+                    client: None,
+                    tools: Vec::new(),
+                    challenge: Arc::default(),
+                },
+            );
+        }
+        self.inner
+            .arrivals
+            .remove_prefixed(&format!("{}__", names::namespace(&entry.name)));
+        if entry.config.enabled && entry.config.is_reachable() {
+            self.connect_in_background(&entry.name);
+        }
+        Ok(())
+    }
+
+    /// Take away a server an extension registered, and its tools with it.
+    pub fn unregister(&self, name: &str) {
+        let removed = {
+            let mut states = self.lock();
+            match states.get(name) {
+                Some(state) if state.entry.scope == config::Scope::Extension => {
+                    states.remove(name).is_some()
+                }
+                _ => false,
+            }
+        };
+        if removed {
+            self.inner
+                .arrivals
+                .remove_prefixed(&format!("{}__", names::namespace(name)));
+        }
+    }
+
     /// Connect a server without waiting for it. Its tools are delivered to the arrivals, and a
     /// tool search waits for them.
     pub fn connect_in_background(&self, name: &str) {
@@ -318,7 +422,10 @@ impl Servers {
         let name = name.to_string();
         tokio::spawn(async move {
             if let Ok(tools) = servers.connect(&name).await {
-                servers.inner.arrivals.add(tools);
+                // A server taken away while it connected offers nothing.
+                if servers.entry(&name).is_some() {
+                    servers.inner.arrivals.add(tools);
+                }
             }
             drop(expected);
         });
@@ -364,12 +471,18 @@ impl Servers {
                 let cwd = cwd
                     .as_deref()
                     .map(|cwd| self.inner.workspace.join(expand_home(cwd)));
-                let spawned = StdioTransport::spawn(&command, &args, &env, cwd.as_deref(), sender)
-                    .map_err(|error| McpError::Start {
-                        server: name.to_string(),
-                        command: command.clone(),
-                        message: error.to_string(),
-                    })?;
+                let log = self
+                    .inner
+                    .log
+                    .as_ref()
+                    .map(|log| (Arc::clone(log), name.to_string()));
+                let spawned =
+                    StdioTransport::spawn(&command, &args, &env, cwd.as_deref(), sender, log)
+                        .map_err(|error| McpError::Start {
+                            server: name.to_string(),
+                            command: command.clone(),
+                            message: error.to_string(),
+                        })?;
                 Arc::new(spawned)
             }
             Configured::Http {
@@ -415,7 +528,14 @@ impl Servers {
             }
         };
 
-        Client::connect(name, transport, incoming, entry.config.timeout).await
+        Client::connect(
+            name,
+            transport,
+            incoming,
+            entry.config.timeout,
+            self.inner.log.clone(),
+        )
+        .await
     }
 
     /// Every server and where it stands, servers that need attention first.

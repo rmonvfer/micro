@@ -57,6 +57,10 @@ async fn trusted(root: &Path) -> bool {
 fn servers(root: &Path, loaded: config::LoadedConfig) -> Result<Servers> {
     let providers = Arc::new(micro_auth::AuthStore::open()?);
     let servers = Servers::new(loaded, root).with_providers(providers);
+    let servers = match micro_mcp::ServerLog::in_data_dir() {
+        Some(log) => servers.with_log(log),
+        None => servers,
+    };
     Ok(match micro_mcp::oauth::CredentialStore::open() {
         Some(credentials) => servers.with_credentials(credentials),
         None => servers,
@@ -487,6 +491,41 @@ async fn sign_in(servers: &Servers, name: &str, notifier: Option<&micro_tui::UiA
         }
     });
     Applied::note(announced)
+}
+
+/// The `mcp_servers` system prompt section as the servers stand when a run starts, so a server
+/// that connected since, and said what it offers, or that an extension added, is listed with it.
+pub struct ServersSection {
+    servers: Servers,
+    /// The servers whose tools were not declared to the model when the session started.
+    undeclared: Vec<String>,
+    codemode: bool,
+}
+
+impl ServersSection {
+    pub fn new(servers: Servers, undeclared: Vec<String>, codemode: bool) -> Self {
+        ServersSection {
+            servers,
+            undeclared,
+            codemode,
+        }
+    }
+}
+
+impl micro_agent::LiveSection for ServersSection {
+    fn name(&self) -> &str {
+        "mcp_servers"
+    }
+
+    fn render(&self) -> Option<String> {
+        let mut undeclared = self.undeclared.clone();
+        for entry in self.servers.entries() {
+            if entry.config.has_undeclared_tools() && !undeclared.contains(&entry.name) {
+                undeclared.push(entry.name);
+            }
+        }
+        self.servers.prompt_section(&undeclared, self.codemode)
+    }
 }
 
 #[cfg(test)]

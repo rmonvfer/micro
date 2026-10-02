@@ -5,8 +5,17 @@ mod nested;
 mod summarizer;
 mod warming;
 
+pub use warming::format_warm_notice;
+pub use warming::format_warming_status;
 pub use warming::CacheWarming;
 pub use warming::CacheWarmingMode;
+pub use warming::WarmNotice;
+pub use warming::WarmingAction;
+pub use warming::WarmingDecision;
+pub use warming::WarmingPhase;
+pub use warming::WarmingState;
+pub use warming::WarmingStatus;
+pub use warming::WarmingWatch;
 
 pub use summarizer::ProviderSummarizer;
 
@@ -334,6 +343,9 @@ pub struct Agent {
     offered: Option<Arc<std::sync::RwLock<Option<Vec<String>>>>>,
     /// Tools that became callable after the agent was built, never declared to the model.
     arrivals: Option<micro_tools::Arrivals>,
+    /// Parts of the system prompt that can change while the session runs, each with what the
+    /// system prompt says for it.
+    live_sections: Vec<(Arc<dyn LiveSection>, Option<String>)>,
 
     turn: u64,
     /// Results written to answer tool calls a conversation arrived with unanswered, waiting for a
@@ -385,6 +397,7 @@ impl Agent {
             steering: Steering::default(),
             offered: None,
             arrivals: None,
+            live_sections: Vec::new(),
             turn: 0,
             repairs: Vec::new(),
             stored_blobs: HashSet::new(),
@@ -419,7 +432,7 @@ impl Agent {
 
     /// Point the agent at a different model, keeping the conversation.
     pub fn set_model(&mut self, swap: ModelSwap) {
-        self.warmer.stop();
+        self.warmer.stop("model changed");
         self.provider = swap.provider;
         self.model = swap.model;
         self.api_key = swap.api_key;
@@ -493,8 +506,14 @@ impl Agent {
 
     /// When to keep a prompt cache from expiring between requests.
     pub fn with_cache_warming(mut self, warming: CacheWarming) -> Self {
+        self.warmer.set_mode(warming.mode);
         self.cache_warming = warming;
         self
+    }
+
+    /// A handle onto what the cache warmer is doing.
+    pub fn cache_warming_watch(&self) -> WarmingWatch {
+        self.warmer.watch()
     }
 
     /// How large an image each model may be sent.
@@ -602,6 +621,43 @@ impl Agent {
     }
 
     /// Let something decide what the run may do.
+    /// Keep `section` current: the system prompt says `in_system_prompt` for it, and a run that
+    /// finds it reading otherwise adds the change to the conversation ahead of its prompt.
+    pub fn with_live_section(
+        mut self,
+        section: Arc<dyn LiveSection>,
+        in_system_prompt: Option<String>,
+    ) -> Self {
+        self.live_sections.push((section, in_system_prompt));
+        self
+    }
+
+    /// The messages saying which live sections read otherwise than the conversation last said.
+    fn section_updates(&self) -> Vec<Message> {
+        self.live_sections
+            .iter()
+            .filter_map(|(section, in_system_prompt)| {
+                let name = section.name();
+                let said = self
+                    .messages
+                    .iter()
+                    .rev()
+                    .filter_map(|message| match message {
+                        Message::User { content, .. } => {
+                            micro_types::read_section_update(&text_of(content))
+                        }
+                        _ => None,
+                    })
+                    .find(|update| update.name == name)
+                    .map(|update| update.body)
+                    .unwrap_or_else(|| in_system_prompt.clone());
+                let now = section.render();
+                (now != said)
+                    .then(|| Message::user(micro_types::section_update(name, now.as_deref())))
+            })
+            .collect()
+    }
+
     pub fn with_hooks(mut self, hooks: Arc<dyn Hooks>) -> Self {
         self.hooks = Some(hooks);
         self
@@ -658,14 +714,14 @@ impl Agent {
         let summary = compacted.messages[0].clone();
         self.record_compaction(&compacted);
         self.charge(compacted.cost.usage);
-        self.warmer.stop();
+        self.warmer.stop("conversation compacted");
         self.messages = compacted.messages;
         Ok(summary)
     }
 
     /// Put the agent in a different conversation.
     pub fn set_messages(&mut self, messages: Vec<Message>) {
-        self.warmer.stop();
+        self.warmer.stop("conversation replaced");
         self.messages = messages;
 
         self.repairs = answer_abandoned_calls(&mut self.messages);
@@ -1101,16 +1157,40 @@ impl Agent {
             .collect()
     }
 
+    /// A tool the model may call by name: one of the agent's own, unless something narrowed the
+    /// run to others, or one that arrived while the session ran and is found by searching.
     fn find_tool(&self, name: &str) -> Option<Arc<dyn Tool>> {
         let offered = self.offered_names();
-        if offered.is_some_and(|names| !names.iter().any(|offered| offered == name)) {
+        let own = self
+            .tools
+            .iter()
+            .find(|tool| tool.definition().name == name);
+        match own {
+            Some(_)
+                if offered.is_some_and(|names| !names.iter().any(|offered| offered == name)) =>
+            {
+                None
+            }
+            Some(tool) => Some(Arc::clone(tool)),
+            None => self.arrivals.as_ref()?.find(name),
+        }
+        .filter(|tool| tool.exposure() != ToolExposure::Hidden)
+    }
+
+    /// [`Self::find_tool`], waiting for a tool whose source is still on its way: a deferred
+    /// tool the conversation found before it was resumed is callable once its server
+    /// reconnects.
+    async fn resolve_tool(&self, name: &str) -> Option<Arc<dyn Tool>> {
+        if let Some(tool) = self.find_tool(name) {
+            return Some(tool);
+        }
+        if self.tools.iter().any(|tool| tool.definition().name == name) {
             return None;
         }
-        self.tools
-            .iter()
-            .find(|tool| tool.definition().name == name)
-            .cloned()
-            .or_else(|| self.arrivals.as_ref()?.find(name))
+        self.arrivals
+            .as_ref()?
+            .arriving(name)
+            .await
             .filter(|tool| tool.exposure() != ToolExposure::Hidden)
     }
 
@@ -1148,6 +1228,15 @@ impl Agent {
         }
 
         events.send(AgentEvent::AgentStart);
+        for update in self.section_updates() {
+            events.send(AgentEvent::MessageStart {
+                message: update.clone(),
+            });
+            events.send(AgentEvent::MessageEnd {
+                message: update.clone(),
+            });
+            self.commit(update, &mut produced);
+        }
         events.send(AgentEvent::MessageStart {
             message: prompt.clone(),
         });
@@ -1270,7 +1359,7 @@ impl Agent {
                             if let ToolDecision::Rewrite(replacement) = decision {
                                 arguments = replacement;
                             }
-                            match self.find_tool(&name) {
+                            match self.resolve_tool(&name).await {
                                 Some(tool) => runnable = Some(tool),
                                 None => settled = Some((format!("tool not found: {name}"), true)),
                             }
@@ -1358,7 +1447,7 @@ impl Agent {
         let summary = compacted.messages[0].clone();
         self.record_compaction(&compacted);
         self.charge(compacted.cost.usage);
-        self.warmer.stop();
+        self.warmer.stop("conversation compacted");
         self.messages = compacted.messages;
 
         events.send(AgentEvent::MessageStart {
@@ -1371,7 +1460,7 @@ impl Agent {
     /// Issue one model request, forwarding stream events and retrying transient failures that
     /// happen before any content is shown.
     async fn stream_once(&mut self, events: &Fan<'_>) -> AssistantMessage {
-        self.warmer.stop();
+        self.warmer.stop("a request is in flight");
         let context = self
             .prefix
             .ahead_of(self.messages.clone(), self.cache_key.clone());
@@ -1520,6 +1609,7 @@ impl Agent {
                 usage,
                 cost,
                 recorder: self.recorder.clone(),
+                hooks: self.hooks.clone(),
             },
         );
     }
@@ -1794,6 +1884,35 @@ mod tests {
         }
     }
 
+    /// A tool the conversation found before it was resumed is called once its server is back,
+    /// whatever narrowed the agent's own tools.
+    #[tokio::test]
+    async fn a_call_waits_for_the_server_its_tool_comes_from() {
+        let arrivals = micro_tools::Arrivals::default();
+        let expected = arrivals.expect("mcp__docs");
+        let agent = Agent::new(
+            Arc::new(NoProvider),
+            vec![Arc::new(NamedTool("read"))],
+            Model::anthropic("test-model"),
+            "test-key",
+        )
+        .with_offered_tools(Arc::new(std::sync::RwLock::new(Some(vec![
+            "read".to_string()
+        ]))))
+        .with_arrivals(arrivals.clone());
+
+        let delivering = arrivals.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            delivering.add(vec![Arc::new(NamedTool("mcp__docs__look"))]);
+            drop(expected);
+        });
+
+        assert!(agent.find_tool("mcp__docs__look").is_none());
+        assert!(agent.resolve_tool("mcp__docs__look").await.is_some());
+        assert!(agent.resolve_tool("mcp__other__look").await.is_none());
+    }
+
     /// A tool whose provider is gone is gone: the model stops being told about it, and it can no
     /// longer be found by name either.
     #[test]
@@ -2064,6 +2183,7 @@ mod tests {
                 ..ModelCost::default()
             },
             recorder: Some(recorder),
+            hooks: None,
         }
     }
 
@@ -2118,6 +2238,151 @@ mod tests {
             warm_request(&provider, recorder),
         );
         assert!(!warmer.is_running());
+    }
+
+    /// What a user message says.
+    fn said(message: &Message) -> String {
+        match message {
+            Message::User { content, .. } => text_of(content),
+            _ => String::new(),
+        }
+    }
+
+    /// A section whose text the test sets.
+    struct Servers(Arc<std::sync::Mutex<Option<String>>>);
+
+    impl LiveSection for Servers {
+        fn name(&self) -> &str {
+            "mcp_servers"
+        }
+
+        fn render(&self) -> Option<String> {
+            self.0.lock().unwrap().clone()
+        }
+    }
+
+    #[tokio::test]
+    async fn a_changed_section_joins_the_conversation_and_the_system_prompt_stays() {
+        let now = Arc::new(std::sync::Mutex::new(Some("- mcp__docs".to_string())));
+        let mut agent = Agent::new(
+            Arc::new(RecordingProvider::new("anthropic")),
+            Vec::new(),
+            plain_model("anthropic", "claude"),
+            "key",
+        )
+        .with_system_prompt("prompt\n\n- mcp__docs")
+        .with_live_section(
+            Arc::new(Servers(Arc::clone(&now))),
+            Some("- mcp__docs".to_string()),
+        );
+        let (events, _received) = tokio::sync::mpsc::unbounded_channel();
+
+        agent.run(Message::user("first"), &events).await;
+        assert_eq!(agent.messages().len(), 2, "nothing changed yet");
+
+        *now.lock().unwrap() = Some("- mcp__docs: Search the docs".to_string());
+        agent.run(Message::user("second"), &events).await;
+        let update = said(&agent.messages()[2]);
+        assert_eq!(
+            micro_types::read_section_update(&update).and_then(|update| update.body),
+            Some("- mcp__docs: Search the docs".to_string())
+        );
+        assert_eq!(said(&agent.messages()[3]), "second");
+        assert_eq!(
+            agent.prefix().system_prompt(),
+            Some("prompt\n\n- mcp__docs")
+        );
+
+        agent.run(Message::user("third"), &events).await;
+        assert_eq!(agent.messages().len(), 7, "the update is said once");
+
+        *now.lock().unwrap() = None;
+        agent.run(Message::user("fourth"), &events).await;
+        let update = said(&agent.messages()[7]);
+        assert_eq!(
+            micro_types::read_section_update(&update).map(|update| update.body),
+            Some(None)
+        );
+    }
+
+    struct Refusing;
+
+    #[async_trait::async_trait]
+    impl Hooks for Refusing {
+        async fn cache_warming_decision(
+            &self,
+            decision: &WarmingDecision,
+        ) -> Option<WarmingAction> {
+            assert!(decision.warm, "micro would have warmed: {decision:?}");
+            Some(WarmingAction::Stop)
+        }
+    }
+
+    #[tokio::test]
+    async fn a_refresh_is_announced_and_the_status_follows_it() {
+        let provider = RecordingProvider::new("anthropic");
+        let (recorder, _recorded) = tokio::sync::mpsc::unbounded_channel();
+        let mut warmer = warming::Warmer::default();
+        let watch = warmer.watch();
+        let notices = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let heard = Arc::clone(&notices);
+        watch.on_warmed(move |notice| heard.lock().unwrap().push(notice));
+        let _running = warmer.run_started();
+        warmer.start(
+            &short_lived(CacheWarmingMode::Streaming),
+            warm_request(&provider, recorder),
+        );
+
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let status = watch.status();
+        assert_eq!(status.state, WarmingState::Scheduled);
+        let line = format_warming_status(&status, std::time::SystemTime::now());
+        assert!(line.starts_with("Decision in 1s ("), "{line}");
+        assert!(line.ends_with("-> warm)"), "{line}");
+
+        tokio::time::sleep(Duration::from_millis(1_400)).await;
+        let notices = notices.lock().unwrap().clone();
+        assert_eq!(notices.len(), 1);
+        assert!(!notices[0].extension_override);
+
+        warmer.stop("model changed");
+        assert_eq!(
+            format_warming_status(&watch.status(), std::time::SystemTime::now()),
+            "Inactive (model changed)"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_extension_can_stop_a_refresh_micro_would_send() {
+        let provider = RecordingProvider::new("anthropic");
+        let (recorder, _recorded) = tokio::sync::mpsc::unbounded_channel();
+        let mut warmer = warming::Warmer::default();
+        let _running = warmer.run_started();
+        let mut request = warm_request(&provider, recorder);
+        request.hooks = Some(Arc::new(Refusing));
+        warmer.start(&short_lived(CacheWarmingMode::Streaming), request);
+
+        tokio::time::sleep(Duration::from_millis(1_500)).await;
+        assert!(provider.calls().is_empty(), "the extension stopped it");
+        let status = warmer.watch().status();
+        assert_eq!(status.state, WarmingState::Inactive);
+        assert!(status.extension_override);
+        let line = format_warming_status(&status, std::time::SystemTime::now());
+        assert!(
+            line.starts_with("Stopped (extension override, 100% continuation"),
+            "{line}"
+        );
+    }
+
+    #[test]
+    fn warming_that_is_off_says_so() {
+        let mut warmer = warming::Warmer::default();
+        warmer.set_mode(CacheWarmingMode::Off);
+        warmer.stop("a request is in flight");
+        assert_eq!(
+            format_warming_status(&warmer.watch().status(), std::time::SystemTime::now()),
+            "Inactive (cache warming disabled)"
+        );
     }
 
     #[test]
@@ -2386,6 +2651,23 @@ pub enum ToolDecision {
     Terminate(String),
 }
 
+/// A part of the system prompt that can change while a session runs, such as the list of MCP
+/// servers. Rewriting the system prompt would throw away the prefix the provider cached, so each
+/// run compares what the section reads now with what the conversation last said, and adds a
+/// change to the conversation instead.
+pub trait LiveSection: Send + Sync {
+    /// The section's name, which marks its updates in the conversation.
+    fn name(&self) -> &str;
+
+    /// What the section reads now, or `None` when it has nothing to say.
+    fn render(&self) -> Option<String>;
+}
+
+/// The text of a message's blocks, joined.
+fn text_of(content: &[ContentBlock]) -> String {
+    content.iter().map(ContentBlock::as_text).collect()
+}
+
 #[async_trait::async_trait]
 pub trait Hooks: Send + Sync {
     /// Called before a tool runs, with the chance to change the call or refuse it.
@@ -2420,6 +2702,13 @@ pub trait Hooks: Send + Sync {
     /// Called with the answer, once it is complete.
     async fn after_response(&self, message: &AssistantMessage) {
         let _ = message;
+    }
+
+    /// Called before each prompt-cache refresh with micro's decision; an action returned
+    /// overrules it.
+    async fn cache_warming_decision(&self, decision: &WarmingDecision) -> Option<WarmingAction> {
+        let _ = decision;
+        None
     }
 }
 

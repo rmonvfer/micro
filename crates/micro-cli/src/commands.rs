@@ -47,6 +47,8 @@ pub struct CliCommands {
     /// places the first load did.
     resources: crate::runtime::Resources,
     tree_filter: micro_config::TreeFilter,
+    /// What the agent's prompt-cache warmer is doing, for `/session`.
+    cache_warming: micro_agent::WarmingWatch,
 
     collapse_changelog: bool,
     /// How hard the model is being asked to reason, so a model swap keeps it.
@@ -92,6 +94,24 @@ pub struct CliCommands {
     sandbox_overridden: bool,
 }
 
+/// What `/session` says about the prompt-cache warmer.
+fn warming_report(watch: &micro_agent::WarmingWatch) -> micro_commands::CacheWarmingReport {
+    let status = watch.status();
+    let mode = match watch.mode() {
+        micro_agent::CacheWarmingMode::Off => "off",
+        micro_agent::CacheWarmingMode::Streaming => "streaming",
+        micro_agent::CacheWarmingMode::Idle => "idle",
+    };
+    micro_commands::CacheWarmingReport {
+        mode: mode.to_string(),
+        status: micro_agent::format_warming_status(&status, std::time::SystemTime::now()),
+        costs: status
+            .decision
+            .filter(|decision| decision.economics_available)
+            .map(|decision| (decision.miss_cost, decision.warm_cost)),
+    }
+}
+
 pub struct HostParts {
     pub catalog: Catalog,
     pub auth: Arc<AuthStore>,
@@ -111,6 +131,7 @@ pub struct HostParts {
     pub scoped_models: Vec<String>,
     pub resources: crate::runtime::Resources,
     pub tree_filter: micro_config::TreeFilter,
+    pub cache_warming: micro_agent::WarmingWatch,
     pub collapse_changelog: bool,
     pub thinking: micro_types::ThinkingLevel,
     pub anthropic_extra_usage: bool,
@@ -153,6 +174,7 @@ impl CliCommands {
             scoped_models: parts.scoped_models,
             resources: parts.resources,
             tree_filter: parts.tree_filter,
+            cache_warming: parts.cache_warming,
             collapse_changelog: parts.collapse_changelog,
             thinking: parts.thinking,
             extensions: parts.extensions,
@@ -581,6 +603,7 @@ impl CliCommands {
             collapse_changelog: self.collapse_changelog,
             scoped_models: &self.scoped_models,
             tree_filter: self.tree_filter,
+            cache_warming: Some(warming_report(&self.cache_warming)),
         }
     }
 
@@ -1545,6 +1568,7 @@ mod tests {
             scoped_models: Vec::new(),
             resources: Default::default(),
             tree_filter: Default::default(),
+            cache_warming: Default::default(),
             collapse_changelog: false,
             thinking: micro_types::ThinkingLevel::Off,
             extensions: None,
