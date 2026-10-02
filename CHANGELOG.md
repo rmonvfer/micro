@@ -10,6 +10,11 @@
 - Name MCP tools with `-` written as `_` (`mcp__my_server__x`), give colliding tool names a hash suffix, and reject server names that differ only in `-` and `_`.
 - Connect MCP servers side by side; servers with `"exposure": "deferred"` connect in the background and `tool_search` waits for them. An `mcp_servers` system prompt section lists servers whose tools are not declared.
 - Title MCP tool calls `server/tool`.
+- List image and classifier models beside chat models: OpenRouter's image and decision models under `openrouter`, and TypeSafe's Jev on TypeSafe, OpenRouter, Cloudflare Workers AI, Vercel AI Gateway and OpenCode. `micro models --type image|classifier` lists them; `/model` still offers only chat models.
+- Generate images and classify through `ctx.modelRegistry.generateImages()` and `ctx.modelRegistry.classify()`, with credentials resolved at call time. Their usage is recorded as `model_call` ledger events and counts toward the session cost, `/session` and `micro bill`. `micro_provider::ModelRuntime` offers the same to Rust callers.
+- Register virtual models with `micro.registerVirtualModel()`: a router picks a physical model and thinking level for every request, keeps state on the session branch, and the footer shows the routed model. `/session` lists cost per physical model, and turns are billed at the rates of the model that answered.
+- Connect to a llama.cpp router with `micro llama connect`, and list, search Hugging Face, download, load and unload its models with `micro llama`. Loaded models are chat models under `llama.cpp` and classifiers read from next-token label probabilities; their runtime context windows are remembered between runs.
+- Add the `provider_stream_event` extension event with each parsed provider stream event before micro normalizes it.
 
 ## [0.1.13] - 2026-09-04
 

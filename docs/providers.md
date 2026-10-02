@@ -81,6 +81,8 @@ Live data is merged over the bundled catalog. Fields omitted by the provider, su
 
 If `live_models` or `MICRO_LIVE_MODELS` is enabled, micro refreshes provider listings before selecting a model at startup. If startup cannot resolve a model query from the local catalog, micro also tries the live listings before accepting an unknown model with unknown limits and pricing. Use `micro models --live` for an explicit refresh.
 
+OpenRouter's listing also brings its image and decision models, which `/model` does not offer; see [Image and classifier models](models.md). A [llama.cpp router](llama-cpp.md) is listed every time micro starts, whatever `live_models` says.
+
 ## Add a local or compatible endpoint
 
 Add it to `models.json`:
