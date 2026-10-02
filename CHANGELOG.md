@@ -18,6 +18,7 @@
 - Use Anthropic workload identity federation from `ANTHROPIC_FEDERATION_RULE_ID`, `ANTHROPIC_ORGANIZATION_ID` and `ANTHROPIC_IDENTITY_TOKEN_FILE`.
 - Add `micro auth check`, `micro auth print-api-key` and `micro auth print-bearer-token`.
 - Label `/login` and `/logout` entries as `not configured`, or as an API key, `subscription` or `account`.
+- Add `/bug` to write a ZIP bug report with redacted settings, environment, extensions and recorded failures, optionally with the session transcript, for attaching to a GitHub issue.
 - Let an extension's `tool_call` handler return `terminate: true` with a block, ending the run without another model call when every call in the batch was blocked that way.
 
 ## [0.1.13] - 2026-09-04

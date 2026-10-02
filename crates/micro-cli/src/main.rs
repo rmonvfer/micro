@@ -1,6 +1,8 @@
 //! Entry point.
 
 mod access;
+mod archive;
+mod bug_report;
 mod capabilities;
 mod commands;
 mod extension_broker;

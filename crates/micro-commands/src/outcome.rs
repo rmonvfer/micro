@@ -22,6 +22,18 @@ pub enum RemoteAction {
     Pair,
 }
 
+/// What `/bug` was asked to do.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BugReportAction {
+    /// Write the report to an archive, with or without the session's transcript.
+    Export {
+        transcript: bool,
+        description: Option<String>,
+    },
+    /// Open the page a new issue is filed on.
+    OpenIssue,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ThemeChoice {
     Dark,
@@ -98,6 +110,8 @@ pub enum CommandOutcome {
     },
     /// Publish the conversation, and say where it went.
     Share,
+    /// Write a bug report about micro, or open the page it is filed on.
+    ReportBug(BugReportAction),
     /// Put this session on the phone that has been paired, or pair one.
     RemoteControl {
         action: RemoteAction,
@@ -457,6 +471,7 @@ impl fmt::Debug for CommandOutcome {
                 .field("path", path)
                 .finish(),
             CommandOutcome::Share => formatter.write_str("Share"),
+            CommandOutcome::ReportBug(action) => write!(formatter, "ReportBug({action:?})"),
             CommandOutcome::RemoteControl { action } => {
                 write!(formatter, "RemoteControl {{ action: {action:?} }}")
             }

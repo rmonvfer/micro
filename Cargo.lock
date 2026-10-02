@@ -2295,6 +2295,8 @@ dependencies = [
  "anyhow",
  "async-trait",
  "clap",
+ "crc32fast",
+ "flate2",
  "fs2",
  "futures",
  "libc",

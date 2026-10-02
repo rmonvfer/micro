@@ -34,6 +34,8 @@ micro-types = { workspace = true }
 anyhow = { workspace = true }
 async-trait = { workspace = true }
 clap = { workspace = true }
+crc32fast = { workspace = true }
+flate2 = { workspace = true }
 fs2 = { workspace = true }
 futures = { workspace = true }
 reqwest = { workspace = true }

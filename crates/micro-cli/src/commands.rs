@@ -803,6 +803,90 @@ impl CliCommands {
         }
     }
 
+    /// Write a bug report beside the workspace, or open the page an issue is filed on. Nothing is
+    /// uploaded: the user attaches the archive themselves.
+    async fn report_bug(&mut self, action: micro_commands::BugReportAction) -> Applied {
+        let (transcript, description) = match action {
+            micro_commands::BugReportAction::OpenIssue => {
+                return match micro_auth::oauth::open_browser(micro_commands::ISSUES_URL) {
+                    true => Applied::note(format!("Opened {}", micro_commands::ISSUES_URL)),
+                    false => Applied::warning(format!(
+                        "Could not open a browser. File the issue at {}",
+                        micro_commands::ISSUES_URL
+                    )),
+                };
+            }
+            micro_commands::BugReportAction::Export {
+                transcript,
+                description,
+            } => (transcript, description),
+        };
+
+        let loaded = match self.sessions.load(&self.session_id).await {
+            Ok(loaded) => loaded,
+            Err(error) => return Applied::error(format!("Cannot read the session: {error}")),
+        };
+        let log = match transcript {
+            true => match self.sessions.raw_log(&self.session_id).await {
+                Ok(log) => Some(log),
+                Err(error) => {
+                    return Applied::error(format!("Cannot read the session log: {error}"))
+                }
+            },
+            false => None,
+        };
+
+        let home = std::env::var_os("HOME").map(PathBuf::from);
+        let report = crate::bug_report::build(crate::bug_report::ReportInputs {
+            description: description.as_deref(),
+            session_id: &self.session_id,
+            workspace: &self.workspace,
+            model: &self.model,
+            thinking: self.thinking,
+            tool_names: &self.tool_names,
+            extensions: self
+                .extensions
+                .as_deref()
+                .map(micro_extensions::Host::loaded),
+            messages: &loaded.messages,
+            events: loaded.session.events(),
+            global_settings: &self.config_home.join(micro_config::FILE_NAME),
+            project_settings: &micro_config::ProjectConfig::path(&self.workspace),
+            transcript: log,
+            home: home.as_deref(),
+            now: std::time::SystemTime::now(),
+        });
+
+        let path = match report.write_to(&self.workspace) {
+            Ok(path) => path,
+            Err(error) => {
+                return Applied::error(format!("Failed to write the bug report: {error}"))
+            }
+        };
+        let _ = self
+            .session
+            .lock()
+            .await
+            .append_custom(
+                crate::bug_report::SESSION_ENTRY_TYPE,
+                report.session_entry(&path),
+            )
+            .await;
+
+        let mut note = format!(
+            "Bug report written to {}\nReport ID: {}\nAttach it to an issue at {}, or run /bug --open-issue to open that page.",
+            path.display(),
+            report.id,
+            micro_commands::ISSUES_URL
+        );
+        if report.transcript.is_some() {
+            note.push_str(
+                "\nThe archive includes the session transcript; review it before sharing.",
+            );
+        }
+        Applied::note(note)
+    }
+
     /// Read the instruction files and skills again, and tell the model what they say now.
     async fn reload(&mut self) -> Applied {
         let context = crate::runtime::load_context(
@@ -1236,6 +1320,8 @@ impl Commands for CliCommands {
             CommandOutcome::Import { path } => self.import(&path).await,
 
             CommandOutcome::Share => self.share().await,
+
+            CommandOutcome::ReportBug(action) => self.report_bug(action).await,
 
             CommandOutcome::RemoteControl { action } => self.remote(action).await,
 
@@ -1912,6 +1998,97 @@ mod tests {
             .await
             .expect("an unknown command response");
         assert!(removed.is_error());
+    }
+
+    /// `/bug` writes an archive into the workspace, keeps the transcript out unless asked, and
+    /// leaves secrets in the settings behind.
+    #[tokio::test]
+    async fn a_bug_report_is_written_beside_the_workspace() {
+        let (mut host, root) = host("bug").await;
+        std::fs::create_dir_all(root.join("home")).unwrap();
+        std::fs::write(
+            root.join("home").join(micro_config::FILE_NAME),
+            r#"{"theme":"dark","device_id":"dev-1234","openai_api_key":"sk-hidden"}"#,
+        )
+        .unwrap();
+        host.session
+            .lock()
+            .await
+            .append(&micro_types::Message::user("a private request"))
+            .await
+            .unwrap();
+
+        let applied = host
+            .apply(CommandOutcome::ReportBug(
+                micro_commands::BugReportAction::Export {
+                    transcript: false,
+                    description: Some("the editor froze".into()),
+                },
+            ))
+            .await;
+        let text = note(&applied).to_string();
+        assert!(!applied.is_error(), "{text}");
+        assert!(text.contains(micro_commands::ISSUES_URL), "{text}");
+
+        let archive = std::fs::read_dir(&host.workspace)
+            .unwrap()
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .find(|path| {
+                path.file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name.starts_with("micro-bug-report-"))
+            })
+            .expect("an archive in the workspace");
+        assert!(text.contains(&archive.display().to_string()), "{text}");
+
+        let files = crate::archive::reading::unzip(&std::fs::read(&archive).unwrap());
+        let names: Vec<&str> = files.iter().map(|(name, _)| name.as_str()).collect();
+        assert_eq!(names, ["report.json", "diagnostics.json"]);
+        let report: String = files
+            .iter()
+            .map(|(_, contents)| String::from_utf8_lossy(contents).into_owned())
+            .collect();
+        assert!(report.contains("the editor froze"));
+        assert!(report.contains("\"dark\""));
+        assert!(!report.contains("sk-hidden"));
+        assert!(!report.contains("dev-1234"));
+        assert!(!report.contains("a private request"));
+    }
+
+    /// Asking for the transcript puts the session log in the archive beside the diagnostics.
+    #[tokio::test]
+    async fn a_bug_report_can_carry_the_transcript() {
+        let (mut host, _root) = host("bug-transcript").await;
+        host.session
+            .lock()
+            .await
+            .append(&micro_types::Message::user("what broke"))
+            .await
+            .unwrap();
+
+        let applied = host
+            .apply(CommandOutcome::ReportBug(
+                micro_commands::BugReportAction::Export {
+                    transcript: true,
+                    description: None,
+                },
+            ))
+            .await;
+        let text = note(&applied).to_string();
+        assert!(text.contains("review it before sharing"), "{text}");
+
+        let archive = text
+            .lines()
+            .find_map(|line| line.strip_prefix("Bug report written to "))
+            .map(PathBuf::from)
+            .expect("the note names the archive");
+        let files = crate::archive::reading::unzip(&std::fs::read(&archive).unwrap());
+        let transcript = files
+            .iter()
+            .find(|(name, _)| name == "session.jsonl")
+            .expect("the transcript is in the archive");
+        assert!(String::from_utf8_lossy(&transcript.1).contains("what broke"));
     }
 
     #[tokio::test]
