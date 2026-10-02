@@ -691,6 +691,157 @@ function roundCost(value: number): number {
 	return Number(value.toFixed(6));
 }
 
+/** An image or classifier model, in the catalog's own spelling. Only its own operation accepts it. */
+interface TypedModel {
+	provider: string;
+	id: string;
+	name: string;
+	api: "openrouter-images" | "typesafe-system-one" | "cloudflare-workers-ai-system-one";
+	input: string[];
+	output?: string[];
+	context_window?: number;
+	base_url?: string;
+	cost: { input: number; output: number; cache_read: number; cache_write: number };
+}
+
+/** Workers AI's REST endpoint, where System One models run outside the OpenAI-compatible path. */
+const CLOUDFLARE_WORKERS_AI_REST_BASE_URL = "https://api.cloudflare.com/client/v4/accounts/{CLOUDFLARE_ACCOUNT_ID}/ai";
+
+/** Vercel AI Gateway serves System One models on a TypeSafe-compatible endpoint. */
+const AI_GATEWAY_TYPESAFE_BASE_URL = "https://ai-gateway.vercel.sh/typesafe/v1";
+
+/**
+ * TypeSafe's Jev where no listing describes it. TypeSafe publishes no direct price, so its own
+ * endpoint reports tokens at no cost; OpenCode Zen and Workers AI publish theirs by hand.
+ * https://developers.cloudflare.com/ai/models/typesafe/jev/ and https://opencode.ai/docs/zen
+ */
+const UNLISTED_CLASSIFIERS: TypedModel[] = [
+	{
+		provider: "typesafe",
+		id: "jev-latest",
+		name: "Jev",
+		api: "typesafe-system-one",
+		base_url: "https://api.typesafe.ai/v1/",
+		input: ["text"],
+		context_window: 64000,
+		cost: { input: 0, output: 0, cache_read: 0, cache_write: 0 },
+	},
+	{
+		provider: "opencode",
+		id: "jev-1.13",
+		name: "Jev 1.13",
+		api: "typesafe-system-one",
+		input: ["text"],
+		context_window: 32000,
+		cost: { input: 0.042, output: 0, cache_read: 0, cache_write: 0 },
+	},
+	{
+		provider: "opencode",
+		id: "jev-1.13-free",
+		name: "Jev 1.13 Free",
+		api: "typesafe-system-one",
+		input: ["text"],
+		context_window: 32000,
+		cost: { input: 0, output: 0, cache_read: 0, cache_write: 0 },
+	},
+	{
+		provider: "cloudflare-workers-ai",
+		id: "typesafe/jev",
+		name: "Jev",
+		api: "cloudflare-workers-ai-system-one",
+		base_url: CLOUDFLARE_WORKERS_AI_REST_BASE_URL,
+		input: ["text"],
+		context_window: 32000,
+		cost: { input: 0, output: 0, cache_read: 0, cache_write: 0 },
+	},
+];
+
+/** Input or output modalities the catalog knows, in the order a listing gave them. */
+function typedModalities(names: string[] | undefined): string[] {
+	return (names ?? []).filter((name) => name === "text" || name === "image");
+}
+
+/**
+ * OpenRouter's image and decision models. The plain listing leaves both out, so each is asked
+ * for by what it returns. Image models share the provider's credential; decision models answer
+ * TypeSafe's System One protocol.
+ */
+async function fetchOpenRouterTypedModels(): Promise<TypedModel[]> {
+	const typed: TypedModel[] = [];
+	for (const [query, api] of [
+		["image", "openrouter-images"],
+		["decisions", "typesafe-system-one"],
+	] as const) {
+		try {
+			const response = await fetch(`https://openrouter.ai/api/v1/models?output_modalities=${query}`);
+			const data = await response.json();
+			for (const model of data.data ?? []) {
+				if (!model.architecture?.output_modalities?.includes(query)) continue;
+				if (typed.some((known) => known.api === api && known.id === model.id)) continue;
+				const input = typedModalities(model.architecture?.input_modalities);
+				typed.push({
+					provider: "openrouter",
+					id: model.id,
+					name: model.name,
+					api,
+					input: input.length > 0 ? input : ["text"],
+					...(api === "openrouter-images"
+						? { output: ["image", ...(model.architecture.output_modalities.includes("text") ? ["text"] : [])] }
+						: { context_window: model.top_provider?.context_length || model.context_length || 4096 }),
+					cost: {
+						input: roundCost(parseFloat(model.pricing?.prompt || "0") * 1_000_000),
+						output: roundCost(parseFloat(model.pricing?.completion || "0") * 1_000_000),
+						cache_read: roundCost(parseFloat(model.pricing?.input_cache_read || "0") * 1_000_000),
+						cache_write: roundCost(parseFloat(model.pricing?.input_cache_write || "0") * 1_000_000),
+					},
+				});
+			}
+		} catch (error) {
+			console.error(`Failed to fetch OpenRouter ${query} models:`, error);
+		}
+	}
+	console.log(`Fetched ${typed.length} image and decision models from OpenRouter`);
+	return typed;
+}
+
+/** Vercel AI Gateway's evaluation models, which answer System One on the gateway's TypeSafe path. */
+async function fetchAiGatewayClassifiers(): Promise<TypedModel[]> {
+	try {
+		const response = await fetch(`${AI_GATEWAY_MODELS_URL}/models`);
+		const data = await response.json();
+		return (data.data ?? [])
+			.filter((model: { type?: string; id: string }) => model.type === "evaluation" && model.id.startsWith("typesafe-ai/"))
+			.map((model: AiGatewayModel) => ({
+				provider: "vercel-ai-gateway",
+				id: model.id,
+				name: model.name || model.id,
+				api: "typesafe-system-one" as const,
+				base_url: AI_GATEWAY_TYPESAFE_BASE_URL,
+				input: ["text"],
+				context_window: model.context_window || 4096,
+				cost: {
+					input: roundCost(parseFloat(String(model.pricing?.input ?? "0")) * 1_000_000),
+					output: roundCost(parseFloat(String(model.pricing?.output ?? "0")) * 1_000_000),
+					cache_read: 0,
+					cache_write: 0,
+				},
+			}));
+	} catch (error) {
+		console.error("Failed to fetch Vercel AI Gateway classifiers:", error);
+		return [];
+	}
+}
+
+/** A typed model as one entry of its provider's `models` list. */
+function typedEntry(model: TypedModel, providerBaseUrl: string | undefined): Record<string, unknown> {
+	const entry: Record<string, unknown> = { id: model.id, name: model.name, api: model.api, input: model.input };
+	if (model.output) entry.output = model.output;
+	if (model.context_window) entry.context_window = model.context_window;
+	if (model.base_url && model.base_url !== providerBaseUrl) entry.base_url = model.base_url;
+	entry.cost = model.cost;
+	return entry;
+}
+
 async function fetchNvidiaNimModelIds(): Promise<Map<string, string>> {
 	try {
 		console.log("Fetching models from NVIDIA NIM API...");
@@ -1720,6 +1871,11 @@ async function generateModels() {
 	const modelsDevModels = await loadModelsDevData();
 	const openRouterModels = await fetchOpenRouterModels();
 	const aiGatewayModels = await fetchAiGatewayModels();
+	const typedModels = [
+		...(await fetchOpenRouterTypedModels()),
+		...(await fetchAiGatewayClassifiers()),
+		...UNLISTED_CLASSIFIERS,
+	];
 
 	// Combine models (models.dev has priority)
 	const allModels = [...modelsDevModels, ...openRouterModels, ...aiGatewayModels].filter(
@@ -2396,6 +2552,17 @@ async function generateModels() {
 			env: described.env,
 			key: described.label ?? `${described.name} API key`,
 		});
+	}
+
+	// Image and classifier models follow the chat models of their provider, each naming its own
+	// protocol. A provider that serves nothing else, such as TypeSafe, is listed for them alone.
+	for (const model of [...typedModels].sort((left, right) => left.id.localeCompare(right.id))) {
+		const entry = (catalog[model.provider] ??= { name: model.provider, models: [] }) as {
+			base_url?: string;
+			models: Record<string, unknown>[];
+		};
+		entry.base_url ??= model.base_url;
+		entry.models.push(typedEntry(model, entry.base_url));
 	}
 
 	writeFileSync(

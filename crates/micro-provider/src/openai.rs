@@ -283,6 +283,7 @@ impl Accumulator {
         let Ok(value) = serde_json::from_str::<Value>(data) else {
             return;
         };
+        crate::observe::parsed(&self.provider, "openai-completions", &self.model_id, &value);
 
         if let Some(message) = stream_error(&self.label, &value) {
             self.finished = true;
@@ -1180,6 +1181,36 @@ mod tests {
             timestamp: 0,
         };
         assert!(assistant_message(&empty).is_none());
+    }
+
+    /// A watcher sees each chunk as it was parsed, fields micro does not read included, in the
+    /// order the provider sent them.
+    #[test]
+    fn a_watcher_sees_every_parsed_chunk_before_it_is_normalized() {
+        let (watcher, mut watched) = mpsc::unbounded_channel();
+        crate::watch_provider_events(Some(watcher));
+        let mut costed = text_chunk("hi");
+        costed["request_cost"] = json!(0.01);
+        drain(&[costed, stop_chunk("stop")]);
+        crate::watch_provider_events(None);
+
+        let mut seen = Vec::new();
+        while let Ok(event) = watched.try_recv() {
+            if event.model == model().id {
+                seen.push(event);
+            }
+        }
+        let costed = seen
+            .iter()
+            .position(|event| event.data["request_cost"] == json!(0.01))
+            .expect("the chunk carrying a field micro does not read is seen");
+        assert_eq!(seen[costed].api, "openai-completions");
+        assert!(
+            seen[costed + 1..]
+                .iter()
+                .any(|event| event.data.pointer("/choices/0/finish_reason").is_some()),
+            "the chunks arrive in the order they were sent"
+        );
     }
 
     #[test]

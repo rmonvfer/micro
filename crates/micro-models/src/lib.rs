@@ -11,7 +11,7 @@ mod remote;
 mod resolve;
 mod wire_json;
 
-pub use catalog::{Catalog, Modality, ModelCost, ModelDef, WireApi};
+pub use catalog::{Catalog, Modality, ModelCost, ModelDef, ModelType, WireApi};
 pub use compat::CompatOverrides;
 pub use cost::{RequestCost, TokenUsage};
 pub use error::{Error, Result};

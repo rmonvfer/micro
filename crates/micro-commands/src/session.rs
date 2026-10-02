@@ -313,7 +313,24 @@ pub(crate) async fn info(context: &CommandContext<'_>) -> CommandOutcome {
         thousands(usage.total_tokens() as u64)
     ));
 
-    if let Some(model) = context.model {
+    // What the ledger billed, model by model: a virtual model's turns are billed to the physical
+    // models it routed them to, and extensions' image and classifier calls to theirs.
+    let billed = crate::bill::bill(context.sessions, context.catalog, session_id)
+        .await
+        .ok()
+        .filter(|bill| {
+            bill.from_ledger || !bill.model_calls.is_empty() || !bill.tool_costs.is_empty()
+        });
+    if let Some(bill) = billed {
+        let spent = bill.by_model();
+        if bill.total > 0.0 {
+            out.push_str("\nCost\n");
+            out.push_str(&format!("Total: ${:.3}\n", bill.total));
+            for (model, amount) in spent.iter().filter(|(_, amount)| *amount > 0.0) {
+                out.push_str(&format!("  {model}: ${amount:.3}\n"));
+            }
+        }
+    } else if let Some(model) = context.model {
         let spent = model
             .price(
                 micro_models::TokenUsage::new(usage.input as u64, usage.output as u64)

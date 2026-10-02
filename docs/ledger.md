@@ -99,7 +99,7 @@ Retries keep the same turn number and increment `attempt`. A failed attempt that
 }
 ```
 
-`micro bill` combines these counts with the pricing snapshot in the matching request. Sessions recorded without a snapshot fall back to the current catalog. Prompt-source attribution uses the spans from the matching request and is an estimate. See [Sessions](sessions.md).
+`micro bill` combines these counts with the pricing snapshot in the matching request. Sessions recorded without a snapshot fall back to the current catalog, as does a turn answered by a model other than the one its request named, which is how a virtual model's turns are priced at the rates of the physical model that answered. Prompt-source attribution uses the spans from the matching request and is an estimate. See [Sessions](sessions.md).
 
 ## Other event types
 
@@ -112,6 +112,8 @@ Retries keep the same turn number and increment `attempt`. A failed attempt that
 | `extension_crossing`     | An extension requested a host operation and received a result.     |
 | `prefix_changed`         | The cacheable prompt prefix changed.                               |
 | `budget_stop`            | The session reached its configured cost limit.                     |
+| `tool_cost`              | A tool call spent on models itself, nested calls included; carries its usage and the cost it reported. |
+| `model_call`             | An extension or script used an image or classifier model; carries its usage, rates and who asked. |
 | `request_attempt_failed` | A provider attempt failed, including whether its usage is unknown. |
 | `cache_warm`             | A one-token replay kept a turn's prompt cache alive; billed beside that turn. |
 | `marker`                 | A named runtime marker without a dedicated event type.             |

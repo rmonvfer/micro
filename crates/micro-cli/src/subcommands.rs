@@ -434,16 +434,25 @@ pub async fn auth_logout(provider: &str) -> Result<()> {
     Ok(())
 }
 
-pub async fn models(query: Option<&str>, live: bool) -> Result<()> {
+pub async fn models(query: Option<&str>, live: bool, kind: &str) -> Result<()> {
+    let Some(kind) = micro_models::ModelType::parse(kind) else {
+        bail!("there are chat, image and classifier models, not {kind} models");
+    };
     let mut catalog = Catalog::load().unwrap_or_else(|_| Catalog::bundled());
+    let store = AuthStore::open()?;
     if live {
-        let store = AuthStore::open()?;
         crate::runtime::merge_live_listings(&mut catalog, &store).await;
     }
+    crate::runtime::merge_llama_cpp(&mut catalog, &store).await;
 
-    let models = match query {
-        Some(query) => catalog.resolve(query).candidates(),
-        None => catalog.models().iter().collect(),
+    let models = match (query, kind) {
+        (Some(query), micro_models::ModelType::Chat) => catalog.resolve(query).candidates(),
+        (Some(query), kind) => catalog
+            .models_of_type(kind)
+            .into_iter()
+            .filter(|model| model.qualified_id().contains(query))
+            .collect(),
+        (None, kind) => catalog.models_of_type(kind),
     };
 
     if models.is_empty() {

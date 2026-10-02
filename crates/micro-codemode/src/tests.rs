@@ -494,6 +494,77 @@ async fn further_globals_are_reachable_and_guarded() {
     assert!(Codemode::new().with_globals(Arc::new(Shadowing)).is_err());
 }
 
+/// A global that runs a model, as `models.generateImages` does, and says what it spent.
+struct Painter;
+
+#[async_trait]
+impl ScriptGlobals for Painter {
+    fn names(&self) -> Vec<String> {
+        vec!["art.paint".to_string()]
+    }
+
+    fn describe(&self) -> String {
+        "`art.paint()`: paints".to_string()
+    }
+
+    async fn call(&self, _name: &str, _arguments: Value) -> Result<Option<Value>, String> {
+        Ok(Some(json!({
+            "output": [{ "type": "image", "data": PNG, "mimeType": "image/png" }],
+        })))
+    }
+
+    fn spent(&self, _name: &str, _result: &Value) -> Option<GlobalSpend> {
+        Some(GlobalSpend {
+            label: "paint acme/painter".into(),
+            usage: Usage {
+                input: 10,
+                output: 1000,
+                cache_read: 0,
+                cache_write: 0,
+            },
+            cost: 0.03,
+            images: 1,
+        })
+    }
+}
+
+/// What a script's model calls spent is the tool result's, each call is listed with its cost, and
+/// images that were generated but never shown are pointed out.
+#[tokio::test]
+async fn model_calls_are_counted_into_the_result() {
+    let codemode = Codemode::new().with_globals(Arc::new(Painter)).unwrap();
+
+    let unshown = run_with(
+        &codemode,
+        &Tools::default(),
+        "await art.paint(); await art.paint(); return 'done';",
+    )
+    .await;
+    assert_eq!(unshown.usage.map(|usage| usage.output), Some(2000));
+    assert!((unshown.cost.unwrap() - 0.06).abs() < 1e-12);
+    let text = said(&unshown);
+    assert!(
+        text.contains("paint acme/painter: 1010 tokens, $0.030000"),
+        "{text}"
+    );
+    assert!(
+        text.contains("generated 2 image(s) but showed none"),
+        "{text}"
+    );
+
+    let shown = run_with(
+        &codemode,
+        &Tools::default(),
+        "const painted = await art.paint(); image(painted.output[0]);",
+    )
+    .await;
+    assert!(!said(&shown).contains("showed none"), "{}", said(&shown));
+
+    let none = run_with(&codemode, &Tools::default(), "return 1;").await;
+    assert_eq!(none.usage, None);
+    assert_eq!(none.cost, None);
+}
+
 #[test]
 fn store_entries_apply_in_order_and_odd_ones_are_ignored() {
     let mut store = Map::new();

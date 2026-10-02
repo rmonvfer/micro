@@ -3,6 +3,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import * as components from "./host-components.ts";
+import { sharedModels } from "./host-models.ts";
 import {
 	activeTools,
 	allTools,
@@ -41,6 +42,19 @@ interface RegisteredCommand {
 	handler: (args: string, ctx: unknown) => unknown | Promise<unknown>;
 }
 
+/** pi's `registerVirtualModel` definition: what is listed, and the router that picks a physical
+ *  model and thinking level for each request. */
+interface VirtualModelDefinition {
+	provider: string;
+	id: string;
+	name?: string;
+	thinkingLevels?: string[];
+	contextWindow?: number;
+	maxTokens?: number;
+	input?: string[];
+	route: (request: Json, ctx: unknown) => unknown;
+}
+
 interface Registration {
 	path: string;
 	/** What the extension itself said it may do, when it exported a `capabilities` list. */
@@ -53,6 +67,7 @@ interface Registration {
 	flags: Map<string, { description?: string; type: "boolean" | "string"; default?: boolean | string }>;
 	shortcuts: Map<string, { description?: string; handler: (ctx: unknown) => unknown }>;
 	providers: Map<string, Json>;
+	virtualModels: Map<string, VirtualModelDefinition>;
 	renderers: Map<string, (data: unknown, options: { width: number }) => unknown>;
 	markdownTransformers: Array<(markdown: string, context: Json) => string>;
 }
@@ -154,6 +169,18 @@ function apiFor(registration: Registration) {
 
 		unregisterProvider(name: string): void {
 			registration.providers.delete(name);
+		},
+
+		/** List a model whose router picks a physical model and thinking level for every request. */
+		registerVirtualModel(definition: VirtualModelDefinition): void {
+			if (!definition?.provider || !definition?.id || typeof definition.route !== "function") {
+				throw new Error("a virtual model needs a provider, an id and a route function");
+			}
+			registration.virtualModels.set(`${definition.provider}/${definition.id}`, definition);
+		},
+
+		unregisterVirtualModel(provider: string, id: string): void {
+			registration.virtualModels.delete(`${provider}/${id}`);
 		},
 
 		
@@ -272,6 +299,7 @@ async function load(path: string): Promise<void> {
 		flags: new Map(),
 		shortcuts: new Map(),
 		providers: new Map(),
+		virtualModels: new Map(),
 		renderers: new Map(),
 		markdownTransformers: [],
 	};
@@ -367,6 +395,15 @@ function describe(): Json {
 			})),
 			events: [...registration.handlers.keys()],
 			providers: [...registration.providers.entries()].map(([name, config]) => ({ name, config })),
+			virtual_models: [...registration.virtualModels.values()].map((model) => ({
+				provider: model.provider,
+				id: model.id,
+				name: model.name ?? null,
+				thinkingLevels: model.thinkingLevels ?? ["off"],
+				contextWindow: model.contextWindow ?? null,
+				maxTokens: model.maxTokens ?? null,
+				input: model.input ?? ["text", "image"],
+			})),
 			renderers: [...registration.renderers.keys()],
 		})),
 		errors: failures,
@@ -461,6 +498,38 @@ function asLines(drawn: unknown): string[] {
 		return [];
 	}
 	return String(drawn).split("\n");
+}
+
+/** Ask a virtual model's router where one request goes, and tell micro what it said. */
+async function routeRequest(id: string, provider: string, model: string, request: Json): Promise<void> {
+	const owner = loaded.find((registration) => registration.virtualModels.has(`${provider}/${model}`));
+	const definition = owner?.virtualModels.get(`${provider}/${model}`);
+	if (!owner || !definition) {
+		send({ type: "route_result", id, error: `no extension registered the virtual model ${provider}/${model}` });
+		return;
+	}
+	try {
+		const decided = (await definition.route(
+			{ ...request, signal: new AbortController().signal },
+			await contextFor(uiFor(owner.path), owner.path),
+		)) as Json | undefined;
+		const chosen = (await (decided?.model as Promise<Json> | Json | undefined)) as Json | undefined;
+		if (!chosen || typeof chosen.provider !== "string" || typeof chosen.id !== "string") {
+			throw new Error(`the router of ${provider}/${model} returned no model`);
+		}
+		// Returning nothing, or the state it was handed, keeps the state as it is.
+		const kept = decided?.state === undefined || decided.state === request.state;
+		send({
+			type: "route_result",
+			id,
+			provider: chosen.provider,
+			model: chosen.id,
+			thinkingLevel: (decided?.thinkingLevel as string | undefined) ?? "off",
+			...(kept ? {} : { state: decided?.state ?? null, stateChanged: true }),
+		});
+	} catch (error) {
+		send({ type: "route_result", id, error: error instanceof Error ? error.message : String(error) });
+	}
 }
 
 async function runCommand(id: string, name: string, args: string): Promise<void> {
@@ -633,6 +702,14 @@ async function handle(line: string): Promise<void> {
 		case "command":
 			await runCommand(message.id as string, message.name as string, (message.args as string) ?? "");
 			return;
+		case "route":
+			await routeRequest(
+				message.id as string,
+				message.provider as string,
+				message.model as string,
+				(message.request as Json) ?? {},
+			);
+			return;
 		case "event": {
 			
 			if (message.event === "terminal_input") {
@@ -773,6 +850,9 @@ async function handle(line: string): Promise<void> {
 		case "answer":
 			
 			answered(message.id as string, message);
+			return;
+		case "models":
+			sharedModels(message.models);
 			return;
 		case "set_flag":
 			flagValues.set(message.name as string, message.value as boolean | string);

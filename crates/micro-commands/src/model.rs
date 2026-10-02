@@ -22,9 +22,23 @@ fn offered(context: &CommandContext<'_>) -> Vec<ModelDef> {
         .catalog
         .models()
         .iter()
-        .filter(|model| context.auth.status_of(&model.provider).is_authenticated())
+        .filter(|model| reachable(context, model))
         .cloned()
         .collect()
+}
+
+/// Whether a model can be used as things stand: its provider is signed in, needs no credential,
+/// or, for a virtual model listed under a provider of its own, there is nothing to sign in to.
+fn reachable(context: &CommandContext<'_>, model: &ModelDef) -> bool {
+    if context.auth.status_of(&model.provider).is_authenticated()
+        || micro_provider::llama_cpp::is_keyless(&model.provider)
+    {
+        return true;
+    }
+    model.api == micro_models::WireApi::Virtual
+        && !context.catalog.models().iter().any(|other| {
+            other.provider == model.provider && other.api != micro_models::WireApi::Virtual
+        })
 }
 
 /// What is said about the ones left out.
@@ -421,6 +435,7 @@ mod tests {
             max_output_tokens: 16_000,
             reasoning: false,
             input: Vec::new(),
+            output: Vec::new(),
             headers: Default::default(),
             aliases: Vec::new(),
             cost: Default::default(),
@@ -450,6 +465,7 @@ mod tests {
             max_output_tokens: 100,
             reasoning: false,
             input: Vec::new(),
+            output: Vec::new(),
             headers: Default::default(),
             aliases: Vec::new(),
             cost: Default::default(),

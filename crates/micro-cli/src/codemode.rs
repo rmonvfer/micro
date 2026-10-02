@@ -48,17 +48,21 @@ impl ScriptStore for SessionScriptStore {
 pub fn tool(
     settings: &micro_config::Settings,
     session: Arc<Mutex<Session>>,
+    models: micro_provider::ModelRuntime,
 ) -> Arc<dyn micro_tools::Tool> {
     let mode = match settings.codemode_mode {
         micro_config::CodemodeMode::On => micro_codemode::Mode::On,
         micro_config::CodemodeMode::Only => micro_codemode::Mode::Only,
     };
-    Arc::new(
-        Codemode::new()
-            .with_mode(mode)
-            .with_inline_budget(settings.codemode_inline_budget)
-            .with_store(Arc::new(SessionScriptStore { session })),
-    )
+    let codemode = Codemode::new()
+        .with_mode(mode)
+        .with_inline_budget(settings.codemode_inline_budget)
+        .with_store(Arc::new(SessionScriptStore { session }));
+    let globals = Arc::new(crate::codemode_models::ModelGlobals::new(models));
+    match codemode.with_globals(globals) {
+        Ok(codemode) => Arc::new(codemode),
+        Err(error) => unreachable!("the models global names are valid: {error}"),
+    }
 }
 
 /// Whether `codemode` is offered: when the tool selection names it, or when an MCP server's tools

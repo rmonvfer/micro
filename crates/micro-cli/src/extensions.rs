@@ -35,6 +35,31 @@ pub async fn serve(
 
     while let Some(asked) = asks.recv().await {
         match asked {
+            // A model call takes as long as the service does, so it is answered on its own task
+            // rather than holding up every other question behind it.
+            FromHost::Request {
+                id,
+                request,
+                extension,
+                payload,
+            } if matches!(request.as_str(), "generate_images" | "classify") => {
+                let host = Arc::clone(&host);
+                let broker = broker.clone();
+                let state = Arc::clone(&state);
+                let session = Arc::clone(&session);
+                tokio::spawn(async move {
+                    let answer = model_call(
+                        &request,
+                        &payload,
+                        extension.as_deref(),
+                        &broker,
+                        &state,
+                        &session,
+                    )
+                    .await;
+                    let _ = host.answer(&id, answer).await;
+                });
+            }
             FromHost::Request {
                 id,
                 request,
@@ -226,6 +251,33 @@ pub async fn serve_host_asks(host: Arc<Host>, mut asks: micro_tui::HostAsks) {
     }
 }
 
+/// Generate images or classify for an extension that may call providers.
+async fn model_call(
+    request: &str,
+    payload: &Value,
+    extension: Option<&str>,
+    broker: &Broker,
+    state: &Arc<tokio::sync::RwLock<State>>,
+    session: &Arc<tokio::sync::Mutex<micro_session::Session>>,
+) -> Value {
+    if let Some(needs) = request_needs(request) {
+        if !broker.allows(extension, needs, request) {
+            return json!({ "error": broker.refusal(extension, needs) });
+        }
+    }
+    let models = state.read().await.models.clone();
+    let requested_by = broker.grants.name_of(extension);
+    match request {
+        "generate_images" => {
+            crate::model_registry::generate_images(models.as_ref(), payload, &requested_by, session)
+                .await
+        }
+        _ => {
+            crate::model_registry::classify(models.as_ref(), payload, &requested_by, session).await
+        }
+    }
+}
+
 /// What an extension gets back for a question.
 #[allow(clippy::too_many_arguments)]
 async fn answer(
@@ -262,6 +314,7 @@ async fn answer(
 
         "provider_stream" => provider_stream(payload).await,
         "model_catalog" => model_catalog(payload),
+        "model_registry" => crate::model_registry::catalog(state.read().await.models.as_ref()),
         "get_thinking_level" => json!({ "level": state.read().await.thinking }),
         "get_active_tools" | "get_all_tools" => json!({ "tools": state.read().await.tools }),
         "get_commands" => json!({ "commands": state.read().await.commands }),
@@ -1557,6 +1610,8 @@ pub struct State {
 
     pub tool_snippets: Value,
     pub prompt_guidelines: Vec<String>,
+    /// Every model of every type, and the credentials to call them with.
+    pub models: Option<micro_provider::ModelRuntime>,
 }
 
 /// Tell the extensions something happened somewhere other than inside a turn.
@@ -2071,6 +2126,7 @@ mod tests {
             skills: Vec::new(),
             tool_snippets: json!({}),
             prompt_guidelines: Vec::new(),
+            models: None,
         }));
         let session = scratch_session().await;
         let workspace = std::env::temp_dir();

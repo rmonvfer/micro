@@ -2,24 +2,35 @@
 
 mod anthropic;
 mod bedrock;
+mod classify;
 mod codex;
 mod constrained_sampling;
 mod credential;
 mod eventstream;
 mod gemini;
+mod images;
 mod json;
+pub mod llama_cpp;
+mod observe;
 mod openai;
 mod registry;
+mod request;
 mod retry;
+mod runtime;
 mod sigv4;
 mod sse;
+mod typed;
 mod vertex;
 
 pub use anthropic::Anthropic;
+pub use classify::classify;
 pub use codex::Codex;
 pub use codex::Transport;
 pub use credential::ApiKey;
 pub use gemini::Gemini;
+pub use images::generate_images;
+pub use observe::watch_provider_events;
+pub use observe::ProviderEvent;
 pub use openai::OpenAi;
 pub use registry::client_for;
 pub use registry::client_for_model;
@@ -31,7 +42,22 @@ pub use registry::ResolveError;
 pub use registry::ResolvedProvider;
 pub use retry::requested_retry_delay;
 pub use retry::retry_after;
+pub use runtime::model_call_event;
+pub use runtime::ModelRuntime;
 pub use sse::SseEvent;
+pub use typed::AssistantImages;
+pub use typed::BoolCriteria;
+pub use typed::ClassifierAnswer;
+pub use typed::ClassifierContext;
+pub use typed::ClassifierQuestion;
+pub use typed::ClassifierResult;
+pub use typed::ClassifyOptions;
+pub use typed::ImagesContent;
+pub use typed::ImagesContext;
+pub use typed::Ordered;
+pub use typed::Outcome;
+pub use typed::PricedUsage;
+pub use typed::UsageCost;
 
 /// Re-exported so a caller that renders a provider picker needs only this crate.
 pub use micro_auth::AuthMethod;

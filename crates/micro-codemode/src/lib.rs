@@ -36,6 +36,7 @@ use micro_types::ContentBlock;
 use micro_types::GrammarVariants;
 use micro_types::ToolDefinition;
 use micro_types::ToolExposure;
+use micro_types::Usage;
 use sandbox::CallStatus;
 use sandbox::Execution;
 use sandbox::Failure;
@@ -99,6 +100,25 @@ pub trait ScriptGlobals: Send + Sync {
     /// Run `name` with every argument the script passed, as one array. `Ok(None)` resolves to
     /// `undefined`.
     async fn call(&self, name: &str, arguments: Value) -> Result<Option<Value>, String>;
+
+    /// What a call that returned `result` spent on a model, for the tool result to count and
+    /// show. Calls that spend nothing answer `None`.
+    fn spent(&self, name: &str, result: &Value) -> Option<GlobalSpend> {
+        let _ = (name, result);
+        None
+    }
+}
+
+/// What one global call spent on a model.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct GlobalSpend {
+    /// The call as the result names it, such as `classify typesafe/jev-latest`.
+    pub label: String,
+    pub usage: Usage,
+    /// US dollars.
+    pub cost: f64,
+    /// Images the call generated, which the script shows with `image()`.
+    pub images: usize,
 }
 
 /// The data of a `codemode-store` entry for these writes.
@@ -278,6 +298,12 @@ impl Tool for Codemode {
         };
 
         let execution = sandbox::execute(&parsed.code, setup, &host).await;
+        let spends = host.take_spends();
+        let shown = execution
+            .output
+            .iter()
+            .filter(|item| matches!(item, OutputItem::Image { .. }))
+            .count();
         let mut kept = Ok(());
         if let (Ok(completed), Some(store)) = (&execution.outcome, &self.store) {
             if !completed.writes.is_empty() {
@@ -298,6 +324,7 @@ impl Tool for Codemode {
                 "Note: the values this script stored were not kept: {error}"
             )));
         }
+        account(&mut output, &spends, shown);
         output
     }
 }
@@ -323,9 +350,20 @@ struct ScriptHost<'a> {
     /// Each tool's description and declaration, by tool name.
     samples: HashMap<String, String>,
     globals: Option<Arc<dyn ScriptGlobals>>,
+    /// What the script's global calls spent, in the order they finished.
+    spends: std::sync::Mutex<Vec<GlobalSpend>>,
 }
 
 impl<'a> ScriptHost<'a> {
+    fn take_spends(&self) -> Vec<GlobalSpend> {
+        std::mem::take(
+            &mut *self
+                .spends
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()),
+        )
+    }
+
     fn new(
         caller: Option<&'a dyn ToolCaller>,
         callable: Vec<CallableTool>,
@@ -345,6 +383,7 @@ impl<'a> ScriptHost<'a> {
             callable,
             samples,
             globals,
+            spends: std::sync::Mutex::default(),
         }
     }
 
@@ -487,7 +526,18 @@ impl sandbox::Host for ScriptHost<'_> {
             "describeTool" => self.describe_tool(&listed),
             "describeNamespace" => self.describe_namespace(&listed),
             other => match &self.globals {
-                Some(globals) => globals.call(other, arguments).await,
+                Some(globals) => {
+                    let result = globals.call(other, arguments).await;
+                    if let Ok(Some(value)) = &result {
+                        if let Some(spent) = globals.spent(other, value) {
+                            self.spends
+                                .lock()
+                                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                                .push(spent);
+                        }
+                    }
+                    result
+                }
                 None => Err(format!("Unknown global \"{other}\"")),
             },
         }
@@ -592,6 +642,47 @@ async fn answer(execution: Execution, max_output_tokens: u64, started: Instant) 
         content,
         is_error: failed,
         ..ToolOutput::default()
+    }
+}
+
+/// Count what the script's model calls spent into the tool result, list each call's cost, and
+/// say so when generated images were never shown.
+fn account(output: &mut ToolOutput, spends: &[GlobalSpend], shown: usize) {
+    if spends.is_empty() {
+        return;
+    }
+    let usage = spends
+        .iter()
+        .fold(Usage::default(), |sum, spent| sum.plus(spent.usage));
+    let cost: f64 = spends.iter().map(|spent| spent.cost).sum();
+    output.usage = Some(output.usage.map_or(usage, |own| own.plus(usage)));
+    output.cost = Some(output.cost.unwrap_or_default() + cost);
+
+    let lines: Vec<String> = spends
+        .iter()
+        .map(|spent| {
+            format!(
+                "- {}: {} tokens, ${:.6}",
+                spent.label,
+                spent.usage.total_tokens(),
+                spent.cost
+            )
+        })
+        .collect();
+    output.content.push(ContentBlock::text(format!(
+        "Model calls (${cost:.6} in all):
+{}",
+        lines.join(
+            "
+"
+        )
+    )));
+
+    let generated: usize = spends.iter().map(|spent| spent.images).sum();
+    if generated > 0 && shown == 0 {
+        output.content.push(ContentBlock::text(format!(
+            "Note: the script generated {generated} image(s) but showed none. Pass the image blocks of `result.output` to `image()` to show them; they are not saved anywhere else."
+        )));
     }
 }
 

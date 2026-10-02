@@ -25,11 +25,15 @@ pub struct Bill {
     pub turns: Vec<TurnBill>,
     /// What summarizing the conversation cost, each time it was summarized.
     pub compactions: Vec<CompactionBill>,
+    /// What extensions and scripts spent on image and classifier models.
+    pub model_calls: Vec<ModelCallBill>,
+    /// What tools said they spent on models themselves, as they priced it.
+    pub tool_costs: Vec<ToolCostBill>,
     /// Models the catalog carries no price for, so their turns are billed at nothing.
     pub unpriced: Vec<String>,
 
     pub unmetered: Vec<String>,
-    /// Every turn and every compaction, added up.
+    /// Every turn, every compaction and every model call, added up.
     pub total: f64,
     /// Spend on turns whose recorded message path is an ancestor of the current head.
     pub current_branch_total: f64,
@@ -92,6 +96,29 @@ pub enum Side {
     Answer,
 }
 
+/// What one request to an image or classifier model cost.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ModelCallBill {
+    /// `generate_images` or `classify`.
+    pub operation: String,
+    /// The extension or tool that made the request.
+    pub requested_by: String,
+    pub provider: String,
+    pub model: String,
+    pub usage: Usage,
+    pub cost: RequestCost,
+}
+
+/// What one tool call said it spent on models, its nested calls included.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ToolCostBill {
+    pub tool_call_id: String,
+    pub tool: String,
+    pub usage: Usage,
+    /// US dollars.
+    pub cost: f64,
+}
+
 /// What one summary cost.
 #[derive(Debug, Clone, PartialEq)]
 pub struct CompactionBill {
@@ -128,12 +155,16 @@ pub async fn bill(
     let mut requests: Vec<(u64, Requested)> = Vec::new();
     let mut usages: Vec<(u64, Usage, String, String)> = Vec::new();
     let mut compactions: Vec<CompactionBill> = Vec::new();
+    let mut model_calls: Vec<(ModelCallBill, Option<ModelPricing>)> = Vec::new();
+    let mut tool_costs: Vec<ToolCostBill> = Vec::new();
     let mut unknown_attempts = Vec::new();
     let mut reached = 0;
     for recorded in session.events() {
         match &recorded.event {
             LedgerEvent::TurnRequest {
                 turn,
+                provider,
+                model,
                 pricing,
                 tools_blob,
                 prefix_spans,
@@ -143,6 +174,7 @@ pub async fn bill(
                 reached = reached.max(*turn);
 
                 let described = Requested {
+                    named: format!("{provider}/{model}"),
                     pricing: pricing.clone(),
                     tools_blob: tools_blob.clone(),
                     prefix_spans: prefix_spans
@@ -189,6 +221,35 @@ pub async fn bill(
                     pricing: cost.pricing.clone(),
                 });
             }
+            LedgerEvent::ToolCost {
+                tool_call_id,
+                tool,
+                usage,
+                cost,
+            } => tool_costs.push(ToolCostBill {
+                tool_call_id: tool_call_id.clone(),
+                tool: tool.clone(),
+                usage: *usage,
+                cost: *cost,
+            }),
+            LedgerEvent::ModelCall {
+                operation,
+                requested_by,
+                provider,
+                model,
+                usage,
+                pricing,
+            } => model_calls.push((
+                ModelCallBill {
+                    operation: operation.clone(),
+                    requested_by: requested_by.clone(),
+                    provider: provider.clone(),
+                    model: model.clone(),
+                    usage: *usage,
+                    cost: RequestCost::default(),
+                },
+                pricing.clone(),
+            )),
             LedgerEvent::RequestAttemptFailed {
                 turn,
                 attempt,
@@ -210,7 +271,13 @@ pub async fn bill(
 
     for (turn, usage, provider, model) in usages {
         let requested = requests.iter().find(|(at, _)| *at == turn);
-        let cost = match requested.and_then(|(_, requested)| requested.pricing.as_ref()) {
+        // The recorded rates are those of the model the request named. When another model
+        // answered, as when a virtual model routed the request, that model's own rates apply.
+        let answered = format!("{provider}/{model}");
+        let recorded = requested
+            .filter(|(_, requested)| requested.named == answered)
+            .and_then(|(_, requested)| requested.pricing.as_ref());
+        let cost = match recorded {
             Some(pricing) => {
                 let priced = ModelCost::from(pricing);
                 if priced.is_free() {
@@ -292,11 +359,35 @@ pub async fn bill(
         };
     }
 
+    // A model call is priced at the rates recorded with it. Without them it is priced from the
+    // catalog, which lists image and classifier models apart from chat models.
+    let model_calls: Vec<ModelCallBill> = model_calls
+        .into_iter()
+        .map(|(mut call, pricing)| {
+            let priced = match pricing {
+                Some(pricing) => ModelCost::from(&pricing),
+                None => catalog
+                    .all_models()
+                    .find(|model| model.provider == call.provider && model.id == call.model)
+                    .map(|model| model.cost.clone())
+                    .unwrap_or_default(),
+            };
+            call.cost = priced.price(counted(call.usage));
+            call
+        })
+        .collect();
+    let calls_total = model_calls
+        .iter()
+        .map(|call| call.cost.total())
+        .sum::<f64>()
+        + tool_costs.iter().map(|spent| spent.cost).sum::<f64>();
+
     let total = turns.iter().map(TurnBill::total).sum::<f64>()
         + compactions
             .iter()
             .map(|summarized| summarized.cost.total())
-            .sum::<f64>();
+            .sum::<f64>()
+        + calls_total;
     let current_branch_total = turns
         .iter()
         .filter(|turn| turn.on_current_branch)
@@ -306,7 +397,8 @@ pub async fn bill(
             .iter()
             .filter(|summarized| summarized.on_current_branch)
             .map(|summarized| summarized.cost.total())
-            .sum::<f64>();
+            .sum::<f64>()
+        + calls_total;
 
     Ok(Bill {
         session_id: session_id.to_string(),
@@ -314,6 +406,8 @@ pub async fn bill(
         unmetered: noted.unmetered,
         turns,
         compactions,
+        model_calls,
+        tool_costs,
         total,
         current_branch_total,
         unknown_attempts,
@@ -323,6 +417,9 @@ pub async fn bill(
 
 /// What one turn's request was built from, as far as pricing it cares.
 struct Requested {
+    /// The model the request named, as `provider/id`, which for a virtual model is not the one
+    /// that answered.
+    named: String,
     pricing: Option<ModelPricing>,
     tools_blob: String,
     prefix_spans: Vec<(EventSource, u64)>,
@@ -504,6 +601,43 @@ fn message_bytes(message: &Message) -> u64 {
 }
 
 impl Bill {
+    /// What each model was paid, most expensive first: every turn, summary and model call goes to
+    /// the model that served it, which for a virtual model is the physical model it was routed to.
+    pub fn by_model(&self) -> Vec<(String, f64)> {
+        let mut spent: Vec<(String, f64)> = Vec::new();
+        let billed = self
+            .turns
+            .iter()
+            .map(|turn| (&turn.provider, &turn.model, turn.cost.total()))
+            .chain(self.compactions.iter().map(|summarized| {
+                (
+                    &summarized.provider,
+                    &summarized.model,
+                    summarized.cost.total(),
+                )
+            }))
+            .chain(
+                self.model_calls
+                    .iter()
+                    .map(|call| (&call.provider, &call.model, call.cost.total())),
+            );
+        let tools = self
+            .tool_costs
+            .iter()
+            .map(|spent| (format!("{} tool", spent.tool), spent.cost));
+        let billed = billed
+            .map(|(provider, model, amount)| (format!("{provider}/{model}"), amount))
+            .chain(tools);
+        for (name, amount) in billed {
+            match spent.iter_mut().find(|(known, _)| *known == name) {
+                Some((_, total)) => *total += amount,
+                None => spent.push((name, amount)),
+            }
+        }
+        spent.sort_by(|left, right| right.1.total_cmp(&left.1));
+        spent
+    }
+
     /// The fixed part of the interactive bill.
     pub fn summary(&self) -> String {
         let mut cost = RequestCost::default();
@@ -512,6 +646,7 @@ impl Bill {
             .iter()
             .map(|turn| turn.cost)
             .chain(self.compactions.iter().map(|compaction| compaction.cost))
+            .chain(self.model_calls.iter().map(|call| call.cost))
         {
             cost += part;
         }
@@ -572,7 +707,11 @@ impl Bill {
     pub fn report(&self) -> String {
         let mut out = format!("Bill for session {}\n", self.session_id);
 
-        if self.turns.is_empty() && self.unknown_attempts.is_empty() {
+        if self.turns.is_empty()
+            && self.unknown_attempts.is_empty()
+            && self.model_calls.is_empty()
+            && self.tool_costs.is_empty()
+        {
             out.push_str("\nNothing was billed: no turn of this session reported any usage.\n");
             return out;
         }
@@ -592,6 +731,34 @@ impl Bill {
         }
         for summarized in summaries {
             out.push_str(&summary_row(summarized));
+        }
+        if !self.model_calls.is_empty() {
+            out.push_str("\nModel calls\n");
+            for call in &self.model_calls {
+                out.push_str(&format!(
+                    "  {:<42}{}\n",
+                    format!(
+                        "{} {}/{} ({})",
+                        call.operation, call.provider, call.model, call.requested_by
+                    ),
+                    money(call.cost.total())
+                ));
+            }
+        }
+        if !self.tool_costs.is_empty() {
+            out.push_str(
+                "
+Tools that ran models
+",
+            );
+            for spent in &self.tool_costs {
+                out.push_str(&format!(
+                    "  {:<42}{}
+",
+                    format!("{} ({})", spent.tool, spent.tool_call_id),
+                    money(spent.cost)
+                ));
+            }
         }
 
         out.push_str(&format!(
@@ -1107,6 +1274,129 @@ mod tests {
         assert!(billed.unpriced.is_empty());
     }
 
+    /// A virtual model names itself in the request, priced at nothing, and a physical model
+    /// answers: the turn is billed at the physical model's rates, to that model.
+    #[tokio::test]
+    async fn a_routed_turn_is_billed_to_the_model_that_answered() {
+        let harness = Harness::new("bill-routed");
+        let mut session = harness
+            .sessions
+            .create(&harness.workspace, "router/auto")
+            .await
+            .unwrap();
+        let tools_blob = session.store_blob(b"[]").await.unwrap();
+        let reported = usage(1_000, 200, 0);
+        session.append(&Message::user("route this")).await.unwrap();
+        session
+            .append_event(LedgerEvent::TurnRequest {
+                turn: 1,
+                provider: "router".into(),
+                model: "auto".into(),
+                pricing: Some(ModelPricing::default()),
+                prefix_hash: "aa".into(),
+                request_hash: "bb".into(),
+                request_body_blob: None,
+                system_prompt_blob: None,
+                tools_blob,
+                model_blob: "cc".into(),
+                prefix_spans: Vec::new(),
+                message_entry_ids: Vec::new(),
+                attempt: 1,
+            })
+            .await
+            .unwrap();
+        session
+            .append_event(LedgerEvent::TurnUsage {
+                turn: 1,
+                usage: reported,
+                stop_reason: StopReason::Stop,
+                provider: "openai".into(),
+                model: "test-model".into(),
+            })
+            .await
+            .unwrap();
+        let id = session.id().to_string();
+        drop(session);
+
+        let billed = bill(&harness.sessions, &catalog(), &id).await.unwrap();
+        assert!((billed.total - spent(reported)).abs() < 1e-12);
+        assert!(billed.unmetered.is_empty(), "{:?}", billed.unmetered);
+        assert_eq!(
+            billed.by_model(),
+            vec![("openai/test-model".to_string(), spent(reported))]
+        );
+    }
+
+    /// What an extension spent on an image or classifier model is part of what the session cost.
+    #[tokio::test]
+    async fn model_calls_count_toward_the_session() {
+        let harness = Harness::new("bill-model-calls");
+        let mut session = harness
+            .sessions
+            .create(&harness.workspace, "openai/test-model")
+            .await
+            .unwrap();
+        let turn = usage(1_000, 200, 0);
+        record_turn(&mut session, 1, turn).await;
+        session
+            .append_event(LedgerEvent::ModelCall {
+                operation: "generate_images".into(),
+                requested_by: "painter".into(),
+                provider: "openrouter".into(),
+                model: "acme/painter".into(),
+                usage: usage(10, 1_000, 0),
+                pricing: Some(ModelPricing {
+                    input: 0.3,
+                    output: 30.0,
+                    ..ModelPricing::default()
+                }),
+            })
+            .await
+            .unwrap();
+        let id = session.id().to_string();
+        drop(session);
+
+        let billed = bill(&harness.sessions, &catalog(), &id).await.unwrap();
+        let painted = (10.0 * 0.3 + 1_000.0 * 30.0) / 1e6;
+        assert_eq!(billed.model_calls.len(), 1);
+        assert!((billed.total - (spent(turn) + painted)).abs() < 1e-12);
+        assert!((billed.current_branch_total - billed.total).abs() < 1e-12);
+        assert_eq!(billed.by_model()[0].0, "openrouter/acme/painter");
+        assert!(billed
+            .report()
+            .contains("generate_images openrouter/acme/painter (painter)"));
+    }
+
+    /// What a tool said it spent on models, such as a script's classifier calls or a nested
+    /// extension tool's, counts toward the session.
+    #[tokio::test]
+    async fn tool_costs_count_toward_the_session() {
+        let harness = Harness::new("bill-tool-costs");
+        let mut session = harness
+            .sessions
+            .create(&harness.workspace, "openai/test-model")
+            .await
+            .unwrap();
+        let turn = usage(1_000, 200, 0);
+        record_turn(&mut session, 1, turn).await;
+        session
+            .append_event(LedgerEvent::ToolCost {
+                tool_call_id: "call_1".into(),
+                tool: "codemode".into(),
+                usage: usage(40, 0, 0),
+                cost: 0.25,
+            })
+            .await
+            .unwrap();
+        let id = session.id().to_string();
+        drop(session);
+
+        let billed = bill(&harness.sessions, &catalog(), &id).await.unwrap();
+        assert!((billed.total - (spent(turn) + 0.25)).abs() < 1e-12);
+        assert_eq!(billed.by_model()[0], ("codemode tool".to_string(), 0.25));
+        assert!(billed.report().contains("codemode (call_1)"));
+    }
+
     #[tokio::test]
     async fn abandoned_branch_spend_stays_in_the_total() {
         let harness = Harness::new("bill-branches");
@@ -1392,6 +1682,7 @@ mod tests {
 
     fn spans(pairs: &[(EventSource, u64)]) -> Requested {
         Requested {
+            named: String::new(),
             pricing: None,
             tools_blob: String::new(),
             prefix_spans: pairs.to_vec(),

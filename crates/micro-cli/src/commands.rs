@@ -22,6 +22,9 @@ use tokio::sync::Mutex;
 pub struct CliCommands {
     catalog: Catalog,
     auth: Arc<AuthStore>,
+    /// Every model of every type and the credentials to call them, which a virtual model's
+    /// router dispatches through.
+    models: micro_provider::ModelRuntime,
     sessions: SessionStore,
     workspace: PathBuf,
     provider: String,
@@ -92,6 +95,7 @@ pub struct CliCommands {
 pub struct HostParts {
     pub catalog: Catalog,
     pub auth: Arc<AuthStore>,
+    pub models: micro_provider::ModelRuntime,
     pub sessions: SessionStore,
     pub workspace: PathBuf,
     pub provider: String,
@@ -135,6 +139,7 @@ impl CliCommands {
         CliCommands {
             catalog: parts.catalog,
             auth: parts.auth,
+            models: parts.models,
             sessions: parts.sessions,
             workspace: parts.workspace,
             provider: parts.provider,
@@ -454,7 +459,11 @@ impl CliCommands {
 
     /// Switch the session to `model`, and make it the default for later sessions when `save` is set.
     async fn swap_to(&mut self, model: &ModelDef, save: bool) -> Applied {
-        let resolved = match micro_provider::resolve(&self.auth, model).await {
+        let resolved = match self.virtual_client(model) {
+            Some(routed) => Ok(routed),
+            None => micro_provider::resolve(&self.auth, model).await,
+        };
+        let resolved = match resolved {
             Ok(resolved) => resolved,
             Err(error) => {
                 return Applied::error(format!(
@@ -524,6 +533,25 @@ impl CliCommands {
             }),
             note: Some(note),
         }
+    }
+
+    /// The router a virtual model is used through, which needs no credential of its own.
+    fn virtual_client(&self, model: &ModelDef) -> Option<micro_provider::ResolvedProvider> {
+        if model.api != micro_models::WireApi::Virtual {
+            return None;
+        }
+        let host = self.extensions.as_ref()?;
+        let router = crate::virtual_models::Router::new(
+            Arc::clone(host),
+            self.models.clone(),
+            model.clone(),
+        );
+        router.attach_session(Arc::clone(&self.session));
+        Some(micro_provider::ResolvedProvider {
+            client: Arc::new(router),
+            api_key: "virtual".into(),
+            base_url: None,
+        })
     }
 
     fn subscription_warning(&mut self, api_key: &str, provider: &str) -> Option<String> {
@@ -1497,9 +1525,11 @@ mod tests {
 
         let sandbox = micro_tools::Guard::for_workspace(&workspace);
 
+        let auth = Arc::new(AuthStore::open_at(root.join("auth.json")).unwrap());
         let host = CliCommands::new(HostParts {
+            models: micro_provider::ModelRuntime::new(catalog.clone(), Arc::clone(&auth)),
             catalog,
-            auth: Arc::new(AuthStore::open_at(root.join("auth.json")).unwrap()),
+            auth,
             sessions,
             workspace,
             provider: "anthropic".to_string(),

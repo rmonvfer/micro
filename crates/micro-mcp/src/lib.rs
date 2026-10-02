@@ -467,6 +467,7 @@ impl micro_tools::Tool for RemoteTool {
                 is_error: result.get("isError").and_then(Value::as_bool) == Some(true),
                 structured: Some(result),
                 usage: None,
+                cost: None,
             },
         }
     }

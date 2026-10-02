@@ -95,6 +95,8 @@ pub struct Runtime {
     pub resumed: bool,
     pub history: Vec<Message>,
     pub model: ModelDef,
+    /// Every model of every type and the credentials to call them, for extensions and scripts.
+    pub models: micro_provider::ModelRuntime,
 
     pub subscription: bool,
     pub recorder: tokio::sync::mpsc::UnboundedReceiver<micro_agent::Record>,
@@ -261,6 +263,8 @@ pub async fn build(
     if settings.live_models {
         merge_live_listings(&mut catalog, &store).await;
     }
+    merge_llama_cpp(&mut catalog, &store).await;
+    crate::virtual_models::add_to_catalog(&mut catalog, extensions.as_deref());
 
     // A model is looked up so that what it costs and how much it holds are known, not for permission
     // to use it. When neither the catalog on hand nor the provider's own listing has heard of the
@@ -272,6 +276,7 @@ pub async fn build(
         Err(unknown) => {
             if !settings.live_models {
                 merge_live_listings(&mut catalog, &store).await;
+                crate::virtual_models::add_to_catalog(&mut catalog, extensions.as_deref());
             }
             match pick_model(&catalog, selection) {
                 Ok(model) => model,
@@ -297,26 +302,45 @@ pub async fn build(
         .unwrap_or_else(|| model.provider.clone());
     let recorded_model_cost = taken_at_its_word.is_none().then(|| model.cost.clone());
 
-    let mut resolved = match micro_provider::resolve(&store, &model).await {
-        Ok(resolved) => Resolved {
-            client: resolved.client,
-            api_key: resolved.api_key,
-            base_url: resolved.base_url,
-        },
-        // A provider that would not resolve now may resolve later: a token service having a bad
-        // minute is not a session's problem unless it lasts. The credential stays tied to the store
-        // so every request asks it again, rather than being frozen as the nothing it is at present.
-        Err(_) => Resolved {
-            client: micro_provider::client_for_model(&model),
-            api_key: match declared.get(&provider_name) {
-                Some(key) => key.clone().into(),
-                None => micro_provider::ApiKey::Stored {
-                    store: Arc::clone(&store),
-                    provider: provider_name.clone(),
-                    resolved: String::new(),
-                },
-            },
+    let models = micro_provider::ModelRuntime::new(catalog.clone(), Arc::clone(&store))
+        .with_keys(declared.clone());
+    let router =
+        match (model.api, extensions.as_ref()) {
+            (micro_models::WireApi::Virtual, Some(host)) => Some(
+                crate::virtual_models::Router::new(Arc::clone(host), models.clone(), model.clone()),
+            ),
+            _ => None,
+        };
+
+    // A virtual model needs no credential of its own: each request carries the credential of the
+    // physical model its router picks.
+    let mut resolved = match &router {
+        Some(router) => Resolved {
+            client: Arc::new(router.clone()),
+            api_key: "virtual".into(),
             base_url: None,
+        },
+        None => match micro_provider::resolve(&store, &model).await {
+            Ok(resolved) => Resolved {
+                client: resolved.client,
+                api_key: resolved.api_key,
+                base_url: resolved.base_url,
+            },
+            // A provider that would not resolve now may resolve later: a token service having a bad
+            // minute is not a session's problem unless it lasts. The credential stays tied to the store
+            // so every request asks it again, rather than being frozen as the nothing it is at present.
+            Err(_) => Resolved {
+                client: micro_provider::client_for_model(&model),
+                api_key: match declared.get(&provider_name) {
+                    Some(key) => key.clone().into(),
+                    None => micro_provider::ApiKey::Stored {
+                        store: Arc::clone(&store),
+                        provider: provider_name.clone(),
+                        resolved: String::new(),
+                    },
+                },
+                base_url: None,
+            },
         },
     };
 
@@ -341,7 +365,7 @@ pub async fn build(
         )),
     };
 
-    if micro_auth::canonical_provider(&provider_name) == "openai-codex" {
+    if router.is_none() && micro_auth::canonical_provider(&provider_name) == "openai-codex" {
         let transport = micro_provider::Transport::named(&settings.transport).unwrap_or_default();
         resolved.client =
             std::sync::Arc::new(micro_provider::Codex::new().with_transport(transport));
@@ -396,7 +420,11 @@ pub async fn build(
 
     let codemode = crate::codemode::wanted(&selection.tools, &selection.exclude_tools, &mcp);
     if codemode {
-        tools.push(crate::codemode::tool(settings, Arc::clone(&session)));
+        tools.push(crate::codemode::tool(
+            settings,
+            Arc::clone(&session),
+            models.clone(),
+        ));
         kept.push(micro_codemode::CODEMODE_TOOL_NAME.to_string());
     }
 
@@ -564,6 +592,16 @@ pub async fn build(
         Arc::clone(&mirror),
     ));
 
+    if let Some(router) = &router {
+        router.attach_session(Arc::clone(&session));
+    }
+    if let Some(host) = extensions
+        .as_ref()
+        .filter(|host| host.listens_to("provider_stream_event"))
+    {
+        forward_provider_events(Arc::clone(host));
+    }
+
     let (seam, remote) = crate::remote::Seam::build();
     let snapshot = Arc::new(Mutex::new(crate::remote::Snapshot {
         model: model.qualified_id(),
@@ -575,6 +613,7 @@ pub async fn build(
     let commands = CliCommands::new(crate::commands::HostParts {
         catalog,
         auth: Arc::clone(&store),
+        models: models.clone(),
         sessions,
         workspace: root.to_path_buf(),
         provider: provider_name,
@@ -626,6 +665,7 @@ pub async fn build(
         resources,
         remote,
         model,
+        models,
         recorder: receiver,
         forwarder,
         commands,
@@ -1409,6 +1449,61 @@ async fn forward_events(
             }
         }
     }
+}
+
+/// How long starting up waits on a llama.cpp router that is slow to answer.
+const LLAMA_CPP_LISTING_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
+
+/// List the models of the llama.cpp router micro is pointed at, when it is pointed at one, and
+/// remember the context windows its loaded models run with.
+pub(crate) async fn merge_llama_cpp(catalog: &mut Catalog, store: &AuthStore) {
+    use micro_provider::llama_cpp;
+
+    let config_home = micro_dirs::config_dir().unwrap_or_default();
+    let data_home = micro_dirs::data_dir().unwrap_or_default();
+    let Some(url) = llama_cpp::configured_url(&config_home) else {
+        return;
+    };
+    let Ok(client) = llama_cpp::LlamaClient::new(&url, llama_cpp::api_key(store)) else {
+        return;
+    };
+    let listed = async {
+        let running = client.list(false).await?;
+        let _ = llama_cpp::remember_context_windows(&data_home, &running);
+        client
+            .catalog_models(&llama_cpp::remembered_context_windows(&data_home))
+            .await
+    };
+    match tokio::time::timeout(LLAMA_CPP_LISTING_TIMEOUT, listed).await {
+        Ok(Ok(models)) => {
+            catalog.remove_provider(llama_cpp::PROVIDER);
+            catalog.merge_listing(models);
+        }
+        Ok(Err(error)) => eprintln!("note: the llama.cpp router at {url} was not listed: {error}"),
+        Err(_) => eprintln!("note: the llama.cpp router at {url} did not answer in time"),
+    }
+}
+
+/// Hand every parsed provider event to the extensions that listen for it, in the order they
+/// arrive.
+fn forward_provider_events(host: Arc<micro_extensions::Host>) {
+    let (watcher, mut watched) = tokio::sync::mpsc::unbounded_channel();
+    micro_provider::watch_provider_events(Some(watcher));
+    tokio::spawn(async move {
+        while let Some(event) = watched.recv().await {
+            let payload = serde_json::json!({
+                "type": "provider_stream_event",
+                "provider": event.provider,
+                "api": event.api,
+                "model": event.model,
+                "data": event.data,
+            });
+            if host.notify("provider_stream_event", payload).await.is_err() {
+                micro_provider::watch_provider_events(None);
+                return;
+            }
+        }
+    });
 }
 
 /// Merge every provider the extensions declared into the catalog, and collect the credentials they

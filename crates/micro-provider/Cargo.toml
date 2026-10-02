@@ -13,6 +13,7 @@ micro-types = { workspace = true }
 async-trait = { workspace = true }
 futures = { workspace = true }
 reqwest = { workspace = true }
+serde = { workspace = true }
 hmac = { workspace = true }
 httpdate = "1"
 serde_json = { workspace = true }

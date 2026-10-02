@@ -167,6 +167,12 @@ micro.on("tool_call", (event) => {
 });
 ```
 
+`provider_stream_event` fires for each provider stream event as micro parsed it, before micro reads it into its own events: an SSE frame's JSON, or a Bedrock event keyed by its type. The event names the `provider`, `api` and `model`, and `event.data` holds the parsed value, which can carry fields micro does not read, such as a gateway's per-request cost. It is not the original bytes. The event is notification-only, arrives in stream order, and is not persisted; micro forwards them only when an extension listens.
+
+## Models
+
+`ctx.modelRegistry` looks up models of every type and runs image generation and classification with the session's credentials, billing what they use to the session. See [Image and classifier models](models.md). `micro.registerVirtualModel()` lists a model whose router picks a physical model for each request; see [Virtual models](virtual-models.md).
+
 ## Terminal UI
 
 `ctx.ui` provides notifications, prompts, selectors, editors, status text, widgets, headers, footers, overlays, autocomplete, and custom editor components.

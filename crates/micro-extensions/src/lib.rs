@@ -40,6 +40,7 @@ pub use host::RegisteredFlag;
 pub use host::RegisteredProvider;
 pub use host::RegisteredShortcut;
 pub use host::RegisteredTool;
+pub use host::RegisteredVirtualModel;
 pub use packages::install;
 pub use packages::remove;
 pub use packages::Installed;

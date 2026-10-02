@@ -281,6 +281,7 @@ impl Accumulator {
         let Ok(data) = serde_json::from_str::<Value>(&event.data) else {
             return;
         };
+        crate::observe::parsed(&self.provider, "anthropic-messages", &self.model_id, &data);
 
         match name {
             "message_start" => {

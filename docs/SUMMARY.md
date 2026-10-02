@@ -15,12 +15,15 @@
 - [Codemode](codemode.md)
 - [Project context](project-context.md)
 - [Providers and models](providers.md)
+- [Image and classifier models](models.md)
+- [Local models with llama.cpp](llama-cpp.md)
 - [Remote control](remote-control.md)
 
 # Configure and extend
 
 - [Configuration](configuration.md)
 - [Extensions](extensions.md)
+- [Virtual models](virtual-models.md)
 - [Testing extensions](extension-testing.md)
 
 # Security

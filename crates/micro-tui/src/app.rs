@@ -282,6 +282,9 @@ pub struct App {
     pub should_quit: bool,
 
     model: String,
+    /// The model that answered last, as `provider/id`, when it is not the one selected: what a
+    /// virtual model routed the response to.
+    routed: Option<String>,
     turn: Option<Turn>,
     /// Whether the active operation is compacting the conversation.
     compacting: bool,
@@ -604,6 +607,7 @@ impl App {
             tick: 0,
             should_quit: false,
             model: options.model,
+            routed: None,
             turn: None,
             compacting: false,
             pending: VecDeque::new(),
@@ -698,6 +702,25 @@ impl App {
 
     pub fn set_model_label(&mut self, model: String) {
         self.model = model;
+        self.routed = None;
+    }
+
+    /// The model a virtual model sent the latest response to.
+    pub fn routed_model(&self) -> Option<&str> {
+        self.routed.as_deref()
+    }
+
+    /// Note which model answered, when it is not the one selected.
+    fn note_answered_by(&mut self, message: &micro_types::AssistantMessage) {
+        if message.stop_reason == micro_types::StopReason::Error || message.model.is_empty() {
+            return;
+        }
+        let answered = format!("{}/{}", message.provider, message.model);
+        let selected = self.model.as_str();
+        let same = answered == selected
+            || message.model == selected
+            || selected.ends_with(&format!("/{}", message.model));
+        self.routed = (!same).then_some(answered);
     }
 
     /// Price the session against a different model's rates.
@@ -1748,7 +1771,10 @@ impl App {
     pub fn apply_event(&mut self, event: AgentEvent) {
         let answers_before = self.answers;
         self.transcript.apply(&event);
-        if let AgentEvent::MessageEnd { .. } = &event {
+        if let AgentEvent::MessageEnd { message } = &event {
+            if let micro_types::Message::Assistant(assistant) = message {
+                self.note_answered_by(assistant);
+            }
             self.answers = self.answers.saturating_add(1);
             self.report_cache_miss(answers_before);
         }
@@ -4575,6 +4601,36 @@ mod tests {
         );
         ask(&mut app, "set_header", "", None, Vec::new());
         assert!(app.header_override().is_none());
+    }
+
+    /// A response from a model other than the selected one is what a virtual model routed to,
+    /// and is shown until the selection changes.
+    #[test]
+    fn the_model_a_virtual_model_routed_to_is_remembered() {
+        let answered = |provider: &str, model: &str| AgentEvent::MessageEnd {
+            message: micro_types::Message::Assistant(micro_types::AssistantMessage {
+                content: Vec::new(),
+                provider: provider.into(),
+                model: model.into(),
+                usage: Default::default(),
+                stop_reason: micro_types::StopReason::Stop,
+                error: None,
+                timestamp: 0,
+            }),
+        };
+        let mut app = app();
+        app.set_model_label("router/auto".into());
+        app.apply_event(answered("anthropic", "claude-sonnet-5"));
+        assert_eq!(app.routed_model(), Some("anthropic/claude-sonnet-5"));
+
+        app.set_model_label("anthropic/claude-sonnet-5".into());
+        assert_eq!(app.routed_model(), None);
+        app.apply_event(answered("anthropic", "claude-sonnet-5"));
+        assert_eq!(
+            app.routed_model(),
+            None,
+            "the selected model answering is not a route"
+        );
     }
 
     #[test]
