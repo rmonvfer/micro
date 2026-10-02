@@ -1263,6 +1263,38 @@ export default (micro) => {
     assert!(refused, "the reason reached the model: {second:#?}");
 }
 
+/// A block that asks to terminate ends the run once every call in the batch was stopped that way,
+/// so the model is not asked again.
+#[test]
+fn an_extension_can_end_the_run_by_blocking_every_call() {
+    if which_bun().is_none() {
+        return;
+    }
+    let api = FakeApi::start([
+        Reply::tool_call(
+            "call_1",
+            "write",
+            json!({ "path": "secrets.env", "content": "x" }),
+        ),
+        Reply::text("never asked"),
+    ]);
+    let fixture = Fixture::new(&api);
+    fixture.write(
+        ".micro/extensions/guard.ts",
+        r#"
+export default (micro) => {
+    micro.on("tool_call", () => ({ block: true, reason: "stopping here", terminate: true }));
+};
+"#,
+    );
+
+    let output = fixture.print(&["-m", "test", "write the file"]);
+    assert!(output.status.success(), "{}", output.stderr);
+
+    assert!(!fixture.exists("secrets.env"), "the call did not run");
+    assert_eq!(api.request_count(), 1, "the model was not asked again");
+}
+
 /// An extension can rewrite what a tool returned before the model reads it.
 #[test]
 fn an_extension_can_rewrite_a_tool_result() {

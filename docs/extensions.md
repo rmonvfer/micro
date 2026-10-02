@@ -123,6 +123,16 @@ Common lifecycle events include:
 
 An exception in one handler is reported without preventing other handlers from running.
 
+A `tool_call` handler runs before a tool does. Returning `{ block: true, reason }` stops the call, and the model reads the reason in place of the tool's output. Adding `terminate: true` also ends the run when every call in that batch was blocked this way, so micro does not ask the model again; a batch where any call ran or was blocked without it continues as usual.
+
+```ts
+micro.on("tool_call", (event) => {
+  if (event.toolName === "bash") {
+    return { block: true, reason: "Shell access is off for this task", terminate: true };
+  }
+});
+```
+
 ## Terminal UI
 
 `ctx.ui` provides notifications, prompts, selectors, editors, status text, widgets, headers, footers, overlays, autocomplete, and custom editor components.

@@ -76,6 +76,14 @@ Inside an interactive session, `/export [path]` writes a readable Markdown trans
 
 These commands are explicit. micro does not upload sessions automatically.
 
+## Report a bug
+
+`/bug [description]` writes a bug report to `micro-bug-report-<id>.zip` in the workspace and prints its path. It first asks whether to include the session transcript; the choice is also available directly as `/bug --transcript` or `/bug --no-transcript`, followed by the description.
+
+The report holds micro's version, the platform and terminal, the model and thinking level, the tools offered, loaded extensions and the ones that failed to load, and the failed replies and request attempts this session recorded, without conversation content. Global and project settings are included with secret-looking values replaced by `<redacted>` (keys such as `api_key`, `token`, `secret`, `password` or `authorization`, plus credentials in URLs) and the installation's `device_id` removed. Paths under the home directory are written with `~`. A transcript, when included, is the raw session log, so review it before sharing.
+
+micro uploads nothing. Attach the archive to an issue at `https://github.com/rmonvfer/micro/issues/new`; `/bug --open-issue` opens that page in the browser.
+
 ## Billing
 
 Select a session or one turn explicitly:

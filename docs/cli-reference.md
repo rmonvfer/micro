@@ -161,6 +161,7 @@ Type `/help` in the interface for the list from the installed version.
 | `/set <setting> [value]`        | Read or change a setting.                                                       |
 | `/remote [pair]`                | Pair a phone or publish the current session.                                    |
 | `/share`                        | Export the session to a secret GitHub gist. Requires a token with `gist` scope. |
+| `/bug [description]`            | Write a redacted bug report ZIP to the workspace, optionally with the transcript. Uploads nothing. |
 | `/export [path]`                | Write the conversation to a file.                                               |
 | `/import <path>`                | Import and resume a JSONL session.                                              |
 | `/copy`                         | Copy the last answer.                                                           |

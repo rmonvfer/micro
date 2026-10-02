@@ -2,6 +2,7 @@
 
 mod auth;
 mod bill;
+mod bug;
 mod model;
 mod outcome;
 mod parse;
@@ -16,6 +17,8 @@ pub use bill::CompactionBill;
 pub use bill::Side;
 pub use bill::TurnBill;
 pub use bill::UnknownAttempt;
+pub use bug::ISSUES_URL;
+pub use outcome::BugReportAction;
 pub use outcome::CommandOutcome;
 pub use outcome::InspectionItem;
 pub use outcome::MessageKind;
@@ -146,6 +149,11 @@ static COMMANDS: &[Command] = &[
         name: "share",
         argument: None,
         description: "Share session as a secret GitHub gist",
+    },
+    Command {
+        name: "bug",
+        argument: Some("[description]"),
+        description: "write a bug report to attach to an issue",
     },
     Command {
         name: "remote",
@@ -348,6 +356,7 @@ pub async fn run(
         "trust" => trust(argument),
         "reload" => CommandOutcome::Reload,
         "share" => CommandOutcome::Share,
+        "bug" => bug::command(argument),
 
         "remote" => CommandOutcome::RemoteControl {
             action: match argument.map(str::trim).unwrap_or_default() {
