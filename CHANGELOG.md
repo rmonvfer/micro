@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+- Configure MCP servers in `mcp.json`, globally and in trusted projects, instead of `mcp_servers` in settings. Entries use the `mcpServers` shape shared with other MCP clients and may carry a `description`.
+- Connect to MCP servers over streamable HTTP, with `url` and `headers`, alongside stdio.
+- Sign in to MCP servers with OAuth: discovery, dynamic client registration with `oauth.clientName`, PKCE with a loopback callback and a clickable sign-in link, `oauth.authServerMetadataUrl`, RFC 9207 issuer checks, refresh, and step-up sign-in that keeps granted scopes. Credentials are stored per server name and URL, readable only by their owner.
+- Send a provider's micro credential to an HTTP MCP server with `"auth": { "provider": "<name>" }`, allowed only in the global `mcp.json`.
+- Add `micro mcp add|remove|list|login|logout` and the `/mcp` command.
+- Name MCP tools with `-` written as `_` (`mcp__my_server__x`), give colliding tool names a hash suffix, and reject server names that differ only in `-` and `_`.
+- Connect MCP servers side by side; servers with `"exposure": "deferred"` connect in the background and `tool_search` waits for them. An `mcp_servers` system prompt section lists servers whose tools are not declared.
+- Title MCP tool calls `server/tool`.
+
 ## [0.1.13] - 2026-09-04
 
 - Show `micro — <workspace>` in terminal tabs and name Bun extension host processes.

@@ -34,7 +34,7 @@ micro-cli
 | `micro-session`    | Append-only conversations, ledger events, metadata, and blobs.                   |
 | `micro-commands`   | Slash-command parsing and outcomes.                                              |
 | `micro-extensions` | Bun extension host and capability broker.                                        |
-| `micro-mcp`        | MCP server processes and tools.                                                  |
+| `micro-mcp`        | MCP servers over stdio and streamable HTTP, OAuth sign-in, and their tools.      |
 | `micro-skills`     | Skill discovery and loading.                                                     |
 | `micro-prompts`    | Prompt-template discovery and argument expansion.                                |
 | `micro-mermaid`    | Mermaid diagram rendering requested by a response.                               |

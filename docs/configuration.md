@@ -112,7 +112,6 @@ Command-line options take precedence over environment variables, which take prec
 | `default_project_trust` | `ask` | `ask`, `always`, or `never`. |
 | `http_idle_timeout` | `120` | Seconds without provider output before a request fails. |
 | `scoped_models` | `[]` | Model queries allowed in the workspace. Empty permits the full catalog. |
-| `mcp_servers` | `{}` | Named MCP server definitions. |
 | `tool_search_threshold` | `15` | Number of non-built-in tools included directly before `tool_search` is used. |
 | `anthropic_extra_usage` | `true` | Warn about per-token use of Anthropic subscription credentials in a third-party client. |
 | `transport` | `sse` | `sse` or `auto` for the ChatGPT Codex backend. |
@@ -239,31 +238,25 @@ See [Providers and models](providers.md).
 
 ## MCP servers
 
-Configure MCP servers under `mcp_servers`:
+MCP servers are configured in `mcp.json` beside `config.json`, and in a trusted project's `.micro/mcp.json`, using the `mcpServers` shape other MCP clients share:
 
 ```json
 {
-  "mcp_servers": {
+  "mcpServers": {
     "notes": {
       "command": "/usr/local/bin/notes-mcp",
       "args": ["--stdio"],
-      "env": { "NOTES_HOME": "/srv/notes" },
-      "startup_timeout": 20,
-      "tool_timeout": 120
+      "env": { "NOTES_HOME": "/srv/notes" }
     }
   }
 }
 ```
 
-`command` is required. `args`, `env`, `cwd`, `enabled`, `startup_timeout`, and `tool_timeout` are optional. Environment entries are added to the inherited process environment.
-
-A server that fails to start is reported and skipped. Other tools remain available.
-
-MCP servers are configured programs and are not launched inside the command sandbox.
+See [MCP servers](mcp.md) for HTTP servers, OAuth, exposure, and the `micro mcp` commands.
 
 ## Project configuration
 
-A trusted project may provide `.micro/settings.json`, extensions, skills, prompts, themes, `SYSTEM.md`, and `APPEND_SYSTEM.md`. Project `settings.json` accepts only `sandbox`; other user settings remain controlled by `config.json`, environment variables, and command-line options.
+A trusted project may provide `.micro/settings.json`, `.micro/mcp.json`, extensions, skills, prompts, themes, `SYSTEM.md`, and `APPEND_SYSTEM.md`. Project `settings.json` accepts only `sandbox`; other user settings remain controlled by `config.json`, environment variables, and command-line options.
 
 `--approve` and `--no-approve` override trust for one run. `/trust on` and `/trust off` save a decision for later runs.
 

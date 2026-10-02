@@ -89,6 +89,19 @@ micro list
 
 Sources may be npm packages, Git repositories, or local paths. See [Extensions](extensions.md).
 
+### MCP servers
+
+```bash
+micro mcp add [-l|--local] <NAME> [OPTIONS] -- <COMMAND> [ARGS]...
+micro mcp add [-l|--local] <NAME> --url <URL> [OPTIONS]
+micro mcp remove [-l|--local] <NAME>
+micro mcp list [--json]
+micro mcp login <NAME> [--timeout <SECONDS>]
+micro mcp logout <NAME>
+```
+
+See [MCP servers](mcp.md).
+
 ### Sessions and costs
 
 ```bash
@@ -133,6 +146,7 @@ Type `/help` in the interface for the list from the installed version.
 | `/compact`                      | Summarize older context.                                                        |
 | `/trust [on/off]`               | Save a project trust decision.                                                  |
 | `/sandbox [session/user/project]` | Inspect or configure command access.                                          |
+| `/mcp [server]`                 | Show MCP servers, sign in to them, or reconnect them.                           |
 | `/reload`                       | Reload skills and context files.                                                |
 | `/skills`                       | List discovered skills.                                                         |
 | `/settings`                     | Show settings and their sources.                                                |
