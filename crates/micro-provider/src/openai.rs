@@ -962,7 +962,9 @@ mod tests {
 
     #[test]
     fn a_service_is_only_told_thinking_is_off_when_it_has_a_word_for_it() {
-        let unsaid = served_by("openai", "o1");
+        let mut unsaid = served_by("openai", "o1");
+        unsaid.compat.thinking.clear();
+        unsaid.thinking = ThinkingLevel::Off;
         assert!(build_payload(&unsaid, &Context::default())
             .unwrap()
             .get("reasoning_effort")

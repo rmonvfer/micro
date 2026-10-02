@@ -274,14 +274,20 @@ impl ModelDef {
         self.cost.price(usage)
     }
 
-    /// The runtime handle a provider needs in order to issue a request.
+    /// The thinking levels this model can be asked for, from least to most reasoning.
+    pub fn thinking_levels(&self) -> Vec<micro_types::ThinkingLevel> {
+        micro_types::supported_thinking_levels(self.reasoning, &self.thinking)
+    }
+
+    /// The runtime handle a provider needs in order to issue a request, reasoning at the level
+    /// asked for when this model offers it and at the nearest level it offers otherwise.
     pub fn to_runtime(&self, thinking: micro_types::ThinkingLevel) -> micro_types::Model {
         micro_types::Model {
             id: self.id.clone(),
             provider: self.provider.clone(),
             base_url: self.base_url.clone(),
             max_tokens: self.max_output_tokens,
-            thinking,
+            thinking: micro_types::clamp_thinking_level(&self.thinking_levels(), thinking),
             reasoning: self.reasoning,
             compat: crate::compat::resolve(
                 &self.provider,
@@ -1132,6 +1138,48 @@ mod tests {
 
         let default: micro_types::Model = def.into();
         assert_eq!(default.thinking, micro_types::ThinkingLevel::Off);
+    }
+
+    #[test]
+    fn a_runtime_model_reasons_only_at_a_level_it_offers() {
+        let catalog = Catalog::bundled();
+        let sonnet = catalog.get("anthropic", "claude-sonnet-4-5").unwrap();
+        assert_eq!(
+            sonnet
+                .to_runtime(micro_types::ThinkingLevel::XHigh)
+                .thinking,
+            micro_types::ThinkingLevel::High,
+            "xhigh is not offered, so the nearest level below it is used"
+        );
+
+        let opus = catalog.get("anthropic", "claude-opus-4-7").unwrap();
+        assert!(opus
+            .thinking_levels()
+            .contains(&micro_types::ThinkingLevel::XHigh));
+        assert_eq!(
+            opus.to_runtime(micro_types::ThinkingLevel::XHigh).thinking,
+            micro_types::ThinkingLevel::XHigh
+        );
+
+        let gpt4o = catalog.get("openai", "gpt-4o").unwrap();
+        assert_eq!(
+            gpt4o.thinking_levels(),
+            vec![micro_types::ThinkingLevel::Off]
+        );
+        assert_eq!(
+            gpt4o.to_runtime(micro_types::ThinkingLevel::High).thinking,
+            micro_types::ThinkingLevel::Off
+        );
+
+        let gpt5 = catalog.get("openai", "gpt-5").unwrap();
+        assert!(!gpt5
+            .thinking_levels()
+            .contains(&micro_types::ThinkingLevel::Off));
+        assert_eq!(
+            gpt5.to_runtime(micro_types::ThinkingLevel::Off).thinking,
+            micro_types::ThinkingLevel::Minimal,
+            "a model that cannot stop reasoning does the least it can"
+        );
     }
 
     #[test]
