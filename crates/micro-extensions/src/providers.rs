@@ -77,6 +77,8 @@ fn model(described: &Value) -> Result<Value, String> {
         ("maxTokens", "max_output_tokens"),
         ("reasoning", "reasoning"),
         ("input", "input"),
+        ("output", "output"),
+        ("type", "type"),
         ("api", "api"),
         ("aliases", "aliases"),
     ] {

@@ -1,5 +1,6 @@
 
 
+import { modelRegistryFor } from "./host-models.ts";
 import { ask, type Json, wireFor } from "./host-wire.ts";
 
 /** Whether a run is in flight, and the controller whose signal is handed out for its duration. */
@@ -241,7 +242,8 @@ export function contextFrom(now: Json, ui: Json, extension: string, commandConte
 		cwd: where.cwd,
 		model,
 		thinkingLevel: now.thinkingLevel,
-		
+		modelRegistry: modelRegistryFor(extension),
+
 		scopedModels: (now.scopedModels as Json[] | undefined) ?? [],
 		sessionManager: sessionManagerFor(now.session as Json | undefined),
 		isProjectTrusted: (): boolean => where.trusted,

@@ -6,13 +6,16 @@ mod commands;
 mod extension_broker;
 mod extensions;
 mod headless;
+mod llama;
 mod mcp;
+mod model_registry;
 mod remote;
 mod runtime;
 mod sandbox;
 mod share;
 mod subcommands;
 mod update;
+mod virtual_models;
 
 use anyhow::Result;
 use clap::Parser;
@@ -151,6 +154,9 @@ enum Command {
         /// Merge live provider listings before showing the catalog.
         #[arg(long)]
         live: bool,
+        /// Which models to show: chat, image or classifier.
+        #[arg(long = "type", value_name = "TYPE", default_value = "chat")]
+        kind: String,
     },
     /// Install an extension package.
     Install {
@@ -202,6 +208,38 @@ enum Command {
         #[command(subcommand)]
         action: McpAction,
     },
+    /// Connect to a llama.cpp router, and manage the models it serves.
+    Llama {
+        #[command(subcommand)]
+        action: LlamaAction,
+    },
+}
+
+#[derive(Subcommand)]
+enum LlamaAction {
+    /// Remember which router to use, after checking it answers.
+    Connect {
+        /// The router's address; defaults to http://127.0.0.1:8080.
+        url: Option<String>,
+        /// The key the router was started with, if it was started with --api-key.
+        #[arg(long = "api-key", value_name = "KEY")]
+        api_key: Option<String>,
+    },
+    /// List the router's models and the state each is in.
+    Status,
+    /// Search Hugging Face for GGUF models, or list the quantizations of `owner/repository`.
+    Search { query: String },
+    /// Have the router download `owner/repository[:quant]` from Hugging Face.
+    Download { model: String },
+    /// Load a model, waiting until it is serving.
+    Load {
+        model: String,
+        /// Unload every other loaded model first.
+        #[arg(long)]
+        unload_others: bool,
+    },
+    /// Unload a model.
+    Unload { model: String },
 }
 
 #[derive(clap::Args)]
@@ -516,8 +554,23 @@ async fn main() -> Result<()> {
                 AuthAction::Status => subcommands::auth_status().await,
             }
         }
-        Some(Command::Models { query, live }) => {
-            return subcommands::models(query.as_deref(), *live).await
+        Some(Command::Models { query, live, kind }) => {
+            return subcommands::models(query.as_deref(), *live, kind).await
+        }
+        Some(Command::Llama { action }) => {
+            return match action {
+                LlamaAction::Connect { url, api_key } => {
+                    llama::connect(url.as_deref(), api_key.as_deref()).await
+                }
+                LlamaAction::Status => llama::status().await,
+                LlamaAction::Search { query } => llama::search(query).await,
+                LlamaAction::Download { model } => llama::download(model).await,
+                LlamaAction::Load {
+                    model,
+                    unload_others,
+                } => llama::load(model, *unload_others).await,
+                LlamaAction::Unload { model } => llama::unload(model).await,
+            };
         }
         Some(Command::Install { source, local }) => {
             let root = runtime::workspace(&cli.cwd)?;
@@ -714,6 +767,9 @@ async fn main() -> Result<()> {
 
             "reason": if resume.is_some() { "resume" } else { "startup" },
         });
+        let _ = host
+            .share_models(model_registry::catalog(Some(&built.models))["models"].take())
+            .await;
         let _ = host.notify("session_start", started).await;
     }
 
@@ -769,6 +825,7 @@ async fn main() -> Result<()> {
             skills: built.skills.clone(),
             tool_snippets,
             prompt_guidelines,
+            models: Some(built.models.clone()),
         }));
         tokio::spawn(extensions::serve(
             std::sync::Arc::clone(host),

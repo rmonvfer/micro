@@ -1144,6 +1144,169 @@ export default (micro) => {{
     );
 }
 
+/// Everything micro wrote under its own directory, for a test looking for what was recorded.
+fn written_under(root: &std::path::Path) -> String {
+    let mut found = String::new();
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return found;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            found.push_str(&written_under(&path));
+        } else if let Ok(text) = std::fs::read_to_string(&path) {
+            found.push_str(&text);
+        }
+    }
+    found
+}
+
+/// A virtual model is selected like any model, and its router sends each request to the physical
+/// model it picks, which is the model the transcript names.
+#[test]
+fn a_virtual_model_routes_a_request_to_the_model_its_router_picks() {
+    if which_bun().is_none() {
+        return;
+    }
+    let api = FakeApi::start([Reply::text("answered by the physical model")]);
+    let fixture = Fixture::new(&api);
+    fixture.write(
+        ".micro/extensions/router.ts",
+        &format!(
+            r#"
+export const capabilities = ["providers"];
+
+export default (micro) => {{
+    micro.registerProvider("my-proxy", {{
+        baseUrl: {base:?},
+        api: "openai-completions",
+        apiKey: "sk-declared",
+        models: [{{ id: "proxied-model", contextWindow: 128000, maxTokens: 8192 }}],
+    }});
+    micro.registerVirtualModel({{
+        provider: "router",
+        id: "auto",
+        name: "Auto",
+        thinkingLevels: ["low", "high"],
+        route(request) {{
+            if (request.reason !== "user") throw new Error(`unexpected ${{request.reason}}`);
+            return {{
+                model: {{ provider: "my-proxy", id: "proxied-model" }},
+                thinkingLevel: "medium",
+                state: {{ phase: "build", seen: request.messages.length }},
+            }};
+        }},
+    }});
+}};
+"#,
+            base = api.base_url()
+        ),
+    );
+
+    let output = fixture.print(&["-m", "router/auto", "route this"]);
+    assert!(output.status.success(), "{}", output.stderr);
+    assert!(
+        output.stdout.contains("answered by the physical model"),
+        "{}",
+        output.stdout
+    );
+
+    assert_eq!(api.request(0)["model"], "proxied-model");
+    assert!(api
+        .headers(0)
+        .get("authorization")
+        .is_some_and(|authorization| authorization.contains("sk-declared")));
+
+    let recorded = written_under(&fixture.home());
+    assert!(
+        recorded.contains(r#""custom_type":"virtual-model-state""#)
+            && recorded.contains(r#""phase":"build""#),
+        "the router's state is kept on the session branch"
+    );
+}
+
+/// An extension generates images with a provider's credential, without ever seeing it, and what
+/// the request cost is billed to the session.
+#[test]
+fn an_extension_generates_images_billed_to_the_session() {
+    if which_bun().is_none() {
+        return;
+    }
+    let api = FakeApi::start([Reply::Status(
+        200,
+        json!({
+            "id": "gen-1",
+            "choices": [{ "message": {
+                "content": "",
+                "images": [{ "image_url": { "url": "data:image/png;base64,iVBORw0KGgo=" } }],
+            }}],
+            "usage": { "prompt_tokens": 10, "completion_tokens": 1000 },
+        })
+        .to_string(),
+    )]);
+    let fixture = Fixture::new(&api);
+    fixture.write(
+        ".micro/extensions/painter.ts",
+        &format!(
+            r#"
+export const capabilities = ["commands", "providers", "provider_stream"];
+
+export default (micro) => {{
+    micro.registerProvider("my-proxy", {{
+        baseUrl: {base:?},
+        api: "openai-completions",
+        apiKey: "sk-painter",
+        models: [
+            {{ id: "proxied-model" }},
+            {{ id: "painter", api: "openrouter-images", cost: {{ input: 1, output: 30, cacheRead: 0, cacheWrite: 0 }} }},
+        ],
+    }});
+    micro.registerCommand("paint", {{
+        handler: async (prompt, ctx) => {{
+            await ctx.modelRegistry.refresh();
+            const painter = ctx.modelRegistry.findOfType("image", "my-proxy", "painter");
+            const result = await ctx.modelRegistry.generateImages(painter, {{
+                input: [{{ type: "text", text: prompt }}],
+            }});
+            return JSON.stringify({{
+                stopReason: result.stopReason,
+                images: result.output.filter((block) => block.type === "image").length,
+                cost: result.usage?.cost.total,
+                chat: ctx.modelRegistry.find("my-proxy", "painter") === undefined,
+            }});
+        }},
+    }});
+}};
+"#,
+            base = api.base_url()
+        ),
+    );
+
+    let output = fixture.print(&["-m", "test", "/paint a fox"]);
+    assert!(output.status.success(), "{}", output.stderr);
+    let painted = stdout_json(&output);
+    assert_eq!(painted["stopReason"], "stop", "{painted}");
+    assert_eq!(painted["images"], 1);
+    assert_eq!(painted["chat"], true, "an image model is not a chat model");
+    let cost = painted["cost"].as_f64().unwrap();
+    assert!((cost - (10.0 + 30_000.0) / 1e6).abs() < 1e-12, "{cost}");
+
+    let sent = api.request(0);
+    assert_eq!(sent["model"], "painter");
+    assert_eq!(sent["messages"][0]["content"][0]["text"], "a fox");
+    assert!(api
+        .headers(0)
+        .get("authorization")
+        .is_some_and(|authorization| authorization.contains("sk-painter")));
+
+    let recorded = written_under(&fixture.home());
+    assert!(
+        recorded.contains(r#""type":"model_call""#)
+            && recorded.contains(r#""operation":"generate_images""#),
+        "the call is billed in the ledger"
+    );
+}
+
 /// An extension can refuse a tool call, and the model is told why instead of getting the tool's
 /// output.
 #[test]

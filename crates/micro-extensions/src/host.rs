@@ -20,6 +20,7 @@ use tokio::sync::Mutex;
 const HOST_SOURCE: &[(&str, &str)] = &[
     ("extension-host.ts", include_str!("../host/host.ts")),
     ("host-context.ts", include_str!("../host/context.ts")),
+    ("host-models.ts", include_str!("../host/models.ts")),
     ("host-ui.ts", include_str!("../host/ui.ts")),
     ("host-tools.ts", include_str!("../host/tools.ts")),
     ("host-wire.ts", include_str!("../host/wire.ts")),
@@ -60,6 +61,9 @@ pub struct Registered {
     pub events: Vec<String>,
     #[serde(default)]
     pub providers: Vec<RegisteredProvider>,
+    /// Models that route each request to a physical model the extension picks.
+    #[serde(default)]
+    pub virtual_models: Vec<RegisteredVirtualModel>,
     /// The custom types this extension draws itself.
     #[serde(default)]
     pub renderers: Vec<String>,
@@ -75,6 +79,35 @@ pub struct RegisteredProvider {
     pub name: String,
     /// The provider as pi's `registerProvider` describes it.
     pub config: Value,
+}
+
+/// A virtual model as `registerVirtualModel` describes it.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct RegisteredVirtualModel {
+    /// The provider it is listed under, which may be one with physical models or none at all.
+    pub provider: String,
+    pub id: String,
+    #[serde(default)]
+    pub name: Option<String>,
+    /// The levels offered for selection, which mean whatever the router makes of them.
+    #[serde(default = "only_off", rename = "thinkingLevels")]
+    pub thinking_levels: Vec<String>,
+    /// Shown before the first response, when the extension says.
+    #[serde(default, rename = "contextWindow")]
+    pub context_window: Option<u32>,
+    #[serde(default, rename = "maxTokens")]
+    pub max_tokens: Option<u32>,
+    /// The input types offered for selection.
+    #[serde(default = "text_and_images")]
+    pub input: Vec<String>,
+}
+
+fn only_off() -> Vec<String> {
+    vec!["off".to_string()]
+}
+
+fn text_and_images() -> Vec<String> {
+    vec!["text".to_string(), "image".to_string()]
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -435,6 +468,14 @@ impl Host {
                         .map(|provider| provider.name)
                         .collect(),
                 );
+                refuse(
+                    "providers",
+                    extension
+                        .virtual_models
+                        .drain(..)
+                        .map(|model| format!("{}/{}", model.provider, model.id))
+                        .collect(),
+                );
             }
         }
         refused
@@ -526,6 +567,72 @@ impl Host {
             .iter()
             .flat_map(|extension| extension.providers.iter().cloned())
             .collect()
+    }
+
+    /// Every virtual model they registered. A later registration of the same provider and id
+    /// replaces an earlier one.
+    pub fn virtual_models(&self) -> Vec<RegisteredVirtualModel> {
+        let mut models: Vec<RegisteredVirtualModel> = Vec::new();
+        for model in self
+            .loaded
+            .extensions
+            .iter()
+            .flat_map(|extension| extension.virtual_models.iter().cloned())
+        {
+            models.retain(|known| !(known.provider == model.provider && known.id == model.id));
+            models.push(model);
+        }
+        models
+    }
+
+    /// Tell the extensions every model the run knows, which `ctx.modelRegistry` answers lookups
+    /// from without asking micro each time.
+    pub async fn share_models(&self, models: Value) -> Result<(), String> {
+        write_line(
+            &mut *self.stdin.lock().await,
+            &serde_json::json!({ "type": "models", "models": models }),
+        )
+        .await
+    }
+
+    /// Whether any extension handles `event`, so micro can skip the work of telling them.
+    pub fn listens_to(&self, event: &str) -> bool {
+        self.loaded
+            .extensions
+            .iter()
+            .any(|extension| extension.events.iter().any(|handled| handled == event))
+    }
+
+    /// Ask the extension that registered a virtual model where one request goes.
+    ///
+    /// The answer names a physical model and a thinking level, and may carry router state; an
+    /// extension that cannot say is an error.
+    pub async fn route(&self, provider: &str, id: &str, request: Value) -> Result<Value, String> {
+        let request_id = self.claim_id();
+        let (sender, receiver) = oneshot::channel();
+        self.pending.lock().await.insert(request_id.clone(), sender);
+
+        write_line(
+            &mut *self.stdin.lock().await,
+            &serde_json::json!({
+                "type": "route",
+                "id": request_id,
+                "provider": provider,
+                "model": id,
+                "request": request,
+            }),
+        )
+        .await?;
+
+        let answer = tokio::time::timeout(TOOL_TIMEOUT, receiver)
+            .await
+            .map_err(|_| format!("the router of {provider}/{id} did not answer in time"))?
+            .map_err(|_| format!("the extension host stopped while routing {provider}/{id}"))?;
+
+        match answer.get("error").and_then(Value::as_str) {
+            Some(error) => Err(error.to_string()),
+            None => Ok(answer),
+        }
     }
 
     /// Every command they registered.
@@ -1050,6 +1157,7 @@ async fn read_host(
             | "transform_markdown_result"
             | "component_result"
             | "render_tool_result"
+            | "route_result"
             | "deactivated" => {
                 let Some(id) = message.get("id").and_then(Value::as_str) else {
                     continue;

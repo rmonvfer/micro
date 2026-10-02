@@ -107,7 +107,7 @@ pub(crate) fn request_needs(request: &str) -> Option<Capability> {
     match request {
         "exec" => Some(Capability::Exec),
         "run_builtin_tool" => Some(Capability::BuiltinTools),
-        "provider_stream" => Some(Capability::ProviderStream),
+        "provider_stream" | "generate_images" | "classify" => Some(Capability::ProviderStream),
         "append_entry" | "set_label" | "set_session_name" => Some(Capability::SessionWrite),
         "set_model" => Some(Capability::SessionControl),
         "reload" | "new_session" | "switch_session" | "navigate_tree" | "fork" => {
