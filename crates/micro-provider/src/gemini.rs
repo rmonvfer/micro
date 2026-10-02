@@ -849,7 +849,7 @@ fn thinking_config(model: &Model) -> Value {
     };
 
     match lowest_level(&model.id) {
-        Some(_) => json!({ "thinkingLevel": level_for(model.thinking), "includeThoughts": true }),
+        Some(_) => json!({ "thinkingLevel": level_for(model), "includeThoughts": true }),
         None => json!({ "thinkingBudget": budget, "includeThoughts": true }),
     }
 }
@@ -898,8 +898,16 @@ fn is_gemini_3(id: &str, family: &str) -> bool {
 }
 
 /// How hard a model that takes levels should think.
-fn level_for(thinking: micro_types::ThinkingLevel) -> &'static str {
-    match thinking {
+/// The level to ask for: what the model's thinking map names it, when that is a level the service
+/// knows, else the nearest one.
+fn level_for(model: &Model) -> String {
+    if let Some(Some(named)) = model.compat.thinking.get(model.thinking.as_str()) {
+        let named = named.to_ascii_uppercase();
+        if matches!(named.as_str(), "MINIMAL" | "LOW" | "MEDIUM" | "HIGH") {
+            return named;
+        }
+    }
+    match model.thinking {
         micro_types::ThinkingLevel::Off => "MINIMAL",
         micro_types::ThinkingLevel::Minimal => "MINIMAL",
         micro_types::ThinkingLevel::Low => "LOW",
@@ -908,6 +916,7 @@ fn level_for(thinking: micro_types::ThinkingLevel) -> &'static str {
         micro_types::ThinkingLevel::XHigh => "HIGH",
         micro_types::ThinkingLevel::Max => "HIGH",
     }
+    .to_string()
 }
 
 #[cfg(test)]
@@ -1925,6 +1934,17 @@ mod tests {
         assert_eq!(levelled["thinkingLevel"], "HIGH");
         assert_eq!(levelled["includeThoughts"], true);
         assert!(levelled.get("thinkingBudget").is_none());
+
+        let mut mapped = Model {
+            id: "gemma-4-31b-it".into(),
+            thinking: ThinkingLevel::Minimal,
+            ..model()
+        };
+        mapped
+            .compat
+            .thinking
+            .insert("minimal".into(), Some("minimal".into()));
+        assert_eq!(thinking_config(&mapped)["thinkingLevel"], "MINIMAL");
     }
 
     #[test]

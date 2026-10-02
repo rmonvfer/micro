@@ -265,15 +265,32 @@ impl Rpc {
 
             Command::SetThinkingLevel { level, .. } => {
                 self.agent.set_thinking(level);
+                let level = self.agent.model().thinking;
                 self.answer(Response::with(id, name, json!({ "level": level })), output)
                     .await?;
             }
 
             Command::CycleThinkingLevel { .. } => {
-                let level = next_level(self.agent.model().thinking);
-                self.agent.set_thinking(level);
-                self.answer(Response::with(id, name, json!({ "level": level })), output)
-                    .await?;
+                let levels = self.agent.model().thinking_levels();
+                let answer = match levels.iter().any(|level| *level != ThinkingLevel::Off) {
+                    true => {
+                        let level =
+                            micro_types::next_thinking_level(&levels, self.agent.model().thinking);
+                        self.agent.set_thinking(level);
+                        Response::with(id, name, json!({ "level": level }))
+                    }
+                    false => Response::with(id, name, Value::Null),
+                };
+                self.answer(answer, output).await?;
+            }
+
+            Command::GetAvailableThinkingLevels { .. } => {
+                let levels = self.agent.model().thinking_levels();
+                self.answer(
+                    Response::with(id, name, json!({ "levels": levels })),
+                    output,
+                )
+                .await?;
             }
 
             Command::Compact { .. } => {
@@ -862,18 +879,6 @@ fn summary_text(message: &Message) -> String {
             .collect::<Vec<_>>()
             .join(""),
         Message::ToolResult { .. } => String::new(),
-    }
-}
-
-fn next_level(level: ThinkingLevel) -> ThinkingLevel {
-    match level {
-        ThinkingLevel::Off => ThinkingLevel::Minimal,
-        ThinkingLevel::Minimal => ThinkingLevel::Low,
-        ThinkingLevel::Low => ThinkingLevel::Medium,
-        ThinkingLevel::Medium => ThinkingLevel::High,
-        ThinkingLevel::High => ThinkingLevel::XHigh,
-        ThinkingLevel::XHigh => ThinkingLevel::Max,
-        ThinkingLevel::Max => ThinkingLevel::Off,
     }
 }
 

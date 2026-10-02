@@ -1209,12 +1209,7 @@ async fn carry_out(
                 (asker, payload.get("level").and_then(Value::as_str))
             {
                 asker
-                    .ask(
-                        "send_user_message",
-                        format!("/thinking {level}"),
-                        None,
-                        Vec::new(),
-                    )
+                    .ask("set_thinking_level", level, None, Vec::new())
                     .await;
             }
         }

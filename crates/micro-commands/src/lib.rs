@@ -397,7 +397,7 @@ pub async fn run(
         "bill" => bill::command(argument, context).await,
         "why-miss" => why_miss::command(argument, context).await,
         "request" => request::command(argument, context).await,
-        "thinking" => thinking(argument),
+        "thinking" => thinking(argument, context.model),
         "theme" => theme(argument),
         "compact" => compact(context),
         "clear" => CommandOutcome::Clear,
@@ -465,15 +465,19 @@ pub(crate) fn as_default(argument: Option<&str>) -> (bool, Option<&str>) {
     }
 }
 
-/// `/thinking` with no argument offers the levels; with one, sets it for this session, and with
-/// `--default` before it, for later sessions too.
-fn thinking(argument: Option<&str>) -> CommandOutcome {
+/// `/thinking` with no argument offers the levels the model in use can be asked for; with one,
+/// sets it for this session, and with `--default` before it, for later sessions too.
+fn thinking(argument: Option<&str>, model: Option<&ModelDef>) -> CommandOutcome {
+    let offered = model
+        .map(ModelDef::thinking_levels)
+        .unwrap_or_else(|| ThinkingLevel::ALL.to_vec());
     let (save, argument) = as_default(argument);
     let Some(argument) = argument else {
         return CommandOutcome::Choose(Picker::new(
             "Reasoning effort",
             LEVELS
                 .iter()
+                .filter(|(name, _)| level_named(name).is_some_and(|level| offered.contains(&level)))
                 .map(|(name, effort)| {
                     PickerItem::new(*name, *effort, format!("/thinking {name}"))
                         .saving(format!("/thinking {DEFAULT_FLAG} {name}"))
@@ -482,10 +486,15 @@ fn thinking(argument: Option<&str>) -> CommandOutcome {
         ));
     };
 
-    match level_named(argument) {
+    match level_named(argument).filter(|level| offered.contains(level)) {
         Some(level) => CommandOutcome::SetThinking { level, save },
         None => CommandOutcome::error(format!(
-            "unknown reasoning effort `{argument}`: expected off, minimal, low, medium, high, xhigh or max"
+            "unknown thinking level `{argument}`: available levels are {}",
+            offered
+                .iter()
+                .map(ThinkingLevel::as_str)
+                .collect::<Vec<_>>()
+                .join(", ")
         )),
     }
 }
@@ -1581,22 +1590,58 @@ mod tests {
 
     #[test]
     fn a_thinking_level_is_for_this_session_unless_saved_as_the_default() {
-        let CommandOutcome::SetThinking { level, save } = thinking(Some("high")) else {
+        let CommandOutcome::SetThinking { level, save } = thinking(Some("high"), None) else {
             panic!("expected a level");
         };
         assert_eq!(level, ThinkingLevel::High);
         assert!(!save);
 
-        let offered = thinking(None);
+        let offered = thinking(None, None);
         let saving = picker(&offered).items[0].save.clone().expect("a save line");
         assert_eq!(saving, "/thinking --default off");
         let CommandOutcome::SetThinking { level, save } =
-            thinking(saving.strip_prefix("/thinking "))
+            thinking(saving.strip_prefix("/thinking "), None)
         else {
             panic!("expected a level");
         };
         assert_eq!(level, ThinkingLevel::Off);
         assert!(save);
+    }
+
+    #[test]
+    fn only_the_levels_the_model_offers_are_listed_and_accepted() {
+        let catalog = Catalog::bundled();
+        let sonnet = catalog.get("anthropic", "claude-sonnet-4-5").unwrap();
+        let listed: Vec<String> = picker(&thinking(None, Some(sonnet)))
+            .items
+            .iter()
+            .map(|item| item.label.clone())
+            .collect();
+        assert_eq!(listed, ["off", "minimal", "low", "medium", "high"]);
+
+        let refused = thinking(Some("xhigh"), Some(sonnet));
+        assert_eq!(
+            text(&refused),
+            "unknown thinking level `xhigh`: available levels are off, minimal, low, medium, high"
+        );
+
+        let opus = catalog.get("anthropic", "claude-opus-4-7").unwrap();
+        let CommandOutcome::SetThinking { level, .. } = thinking(Some("xhigh"), Some(opus)) else {
+            panic!("expected a level");
+        };
+        assert_eq!(level, ThinkingLevel::XHigh);
+    }
+
+    #[test]
+    fn a_model_that_does_not_reason_offers_only_off() {
+        let catalog = Catalog::bundled();
+        let gpt4o = catalog.get("openai", "gpt-4o").unwrap();
+        let listed: Vec<String> = picker(&thinking(None, Some(gpt4o)))
+            .items
+            .iter()
+            .map(|item| item.label.clone())
+            .collect();
+        assert_eq!(listed, ["off"]);
     }
 
     #[test]

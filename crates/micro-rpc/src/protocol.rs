@@ -76,6 +76,10 @@ pub enum Command {
         #[serde(default)]
         id: Option<String>,
     },
+    GetAvailableThinkingLevels {
+        #[serde(default)]
+        id: Option<String>,
+    },
 
     Compact {
         #[serde(default)]
@@ -172,6 +176,7 @@ impl Command {
             | Command::GetAvailableModels { id }
             | Command::SetThinkingLevel { id, .. }
             | Command::CycleThinkingLevel { id }
+            | Command::GetAvailableThinkingLevels { id }
             | Command::Compact { id }
             | Command::SetAutoCompaction { id, .. }
             | Command::Bash { id, .. }
@@ -205,6 +210,7 @@ impl Command {
             Command::GetAvailableModels { .. } => "get_available_models",
             Command::SetThinkingLevel { .. } => "set_thinking_level",
             Command::CycleThinkingLevel { .. } => "cycle_thinking_level",
+            Command::GetAvailableThinkingLevels { .. } => "get_available_thinking_levels",
             Command::Compact { .. } => "compact",
             Command::SetAutoCompaction { .. } => "set_auto_compaction",
             Command::Bash { .. } => "bash",
@@ -375,6 +381,10 @@ mod tests {
                 "set_thinking_level",
             ),
             (r#"{"type":"cycle_thinking_level"}"#, "cycle_thinking_level"),
+            (
+                r#"{"type":"get_available_thinking_levels"}"#,
+                "get_available_thinking_levels",
+            ),
             (r#"{"type":"compact"}"#, "compact"),
             (
                 r#"{"type":"set_auto_compaction","enabled":false}"#,

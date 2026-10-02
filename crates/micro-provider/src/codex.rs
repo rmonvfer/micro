@@ -486,7 +486,7 @@ fn build_payload(backend: Backend, model: &Model, context: &Context) -> Result<V
         payload["tools"] = Value::Array(tools);
     }
 
-    if let Some(effort) = reasoning_effort(model.thinking) {
+    if let Some(effort) = reasoning_effort(model) {
         payload["reasoning"] = json!({ "effort": effort, "summary": "auto" });
     }
 
@@ -501,8 +501,16 @@ fn build_payload(backend: Backend, model: &Model, context: &Context) -> Result<V
     Ok(payload)
 }
 
-fn reasoning_effort(level: ThinkingLevel) -> Option<&'static str> {
-    match level {
+/// The effort to ask for: what the model's thinking map names the level, else the nearest effort
+/// every model takes, and nothing when thinking is off.
+fn reasoning_effort(model: &Model) -> Option<String> {
+    if model.thinking == ThinkingLevel::Off {
+        return None;
+    }
+    if let Some(Some(named)) = model.compat.thinking.get(model.thinking.as_str()) {
+        return Some(named.clone());
+    }
+    let effort = match model.thinking {
         ThinkingLevel::Off => None,
         ThinkingLevel::Minimal => Some("low"),
         ThinkingLevel::Low => Some("low"),
@@ -510,7 +518,8 @@ fn reasoning_effort(level: ThinkingLevel) -> Option<&'static str> {
         ThinkingLevel::High => Some("high"),
         ThinkingLevel::XHigh => Some("high"),
         ThinkingLevel::Max => Some("high"),
-    }
+    };
+    effort.map(str::to_string)
 }
 
 /// The conversation as typed input items.
@@ -1220,6 +1229,26 @@ mod tests {
         assert_eq!(payload["reasoning"]["effort"], "high");
         assert_eq!(payload["reasoning"]["summary"], "auto");
         assert_eq!(payload["instructions"], "You are a helpful assistant.");
+    }
+
+    /// A level the model's thinking map names is asked for by that name.
+    #[test]
+    fn reasoning_effort_is_what_the_thinking_map_names_it() {
+        let mut model = model();
+        model.thinking = ThinkingLevel::XHigh;
+        model
+            .compat
+            .thinking
+            .insert("xhigh".into(), Some("xhigh".into()));
+        model
+            .compat
+            .thinking
+            .insert("minimal".into(), Some("low".into()));
+        assert_eq!(reasoning_effort(&model).as_deref(), Some("xhigh"));
+        model.thinking = ThinkingLevel::Minimal;
+        assert_eq!(reasoning_effort(&model).as_deref(), Some("low"));
+        model.thinking = ThinkingLevel::Off;
+        assert_eq!(reasoning_effort(&model), None);
     }
 
     /// A call and the result answering it are joined by the id the call was given.

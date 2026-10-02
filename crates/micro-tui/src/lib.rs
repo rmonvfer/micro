@@ -161,6 +161,8 @@ async fn drive(
     let host_asker = options.host_asker.take();
     let mut remote = options.remote.take();
     let mut app = App::new(history, options);
+    app.set_thinking_levels(agent.model().thinking_levels());
+    app.set_thinking(agent.model().thinking);
     let mut interface = Interface {
         screen,
         agent,
@@ -929,6 +931,7 @@ async fn apply_outcome(
 
         CommandOutcome::SetThinking { level, save } => {
             agent.set_thinking(level);
+            let level = agent.model().thinking;
             app.set_thinking(level);
             commands.thinking_changed(level, save).await;
             if save {
@@ -1024,6 +1027,7 @@ fn apply_applied(app: &mut App, agent: &mut Agent, applied: Applied) {
             app.set_model_label(swap.model.id.clone());
             app.context_window = swap.context_window as u32;
             app.set_price(swap.cost.clone());
+            app.set_thinking_levels(swap.model.thinking_levels());
             app.set_thinking(swap.model.thinking);
             agent.set_model(*swap);
             if let Some(note) = note {

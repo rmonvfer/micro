@@ -62,6 +62,24 @@ interface ModelsDevModel {
 	provider?: {
 		npm?: string;
 	};
+	/** How models.dev verified the model can be asked to reason. */
+	reasoning_options?: ModelsDevReasoningOption[];
+}
+
+type ModelsDevReasoningOption =
+	| { type: "toggle" }
+	| {
+			type: "effort";
+			values: Array<"none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max" | "default" | null>;
+	  }
+	| { type: "budget_tokens"; min?: number; max?: number };
+
+/** What OpenRouter's listing says about a model's reasoning. */
+interface OpenRouterReasoningMetadata {
+	mandatory?: boolean;
+	default_enabled?: boolean;
+	supported_efforts?: Array<"none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max">;
+	default_effort?: string;
 }
 
 interface NvidiaNimModelListItem {
@@ -302,11 +320,89 @@ const GITHUB_COPILOT_EXTENDED_CONTEXT_MODELS = new Set([
 const GITHUB_COPILOT_THINKING_LEVEL_OVERRIDES = {
 	"claude-opus-4.7": { minimal: "low" },
 	"claude-opus-4.8": { minimal: "low" },
+	"claude-opus-5": { minimal: "low" },
 	"claude-sonnet-4.6": { minimal: "low", max: "max" },
 } satisfies Record<string, NonNullable<Model<Api>["thinkingLevelMap"]>>;
 
 function mergeThinkingLevelMap(model: Model<any>, map: NonNullable<Model<any>["thinkingLevelMap"]>): void {
 	model.thinkingLevelMap = { ...model.thinkingLevelMap, ...map };
+}
+
+const EFFORT_THINKING_LEVELS = ["minimal", "low", "medium", "high", "xhigh", "max"] as const;
+
+/**
+ * The thinking levels a model offers, from the effort values models.dev or OpenRouter verified.
+ * Values without a level of their own (`default` and `null`) are left out.
+ */
+function getEffortThinkingLevelMap(
+	options: readonly ModelsDevReasoningOption[],
+): NonNullable<Model<any>["thinkingLevelMap"]> | undefined {
+	const effortValues = options.flatMap((option) => (option.type === "effort" ? option.values : []));
+	if (effortValues.length === 0) return undefined;
+
+	const supported = new Set<string | null>(effortValues);
+	if (!EFFORT_THINKING_LEVELS.some((level) => supported.has(level)) && !supported.has("none")) return undefined;
+
+	const map: NonNullable<Model<any>["thinkingLevelMap"]> = { off: supported.has("none") ? "none" : null };
+	for (const level of EFFORT_THINKING_LEVELS) {
+		map[level] = supported.has(level) ? level : null;
+	}
+	return map;
+}
+
+/** The thinking levels OpenRouter's listing says a model offers. */
+function getOpenRouterThinkingLevelMap(
+	reasoning: OpenRouterReasoningMetadata | undefined,
+): NonNullable<Model<any>["thinkingLevelMap"]> | undefined {
+	if (!reasoning) return undefined;
+	if (!reasoning.supported_efforts?.length) return reasoning.mandatory === true ? { off: null } : undefined;
+
+	const map = getEffortThinkingLevelMap([{ type: "effort", values: reasoning.supported_efforts }]);
+	if (!map) return reasoning.mandatory === true ? { off: null } : undefined;
+	return { ...map, off: reasoning.mandatory === true ? null : "none" };
+}
+
+const modelsDevReasoningOptions = new Map<string, ModelsDevReasoningOption[]>();
+
+function recordModelsDevReasoningOptions(provider: string, id: string, sourceModel: ModelsDevModel): void {
+	if (sourceModel.reasoning_options !== undefined) {
+		modelsDevReasoningOptions.set(`${provider}:${id}`, sourceModel.reasoning_options);
+	}
+}
+
+/** Whether the model is asked for a named effort, so the effort values models.dev lists apply. */
+function supportsDirectReasoningEffort(model: Model<Api>): boolean {
+	if (model.api === "anthropic-messages") {
+		return (model.compat as AnthropicMessagesCompat | undefined)?.forceAdaptiveThinking === true;
+	}
+	if (
+		model.api === "openai-responses" ||
+		model.api === "azure-openai-responses" ||
+		model.api === "openai-codex-responses"
+	) {
+		return true;
+	}
+	if (model.api !== "openai-completions") return false;
+
+	const compat = {
+		...detectOpenAICompletionsCompat(model as Model<"openai-completions">),
+		...(model.compat as OpenAICompletionsCompat | undefined),
+	};
+	return compat.thinkingFormat === "openai" && compat.supportsReasoningEffort;
+}
+
+/** Take the levels a model offers from what models.dev verified about it. */
+function applyModelsDevReasoningOptionMetadata(model: Model<Api>): void {
+	const reasoningOptions = modelsDevReasoningOptions.get(`${model.provider}:${model.id}`);
+	if (!reasoningOptions) return;
+	if (isGoogleThinkingApi(model)) {
+		const thinkingLevelMap = getEffortThinkingLevelMap(reasoningOptions);
+		if (thinkingLevelMap) mergeThinkingLevelMap(model, thinkingLevelMap);
+		return;
+	}
+	if (!supportsDirectReasoningEffort(model)) return;
+	const thinkingLevelMap = getEffortThinkingLevelMap(reasoningOptions);
+	if (thinkingLevelMap) mergeThinkingLevelMap(model, thinkingLevelMap);
 }
 
 function getTogetherCompat(modelId: string, reasoning: boolean): OpenAICompletionsCompat {
@@ -334,13 +430,14 @@ function supportsOpenAiXhigh(modelId: string): boolean {
 		modelId.includes("gpt-5.3") ||
 		modelId.includes("gpt-5.4") ||
 		modelId.includes("gpt-5.5") ||
-		modelId.includes("gpt-5.6")
+		modelId.includes("gpt-5.6") ||
+		modelId.includes("gpt-6")
 	);
 }
 
 function supportsOpenAiMax(model: Model<Api>): boolean {
 	return (
-		model.id.includes("gpt-5.6") &&
+		(model.id.includes("gpt-5.6") || model.id.includes("gpt-6")) &&
 		(model.api === "openai-responses" ||
 			model.api === "azure-openai-responses" ||
 			model.api === "openai-codex-responses" ||
@@ -556,6 +653,11 @@ function applyThinkingLevelMetadata(model: Model<any>): void {
 	) {
 		mergeThinkingLevelMap(model, { off: "none" });
 	}
+	// xAI models without verified effort options must not send the undocumented
+	// "none"/"minimal" efforts.
+	if (model.provider === "xai" && model.api === "openai-responses" && model.thinkingLevelMap === undefined) {
+		mergeThinkingLevelMap(model, { off: null, minimal: null });
+	}
 	if (supportsOpenAiXhigh(model.id)) {
 		mergeThinkingLevelMap(model, { xhigh: "xhigh" });
 	}
@@ -570,7 +672,7 @@ function applyThinkingLevelMetadata(model: Model<any>): void {
 	}
 	// Anthropic adaptive-thinking effort support (per Anthropic adaptive thinking docs):
 	// - "max" is available on all adaptive-thinking Claude models.
-	// - "xhigh" is only available on Opus 4.7/4.8, Sonnet 5, and Fable 5.
+	// - "xhigh" is only available on Opus 4.7/4.8/5, Sonnet 5, and Fable 5.
 	if (
 		model.id.includes("opus-4-6") ||
 		model.id.includes("opus-4.6") ||
@@ -584,6 +686,8 @@ function applyThinkingLevelMetadata(model: Model<any>): void {
 		model.id.includes("opus-4.7") ||
 		model.id.includes("opus-4-8") ||
 		model.id.includes("opus-4.8") ||
+		model.id.includes("opus-5") ||
+		model.id.includes("opus.5") ||
 		model.id.includes("sonnet-5") ||
 		model.id.includes("sonnet.5")
 	) {
@@ -598,7 +702,11 @@ function applyThinkingLevelMetadata(model: Model<any>): void {
 	if (model.api === "anthropic-messages" && isAnthropicTemperatureUnsupportedModel(model.id)) {
 		mergeAnthropicMessagesCompat(model, { supportsTemperature: false });
 	}
-	if (model.api === "openai-completions" && model.id.includes("deepseek-v4")) {
+	if (
+		model.api === "openai-completions" &&
+		model.id.includes("deepseek-v4") &&
+		model.thinkingLevelMap === undefined
+	) {
 		mergeThinkingLevelMap(
 			model,
 			model.provider === "openrouter"
@@ -606,13 +714,13 @@ function applyThinkingLevelMetadata(model: Model<any>): void {
 				: DEEPSEEK_V4_THINKING_LEVEL_MAP,
 		);
 	}
-	if (isGoogleThinkingApi(model) && isGemini3ProModel(model.id)) {
+	if (isGoogleThinkingApi(model) && isGemini3ProModel(model.id) && model.thinkingLevelMap === undefined) {
 		mergeThinkingLevelMap(model, { off: null, minimal: null, low: "LOW", medium: null, high: "HIGH" });
 	}
-	if (isGoogleThinkingApi(model) && isGemini3FlashModel(model.id)) {
+	if (isGoogleThinkingApi(model) && isGemini3FlashModel(model.id) && model.thinkingLevelMap === undefined) {
 		mergeThinkingLevelMap(model, { off: null });
 	}
-	if (isGoogleThinkingApi(model) && isGemma4Model(model.id)) {
+	if (isGoogleThinkingApi(model) && isGemma4Model(model.id) && model.thinkingLevelMap === undefined) {
 		mergeThinkingLevelMap(model, { off: null, minimal: "MINIMAL", low: null, medium: null, high: "HIGH" });
 	}
 	if (model.provider === "groq" && model.id === "qwen/qwen3-32b") {
@@ -641,7 +749,13 @@ function applyThinkingLevelMetadata(model: Model<any>): void {
 		mergeThinkingLevelMap(model, { xhigh: "xhigh" });
 	}
 	if (model.provider === "fireworks" && model.id.includes("glm-5p2")) {
-		mergeThinkingLevelMap(model, { off: "none", minimal: null, low: "high", medium: "high", max: "max" });
+		// GLM 5.2 and its fast router support off/high/max. Fireworks maps low
+		// and medium to high, so do not expose those aliases as distinct levels.
+		mergeThinkingLevelMap(model, { off: "none", minimal: null, low: null, medium: null, max: "max" });
+	}
+	if (model.provider === "fireworks" && model.id.includes("kimi-k3")) {
+		// Fireworks maps medium to high on both APIs; do not expose it as a distinct level.
+		mergeThinkingLevelMap(model, { medium: null });
 	}
 	if (model.provider === "opencode-go" && model.id === "glm-5.2") {
 		mergeThinkingLevelMap(model, OPENCODE_GO_GLM52_THINKING_LEVEL_MAP);
@@ -894,6 +1008,8 @@ async function fetchOpenRouterModels(): Promise<Model<any>[]> {
 
 			const contextWindow = model.top_provider?.context_length || model.context_length || 4096;
 
+			const thinkingLevelMap = getOpenRouterThinkingLevelMap(model.reasoning);
+
 			const normalizedModel: Model<any> = {
 				id: modelKey,
 				name: model.name,
@@ -901,6 +1017,7 @@ async function fetchOpenRouterModels(): Promise<Model<any>[]> {
 				baseUrl: "https://openrouter.ai/api/v1",
 				provider,
 				reasoning: model.supported_parameters?.includes("reasoning") || false,
+				...(thinkingLevelMap && { thinkingLevelMap }),
 				input,
 				cost: {
 					input: inputCost,
@@ -1007,6 +1124,7 @@ async function loadModelsDevData(): Promise<Model<any>[]> {
 					continue;
 				}
 
+				recordModelsDevReasoningOptions("amazon-bedrock", id, m);
 				models.push({
 					id,
 					name: m.name || id,
@@ -1033,6 +1151,7 @@ async function loadModelsDevData(): Promise<Model<any>[]> {
 				const m = model as ModelsDevModel;
 				if (m.tool_call !== true) continue;
 
+				recordModelsDevReasoningOptions("anthropic", modelId, m);
 				models.push({
 					id: modelId,
 					name: m.name || modelId,
@@ -1066,6 +1185,7 @@ async function loadModelsDevData(): Promise<Model<any>[]> {
 					source = (data.google.models["gemini-3.1-flash-lite"] as ModelsDevModel | undefined) ?? m;
 				}
 
+				recordModelsDevReasoningOptions("google", modelId, source);
 				models.push({
 					id: modelId,
 					name: m.name || modelId,
@@ -1107,6 +1227,7 @@ async function loadModelsDevData(): Promise<Model<any>[]> {
 				// do not match the official Gemini API standard pricing table. pi only accounts
 				// cachedContentTokenCount as cacheRead.
 				const cacheRead = modelId === "gemini-2.5-flash" ? 0.03 : source.cost?.cache_read || 0;
+				recordModelsDevReasoningOptions("google-vertex", modelId, source);
 				models.push({
 					id: modelId,
 					name: m.name || modelId,
@@ -1135,6 +1256,7 @@ async function loadModelsDevData(): Promise<Model<any>[]> {
 				// models.dev lists this alias, but it is not accepted by OpenAI APIs.
 				if (MODELS_DEV_OPENAI_UNSUPPORTED_MODEL_IDS.has(modelId)) continue;
 
+				recordModelsDevReasoningOptions("openai", modelId, m);
 				models.push({
 					id: modelId,
 					name: m.name || modelId,
@@ -1161,6 +1283,7 @@ async function loadModelsDevData(): Promise<Model<any>[]> {
 				const m = model as ModelsDevModel;
 				if (m.tool_call !== true) continue;
 
+				recordModelsDevReasoningOptions("groq", modelId, m);
 				models.push({
 					id: modelId,
 					name: m.name || modelId,
@@ -1187,6 +1310,7 @@ async function loadModelsDevData(): Promise<Model<any>[]> {
 				const m = model as ModelsDevModel;
 				if (m.tool_call !== true) continue;
 
+				recordModelsDevReasoningOptions("cerebras", modelId, m);
 				models.push({
 					id: modelId,
 					name: m.name || modelId,
@@ -1213,6 +1337,7 @@ async function loadModelsDevData(): Promise<Model<any>[]> {
 				const m = model as ModelsDevModel;
 				if (m.tool_call !== true) continue;
 
+				recordModelsDevReasoningOptions("cloudflare-workers-ai", modelId, m);
 				models.push({
 					id: modelId,
 					name: m.name || modelId,
@@ -1269,6 +1394,7 @@ async function loadModelsDevData(): Promise<Model<any>[]> {
 				const compat =
 					upstream === "anthropic" || upstream === "workers-ai" ? { sendSessionAffinityHeaders: true } : undefined;
 
+				recordModelsDevReasoningOptions("cloudflare-ai-gateway", id, m);
 				models.push({
 					id,
 					name: m.name || id,
@@ -1296,6 +1422,7 @@ async function loadModelsDevData(): Promise<Model<any>[]> {
 				const m = model as ModelsDevModel;
 				if (m.tool_call !== true) continue;
 
+				recordModelsDevReasoningOptions("xai", modelId, m);
 				models.push({
 					id: modelId,
 					name: m.name || modelId,
@@ -1331,6 +1458,7 @@ async function loadModelsDevData(): Promise<Model<any>[]> {
 
 					const isGlm52 = modelId === "glm-5.2";
 
+					recordModelsDevReasoningOptions(provider, modelId, m);
 					models.push({
 						id: modelId,
 						name: m.name || modelId,
@@ -1391,6 +1519,7 @@ async function loadModelsDevData(): Promise<Model<any>[]> {
 				const m = model as ModelsDevModel;
 				if (m.tool_call !== true) continue;
 
+				recordModelsDevReasoningOptions("huggingface", modelId, m);
 				models.push({
 					id: modelId,
 					name: m.name || modelId,
@@ -1420,6 +1549,7 @@ async function loadModelsDevData(): Promise<Model<any>[]> {
 				const m = model as ModelsDevModel;
 				if (m.tool_call !== true) continue;
 
+				recordModelsDevReasoningOptions("fireworks", modelId, m);
 				models.push({
 					id: modelId,
 					name: m.name || modelId,
@@ -1463,6 +1593,7 @@ async function loadModelsDevData(): Promise<Model<any>[]> {
 				if (!liveModelId) continue;
 				if (NVIDIA_NIM_UNSUPPORTED_MODELS.has(liveModelId)) continue;
 
+				recordModelsDevReasoningOptions("nvidia", liveModelId, m);
 				models.push({
 					id: liveModelId,
 					name: m.name || liveModelId,
@@ -1495,6 +1626,7 @@ async function loadModelsDevData(): Promise<Model<any>[]> {
 
 				const reasoning = m.reasoning === true;
 				const thinkingLevelMap = getTogetherThinkingLevelMap(modelId, reasoning);
+				recordModelsDevReasoningOptions("together", modelId, m);
 				models.push({
 					id: modelId,
 					name: m.name || modelId,
@@ -1603,6 +1735,7 @@ async function loadModelsDevData(): Promise<Model<any>[]> {
 					}
 				}
 
+				recordModelsDevReasoningOptions(variant.provider, modelId, m);
 				models.push({
 					id: modelId,
 					name: m.name || modelId,
@@ -1675,6 +1808,7 @@ async function loadModelsDevData(): Promise<Model<any>[]> {
 					} : {}),
 				};
 
+				recordModelsDevReasoningOptions("github-copilot", modelId, m);
 				models.push(copilotModel);
 			}
 		}
@@ -1691,6 +1825,7 @@ async function loadModelsDevData(): Promise<Model<any>[]> {
 					const m = model as ModelsDevModel;
 					if (m.tool_call !== true) continue;
 
+					recordModelsDevReasoningOptions(provider, modelId, m);
 					models.push({
 						id: modelId,
 						name: m.name || modelId,
@@ -1730,6 +1865,7 @@ async function loadModelsDevData(): Promise<Model<any>[]> {
 				const normalizedId = kimiAliases.has(modelId) ? "kimi-for-coding" : modelId;
 				const normalizedName = kimiAliases.has(modelId) ? "Kimi For Coding" : m.name || normalizedId;
 
+				recordModelsDevReasoningOptions("kimi-coding", normalizedId, m);
 				models.push({
 					id: normalizedId,
 					name: normalizedName,
@@ -1778,6 +1914,7 @@ async function loadModelsDevData(): Promise<Model<any>[]> {
 			for (const [modelId, m] of Object.entries(moonshotModels[key])) {
 				if (m.tool_call !== true) continue;
 
+				recordModelsDevReasoningOptions(provider, modelId, m);
 				models.push({
 					id: modelId,
 					name: m.name || modelId,
@@ -1834,6 +1971,7 @@ async function loadModelsDevData(): Promise<Model<any>[]> {
 				const m = model as ModelsDevModel;
 				if (m.tool_call !== true) continue;
 
+				recordModelsDevReasoningOptions(provider, modelId, m);
 				models.push({
 					id: modelId,
 					name: m.name || modelId,
@@ -2379,6 +2517,7 @@ async function generateModels() {
 	allModels.push(...azureOpenAiModels);
 
 	for (const model of allModels) {
+		applyModelsDevReasoningOptionMetadata(model);
 		applyThinkingLevelMetadata(model);
 		applyOpenAICompletionsCompatMetadata(model);
 		applyOpenAIToolSearchMetadata(model);

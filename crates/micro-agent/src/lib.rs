@@ -477,9 +477,9 @@ impl Agent {
         self.model_cost.as_ref()
     }
 
-    /// Reason this hard from the next turn on.
+    /// Reason this hard from the next turn on, or as near to it as the model offers.
     pub fn set_thinking(&mut self, level: ThinkingLevel) {
-        self.model.thinking = level;
+        self.model.thinking = self.model.clamp_thinking(level);
     }
 
     /// The model's context window in tokens, which decides when compaction fires.
