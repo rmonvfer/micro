@@ -289,6 +289,8 @@ pub struct Preferences {
     pub external_editor: Option<String>,
     /// Put text on the clipboard as soon as the mouse selects it.
     pub copy_on_select: bool,
+    /// The theme asked for: `system`, a built-in or user theme's name, or a `light/dark` pair.
+    pub theme: String,
     /// Move the conversation half a page at a time with the page keys.
     pub half_page_scroll: bool,
 }
@@ -320,6 +322,7 @@ impl Default for Preferences {
             terminal: crate::capabilities::Overrides::default(),
             external_editor: None,
             copy_on_select: true,
+            theme: crate::theme::SYSTEM.to_string(),
             half_page_scroll: false,
         }
     }
@@ -370,6 +373,7 @@ impl From<&micro_config::Settings> for Preferences {
             terminal: crate::capabilities::Overrides::from_settings(settings),
             external_editor: settings.external_editor.clone(),
             copy_on_select: settings.copy_on_select,
+            theme: settings.theme.clone(),
             half_page_scroll: settings.half_page_scroll,
         }
     }

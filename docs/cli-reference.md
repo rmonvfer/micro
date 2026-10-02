@@ -119,7 +119,7 @@ Type `/help` in the interface for the list from the installed version.
 | `/logout [provider]`            | Remove a stored provider credential.                                            |
 | `/auth`                         | Show which providers are signed in.                                             |
 | `/thinking [--default] [level]` | Change reasoning effort; `--default` or `ctrl+s` also saves it.                 |
-| `/theme [dark/light]`           | Change the terminal theme.                                                      |
+| `/theme [system/dark/light/auto]` | Change the terminal theme.                                                    |
 | `/sessions`                     | List sessions for the workspace.                                                |
 | `/session`                      | Show the current session information and usage.                                 |
 | `/resume [id]`                  | Resume another session.                                                         |

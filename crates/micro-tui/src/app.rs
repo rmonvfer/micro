@@ -709,6 +709,18 @@ impl App {
         self.tui_mode = mode;
     }
 
+    /// Remember which theme was asked for, so it is rebuilt the same way when the terminal changes.
+    pub fn set_theme_setting(&mut self, setting: impl Into<String>) {
+        self.settings.theme = setting.into();
+    }
+
+    /// Take a theme rebuilt from the terminal's colors, repainting only when it changed.
+    pub fn refresh_theme(&mut self, theme: Theme) {
+        if theme.for_color_depth(self.true_color) != self.theme {
+            self.set_theme(theme);
+        }
+    }
+
     pub fn set_theme(&mut self, theme: Theme) {
         self.theme = theme.for_color_depth(self.true_color);
         self.cache.shape = None;

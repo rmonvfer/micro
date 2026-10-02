@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- Add the `system` theme, now the default, which derives colors from the terminal's reported foreground, background, and ANSI palette, keeps pastel palettes pastel, and rebuilds when the terminal regains focus after switching between light and dark.
+- Accept `#rgb`, `oklch()`, and `okhsl()` colors and an optional `appearance` field in theme files.
 - Keep `/model` and `/thinking` choices to the current session, and save one as the default with `ctrl+s` in their pickers or `--default` before the argument.
 - Search the fullscreen transcript with `ctrl+f`: matches are highlighted, `enter` and `shift+enter` step between them, and `escape` closes the search.
 - Show a clickable jump-to-latest label while the fullscreen transcript is scrolled up, return with `end`, and add `half_page_scroll` for half-page Page Up and Page Down.

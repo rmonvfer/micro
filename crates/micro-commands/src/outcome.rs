@@ -25,8 +25,10 @@ pub enum RemoteAction {
 pub enum ThemeChoice {
     Dark,
     Light,
-    /// Work it out from the terminal's background, the way an unconfigured launch does.
+    /// The built-in light or dark palette, whichever matches the terminal's background.
     Auto,
+    /// Built from the terminal's own colors, the way an unconfigured launch does.
+    System,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

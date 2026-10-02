@@ -491,7 +491,8 @@ fn theme(argument: Option<&str>) -> CommandOutcome {
                 vec![
                     PickerItem::new("dark", "dark palette", "/theme dark"),
                     PickerItem::new("light", "light palette", "/theme light"),
-                    PickerItem::new("auto", "follow the terminal", "/theme auto"),
+                    PickerItem::new("system", "the terminal's own colors", "/theme system"),
+                    PickerItem::new("auto", "light or dark, as the terminal is", "/theme auto"),
                 ],
             )
             .columns(12, 32),
@@ -505,11 +506,14 @@ fn theme(argument: Option<&str>) -> CommandOutcome {
         "light" => CommandOutcome::SetTheme {
             theme: ThemeChoice::Light,
         },
-        "auto" | "system" => CommandOutcome::SetTheme {
+        "auto" => CommandOutcome::SetTheme {
             theme: ThemeChoice::Auto,
         },
+        "system" => CommandOutcome::SetTheme {
+            theme: ThemeChoice::System,
+        },
         other => CommandOutcome::error(format!(
-            "unknown theme `{other}`: expected dark, light or auto"
+            "unknown theme `{other}`: expected system, dark, light or auto"
         )),
     }
 }

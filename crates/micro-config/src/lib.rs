@@ -57,8 +57,8 @@ pub fn experimental_enabled() -> bool {
     std::env::var(EXPERIMENTAL_ENV).is_ok_and(|value| value == "1")
 }
 
-/// The palette to use when the config names none.
-pub const DEFAULT_THEME: &str = "dark";
+/// The palette to use when the config names none: the one built from the terminal's own colors.
+pub const DEFAULT_THEME: &str = "system";
 
 pub type Result<T, E = ConfigError> = std::result::Result<T, E>;
 
@@ -1291,7 +1291,7 @@ mod tests {
 
         assert_eq!(settings, Settings::default());
         assert_eq!(settings.thinking, Thinking::Off);
-        assert_eq!(settings.theme, "dark");
+        assert_eq!(settings.theme, "system");
         assert!(!settings.live_models);
         assert_eq!(settings.model, None);
     }

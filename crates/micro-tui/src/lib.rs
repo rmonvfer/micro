@@ -54,8 +54,10 @@ use crate::app::Outcome;
 use crate::render::pictures::Placement;
 use anyhow::Result;
 use crossterm::event::DisableBracketedPaste;
+use crossterm::event::DisableFocusChange;
 use crossterm::event::DisableMouseCapture;
 use crossterm::event::EnableBracketedPaste;
+use crossterm::event::EnableFocusChange;
 use crossterm::event::EnableMouseCapture;
 use crossterm::event::Event;
 use crossterm::event::EventStream;
@@ -90,6 +92,10 @@ const FRAME: Duration = Duration::from_millis(33);
 /// How often the spinner advances and a running turn is repainted.
 const TICK: Duration = Duration::from_millis(80);
 
+/// How long a replaced input stream is given to stop reading before the terminal is asked about
+/// its colors.
+const INPUT_SETTLE: Duration = Duration::from_millis(20);
+
 /// Ensures remote observers see an interrupted turn as settled even if rendering returns an error.
 struct RemoteTurnGuard(Option<tokio::sync::mpsc::UnboundedSender<crate::remote::ToPhone>>);
 
@@ -118,7 +124,11 @@ pub async fn run_with(
 
     let _ = IMAGES_IN_USE.set(capabilities::detect(&options.settings.terminal).images);
     background::prime();
-    options.theme = Some(options.theme.unwrap_or_else(background::detect_theme));
+    options.theme = Some(
+        options
+            .theme
+            .unwrap_or_else(|| background::detect_theme(Some(&options.settings.theme))),
+    );
     let mode = options.tui_mode;
     let exit_output = options.settings.exit_output;
     let mut said = Vec::new();
@@ -230,6 +240,19 @@ async fn run_loop(interface: &mut Interface<'_>) -> Result<()> {
                 Next::Redrawn => continue,
                 Next::Remote(action) => {
                     let _ = handle_remote(interface.app, action);
+                }
+                Next::Event(Event::FocusGained) => {
+                    let setting = interface.app.settings().theme.clone();
+                    if background::needs_terminal(Some(&setting)) {
+                        // The terminal may have switched between light and dark while it was
+                        // away. Its input is read here and nowhere else until the stream is
+                        // replaced, so the replies cannot reach the editor.
+                        drop(std::mem::replace(&mut input, EventStream::new()));
+                        std::thread::sleep(INPUT_SETTLE);
+                        interface
+                            .app
+                            .refresh_theme(background::refresh_theme(Some(&setting)));
+                    }
                 }
                 Next::Event(event) => {
                     if offer_component_input(interface.host_asker, interface.app, &event).await {
@@ -907,11 +930,16 @@ async fn apply_outcome(
             }
         }
 
-        CommandOutcome::SetTheme { theme } => app.set_theme(match theme {
-            micro_commands::ThemeChoice::Dark => Theme::dark(),
-            micro_commands::ThemeChoice::Light => Theme::light(),
-            micro_commands::ThemeChoice::Auto => background::detect_theme(),
-        }),
+        CommandOutcome::SetTheme { theme } => {
+            let setting = match theme {
+                micro_commands::ThemeChoice::Dark => "dark",
+                micro_commands::ThemeChoice::Light => "light",
+                micro_commands::ThemeChoice::Auto => "light/dark",
+                micro_commands::ThemeChoice::System => theme::SYSTEM,
+            };
+            app.set_theme_setting(setting);
+            app.set_theme(background::detect_theme(Some(setting)));
+        }
 
         CommandOutcome::SetTuiMode { mode } => {
             let mode = match mode {
@@ -1522,7 +1550,8 @@ impl Screen {
                         std::io::stdout(),
                         EnterAlternateScreen,
                         EnableBracketedPaste,
-                        EnableMouseCapture
+                        EnableMouseCapture,
+                        EnableFocusChange
                     )?;
                     let mut terminal = Terminal::new(Anchored::new(anchor))?;
                     terminal.clear()?;
@@ -1540,7 +1569,12 @@ impl Screen {
                     Ok(screen)
                 }
                 TuiMode::Inline => {
-                    execute!(std::io::stdout(), EnableBracketedPaste, EnableMouseCapture)?;
+                    execute!(
+                        std::io::stdout(),
+                        EnableBracketedPaste,
+                        EnableMouseCapture,
+                        EnableFocusChange
+                    )?;
 
                     let terminal = inline_region(Anchored::new(anchor), INLINE_ROWS)?;
                     let size = terminal.size()?;
@@ -1578,7 +1612,8 @@ impl Screen {
                     std::io::stdout(),
                     EnterAlternateScreen,
                     EnableBracketedPaste,
-                    EnableMouseCapture
+                    EnableMouseCapture,
+                    EnableFocusChange
                 )?;
                 let mut terminal = Terminal::new(Anchored::new(self.anchor))?;
                 terminal.clear()?;
@@ -1591,7 +1626,8 @@ impl Screen {
                     std::io::stdout(),
                     LeaveAlternateScreen,
                     EnableBracketedPaste,
-                    EnableMouseCapture
+                    EnableMouseCapture,
+                    EnableFocusChange
                 )?;
 
                 self.size = self.terminal.size()?;
@@ -1611,12 +1647,18 @@ impl Screen {
                     std::io::stdout(),
                     EnterAlternateScreen,
                     EnableBracketedPaste,
-                    EnableMouseCapture
+                    EnableMouseCapture,
+                    EnableFocusChange
                 )?;
                 self.terminal.clear()?;
             }
             TuiMode::Inline => {
-                execute!(std::io::stdout(), EnableBracketedPaste, EnableMouseCapture)?;
+                execute!(
+                    std::io::stdout(),
+                    EnableBracketedPaste,
+                    EnableMouseCapture,
+                    EnableFocusChange
+                )?;
 
                 if let Ok((_, row)) = crossterm::cursor::position() {
                     self.anchor = Some(row);
@@ -1932,6 +1974,7 @@ fn leave() {
         std::io::stdout(),
         DisableBracketedPaste,
         DisableMouseCapture,
+        DisableFocusChange,
         LeaveAlternateScreen
     );
     let _ = disable_raw_mode();

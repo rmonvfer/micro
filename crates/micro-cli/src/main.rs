@@ -379,6 +379,7 @@ fn settled(cli: &Cli) -> micro_config::Settings {
             config.resolve_from_env(&micro_config::Overrides {
                 model: cli.model.clone(),
                 provider: cli.provider.clone(),
+                theme: cli.theme.clone(),
                 ..micro_config::Overrides::default()
             })
         })

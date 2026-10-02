@@ -80,7 +80,7 @@ Command-line options take precedence over environment variables, which take prec
 | `model` | unset | Model query resolved at startup. |
 | `provider` | unset | Provider used when the model query does not choose one. |
 | `thinking` | `off` | `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, or `max`. |
-| `theme` | `dark` | Terminal theme name. |
+| `theme` | `system` | `system`, `dark`, `light`, a user theme's name, or a `light/dark` pair. |
 | `tui_mode` | `fullscreen` | `regular` or `fullscreen`. |
 | `live_models` | `false` | Refresh provider model listings at startup before selecting a model. |
 | `auto_compact` | `true` | Compact when context approaches the model limit. |
@@ -195,6 +195,23 @@ Sets a per-session cost ceiling in US dollars. `0` disables the ceiling. The tot
 ### tool_search_threshold
 
 When extensions and MCP servers add more tools than this threshold, micro exposes them through `tool_search` instead of sending every tool definition on every request. The default is `15`. Set it to `0` to describe every tool directly.
+
+### Themes
+
+The `system` theme, the default, builds micro's colors from the terminal's own. micro asks the terminal for its default foreground and background and its sixteen ANSI colors, takes each color's hue from one ANSI color (errors from red, links from blue), and sets its lightness so it stands out from the background; pastel palettes stay pastel. Body text keeps at least a 4.5:1 contrast ratio, and uses the terminal's own foreground when that is strong enough. When the terminal reports only its background, micro uses its own hues; when it reports nothing, the built-in `dark` or `light` theme is used. The terminal is asked again whenever it regains focus, so switching it between light and dark rebuilds the theme.
+
+`dark` and `light` select a built-in theme, and a pair such as `"solarized-light/solarized-dark"` picks one side by the terminal's background. Any other name loads `themes/<name>.json` from the configuration directory. A theme file has a `name`, which cannot be `system` or contain `/`, a `colors` object with every token, optional `vars` that colors can name, and an optional `appearance` of `"dark"` or `"light"` saying which background it was made for; without it, micro infers the appearance from the `text` color. A color is a hex value (`"#0af"` or `"#00aaff"`), `"oklch(62% 0.1 200)"`, `"okhsl(250 60% 55%)"`, a 256-color index such as `39`, a variable name, or `""` for the terminal's default color.
+
+```json
+{
+  "name": "harbor",
+  "appearance": "dark",
+  "vars": { "sea": "okhsl(220 70% 65%)" },
+  "colors": { "accent": "sea", "text": "", "border": "#456" }
+}
+```
+
+`/theme` switches between `system`, `dark`, `light`, and `auto`, which follows the terminal's background with the built-in themes, for the rest of the session.
 
 ### Terminal capabilities
 
