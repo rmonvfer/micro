@@ -544,7 +544,7 @@ fn name_for(name: &str, subscription: bool) -> String {
 
 /// The effort a model deciding its own thinking is asked for: what its thinking map names the level,
 /// else the nearest of the efforts every such model takes.
-fn effort_for(model: &Model) -> String {
+pub(crate) fn effort_for(model: &Model) -> String {
     if let Some(Some(named)) = model.compat.thinking.get(model.thinking.as_str()) {
         return named.clone();
     }
