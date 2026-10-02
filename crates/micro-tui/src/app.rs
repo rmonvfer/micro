@@ -266,6 +266,8 @@ pub struct App {
     pub show_thinking: bool,
     /// How hard the model is reasoning, for the footer and the editor's rules.
     pub thinking: ThinkingLevel,
+    /// The levels the model can be asked for, which cycling steps through.
+    thinking_levels: Vec<ThinkingLevel>,
     pub context_window: u32,
     /// The workspace, shortened the way a shell prompt shortens it.
     pub cwd: String,
@@ -598,6 +600,7 @@ impl App {
                 .for_color_depth(capabilities.true_color),
             show_thinking: !options.settings.hide_thinking,
             thinking: options.thinking,
+            thinking_levels: ThinkingLevel::ALL.to_vec(),
             context_window: options.context_window,
             worked: false,
             quitting: false,
@@ -752,6 +755,18 @@ impl App {
 
     pub fn set_thinking(&mut self, level: ThinkingLevel) {
         self.thinking = level;
+    }
+
+    /// Take in the levels the model in use can be asked for.
+    pub fn set_thinking_levels(&mut self, levels: Vec<ThinkingLevel>) {
+        self.thinking_levels = levels;
+    }
+
+    /// Whether the model in use can be asked to reason at all.
+    pub fn supports_thinking(&self) -> bool {
+        self.thinking_levels
+            .iter()
+            .any(|level| *level != ThinkingLevel::Off)
     }
 
     /// The colour reasoning effort is marked in, drawn on the input's rules.
@@ -1296,6 +1311,15 @@ impl App {
                 let mut request = request;
                 self.queue_line(request.title.clone());
                 request.answer(serde_json::json!({ "queued": true }));
+                return;
+            }
+            "set_thinking_level" => {
+                let mut request = request;
+                if let Some(level) = ThinkingLevel::named(&request.title) {
+                    let level = micro_types::clamp_thinking_level(&self.thinking_levels, level);
+                    self.queue_line(format!("/thinking {}", level.as_str()));
+                }
+                request.answer(serde_json::json!({}));
                 return;
             }
 
@@ -2145,11 +2169,18 @@ impl App {
                 self.show_thinking = !self.show_thinking;
                 Outcome::Handled
             }
-            Action::CycleThinking => {
-                let level = next_level(self.thinking);
-                self.thinking = level;
-                Outcome::ThinkingChanged(level)
-            }
+            Action::CycleThinking => match self.supports_thinking() {
+                true => {
+                    let level =
+                        micro_types::next_thinking_level(&self.thinking_levels, self.thinking);
+                    self.thinking = level;
+                    Outcome::ThinkingChanged(level)
+                }
+                false => {
+                    self.notice("Current model does not support thinking", MessageKind::Info);
+                    Outcome::Handled
+                }
+            },
 
             Action::CycleModel { forward } => Outcome::CycleModel(forward),
             Action::SelectModel => {
@@ -2959,19 +2990,6 @@ impl App {
 /// How soon a press must follow the last at the same place to count toward a double or triple
 /// click.
 const MULTI_CLICK_INTERVAL: std::time::Duration = std::time::Duration::from_millis(500);
-
-/// The next reasoning level, wrapping at the top.
-fn next_level(level: ThinkingLevel) -> ThinkingLevel {
-    match level {
-        ThinkingLevel::Off => ThinkingLevel::Minimal,
-        ThinkingLevel::Minimal => ThinkingLevel::Low,
-        ThinkingLevel::Low => ThinkingLevel::Medium,
-        ThinkingLevel::Medium => ThinkingLevel::High,
-        ThinkingLevel::High => ThinkingLevel::XHigh,
-        ThinkingLevel::XHigh => ThinkingLevel::Max,
-        ThinkingLevel::Max => ThinkingLevel::Off,
-    }
-}
 
 /// What a reasoning level is called where a user reads it.
 pub fn thinking_name(level: ThinkingLevel) -> &'static str {
@@ -4375,6 +4393,63 @@ mod tests {
             4,
             "levels share the available thinking colours"
         );
+    }
+
+    /// Cycling steps through only the levels the model offers.
+    #[test]
+    fn cycling_skips_the_levels_the_model_does_not_offer() {
+        let mut app = app();
+        app.set_thinking_levels(vec![
+            ThinkingLevel::Low,
+            ThinkingLevel::High,
+            ThinkingLevel::XHigh,
+        ]);
+        app.set_thinking(ThinkingLevel::Low);
+
+        let mut seen = Vec::new();
+        for _ in 0..3 {
+            match app.handle(Action::CycleThinking) {
+                Outcome::ThinkingChanged(level) => seen.push(level),
+                other => panic!("expected a level, got {other:?}"),
+            }
+        }
+        assert_eq!(
+            seen,
+            [
+                ThinkingLevel::High,
+                ThinkingLevel::XHigh,
+                ThinkingLevel::Low
+            ]
+        );
+    }
+
+    /// A model that cannot reason keeps its level, says why, and leaves thinking off the footer.
+    #[test]
+    fn a_model_that_cannot_reason_is_not_cycled() {
+        let mut app = app();
+        app.set_thinking_levels(vec![ThinkingLevel::Off]);
+
+        assert_eq!(app.handle(Action::CycleThinking), Outcome::Handled);
+        assert_eq!(app.thinking, ThinkingLevel::Off);
+        assert!(!app.supports_thinking());
+        assert!(transcript_text(&mut app).contains("Current model does not support thinking"));
+    }
+
+    /// An extension asking for a level the model lacks gets the nearest one it offers.
+    #[test]
+    fn an_extension_setting_an_unoffered_level_gets_the_nearest_offered_one() {
+        let mut app = app();
+        app.set_thinking_levels(vec![
+            ThinkingLevel::Off,
+            ThinkingLevel::Low,
+            ThinkingLevel::High,
+        ]);
+
+        ask(&mut app, "set_thinking_level", "xhigh", None, Vec::new());
+        assert_eq!(app.take_submission().as_deref(), Some("/thinking high"));
+
+        ask(&mut app, "set_thinking_level", "medium", None, Vec::new());
+        assert_eq!(app.take_submission().as_deref(), Some("/thinking high"));
     }
 
     #[test]

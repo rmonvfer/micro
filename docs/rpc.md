@@ -104,8 +104,9 @@ Other commands received during a turn are held until that turn finishes.
 | `set_model`               | `provider`, `model_id` | Select an exact catalog model.                                      |
 | `cycle_model`             | none                   | Select the next catalog model.                                      |
 | `get_available_models`    | none                   | Return catalog models and limits.                                   |
-| `set_thinking_level`      | `level`                | Change reasoning effort.                                            |
-| `cycle_thinking_level`    | none                   | Select the next reasoning level.                                    |
+| `set_thinking_level`      | `level`                | Change reasoning effort, clamped to the model's levels; returns the level in use. |
+| `cycle_thinking_level`    | none                   | Select the next level the model offers; `data` is null when it does not reason. |
+| `get_available_thinking_levels` | none             | Return the model's `levels`, from least to most reasoning.          |
 | `compact`                 | none                   | Compact the conversation immediately.                               |
 | `set_auto_compaction`     | `enabled`              | Enable or disable automatic compaction.                             |
 | `bash`                    | `command`              | Run `sh -c` under the active session sandbox.                       |

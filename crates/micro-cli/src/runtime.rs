@@ -612,7 +612,11 @@ pub async fn build(
     let snapshot = Arc::new(Mutex::new(crate::remote::Snapshot {
         model: model.qualified_id(),
         provider: model.provider.clone(),
-        thinking: selection.thinking.as_str().to_string(),
+        thinking: model
+            .to_runtime(selection.thinking)
+            .thinking
+            .as_str()
+            .to_string(),
         session_name: session_id.clone(),
         cwd: root.display().to_string(),
     }));

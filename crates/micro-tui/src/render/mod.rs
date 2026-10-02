@@ -760,7 +760,9 @@ fn footer_for(app: &App) -> status::Footer<'_> {
         last: app.last_usage(),
         context_window: app.context_window,
         model: app.model_id(),
-        thinking: Some(crate::app::thinking_name(app.thinking)),
+        thinking: app
+            .supports_thinking()
+            .then(|| crate::app::thinking_name(app.thinking)),
         routed: app.routed_model(),
         attachments: app.attachments(),
         cost: app.session_cost(),

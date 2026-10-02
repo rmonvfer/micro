@@ -36,21 +36,6 @@ pub(crate) const STATE_ENTRY: &str = "virtual-model-state";
 const DEFAULT_CONTEXT_WINDOW: u32 = 128_000;
 const DEFAULT_MAX_TOKENS: u32 = 16_384;
 
-/// Every level a thinking map can name.
-const LEVELS: [ThinkingLevel; 7] = [
-    ThinkingLevel::Off,
-    ThinkingLevel::Minimal,
-    ThinkingLevel::Low,
-    ThinkingLevel::Medium,
-    ThinkingLevel::High,
-    ThinkingLevel::XHigh,
-    ThinkingLevel::Max,
-];
-
-pub(crate) fn thinking_level(name: &str) -> Option<ThinkingLevel> {
-    LEVELS.into_iter().find(|level| level.as_str() == name)
-}
-
 /// A registered virtual model, as the catalog lists it.
 pub(crate) fn catalog_entry(registered: &RegisteredVirtualModel) -> ModelDef {
     let input = registered
@@ -62,7 +47,7 @@ pub(crate) fn catalog_entry(registered: &RegisteredVirtualModel) -> ModelDef {
             _ => None,
         })
         .collect();
-    let thinking = LEVELS
+    let thinking = ThinkingLevel::ALL
         .into_iter()
         .map(|level| {
             let offered = registered
@@ -240,7 +225,7 @@ impl Inner {
         let level = decided
             .get("thinkingLevel")
             .and_then(Value::as_str)
-            .and_then(thinking_level)
+            .and_then(ThinkingLevel::named)
             .unwrap_or_default();
 
         let physical = self
@@ -271,11 +256,8 @@ impl Inner {
             true => micro_auth::copilot::base_url_from_token(&key),
             false => None,
         };
-        let level = match physical.reasoning {
-            true => level,
-            false => ThinkingLevel::Off,
-        };
         let runtime = crate::runtime::with_host(physical.to_runtime(level), base_url.as_deref());
+        let level = runtime.thinking;
 
         if let Ok(mut memory) = self.memory.lock() {
             memory
@@ -452,9 +434,26 @@ mod tests {
     }
 
     #[test]
-    fn thinking_levels_are_read_by_their_wire_names() {
-        assert_eq!(thinking_level("xhigh"), Some(ThinkingLevel::XHigh));
-        assert_eq!(thinking_level("off"), Some(ThinkingLevel::Off));
-        assert_eq!(thinking_level("extreme"), None);
+    fn a_virtual_model_offers_exactly_the_levels_it_declares() {
+        let declared = |levels: &[&str]| {
+            catalog_entry(
+                &serde_json::from_value(json!({
+                    "provider": "router",
+                    "id": "auto",
+                    "thinkingLevels": levels,
+                }))
+                .unwrap(),
+            )
+            .thinking_levels()
+        };
+        assert_eq!(declared(&["off"]), vec![ThinkingLevel::Off]);
+        assert_eq!(
+            declared(&["low", "high", "xhigh"]),
+            vec![
+                ThinkingLevel::Low,
+                ThinkingLevel::High,
+                ThinkingLevel::XHigh
+            ]
+        );
     }
 }

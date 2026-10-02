@@ -153,6 +153,8 @@ Unknown keys are preserved when micro rewrites the file but have no effect in a 
 
 Sets the default reasoning effort. Supported values include `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, and `max`; the selected model may support only part of that range.
 
+The model catalog records which levels each model offers. A model that does not reason offers only `off`; one that does offers every level its catalog entry does not mark unsupported, and `xhigh` and `max` only where the entry names them. A requested level the model lacks, whether from settings, `--thinking`, an extension, or a model switch, becomes the nearest offered level above it, or below it when none is higher. The footer shows the level in use, and switching back to a model that offers the requested level restores it. `/thinking` lists and accepts only the current model's levels, and `shift+tab` cycles through them.
+
 ### updates
 
 Release-installer installations check GitHub for a newer release before an interactive session. The default is enabled once every 24 hours. Source, package-manager, and manually copied binaries are never replaced automatically.

@@ -913,7 +913,12 @@ async fn main() -> Result<()> {
             extensions::tool_prompt_options(&host.tools(), &built.tool_names);
 
         let state = std::sync::Arc::new(tokio::sync::RwLock::new(extensions::State {
-            thinking: format!("{thinking:?}").to_lowercase(),
+            thinking: built
+                .model
+                .to_runtime(thinking)
+                .thinking
+                .as_str()
+                .to_string(),
             model: built.model.id.clone(),
             model_name: built.model.name.clone(),
             provider: built.model.provider.clone(),
