@@ -284,6 +284,8 @@ pub struct Preferences {
     pub follow_up_interrupts: bool,
     /// What the user said the terminal supports, in place of what it is detected to.
     pub terminal: crate::capabilities::Overrides,
+    /// The command ctrl+g opens the prompt in, ahead of `$VISUAL` and `$EDITOR`.
+    pub external_editor: Option<String>,
 }
 
 impl Default for Preferences {
@@ -311,6 +313,7 @@ impl Default for Preferences {
             double_escape: DoubleEscape::Tree,
             follow_up_interrupts: false,
             terminal: crate::capabilities::Overrides::default(),
+            external_editor: None,
         }
     }
 }
@@ -358,6 +361,7 @@ impl From<&micro_config::Settings> for Preferences {
             },
             clear_on_shrink: settings.clear_on_shrink,
             terminal: crate::capabilities::Overrides::from_settings(settings),
+            external_editor: settings.external_editor.clone(),
         }
     }
 }

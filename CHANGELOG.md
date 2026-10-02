@@ -2,6 +2,7 @@
 
 ## [Unreleased]
 
+- Add `external_editor` to choose the `ctrl+g` editor ahead of `$VISUAL` and `$EDITOR`, and run editor commands that carry arguments.
 - Add `output_pad` to set the transcript's horizontal padding apart from `content_padding`.
 - Accept `quiet_startup: "header"` to keep the startup header with the version and key hints and hide the rest.
 - Link file paths in built-in file tool titles with OSC 8 `file://` hyperlinks.

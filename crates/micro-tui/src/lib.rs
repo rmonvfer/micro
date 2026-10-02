@@ -543,11 +543,42 @@ fn arrived(event: Option<std::result::Result<Event, std::io::Error>>) -> Next {
     }
 }
 
-/// Hand the prompt to `$EDITOR`, and take back whatever it was left as.
+/// The editor command ctrl+g opens: the `external_editor` setting, then `$VISUAL`, then `$EDITOR`,
+/// then `vi`.
+fn editor_command(configured: Option<&str>, variable: impl Fn(&str) -> Option<String>) -> String {
+    let named = |value: Option<String>| value.filter(|value| !value.trim().is_empty());
+    named(configured.map(str::to_string))
+        .or_else(|| named(variable("VISUAL")))
+        .or_else(|| named(variable("EDITOR")))
+        .unwrap_or_else(|| "vi".to_string())
+}
+
+/// The process that opens `path` in `editor`, which is read the way a shell reads it so a command
+/// with arguments, such as `code --wait`, works as written.
+fn editor_process(editor: &str, path: &std::path::Path) -> std::process::Command {
+    #[cfg(unix)]
+    {
+        let mut command = std::process::Command::new("sh");
+        command
+            .arg("-c")
+            .arg(format!("{editor} \"$1\""))
+            .arg("micro-editor")
+            .arg(path);
+        command
+    }
+    #[cfg(not(unix))]
+    {
+        let mut command = std::process::Command::new(editor);
+        command.arg(path);
+        command
+    }
+}
+
+/// Hand the prompt to the external editor, and take back whatever it was left as.
 fn external_editor(screen: &mut Screen, app: &mut App) -> Result<()> {
-    let editor = std::env::var("VISUAL")
-        .or_else(|_| std::env::var("EDITOR"))
-        .unwrap_or_else(|_| "vi".to_string());
+    let editor = editor_command(app.settings().external_editor.as_deref(), |name| {
+        std::env::var(name).ok()
+    });
 
     let directory = secure_temp_directory()?;
     let path = directory.join("prompt.md");
@@ -558,7 +589,7 @@ fn external_editor(screen: &mut Screen, app: &mut App) -> Result<()> {
     }
 
     leave();
-    let status = std::process::Command::new(&editor).arg(&path).status();
+    let status = editor_process(&editor, &path).status();
     screen.reopen()?;
 
     match status {
@@ -1919,6 +1950,41 @@ mod tests {
     fn the_terminal_title_names_the_workspace() {
         assert_eq!(workspace_title(Path::new("/work/micro")), "micro — micro");
         assert_eq!(workspace_title(Path::new("/")), "micro — workspace");
+    }
+
+    #[test]
+    fn the_configured_editor_comes_before_the_environment() {
+        let environment = |name: &str| match name {
+            "VISUAL" => Some("hx".to_string()),
+            "EDITOR" => Some("nano".to_string()),
+            _ => None,
+        };
+        assert_eq!(
+            editor_command(Some("code --wait"), environment),
+            "code --wait"
+        );
+        assert_eq!(editor_command(Some("  "), environment), "hx");
+        assert_eq!(editor_command(None, environment), "hx");
+        assert_eq!(
+            editor_command(None, |name| (name == "EDITOR").then(|| "nano".to_string())),
+            "nano"
+        );
+        assert_eq!(editor_command(None, |_| None), "vi");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_editor_command_with_arguments_runs_as_a_shell_would_read_it() {
+        let directory = secure_temp_directory().expect("temporary directory");
+        let path = directory.join("prompt with space.md");
+        std::fs::write(&path, "draft").unwrap();
+
+        let status = editor_process("printf edited >", &path)
+            .status()
+            .expect("runs");
+        assert!(status.success());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "edited");
+        let _ = std::fs::remove_dir_all(directory);
     }
 
     #[test]

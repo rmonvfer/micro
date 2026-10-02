@@ -120,6 +120,7 @@ Command-line options take precedence over environment variables, which take prec
 | `sandbox` | unset | Command policy; runtime default is `workspace-write`. |
 | `budget` | `0` | Session cost limit in USD. Zero disables it. |
 | `extensions` | `[]` | Additional extension paths or package sources. |
+| `external_editor` | unset | Command `ctrl+g` opens the prompt in, ahead of `$VISUAL` and `$EDITOR`, read the way a shell reads it, such as `"code --wait"`. |
 | `terminal_hyperlinks` | `"auto"` | `true`, `false`, or `"auto"` to override OSC 8 hyperlink detection. |
 | `terminal_images` | `"auto"` | `"kitty"`, `"iterm2"`, `false`, or `"auto"` to override inline image protocol detection. |
 | `terminal_true_color` | `"auto"` | `true`, `false`, or `"auto"` to override 24-bit color detection. |

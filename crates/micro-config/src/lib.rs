@@ -474,6 +474,9 @@ pub struct Config {
     /// Extensions to load beyond the ones found in the project and the home directory.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub extensions: Option<Vec<String>>,
+    /// The command ctrl+g opens the prompt in, ahead of `$VISUAL` and `$EDITOR`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub external_editor: Option<String>,
     /// Whether text can be made clickable, in place of what the terminal is detected to support.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub terminal_hyperlinks: Option<Capability>,
@@ -548,6 +551,7 @@ pub struct Settings {
     /// What one session may spend before it stops, in US dollars.
     pub budget: f64,
     pub extensions: Vec<String>,
+    pub external_editor: Option<String>,
     pub terminal_hyperlinks: Capability,
     pub terminal_images: ImageProtocolSetting,
     pub terminal_true_color: Capability,
@@ -611,6 +615,7 @@ impl Default for Settings {
             sandbox: None,
             budget: 0.0,
             extensions: Vec::new(),
+            external_editor: None,
             terminal_hyperlinks: Capability::Auto,
             terminal_images: ImageProtocolSetting::Auto,
             terminal_true_color: Capability::Auto,
@@ -809,6 +814,10 @@ impl Config {
 
             budget: self.budget.unwrap_or(defaults.budget).max(0.0),
             extensions: self.extensions.clone().unwrap_or(defaults.extensions),
+            external_editor: self
+                .external_editor
+                .clone()
+                .filter(|command| !command.trim().is_empty()),
             terminal_hyperlinks: self
                 .terminal_hyperlinks
                 .unwrap_or(defaults.terminal_hyperlinks),
@@ -870,6 +879,7 @@ impl Config {
             sandbox: take(&mut fields, "sandbox", path)?,
             budget: take(&mut fields, "budget", path)?,
             extensions: take(&mut fields, "extensions", path)?,
+            external_editor: take(&mut fields, "external_editor", path)?,
             terminal_hyperlinks: take(&mut fields, "terminal_hyperlinks", path)?,
             terminal_images: take(&mut fields, "terminal_images", path)?,
             terminal_true_color: take(&mut fields, "terminal_true_color", path)?,
