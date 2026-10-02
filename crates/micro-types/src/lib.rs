@@ -27,7 +27,13 @@ pub use prefix::Prefix;
 pub use tool::ConstrainedSampling;
 pub use tool::GrammarVariants;
 pub use tool::JsonSchemaStrictness;
+pub use tool::NestedCallStatus;
+pub use tool::NestedToolCall;
+pub use tool::NestedToolCalls;
+pub use tool::ToolAnnotations;
 pub use tool::ToolExecutionMode;
+pub use tool::ToolExposure;
+pub use tool::ToolNamespace;
 
 use serde::Deserialize;
 use serde::Serialize;
@@ -112,6 +118,16 @@ impl Usage {
     pub fn total_tokens(&self) -> u32 {
         self.input + self.output + self.cache_read + self.cache_write
     }
+
+    /// Both counts together.
+    pub fn plus(self, other: Usage) -> Usage {
+        Usage {
+            input: self.input.saturating_add(other.input),
+            output: self.output.saturating_add(other.output),
+            cache_read: self.cache_read.saturating_add(other.cache_read),
+            cache_write: self.cache_write.saturating_add(other.cache_write),
+        }
+    }
 }
 
 /// A response from the model.
@@ -171,6 +187,13 @@ pub enum Message {
         content: Vec<ContentBlock>,
         is_error: bool,
         timestamp: i64,
+        /// The calls the tool made to other tools while it ran.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        nested_calls: Option<NestedToolCalls>,
+        /// Tokens the tool spent itself, such as on a model it ran, including what its nested
+        /// calls spent.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        usage: Option<Usage>,
     },
 }
 
@@ -208,6 +231,8 @@ impl Message {
             content,
             is_error,
             timestamp: now_ms(),
+            nested_calls: None,
+            usage: None,
         }
     }
 

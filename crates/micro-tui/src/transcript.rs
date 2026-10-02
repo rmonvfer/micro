@@ -45,6 +45,58 @@ pub struct ToolEntry {
     pub result_lines: Option<Vec<String>>,
 
     pub self_framed: bool,
+    /// The calls this tool made to other tools while it ran, oldest first.
+    pub nested: Vec<NestedRow>,
+}
+
+/// Where one call a tool made to another tool stands.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NestedState {
+    Running,
+    Ok,
+    Error,
+    /// Still running when the calling tool finished.
+    Cancelled,
+}
+
+/// One call a tool made to another tool, as a line under the calling tool.
+#[derive(Debug, Clone, PartialEq)]
+pub struct NestedRow {
+    pub id: String,
+    pub name: String,
+    /// The arguments as compact JSON.
+    pub arguments: String,
+    pub state: NestedState,
+    pub duration_ms: Option<u64>,
+    /// The start of the error text, for a call that failed.
+    pub error: Option<String>,
+    /// When the call started, to say how long it took once it ends.
+    started: Option<std::time::Instant>,
+}
+
+/// Characters of a nested call's error kept for display.
+const NESTED_ERROR_CHARS: usize = 500;
+
+impl NestedRow {
+    fn from_record(record: &micro_types::NestedToolCall) -> Self {
+        NestedRow {
+            id: record.id.clone(),
+            name: record.name.clone(),
+            arguments: record
+                .arguments
+                .as_ref()
+                .map(Value::to_string)
+                .unwrap_or_default(),
+            state: match record.status {
+                micro_types::NestedCallStatus::Ok => NestedState::Ok,
+                micro_types::NestedCallStatus::Error => NestedState::Error,
+                micro_types::NestedCallStatus::Unfinished => NestedState::Cancelled,
+            },
+            duration_ms: record.duration_ms,
+            error: record.error.clone(),
+            started: None,
+        }
+    }
 }
 
 impl ToolEntry {
@@ -335,8 +387,12 @@ impl Transcript {
                     tool_call_id,
                     content,
                     is_error,
+                    nested_calls,
                     ..
-                } => self.answer_unfinished(tool_call_id, &text_of(content), *is_error),
+                } => {
+                    self.answer_unfinished(tool_call_id, &text_of(content), *is_error);
+                    self.settle_nested(tool_call_id, nested_calls.as_ref());
+                }
                 Message::User { .. } => {}
             },
             AgentEvent::ToolStart {
@@ -364,6 +420,20 @@ impl Transcript {
                 output,
                 is_error,
             } => self.finish_tool(id, name, output, *is_error),
+            AgentEvent::NestedToolStart {
+                parent_id,
+                id,
+                name,
+                arguments,
+            } => self.start_nested(parent_id, id, name, arguments),
+            AgentEvent::NestedToolUpdate { .. } => {}
+            AgentEvent::NestedToolEnd {
+                parent_id,
+                id,
+                output,
+                is_error,
+                ..
+            } => self.finish_nested(parent_id, id, output, *is_error),
             AgentEvent::Retry {
                 attempt,
                 max_attempts,
@@ -484,6 +554,71 @@ impl Transcript {
             if tool.output.is_none() {
                 tool.output = Some(output.to_string());
                 tool.is_error = is_error;
+            }
+        }
+    }
+
+    /// A running tool started a call to another tool.
+    fn start_nested(&mut self, parent_id: &str, id: &str, name: &str, arguments: &Value) {
+        let Some(index) = self.tools.get(parent_id).copied() else {
+            return;
+        };
+        self.touched(index);
+        if let Some(Entry::Tool(tool)) = self.entries.get_mut(index) {
+            tool.nested.push(NestedRow {
+                id: id.to_string(),
+                name: name.to_string(),
+                arguments: arguments.to_string(),
+                state: NestedState::Running,
+                duration_ms: None,
+                error: None,
+                started: Some(std::time::Instant::now()),
+            });
+        }
+    }
+
+    /// A call a running tool made has answered.
+    fn finish_nested(&mut self, parent_id: &str, id: &str, output: &str, is_error: bool) {
+        let Some(index) = self.tools.get(parent_id).copied() else {
+            return;
+        };
+        self.touched(index);
+        let Some(Entry::Tool(tool)) = self.entries.get_mut(index) else {
+            return;
+        };
+        let Some(row) = tool.nested.iter_mut().find(|row| row.id == id) else {
+            return;
+        };
+        row.state = match is_error {
+            true => NestedState::Error,
+            false => NestedState::Ok,
+        };
+        row.duration_ms = row
+            .started
+            .map(|started| started.elapsed().as_millis() as u64);
+        if is_error {
+            row.error = Some(output.chars().take(NESTED_ERROR_CHARS).collect());
+        }
+    }
+
+    /// Take the record a finished tool's result carries as what its nested calls came to.
+    fn settle_nested(&mut self, id: &str, recorded: Option<&micro_types::NestedToolCalls>) {
+        let Some(index) = self.tools.get(id).copied() else {
+            return;
+        };
+        let Some(Entry::Tool(tool)) = self.entries.get_mut(index) else {
+            return;
+        };
+        match recorded {
+            Some(recorded) => {
+                tool.nested = recorded.calls.iter().map(NestedRow::from_record).collect();
+            }
+            None => {
+                for row in &mut tool.nested {
+                    if row.state == NestedState::Running {
+                        row.state = NestedState::Cancelled;
+                    }
+                }
             }
         }
     }
@@ -641,9 +776,11 @@ impl Transcript {
                 tool_name,
                 content,
                 is_error,
+                nested_calls,
                 ..
             } => {
                 self.finish_tool(tool_call_id, tool_name, &text_of(content), *is_error);
+                self.settle_nested(tool_call_id, nested_calls.as_ref());
                 // A picture a tool produced is drawn below its card, where the reader looks for
                 // what the tool did.
                 self.push_images(content);
@@ -977,6 +1114,8 @@ mod tests {
                 ],
                 is_error: false,
                 timestamp: 0,
+                nested_calls: None,
+                usage: None,
             },
         ];
         let transcript = Transcript::from_messages(&messages);

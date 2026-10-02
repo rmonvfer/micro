@@ -185,6 +185,9 @@ fn name_of(event: &AgentEvent) -> &'static str {
         AgentEvent::MessageEnd { .. } => "MessageEnd",
         AgentEvent::ToolStart { .. } => "ToolStart",
         AgentEvent::ToolEnd { .. } => "ToolEnd",
+        AgentEvent::NestedToolStart { .. } => "NestedToolStart",
+        AgentEvent::NestedToolUpdate { .. } => "NestedToolUpdate",
+        AgentEvent::NestedToolEnd { .. } => "NestedToolEnd",
         AgentEvent::Retry { .. } => "Retry",
         AgentEvent::AgentEnd { .. } => "AgentEnd",
     }

@@ -2358,9 +2358,7 @@ impl App {
     fn handle_key_prompt(&mut self, action: Action) -> Outcome {
         if matches!(
             action,
-            Action::SelectStart { .. }
-                | Action::SelectDrag { .. }
-                | Action::SelectEnd { .. }
+            Action::SelectStart { .. } | Action::SelectDrag { .. } | Action::SelectEnd { .. }
         ) {
             return Outcome::Handled;
         }
@@ -2399,9 +2397,7 @@ impl App {
     fn handle_picker(&mut self, action: Action) -> Outcome {
         if matches!(
             action,
-            Action::SelectStart { .. }
-                | Action::SelectDrag { .. }
-                | Action::SelectEnd { .. }
+            Action::SelectStart { .. } | Action::SelectDrag { .. } | Action::SelectEnd { .. }
         ) {
             return Outcome::Handled;
         }
@@ -2471,9 +2467,7 @@ impl App {
     fn handle_inspection(&mut self, action: Action) -> Outcome {
         if matches!(
             action,
-            Action::SelectStart { .. }
-                | Action::SelectDrag { .. }
-                | Action::SelectEnd { .. }
+            Action::SelectStart { .. } | Action::SelectDrag { .. } | Action::SelectEnd { .. }
         ) {
             return Outcome::Handled;
         }
@@ -2544,9 +2538,7 @@ impl App {
     fn handle_extension_editor(&mut self, action: Action) -> Outcome {
         if matches!(
             action,
-            Action::SelectStart { .. }
-                | Action::SelectDrag { .. }
-                | Action::SelectEnd { .. }
+            Action::SelectStart { .. } | Action::SelectDrag { .. } | Action::SelectEnd { .. }
         ) {
             return Outcome::Handled;
         }
