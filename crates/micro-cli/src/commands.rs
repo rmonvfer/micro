@@ -71,7 +71,7 @@ pub struct CliCommands {
     /// The user's reusable instructions, which can be run explicitly by name.
     skills: Vec<micro_skills::Skill>,
 
-    model_source: &'static str,
+    model_source: micro_agent::ModelSource,
     /// Every tool this run actually offers the model.
     tool_names: Vec<String>,
     /// The configured MCP servers, for `/mcp`.
@@ -186,7 +186,7 @@ impl CliCommands {
             mirror: parts.mirror,
             snapshot: parts.snapshot,
             remote_started: false,
-            model_source: "set",
+            model_source: micro_agent::ModelSource::Set,
             tool_names: parts.tool_names,
             mcp: parts.mcp,
             mcp_section: parts.mcp_section,
@@ -503,8 +503,7 @@ impl CliCommands {
             ));
         }
 
-        let previous_model = self.model.clone();
-        let source = std::mem::replace(&mut self.model_source, "set");
+        let source = std::mem::replace(&mut self.model_source, micro_agent::ModelSource::Set);
 
         self.provider = model.provider.clone();
         self.model = model.clone();
@@ -517,19 +516,6 @@ impl CliCommands {
             true => self.remember_model(model),
             false => Ok(()),
         };
-
-        if previous_model.qualified_id() != model.qualified_id() {
-            crate::extensions::announce(
-                self.extensions.as_ref(),
-                "model_select",
-                serde_json::json!({
-                    "model": model_json(model),
-                    "previousModel": model_json(&previous_model),
-                    "source": source,
-                }),
-            )
-            .await;
-        }
 
         let mut note = match self.subscription_warning(resolved.api_key.as_str(), &model.provider) {
             Some(warning) => format!("Model: {}\n{warning}", model.qualified_id()),
@@ -552,6 +538,8 @@ impl CliCommands {
                 api_key: resolved.api_key,
                 context_window: model.context_window as usize,
                 cost: model.cost.clone(),
+                name: model.name.clone(),
+                source,
             }),
             note: Some(note),
         }
@@ -1213,22 +1201,12 @@ impl Commands for CliCommands {
     }
 
     async fn thinking_changed(&mut self, level: micro_types::ThinkingLevel, save: bool) {
-        let previous_level = self.thinking;
         self.thinking = level;
         if save {
             if let Err(error) = self.remember_thinking(level) {
                 eprintln!("note: thinking level was not saved as the default: {error}");
             }
         }
-        crate::extensions::announce(
-            self.extensions.as_ref(),
-            "thinking_level_select",
-            serde_json::json!({
-                "level": format!("{level:?}").to_lowercase(),
-                "previousLevel": format!("{previous_level:?}").to_lowercase(),
-            }),
-        )
-        .await;
     }
 
     async fn compacting(&mut self) -> bool {
@@ -1359,9 +1337,9 @@ impl Commands for CliCommands {
             Some(("model", argument))
                 if matches!(argument.trim(), "next" | "previous" | "prev") =>
             {
-                "cycle"
+                micro_agent::ModelSource::Cycle
             }
-            _ => "set",
+            _ => micro_agent::ModelSource::Set,
         };
 
         if let Some(("sandbox", argument)) = command_parts(line) {
@@ -1490,18 +1468,6 @@ fn counted(count: usize, thing: &str) -> String {
         1 => format!("1 {thing}"),
         other => format!("{other} {thing}s"),
     }
-}
-
-/// A model the way `model_select` and `get_model` both describe one to an extension.
-fn model_json(model: &ModelDef) -> serde_json::Value {
-    serde_json::json!({
-        "id": model.id,
-        "name": model.name,
-        "provider": model.provider,
-        "contextWindow": model.context_window,
-        "maxOutputTokens": model.max_output_tokens,
-        "reasoning": model.reasoning,
-    })
 }
 
 /// The name and arguments of a slash command, or nothing when the line is not one.

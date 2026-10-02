@@ -168,6 +168,14 @@ Common lifecycle events include:
 
 An exception in one handler is reported without preventing other handlers from running.
 
+`thinking_level_select` fires with `level` and `previousLevel` whenever the reasoning level in force changes, and `model_select` fires with `model`, `previousModel` and `source` (`set` or `cycle`) whenever a different model is chosen. Both fire for every way of changing them: `/model`, `/thinking`, `shift+tab`, `ctrl+p`, `micro.setModel`, `micro.setThinkingLevel`, and RPC. When a switch moves the level to the nearest one the new model supports, `thinking_level_select` fires first. Handlers, and anything an extension reads afterwards through `ctx.model`, `ctx.thinkingLevel`, `micro.getModel()` or `micro.getThinkingLevel()`, see the new values.
+
+```ts
+micro.on("model_select", (event) => {
+  console.log(`${event.previousModel.id} -> ${event.model.id} (${event.source})`);
+});
+```
+
 A `tool_call` handler runs before a tool does. Returning `{ block: true, reason }` stops the call, and the model reads the reason in place of the tool's output. Adding `terminate: true` also ends the run when every call in that batch was blocked this way, so micro does not ask the model again; a batch where any call ran or was blocked without it continues as usual.
 
 ```ts

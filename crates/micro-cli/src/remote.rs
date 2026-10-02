@@ -46,6 +46,21 @@ pub struct Snapshot {
     pub cwd: String,
 }
 
+impl Snapshot {
+    /// Take in what the agent was set to.
+    pub fn select(&mut self, change: &micro_agent::SelectionChange) {
+        let level = match change {
+            micro_agent::SelectionChange::Model { model, .. } => {
+                self.model = format!("{}/{}", model.provider, model.id);
+                self.provider = model.provider.clone();
+                model.thinking
+            }
+            micro_agent::SelectionChange::Thinking { level } => *level,
+        };
+        self.thinking = level.as_str().to_string();
+    }
+}
+
 pub struct Seam {
     /// What to tell the interface to do.
     pub to_interface: UnboundedSender<FromPhone>,

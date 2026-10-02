@@ -4,6 +4,7 @@
 
 - Open the interface on a small half-block mark of three squares stepping down in size, in the theme's colours, with the version and key hints beside it; wrapped hints and resource lists stay indented, and `quiet_startup: "header"` keeps the note that micro can explain its own features.
 - Offer only the thinking levels the current model supports, as its catalog entry records them: `/thinking` lists and accepts only those, `shift+tab` cycles through them and says when the model does not reason, the footer leaves thinking out for such models, and a level the model lacks (from settings, `--thinking`, an extension, a virtual model's router, or a model switch) becomes the nearest supported one. Anthropic, Codex and Gemini requests send `xhigh`, `max` and other levels as the model names them, the catalog takes each model's levels from models.dev and OpenRouter, and RPC adds `get_available_thinking_levels` and spells the level `xhigh`.
+- Extensions and a paired phone see the model and thinking level in force after every change, not the ones the session started with: `/model`, `/thinking`, `shift+tab`, `ctrl+p`, `setModel`, `setThinkingLevel`, RPC, and the clamp a model switch applies all update `ctx.model`, `getModel()` and `getThinkingLevel()`, and fire pi's `thinking_level_select` and `model_select` once each, including from RPC.
 
 ## [0.2.1] - 2026-10-02
 

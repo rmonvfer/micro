@@ -12,6 +12,7 @@ pub use protocol::SessionState;
 pub use protocol::SlashCommand;
 
 use micro_agent::Agent;
+use micro_agent::ModelSource;
 use micro_agent::ModelSwap;
 use micro_auth::AuthStore;
 use micro_models::Catalog;
@@ -218,7 +219,7 @@ impl Rpc {
             } => {
                 let model = self.catalog.get(&provider, &model_id).cloned();
                 let answer = match model {
-                    Some(model) => match self.select_model(&model).await {
+                    Some(model) => match self.select_model(&model, ModelSource::Set).await {
                         Ok(model) => Response::with(id, name, model),
                         Err(error) => Response::failed(id, name, error),
                     },
@@ -636,11 +637,15 @@ impl Rpc {
             Some(position) => models[(position + 1) % models.len()].clone(),
             None => models[0].clone(),
         };
-        self.select_model(&next).await.map(Some)
+        self.select_model(&next, ModelSource::Cycle).await.map(Some)
     }
 
     /// Replace every model-dependent part of the running agent.
-    async fn select_model(&mut self, model: &ModelDef) -> Result<Value, String> {
+    async fn select_model(
+        &mut self,
+        model: &ModelDef,
+        source: ModelSource,
+    ) -> Result<Value, String> {
         let auth = self
             .auth
             .as_ref()
@@ -674,6 +679,8 @@ impl Rpc {
             api_key: resolved.api_key,
             context_window: model.context_window as usize,
             cost: model.cost.clone(),
+            name: model.name.clone(),
+            source,
         });
 
         Ok(json!({ "provider": model.provider, "model_id": model.id }))
@@ -886,6 +893,7 @@ fn summary_text(message: &Message) -> String {
 mod tests {
     use super::*;
     use micro_agent::Budget;
+    use micro_agent::SelectionChange;
     use micro_testkit::FakeProvider;
     #[cfg(target_os = "macos")]
     use micro_tools::Guard;
@@ -940,6 +948,15 @@ mod tests {
         catalog: Catalog,
         tools: Vec<Arc<dyn micro_tools::Tool>>,
     ) -> Rpc {
+        rpc_watched(root, catalog, tools, None).await
+    }
+
+    async fn rpc_watched(
+        root: &std::path::Path,
+        catalog: Catalog,
+        tools: Vec<Arc<dyn micro_tools::Tool>>,
+        selection_watch: Option<tokio::sync::mpsc::UnboundedSender<SelectionChange>>,
+    ) -> Rpc {
         let current = catalog.get("anthropic", "shared").unwrap();
         let sessions = micro_session::SessionStore::new(root.join("sessions"));
         let session = sessions.create(root, current.qualified_id()).await.unwrap();
@@ -952,7 +969,55 @@ mod tests {
         .with_context_window(current.context_window as usize)
         .with_model_cost(current.cost.clone())
         .with_budget(Budget::new(100.0, current.cost.clone()));
+        let agent = match selection_watch {
+            Some(watch) => agent.with_selection_watch(watch),
+            None => agent,
+        };
         Rpc::new(agent, Arc::new(Mutex::new(session)), catalog, root)
+    }
+
+    #[tokio::test]
+    async fn rpc_model_and_thinking_changes_reach_the_selection_watch() {
+        let root = scratch("selection-watch");
+        let auth = Arc::new(AuthStore::open_at(root.join("auth.json")).unwrap());
+        auth.store_api_key("anthropic", "anthropic-key").unwrap();
+        auth.store_api_key("openrouter", "openrouter-key").unwrap();
+        let (watch, mut watched) = tokio::sync::mpsc::unbounded_channel();
+        let mut rpc = rpc_watched(&root, catalog(), Vec::new(), Some(watch))
+            .await
+            .with_auth_store(auth);
+
+        let input = concat!(
+            r#"{"type":"set_thinking_level","level":"off"}"#,
+            "\n",
+            r#"{"type":"cycle_model"}"#,
+            "\n",
+        );
+        let mut output = Vec::new();
+        rpc.run(std::io::Cursor::new(input.as_bytes().to_vec()), &mut output)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            watched.try_recv().unwrap(),
+            SelectionChange::Thinking {
+                level: ThinkingLevel::Off
+            }
+        );
+        match watched.try_recv().unwrap() {
+            SelectionChange::Model {
+                model,
+                context_window,
+                source,
+                ..
+            } => {
+                assert_eq!(model.provider, "openrouter");
+                assert_eq!(context_window, 64_000);
+                assert_eq!(source, ModelSource::Cycle);
+            }
+            other => panic!("expected a model change, got {other:?}"),
+        }
+        assert!(watched.try_recv().is_err());
     }
 
     #[tokio::test]
@@ -967,7 +1032,7 @@ mod tests {
             .await
             .with_auth_store(auth);
 
-        let response = rpc.select_model(&selected).await.unwrap();
+        let response = rpc.select_model(&selected, ModelSource::Set).await.unwrap();
 
         assert_eq!(response["provider"], "openrouter");
         assert_eq!(rpc.agent.provider_name(), "openrouter");

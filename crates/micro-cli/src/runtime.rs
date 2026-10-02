@@ -102,6 +102,10 @@ pub struct Runtime {
     pub recorder: tokio::sync::mpsc::UnboundedReceiver<micro_agent::Record>,
     /// Delivers agent lifecycle events to extensions and remote observers.
     pub forwarder: tokio::task::JoinHandle<()>,
+    /// Every time the agent's model or reasoning level is set.
+    pub selections: tokio::sync::mpsc::UnboundedReceiver<micro_agent::SelectionChange>,
+    /// What a paired phone is told about the session.
+    pub snapshot: Arc<Mutex<crate::remote::Snapshot>>,
     /// How the interface runs slash commands.
     pub commands: CliCommands,
     /// The extension host, when there was anything to load and a runtime to load it.
@@ -530,6 +534,7 @@ pub async fn build(
     }
 
     let (watching, watched) = tokio::sync::mpsc::unbounded_channel();
+    let (selection_watch, selections) = tokio::sync::mpsc::unbounded_channel();
 
     let system_prompt = context.system_prompt.clone();
 
@@ -558,6 +563,7 @@ pub async fn build(
     .with_context_window(model.context_window as usize)
     .with_recorder(recorder)
     .with_observer(watching)
+    .with_selection_watch(selection_watch)
     .with_cache_key(session_id.clone())
     .with_compaction_budgets(compaction_budgets(&settings.compaction))
     .with_image_limits(image_limits(&settings.image_limits))
@@ -655,7 +661,7 @@ pub async fn build(
         sandbox_overridden,
         seam,
         mirror,
-        snapshot,
+        snapshot: Arc::clone(&snapshot),
     });
 
     Ok(Runtime {
@@ -679,6 +685,8 @@ pub async fn build(
         models,
         recorder: receiver,
         forwarder,
+        selections,
+        snapshot,
         commands,
         mcp,
         system_prompt,

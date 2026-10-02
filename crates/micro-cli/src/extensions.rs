@@ -318,19 +318,7 @@ async fn answer(
         "get_thinking_level" => json!({ "level": state.read().await.thinking }),
         "get_active_tools" | "get_all_tools" => json!({ "tools": state.read().await.tools }),
         "get_commands" => json!({ "commands": state.read().await.commands }),
-        "get_model" => {
-            let state = state.read().await;
-            json!({
-                "model": {
-                    "id": state.model,
-                    "name": state.model_name,
-                    "provider": state.provider,
-                    "contextWindow": state.context_window,
-                    "maxOutputTokens": state.max_output_tokens,
-                    "reasoning": state.reasoning,
-                },
-            })
-        }
+        "get_model" => json!({ "model": state.read().await.model_json() }),
         "get_system_prompt" => json!({ "systemPrompt": state.read().await.system_prompt }),
 
         "get_context" => {
@@ -345,14 +333,7 @@ async fn answer(
                 }
             };
             let mut response = json!({
-                "model": {
-                    "id": state.model,
-                    "name": state.model_name,
-                    "provider": state.provider,
-                    "contextWindow": state.context_window,
-                    "maxOutputTokens": state.max_output_tokens,
-                    "reasoning": state.reasoning,
-                },
+                "model": state.model_json(),
                 "thinkingLevel": state.thinking,
                 "systemPrompt": state.system_prompt,
                 "scopedModels": scoped_models,
@@ -1655,6 +1636,93 @@ pub struct State {
     pub mcp: Option<micro_mcp::Servers>,
 }
 
+impl State {
+    /// The model in use, the way `getModel()`, `ctx.model` and `model_select` describe one.
+    pub fn model_json(&self) -> Value {
+        json!({
+            "id": self.model,
+            "name": self.model_name,
+            "provider": self.provider,
+            "contextWindow": self.context_window,
+            "maxOutputTokens": self.max_output_tokens,
+            "reasoning": self.reasoning,
+        })
+    }
+
+    /// Take in what the agent was set to, answering the events that tell extensions what changed:
+    /// `thinking_level_select` when the reasoning level moved, including when a model switch
+    /// clamped it, then `model_select` when the model is a different one.
+    pub fn select(&mut self, change: &micro_agent::SelectionChange) -> Vec<(&'static str, Value)> {
+        let previous_model = self.model_json();
+        let previous_level = self.thinking.clone();
+
+        let (level, source) = match change {
+            micro_agent::SelectionChange::Model {
+                model,
+                name,
+                context_window,
+                source,
+            } => {
+                self.model = model.id.clone();
+                self.model_name = name.clone();
+                self.provider = model.provider.clone();
+                self.context_window = u32::try_from(*context_window).unwrap_or(u32::MAX);
+                self.max_output_tokens = model.max_tokens;
+                self.reasoning = model.reasoning;
+                (model.thinking, Some(*source))
+            }
+            micro_agent::SelectionChange::Thinking { level } => (*level, None),
+        };
+        self.thinking = level.as_str().to_string();
+
+        let mut events = Vec::new();
+        if self.thinking != previous_level {
+            events.push((
+                "thinking_level_select",
+                json!({ "level": self.thinking, "previousLevel": previous_level }),
+            ));
+        }
+        let model_changed = previous_model["id"] != self.model.as_str()
+            || previous_model["provider"] != self.provider.as_str();
+        if let (Some(source), true) = (source, model_changed) {
+            events.push((
+                "model_select",
+                json!({
+                    "model": self.model_json(),
+                    "previousModel": previous_model,
+                    "source": source.as_str(),
+                }),
+            ));
+        }
+        events
+    }
+}
+
+/// Keep what extensions and a paired phone are told about the model and reasoning level in step
+/// with the agent, and tell the extensions each time either changes, for as long as the agent can
+/// be set.
+pub async fn follow_selection(
+    mut changes: tokio::sync::mpsc::UnboundedReceiver<micro_agent::SelectionChange>,
+    host: Option<Arc<Host>>,
+    state: Option<Arc<tokio::sync::RwLock<State>>>,
+    snapshot: Arc<Mutex<crate::remote::Snapshot>>,
+) {
+    while let Some(change) = changes.recv().await {
+        snapshot.lock().await.select(&change);
+        let Some(state) = state.as_ref() else {
+            continue;
+        };
+        let events = state.write().await.select(&change);
+        // Each event is waited out, so its handlers read the selection it describes rather than
+        // whichever one follows it.
+        if let Some(host) = host.as_ref() {
+            for (event, payload) in events {
+                let _ = host.ask_event(event, payload).await;
+            }
+        }
+    }
+}
+
 /// Tell the extensions something happened somewhere other than inside a turn.
 pub async fn announce(host: Option<&Arc<Host>>, event: &str, payload: Value) {
     if let Some(host) = host {
@@ -2334,6 +2402,283 @@ mod tests {
         assert_eq!(context["systemPrompt"], "you are micro");
 
         assert_eq!(context["scopedModels"], serde_json::json!([]));
+    }
+
+    fn opus_state() -> State {
+        State {
+            thinking: "high".into(),
+            model: "claude-opus-5".into(),
+            model_name: "Claude Opus 5".into(),
+            provider: "anthropic".into(),
+            context_window: 200_000,
+            max_output_tokens: 32_000,
+            reasoning: true,
+            ..State::default()
+        }
+    }
+
+    /// A model that cannot reason, asked for at `high` the way a switch carries the level over.
+    fn plain_model() -> micro_types::Model {
+        micro_types::Model {
+            id: "plain".into(),
+            provider: "openrouter".into(),
+            base_url: "https://openrouter.invalid".into(),
+            max_tokens: 8_000,
+            thinking: micro_types::ThinkingLevel::High,
+            reasoning: false,
+            compat: Default::default(),
+            headers: Default::default(),
+        }
+    }
+
+    fn plain_swap() -> micro_agent::ModelSwap {
+        micro_agent::ModelSwap {
+            provider: Arc::new(
+                micro_testkit::FakeProvider::builder()
+                    .name("openrouter")
+                    .build(),
+            ),
+            model: plain_model(),
+            api_key: "key".into(),
+            context_window: 64_000,
+            cost: Default::default(),
+            name: "Plain".into(),
+            source: micro_agent::ModelSource::Cycle,
+        }
+    }
+
+    #[test]
+    fn a_selection_is_told_as_pis_events_only_when_something_changed() {
+        let mut state = opus_state();
+
+        let events = state.select(&micro_agent::SelectionChange::Thinking {
+            level: micro_types::ThinkingLevel::Low,
+        });
+        assert_eq!(
+            events,
+            vec![(
+                "thinking_level_select",
+                json!({ "level": "low", "previousLevel": "high" })
+            )]
+        );
+        assert!(state
+            .select(&micro_agent::SelectionChange::Thinking {
+                level: micro_types::ThinkingLevel::Low,
+            })
+            .is_empty());
+
+        let switched = micro_agent::SelectionChange::Model {
+            model: plain_model().with_thinking(micro_types::ThinkingLevel::Off),
+            name: "Plain".into(),
+            context_window: 64_000,
+            source: micro_agent::ModelSource::Cycle,
+        };
+        let events = state.select(&switched);
+        assert_eq!(
+            events,
+            vec![
+                (
+                    "thinking_level_select",
+                    json!({ "level": "off", "previousLevel": "low" })
+                ),
+                (
+                    "model_select",
+                    json!({
+                        "model": {
+                            "id": "plain",
+                            "name": "Plain",
+                            "provider": "openrouter",
+                            "contextWindow": 64_000,
+                            "maxOutputTokens": 8_000,
+                            "reasoning": false,
+                        },
+                        "previousModel": {
+                            "id": "claude-opus-5",
+                            "name": "Claude Opus 5",
+                            "provider": "anthropic",
+                            "contextWindow": 200_000,
+                            "maxOutputTokens": 32_000,
+                            "reasoning": true,
+                        },
+                        "source": "cycle",
+                    })
+                ),
+            ]
+        );
+        assert!(state.select(&switched).is_empty());
+    }
+
+    #[tokio::test]
+    async fn what_an_extension_reads_follows_the_agent_through_a_clamping_switch() {
+        let state = Arc::new(tokio::sync::RwLock::new(opus_state()));
+        let snapshot = Arc::new(Mutex::new(crate::remote::Snapshot::default()));
+        let (watch, watched) = tokio::sync::mpsc::unbounded_channel();
+        let mut agent = micro_agent::Agent::new(
+            Arc::new(
+                micro_testkit::FakeProvider::builder()
+                    .name("anthropic")
+                    .build(),
+            ),
+            Vec::new(),
+            micro_types::Model {
+                reasoning: true,
+                ..micro_types::Model::anthropic("claude-opus-5")
+                    .with_thinking(micro_types::ThinkingLevel::High)
+            },
+            "key",
+        )
+        .with_selection_watch(watch);
+
+        agent.set_thinking(micro_types::ThinkingLevel::Medium);
+        agent.set_model(plain_swap());
+        drop(agent);
+        follow_selection(
+            watched,
+            None,
+            Some(Arc::clone(&state)),
+            Arc::clone(&snapshot),
+        )
+        .await;
+
+        let session = scratch_session().await;
+        let workspace = std::env::temp_dir();
+        let context = answer(
+            "get_context",
+            &json!({}),
+            None,
+            &workspace,
+            &unconfined(),
+            &Broker::open(),
+            &state,
+            &session,
+            None,
+        )
+        .await;
+        assert_eq!(context["model"]["id"], "plain");
+        assert_eq!(context["model"]["name"], "Plain");
+        assert_eq!(context["model"]["contextWindow"], 64_000);
+        assert_eq!(context["thinkingLevel"], "off");
+        let thinking = answer(
+            "get_thinking_level",
+            &json!({}),
+            None,
+            &workspace,
+            &unconfined(),
+            &Broker::open(),
+            &state,
+            &session,
+            None,
+        )
+        .await;
+        assert_eq!(thinking["level"], "off");
+
+        let phone = snapshot.lock().await.clone();
+        assert_eq!(phone.model, "openrouter/plain");
+        assert_eq!(phone.thinking, "off");
+    }
+
+    #[tokio::test]
+    async fn an_extension_hears_model_and_thinking_changes_once_and_reads_them_back() {
+        if micro_extensions::which_bun().is_none() {
+            return;
+        }
+        let root = scratch("selection-events");
+        let extension = root.join("selection.ts");
+        std::fs::write(
+            &extension,
+            r#"
+const heard = [];
+export default (micro) => {
+    for (const event of ["model_select", "thinking_level_select"]) {
+        micro.on(event, async (payload, ctx) => {
+            heard.push({
+                event,
+                payload,
+                model: ctx.model?.id,
+                thinking: ctx.thinkingLevel,
+                asked: micro.getThinkingLevel(),
+            });
+        });
+    }
+    micro.registerCommand("heard", { handler: async () => JSON.stringify(heard) });
+};
+"#,
+        )
+        .unwrap();
+        let host = Arc::new(
+            Host::start(&root, &[extension], &root, true, false, "tui")
+                .await
+                .expect("the host starts"),
+        );
+
+        let state = Arc::new(tokio::sync::RwLock::new(opus_state()));
+        let session = scratch_session().await;
+        tokio::spawn(serve(
+            Arc::clone(&host),
+            root.clone(),
+            unconfined(),
+            Broker::open(),
+            None,
+            Arc::clone(&state),
+            session,
+        ));
+        let (watch, watched) = tokio::sync::mpsc::unbounded_channel();
+        let following = tokio::spawn(follow_selection(
+            watched,
+            Some(Arc::clone(&host)),
+            Some(Arc::clone(&state)),
+            Arc::default(),
+        ));
+
+        let mut agent = micro_agent::Agent::new(
+            Arc::new(
+                micro_testkit::FakeProvider::builder()
+                    .name("anthropic")
+                    .build(),
+            ),
+            Vec::new(),
+            micro_types::Model {
+                reasoning: true,
+                ..micro_types::Model::anthropic("claude-opus-5")
+                    .with_thinking(micro_types::ThinkingLevel::High)
+            },
+            "key",
+        )
+        .with_selection_watch(watch);
+        agent.set_thinking(micro_types::ThinkingLevel::Low);
+        agent.set_thinking(micro_types::ThinkingLevel::Low);
+        agent.set_model(plain_swap());
+        drop(agent);
+        following.await.unwrap();
+
+        let heard = host.call_command("heard", "").await.unwrap();
+        let heard: Value = serde_json::from_str(heard.as_str().unwrap()).unwrap();
+        let heard = heard.as_array().unwrap();
+        assert_eq!(heard.len(), 3, "{heard:#?}");
+
+        assert_eq!(heard[0]["event"], "thinking_level_select");
+        assert_eq!(
+            heard[0]["payload"],
+            json!({ "level": "low", "previousLevel": "high" })
+        );
+        assert_eq!(heard[0]["thinking"], "low");
+        assert_eq!(heard[0]["asked"], "low");
+
+        assert_eq!(heard[1]["event"], "thinking_level_select");
+        assert_eq!(
+            heard[1]["payload"],
+            json!({ "level": "off", "previousLevel": "low" })
+        );
+
+        assert_eq!(heard[2]["event"], "model_select");
+        assert_eq!(heard[2]["payload"]["model"]["id"], "plain");
+        assert_eq!(heard[2]["payload"]["previousModel"]["id"], "claude-opus-5");
+        assert_eq!(heard[2]["payload"]["source"], "cycle");
+        assert_eq!(heard[2]["model"], "plain");
+        assert_eq!(heard[2]["thinking"], "off");
+        assert_eq!(heard[2]["asked"], "off");
+
+        host.shutdown("quit").await;
     }
 
     /// A pattern matches by provider-qualified id or by bare id, the same prefix match `/model`'s
