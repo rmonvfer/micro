@@ -3,6 +3,8 @@
 use crate::eventstream::Decoder;
 use crate::json::parse_arguments;
 use crate::sigv4;
+use base64::engine::general_purpose::STANDARD as BASE64;
+use base64::Engine;
 use micro_types::now_ms;
 use micro_types::AssistantMessage;
 use micro_types::ContentBlock;
@@ -11,6 +13,7 @@ use micro_types::Message;
 use micro_types::Model;
 use micro_types::StopReason;
 use micro_types::StreamEvent;
+use micro_types::ThinkingLevel;
 use micro_types::Usage;
 use serde_json::json;
 use serde_json::Value;
@@ -24,6 +27,11 @@ pub const PROVIDER: &str = "amazon-bedrock";
 const SERVICE: &str = "bedrock";
 
 const DEFAULT_REGION: &str = "us-east-1";
+
+/// Lets a Claude model that thinks to a budget keep thinking between tool calls.
+const INTERLEAVED_THINKING_BETA: &str = "interleaved-thinking-2025-05-14";
+/// Tokens always left for the answer when a thinking budget shares the response ceiling.
+const MIN_ANSWER_TOKENS: u32 = 1_024;
 
 /// Environment variables Bedrock reads, in the order AWS reads them.
 const BEARER_TOKEN_ENV: &str = "AWS_BEARER_TOKEN_BEDROCK";
@@ -263,6 +271,7 @@ async fn run(
     }
 
     if !state.finished {
+        state.close_open_blocks(sender);
         let _ = sender.send(StreamEvent::Done {
             message: state.build(),
         });
@@ -272,10 +281,17 @@ async fn run(
 
 /// Bedrock's own request shape.
 pub(crate) fn build_payload(model: &Model, context: &Context) -> Result<Value, String> {
+    let model = &model
+        .clone()
+        .with_thinking(model.clamp_thinking(model.thinking));
     let mut payload = json!({
-        "messages": build_messages(&context.messages),
+        "messages": build_messages(&context.messages, is_anthropic_claude(model)),
         "inferenceConfig": { "maxTokens": model.max_tokens },
     });
+
+    if let Some(fields) = thinking_fields(model) {
+        payload["additionalModelRequestFields"] = fields;
+    }
 
     if let Some(system) = context
         .system_prompt
@@ -311,8 +327,57 @@ pub(crate) fn build_payload(model: &Model, context: &Context) -> Result<Value, S
     Ok(payload)
 }
 
-/// The conversation as Bedrock reads it.
-fn build_messages(messages: &[Message]) -> Vec<Value> {
+/// Whether a model is one of Anthropic's Claude models, which think the way Anthropic's own API
+/// does and sign what they think.
+fn is_anthropic_claude(model: &Model) -> bool {
+    let id = model.id.to_lowercase();
+    id.contains("anthropic.claude") || id.contains("anthropic/claude")
+}
+
+/// Whether the request goes to AWS GovCloud, which does not take Claude's `thinking.display`.
+fn is_gov_cloud(model: &Model) -> bool {
+    let id = model.id.to_lowercase();
+    region(&model.base_url)
+        .to_lowercase()
+        .starts_with("us-gov-")
+        || id.starts_with("us-gov.")
+        || id.starts_with("arn:aws-us-gov:")
+}
+
+/// The fields Bedrock hands the model untouched, which is where Claude's thinking is asked for.
+/// Only Claude models are asked to think; every other model reasons as its own defaults say.
+fn thinking_fields(model: &Model) -> Option<Value> {
+    if !is_anthropic_claude(model) || model.thinking == ThinkingLevel::Off {
+        return None;
+    }
+
+    let mut fields = if model.compat.force_adaptive_thinking {
+        json!({
+            "thinking": { "type": "adaptive" },
+            "output_config": { "effort": crate::anthropic::effort_for(model) },
+        })
+    } else {
+        let budget: u32 = match model.thinking {
+            ThinkingLevel::Off | ThinkingLevel::Minimal => 1_024,
+            ThinkingLevel::Low => 2_048,
+            ThinkingLevel::Medium => 8_192,
+            ThinkingLevel::High | ThinkingLevel::XHigh | ThinkingLevel::Max => 16_384,
+        };
+        let budget = budget.min(model.max_tokens.saturating_sub(MIN_ANSWER_TOKENS));
+        json!({
+            "thinking": { "type": "enabled", "budget_tokens": budget },
+            "anthropic_beta": [INTERLEAVED_THINKING_BETA],
+        })
+    };
+
+    if !is_gov_cloud(model) {
+        fields["thinking"]["display"] = json!("summarized");
+    }
+    Some(fields)
+}
+
+/// The conversation as Bedrock reads it. Only Claude takes a signature on replayed reasoning.
+fn build_messages(messages: &[Message], signs_reasoning: bool) -> Vec<Value> {
     let mut wire: Vec<Value> = Vec::new();
 
     for message in messages {
@@ -321,7 +386,7 @@ fn build_messages(messages: &[Message]) -> Vec<Value> {
                 wire.push(json!({ "role": "user", "content": user_content(content) }));
             }
             Message::Assistant(assistant) => {
-                let content = assistant_content(&assistant.content);
+                let content = assistant_content(&assistant.content, signs_reasoning);
                 if !content.is_empty() {
                     wire.push(json!({ "role": "assistant", "content": content }));
                 }
@@ -369,11 +434,16 @@ fn user_content(content: &[ContentBlock]) -> Vec<Value> {
         .collect()
 }
 
-fn assistant_content(content: &[ContentBlock]) -> Vec<Value> {
+fn assistant_content(content: &[ContentBlock], signs_reasoning: bool) -> Vec<Value> {
     content
         .iter()
         .filter_map(|block| match block {
             ContentBlock::Text { text } if !text.is_empty() => Some(json!({ "text": text })),
+            ContentBlock::Thinking {
+                thinking,
+                signature,
+            } => replayed_thinking(thinking, signature.as_deref(), signs_reasoning),
+            ContentBlock::RedactedThinking { data } => replayed_redacted_thinking(data),
             ContentBlock::ToolCall {
                 id,
                 name,
@@ -387,6 +457,48 @@ fn assistant_content(content: &[ContentBlock]) -> Vec<Value> {
         .collect()
 }
 
+/// Reasoning as it goes back to the model. Claude rejects reasoning without the signature it
+/// issued, so unsigned Claude reasoning goes back as plain text; other models reject a signature.
+fn replayed_thinking(
+    thinking: &str,
+    signature: Option<&str>,
+    signs_reasoning: bool,
+) -> Option<Value> {
+    if thinking.trim().is_empty() {
+        return None;
+    }
+    let signature = signature.filter(|signature| !signature.trim().is_empty());
+    let replayed = match (signs_reasoning, signature) {
+        (true, Some(signature)) => json!({
+            "reasoningContent": {
+                "reasoningText": { "text": thinking, "signature": signature },
+            }
+        }),
+        (true, None) => json!({ "text": thinking }),
+        (false, _) => json!({
+            "reasoningContent": { "reasoningText": { "text": thinking } }
+        }),
+    };
+    Some(replayed)
+}
+
+/// Encrypted reasoning goes back exactly as it arrived. A payload that is not base64 cannot have
+/// come from Bedrock, so it is left out rather than failing the request.
+fn replayed_redacted_thinking(data: &str) -> Option<Value> {
+    let bytes = BASE64.decode(data).ok().filter(|bytes| !bytes.is_empty())?;
+    Some(json!({ "reasoningContent": { "redactedContent": BASE64.encode(bytes) } }))
+}
+
+/// A reasoning block still streaming.
+struct OpenReasoning {
+    /// Where Bedrock numbers this block among the response's content.
+    content_index: u64,
+    /// Where this block sits in the answer being built.
+    position: usize,
+    /// Encrypted reasoning so far, which replaces any readable reasoning once the block closes.
+    redacted: Vec<u8>,
+}
+
 /// Builds the answer as the frames arrive.
 struct Accumulator {
     provider: String,
@@ -394,6 +506,7 @@ struct Accumulator {
     blocks: Vec<ContentBlock>,
     /// The tool call currently being streamed, with its arguments so far as text.
     open_tool: Option<(usize, String, String, String)>,
+    open_reasoning: Option<OpenReasoning>,
     usage: Usage,
     stop_reason: StopReason,
     finished: bool,
@@ -406,6 +519,7 @@ impl Accumulator {
             model_id: model.id.clone(),
             blocks: Vec::new(),
             open_tool: None,
+            open_reasoning: None,
             usage: Usage::default(),
             stop_reason: StopReason::Stop,
             finished: false,
@@ -422,6 +536,7 @@ impl Accumulator {
         match event_type {
             "contentBlockStart" => {
                 if let Some(tool) = event.pointer("/start/toolUse") {
+                    self.close_reasoning(sender);
                     let index = event
                         .get("contentBlockIndex")
                         .and_then(Value::as_u64)
@@ -442,6 +557,7 @@ impl Accumulator {
             }
             "contentBlockDelta" => {
                 if let Some(text) = event.pointer("/delta/text").and_then(Value::as_str) {
+                    self.close_reasoning(sender);
                     let _ = sender.send(StreamEvent::TextDelta {
                         index: self.blocks.len(),
                         delta: text.to_string(),
@@ -454,26 +570,24 @@ impl Accumulator {
                     if let Some((_, _, _, arguments)) = self.open_tool.as_mut() {
                         arguments.push_str(partial);
                     }
-                } else if let Some(thinking) = event
-                    .pointer("/delta/reasoningContent/text")
-                    .and_then(Value::as_str)
-                {
-                    let _ = sender.send(StreamEvent::ThinkingDelta {
-                        index: self.blocks.len(),
-                        delta: thinking.to_string(),
-                    });
-                    self.push_thinking(thinking);
+                } else if let Some(reasoning) = event.pointer("/delta/reasoningContent") {
+                    let content_index = event
+                        .get("contentBlockIndex")
+                        .and_then(Value::as_u64)
+                        .unwrap_or(0);
+                    self.push_reasoning(content_index, reasoning, sender);
                 }
             }
-            "contentBlockStop" => self.close_tool(),
+            "contentBlockStop" => self.close_open_blocks(sender),
             "messageStop" => {
-                self.close_tool();
+                self.close_open_blocks(sender);
                 self.stop_reason = stop_reason(event.get("stopReason").and_then(Value::as_str));
             }
             "metadata" => {
                 if let Some(usage) = event.get("usage") {
                     self.usage = read_usage(usage);
                 }
+                self.close_open_blocks(sender);
                 self.finished = true;
                 let _ = sender.send(StreamEvent::Done {
                     message: self.build(),
@@ -490,14 +604,90 @@ impl Accumulator {
         }
     }
 
-    fn push_thinking(&mut self, text: &str) {
-        match self.blocks.last_mut() {
-            Some(ContentBlock::Thinking { thinking, .. }) => thinking.push_str(text),
-            _ => self.blocks.push(ContentBlock::Thinking {
-                thinking: text.to_string(),
+    /// Adds one reasoning delta: readable text, a piece of its signature, or encrypted reasoning.
+    fn push_reasoning(
+        &mut self,
+        content_index: u64,
+        reasoning: &Value,
+        sender: &UnboundedSender<StreamEvent>,
+    ) {
+        let continues = self
+            .open_reasoning
+            .as_ref()
+            .is_some_and(|open| open.content_index == content_index);
+        if !continues {
+            self.close_open_blocks(sender);
+            let position = self.blocks.len();
+            self.blocks.push(ContentBlock::Thinking {
+                thinking: String::new(),
                 signature: None,
-            }),
+            });
+            self.open_reasoning = Some(OpenReasoning {
+                content_index,
+                position,
+                redacted: Vec::new(),
+            });
+            let _ = sender.send(StreamEvent::ThinkingStart { index: position });
         }
+
+        let Some(open) = self.open_reasoning.as_mut() else {
+            return;
+        };
+        let Some(ContentBlock::Thinking {
+            thinking,
+            signature,
+        }) = self.blocks.get_mut(open.position)
+        else {
+            return;
+        };
+
+        if let Some(text) = reasoning.get("text").and_then(Value::as_str) {
+            if !text.is_empty() {
+                thinking.push_str(text);
+                let _ = sender.send(StreamEvent::ThinkingDelta {
+                    index: open.position,
+                    delta: text.to_string(),
+                });
+            }
+        }
+        if let Some(piece) = reasoning.get("signature").and_then(Value::as_str) {
+            signature.get_or_insert_with(String::new).push_str(piece);
+        }
+        if let Some(encoded) = reasoning.get("redactedContent").and_then(Value::as_str) {
+            if let Ok(bytes) = BASE64.decode(encoded) {
+                open.redacted.extend(bytes);
+            }
+        }
+    }
+
+    /// Finish whatever reasoning was streaming. Encrypted reasoning takes the block's place, since
+    /// it is what the model needs back and a signature cannot travel with it.
+    fn close_reasoning(&mut self, sender: &UnboundedSender<StreamEvent>) {
+        let Some(open) = self.open_reasoning.take() else {
+            return;
+        };
+        let Some(block) = self.blocks.get_mut(open.position) else {
+            return;
+        };
+        let thinking = match block {
+            ContentBlock::Thinking { thinking, .. } => thinking.clone(),
+            _ => String::new(),
+        };
+        if !open.redacted.is_empty() {
+            *block = ContentBlock::RedactedThinking {
+                data: BASE64.encode(&open.redacted),
+            };
+        }
+        let _ = sender.send(StreamEvent::ThinkingEnd {
+            index: open.position,
+            thinking,
+        });
+    }
+
+    /// Finish every block still streaming.
+    fn close_open_blocks(&mut self, sender: &UnboundedSender<StreamEvent>) {
+        self.close_reasoning(sender);
+        self.close_tool();
     }
 
     /// Finish whatever tool call was streaming, if one was.
@@ -814,5 +1004,312 @@ mod tests {
         assert_eq!(usage.output, 45);
         assert_eq!(usage.cache_read, 12);
         assert_eq!(usage.cache_write, 3);
+    }
+
+    /// A model as the catalog would hand it over, reasoning at `level`.
+    fn served(id: &str, level: ThinkingLevel) -> Model {
+        let catalog = micro_models::Catalog::bundled();
+        let model = catalog
+            .by_provider(PROVIDER)
+            .find(|model| model.id == id)
+            .unwrap_or_else(|| panic!("Bedrock serves {id}"))
+            .to_runtime(level);
+        model
+    }
+
+    fn fields_for(model: &Model) -> Value {
+        let context = Context {
+            messages: vec![Message::user("hi")],
+            ..Default::default()
+        };
+        build_payload(model, &context).unwrap()["additionalModelRequestFields"].clone()
+    }
+
+    #[test]
+    fn a_claude_model_with_thinking_off_is_not_asked_to_think() {
+        let model = served(
+            "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
+            ThinkingLevel::Off,
+        );
+        assert!(fields_for(&model).is_null());
+    }
+
+    #[test]
+    fn a_budget_claude_model_is_given_a_budget_and_interleaved_thinking() {
+        let model = served(
+            "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
+            ThinkingLevel::Medium,
+        );
+        let fields = fields_for(&model);
+
+        assert_eq!(fields["thinking"]["type"], "enabled");
+        assert_eq!(fields["thinking"]["budget_tokens"], 8_192);
+        assert_eq!(fields["thinking"]["display"], "summarized");
+        assert_eq!(
+            fields["anthropic_beta"],
+            json!(["interleaved-thinking-2025-05-14"])
+        );
+        assert!(fields.get("output_config").is_none());
+    }
+
+    #[test]
+    fn each_budget_level_asks_for_its_own_budget() {
+        for (level, budget) in [
+            (ThinkingLevel::Minimal, 1_024),
+            (ThinkingLevel::Low, 2_048),
+            (ThinkingLevel::Medium, 8_192),
+            (ThinkingLevel::High, 16_384),
+        ] {
+            let model = served("anthropic.claude-opus-4-5-20251101-v1:0", level);
+            assert_eq!(fields_for(&model)["thinking"]["budget_tokens"], budget);
+        }
+    }
+
+    /// A level the model does not offer is asked for as the nearest one it does.
+    #[test]
+    fn a_budget_model_asked_beyond_high_thinks_at_high() {
+        let mut model = served(
+            "anthropic.claude-opus-4-5-20251101-v1:0",
+            ThinkingLevel::High,
+        );
+        model.thinking = ThinkingLevel::Max;
+        assert_eq!(fields_for(&model)["thinking"]["budget_tokens"], 16_384);
+    }
+
+    /// The budget always leaves room for an answer under the response ceiling.
+    #[test]
+    fn the_budget_leaves_room_for_the_answer() {
+        let mut model = served(
+            "anthropic.claude-opus-4-5-20251101-v1:0",
+            ThinkingLevel::High,
+        );
+        model.max_tokens = 8_000;
+        let payload = build_payload(&model, &Context::default()).unwrap();
+
+        assert_eq!(payload["inferenceConfig"]["maxTokens"], 8_000);
+        assert_eq!(
+            payload["additionalModelRequestFields"]["thinking"]["budget_tokens"],
+            8_000 - 1_024
+        );
+    }
+
+    #[test]
+    fn an_adaptive_claude_model_is_asked_for_an_effort() {
+        let model = served("global.anthropic.claude-opus-4-6-v1", ThinkingLevel::Low);
+        let fields = fields_for(&model);
+
+        assert_eq!(fields["thinking"]["type"], "adaptive");
+        assert_eq!(fields["thinking"]["display"], "summarized");
+        assert_eq!(fields["output_config"]["effort"], "low");
+        assert!(fields["thinking"].get("budget_tokens").is_none());
+        assert!(
+            fields.get("anthropic_beta").is_none(),
+            "adaptive thinking interleaves on its own"
+        );
+    }
+
+    #[test]
+    fn an_adaptive_model_is_asked_for_the_efforts_its_thinking_map_names() {
+        for (id, level, effort) in [
+            (
+                "us.anthropic.claude-opus-4-7",
+                ThinkingLevel::XHigh,
+                "xhigh",
+            ),
+            ("us.anthropic.claude-opus-4-7", ThinkingLevel::Max, "max"),
+            ("us.anthropic.claude-sonnet-4-6", ThinkingLevel::Max, "max"),
+            (
+                "us.anthropic.claude-sonnet-4-6",
+                ThinkingLevel::Minimal,
+                "low",
+            ),
+            (
+                "us.anthropic.claude-sonnet-4-6",
+                ThinkingLevel::High,
+                "high",
+            ),
+        ] {
+            let model = served(id, level);
+            assert_eq!(
+                fields_for(&model)["output_config"]["effort"],
+                effort,
+                "{id} at {level:?}"
+            );
+        }
+    }
+
+    /// A model whose thinking cannot be turned off thinks at its lowest level instead.
+    #[test]
+    fn a_model_that_always_thinks_is_never_asked_for_nothing() {
+        let model = served("us.anthropic.claude-fable-5", ThinkingLevel::Off);
+        assert_eq!(fields_for(&model)["output_config"]["effort"], "low");
+    }
+
+    #[test]
+    fn govcloud_is_not_sent_the_display_field() {
+        let mut model = served(
+            "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
+            ThinkingLevel::High,
+        );
+        model.base_url = "https://bedrock-runtime.us-gov-west-1.amazonaws.com".into();
+        let fields = fields_for(&model);
+
+        assert_eq!(fields["thinking"]["type"], "enabled");
+        assert!(fields["thinking"].get("display").is_none());
+    }
+
+    /// Only Claude is asked to think; other models reason as their defaults say.
+    #[test]
+    fn a_model_that_is_not_claude_is_sent_no_thinking_fields() {
+        let model = served("openai.gpt-5.5", ThinkingLevel::High);
+        assert!(fields_for(&model).is_null());
+    }
+
+    fn stream(frames: &[Value]) -> (AssistantMessage, Vec<StreamEvent>) {
+        let (sender, mut received) = mpsc::unbounded_channel();
+        let mut state = Accumulator::new(&model());
+        for frame in frames {
+            let (event_type, event) = frame.as_object().unwrap().iter().next().unwrap();
+            state.handle(event_type, event, &sender);
+        }
+        let events = std::iter::from_fn(|| received.try_recv().ok()).collect();
+        (state.build(), events)
+    }
+
+    #[test]
+    fn signed_reasoning_is_gathered_into_one_thinking_block() {
+        let (message, events) = stream(&[
+            json!({ "contentBlockDelta": { "contentBlockIndex": 0, "delta": { "reasoningContent": { "text": "Let me " } } } }),
+            json!({ "contentBlockDelta": { "contentBlockIndex": 0, "delta": { "reasoningContent": { "text": "think." } } } }),
+            json!({ "contentBlockDelta": { "contentBlockIndex": 0, "delta": { "reasoningContent": { "signature": "sig-" } } } }),
+            json!({ "contentBlockDelta": { "contentBlockIndex": 0, "delta": { "reasoningContent": { "signature": "abc" } } } }),
+            json!({ "contentBlockStop": { "contentBlockIndex": 0 } }),
+            json!({ "contentBlockDelta": { "contentBlockIndex": 1, "delta": { "text": "Answer" } } }),
+            json!({ "contentBlockStop": { "contentBlockIndex": 1 } }),
+            json!({ "messageStop": { "stopReason": "end_turn" } }),
+        ]);
+
+        assert_eq!(
+            message.content,
+            vec![
+                ContentBlock::Thinking {
+                    thinking: "Let me think.".into(),
+                    signature: Some("sig-abc".into()),
+                },
+                ContentBlock::text("Answer"),
+            ]
+        );
+        assert_eq!(events[0], StreamEvent::ThinkingStart { index: 0 });
+        assert!(events.contains(&StreamEvent::ThinkingEnd {
+            index: 0,
+            thinking: "Let me think.".into(),
+        }));
+    }
+
+    /// Encrypted reasoning arrives as base64 pieces and is kept as one payload.
+    #[test]
+    fn redacted_reasoning_is_kept_whole() {
+        let (message, _) = stream(&[
+            json!({ "contentBlockDelta": { "contentBlockIndex": 0, "delta": { "reasoningContent": { "redactedContent": BASE64.encode(b"secret ") } } } }),
+            json!({ "contentBlockDelta": { "contentBlockIndex": 0, "delta": { "reasoningContent": { "redactedContent": BASE64.encode(b"thoughts") } } } }),
+            json!({ "contentBlockStop": { "contentBlockIndex": 0 } }),
+            json!({ "contentBlockDelta": { "contentBlockIndex": 1, "delta": { "text": "Done" } } }),
+            json!({ "messageStop": { "stopReason": "end_turn" } }),
+        ]);
+
+        assert_eq!(
+            message.content,
+            vec![
+                ContentBlock::RedactedThinking {
+                    data: BASE64.encode(b"secret thoughts"),
+                },
+                ContentBlock::text("Done"),
+            ]
+        );
+    }
+
+    /// What a Claude model thought goes back to it as it came, signature and all.
+    #[test]
+    fn claude_reasoning_is_replayed_with_its_signature() {
+        let (answer, _) = stream(&[
+            json!({ "contentBlockDelta": { "contentBlockIndex": 0, "delta": { "reasoningContent": { "text": "Plan." } } } }),
+            json!({ "contentBlockDelta": { "contentBlockIndex": 0, "delta": { "reasoningContent": { "signature": "sig" } } } }),
+            json!({ "contentBlockStop": { "contentBlockIndex": 0 } }),
+            json!({ "contentBlockDelta": { "contentBlockIndex": 1, "delta": { "reasoningContent": { "redactedContent": BASE64.encode(b"hidden") } } } }),
+            json!({ "contentBlockStop": { "contentBlockIndex": 1 } }),
+            json!({ "contentBlockDelta": { "contentBlockIndex": 2, "delta": { "text": "Hi" } } }),
+            json!({ "messageStop": { "stopReason": "end_turn" } }),
+        ]);
+        let context = Context {
+            messages: vec![
+                Message::user("hi"),
+                Message::Assistant(answer),
+                Message::user("again"),
+            ],
+            ..Default::default()
+        };
+        let model = served(
+            "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
+            ThinkingLevel::High,
+        );
+        let payload = build_payload(&model, &context).unwrap();
+
+        assert_eq!(
+            payload["messages"][1]["content"],
+            json!([
+                { "reasoningContent": { "reasoningText": { "text": "Plan.", "signature": "sig" } } },
+                { "reasoningContent": { "redactedContent": BASE64.encode(b"hidden") } },
+                { "text": "Hi" },
+            ])
+        );
+    }
+
+    /// Claude rejects unsigned reasoning, so it goes back as plain text.
+    #[test]
+    fn unsigned_claude_reasoning_is_replayed_as_text() {
+        let content = assistant_content(
+            &[ContentBlock::Thinking {
+                thinking: "Plan.".into(),
+                signature: None,
+            }],
+            true,
+        );
+        assert_eq!(content, vec![json!({ "text": "Plan." })]);
+    }
+
+    /// Other models reject a signature on replayed reasoning.
+    #[test]
+    fn reasoning_goes_back_to_other_models_without_a_signature() {
+        let context = Context {
+            messages: vec![Message::Assistant(AssistantMessage {
+                content: vec![
+                    ContentBlock::Thinking {
+                        thinking: "Plan.".into(),
+                        signature: Some("sig".into()),
+                    },
+                    ContentBlock::Thinking {
+                        thinking: "  ".into(),
+                        signature: None,
+                    },
+                    ContentBlock::RedactedThinking {
+                        data: "not base64!".into(),
+                    },
+                ],
+                provider: PROVIDER.into(),
+                model: "openai.gpt-5.5".into(),
+                usage: Usage::default(),
+                stop_reason: StopReason::Stop,
+                error: None,
+                timestamp: 0,
+            })],
+            ..Default::default()
+        };
+        let payload =
+            build_payload(&served("openai.gpt-5.5", ThinkingLevel::High), &context).unwrap();
+
+        assert_eq!(
+            payload["messages"][0]["content"],
+            json!([{ "reasoningContent": { "reasoningText": { "text": "Plan." } } }])
+        );
     }
 }

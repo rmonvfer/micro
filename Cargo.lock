@@ -2459,6 +2459,7 @@ name = "micro-provider"
 version = "0.2.1"
 dependencies = [
  "async-trait",
+ "base64",
  "futures",
  "hmac",
  "httpdate",
