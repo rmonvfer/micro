@@ -95,7 +95,7 @@ pub fn append(
 
                 push_markdown(out, &assistant.text, theme, display, links, pictures);
                 if let Some(error) = &assistant.error {
-                    push_notice(out, error, NoticeLevel::Error, theme, display);
+                    push_notice(out, error, NoticeLevel::Error, theme, display, links);
                 }
             }
             Entry::Tool(entry) => out.extend(tool::lines(
@@ -111,7 +111,7 @@ pub fn append(
             Entry::Image { data, mime_type } => {
                 push_image(out, data, mime_type, theme, display, pictures)
             }
-            Entry::Notice { text, level } => push_notice(out, text, *level, theme, display),
+            Entry::Notice { text, level } => push_notice(out, text, *level, theme, display, links),
         }
 
         for line in out.iter_mut().skip(start) {
@@ -335,12 +335,15 @@ fn push_markdown(
     }
 }
 
+/// A notice, with every web address in it made clickable, so a sign-in link still opens when it
+/// wraps across lines.
 fn push_notice(
     out: &mut Vec<Line<'static>>,
     text: &str,
     level: NoticeLevel,
     theme: &Theme,
     display: &Display,
+    links: &mut crate::render::links::Links,
 ) {
     let (color, prefix) = match level {
         NoticeLevel::Info => (theme.dim, ""),
@@ -352,16 +355,50 @@ fn push_notice(
         false => format!("{prefix}{text}"),
     };
 
+    let style = Style::new().fg(color);
     for line in body.split('\n') {
         match line.is_empty() {
             true => out.push(Line::default()),
             false => out.extend(wrap_spans(
-                &[Span::styled(line.to_string(), Style::new().fg(color))],
+                &linked_spans(line, style, links),
                 display.width,
                 0,
             )),
         }
     }
+}
+
+/// A line split so each `http://` or `https://` address is a span of its own, marked as a link.
+fn linked_spans(
+    line: &str,
+    style: Style,
+    links: &mut crate::render::links::Links,
+) -> Vec<Span<'static>> {
+    let mut spans = Vec::new();
+    let mut rest = line;
+    while let Some(start) = ["https://", "http://"]
+        .iter()
+        .filter_map(|scheme| rest.find(scheme))
+        .min()
+    {
+        let end = rest[start..]
+            .find(char::is_whitespace)
+            .map_or(rest.len(), |offset| start + offset);
+        if start > 0 {
+            spans.push(Span::styled(rest[..start].to_string(), style));
+        }
+        let url = &rest[start..end];
+        let marked = links.mark(
+            style.add_modifier(ratatui::style::Modifier::UNDERLINED),
+            url,
+        );
+        spans.push(Span::styled(url.to_string(), marked));
+        rest = &rest[end..];
+    }
+    if !rest.is_empty() || spans.is_empty() {
+        spans.push(Span::styled(rest.to_string(), style));
+    }
+    spans
 }
 
 /// Something an extension drew, on the band a custom message sits in.
@@ -429,6 +466,27 @@ mod tests {
                     .to_string()
             })
             .collect()
+    }
+
+    /// A sign-in link stays one link when it wraps, so it can still be clicked.
+    #[test]
+    fn a_web_address_in_a_notice_is_a_link_even_when_wrapped() {
+        let mut transcript = Transcript::new();
+        let url = "https://auth.example.com/authorize?client_id=micro&state=abcdef";
+        transcript.push_notice(format!("Sign in at {url} now"), NoticeLevel::Info);
+
+        let drawn = lines(&transcript, &Theme::dark(), &display(30));
+        assert_eq!(drawn.links.len(), 1);
+        assert_eq!(drawn.links.url(0), Some(url));
+        let marked: Vec<&Span> = drawn
+            .lines
+            .iter()
+            .flat_map(|line| &line.spans)
+            .filter(|span| span.style.underline_color.is_some())
+            .collect();
+        assert!(marked.len() > 1, "the address wrapped over several lines");
+        let joined: String = marked.iter().map(|span| span.content.as_ref()).collect();
+        assert_eq!(joined.replace(' ', ""), url);
     }
 
     #[test]
