@@ -4,6 +4,7 @@ mod codemode;
 mod editor;
 pub mod hints;
 pub mod links;
+mod mark;
 mod menu;
 mod overlay;
 pub mod pictures;
@@ -614,8 +615,8 @@ const ALL_HINTS: [(&str, &str); 21] = [
     ("drop files", "to attach"),
 ];
 
-/// The opening screen: the name and version, the keys worth knowing, and, when they are given,
-/// what was loaded.
+/// The opening screen: the mark with the version and the keys worth knowing beside it, where to
+/// learn more, and, when they are given, what was loaded.
 fn intro(
     theme: &Theme,
     width: usize,
@@ -624,13 +625,7 @@ fn intro(
 ) -> Vec<Line<'static>> {
     let dim = Style::new().fg(theme.dim);
 
-    let logo = [
-        Span::styled(
-            APP_NAME.to_string(),
-            Style::new().fg(theme.accent).add_modifier(Modifier::BOLD),
-        ),
-        Span::styled(format!(" v{}", env!("CARGO_PKG_VERSION")), dim),
-    ];
+    let version = vec![Span::styled(format!("v{}", env!("CARGO_PKG_VERSION")), dim)];
 
     let onboarding = [Span::styled(
         format!(
@@ -640,36 +635,65 @@ fn intro(
         dim,
     )];
 
-    let mut out = vec![Line::default()];
-    out.extend(wrap_spans(&logo, width, 0));
+    let mut keys: Vec<Vec<Span<'static>>> = match expanded {
+        false => vec![hints::hints(&HINTS, theme)],
+        true => ALL_HINTS
+            .iter()
+            .map(|(keys, description)| hints::hint(keys, description, theme))
+            .collect(),
+    };
+    let first_keys = keys.remove(0);
 
-    match expanded {
-        false => {
-            out.extend(wrap_spans(&hints::hints(&HINTS, theme), width, 0));
-            let more = match resources {
-                Some(_) => "full startup help and loaded resources",
-                None => "full startup help",
-            };
-            out.extend(wrap_spans(
-                &[Span::styled(
-                    format!("Press {} to show {more}.", hints::key_text("ctrl+o")),
-                    dim,
-                )],
-                width,
-                0,
-            ));
-        }
-        true => {
-            for (keys, description) in ALL_HINTS {
-                out.extend(wrap_spans(&hints::hint(keys, description, theme), width, 0));
-            }
-        }
+    let mut out = vec![Line::default()];
+    out.extend(beside_mark(theme, [version, first_keys], width));
+    for line in keys {
+        out.extend(wrap_spans(&line, width, 0));
+    }
+    if !expanded {
+        let more = match resources {
+            Some(_) => "full startup help and loaded resources",
+            None => "full startup help",
+        };
+        out.extend(wrap_spans(
+            &[Span::styled(
+                format!("Press {} to show {more}.", hints::key_text("ctrl+o")),
+                dim,
+            )],
+            width,
+            0,
+        ));
     }
 
+    out.push(Line::default());
+    out.extend(wrap_spans(&onboarding, width, 0));
+
     if let Some(resources) = resources {
-        out.push(Line::default());
-        out.extend(wrap_spans(&onboarding, width, 0));
         out.extend(resource_lines(resources, theme, width, expanded));
+    }
+    out
+}
+
+/// The mark with a line of text beside each of its rows. Text too long for what is left of the
+/// row wraps under itself, clear of the mark.
+fn beside_mark(
+    theme: &Theme,
+    texts: [Vec<Span<'static>>; mark::HEIGHT],
+    width: usize,
+) -> Vec<Line<'static>> {
+    let gutter = mark::WIDTH + 1;
+    let room = width.saturating_sub(gutter);
+
+    let mut out = Vec::new();
+    for (cells, text) in mark::rows(theme).into_iter().zip(texts) {
+        for (index, line) in wrap_spans(&text, room, 0).into_iter().enumerate() {
+            let mut spans = match index {
+                0 => cells.clone(),
+                _ => vec![Span::raw(" ".repeat(mark::WIDTH))],
+            };
+            spans.push(Span::raw(" "));
+            spans.extend(line.spans);
+            out.push(clip(Line::from(spans), width));
+        }
     }
     out
 }
@@ -704,14 +728,14 @@ fn resource_lines(
                     dim,
                 )],
                 width,
-                0,
+                LISTING_INDENT.len(),
             )),
             true => {
                 for path in &section.paths {
                     out.extend(wrap_spans(
                         &[Span::styled(format!("{LISTING_INDENT}{path}"), dim)],
                         width,
-                        0,
+                        LISTING_INDENT.len(),
                     ));
                 }
             }
@@ -836,6 +860,10 @@ mod tests {
     use super::*;
     use crate::app::TuiOptions;
     use crate::event::Action;
+    use crossterm::event::Event;
+    use crossterm::event::KeyCode;
+    use crossterm::event::KeyEvent;
+    use crossterm::event::KeyModifiers;
     use micro_types::AgentEvent;
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;
@@ -1046,7 +1074,7 @@ mod tests {
     }
 
     #[test]
-    fn a_header_only_start_keeps_the_version_and_keys_and_drops_the_rest() {
+    fn a_header_only_start_keeps_the_header_and_drops_what_loaded() {
         let mut resources = crate::app::Resources::default();
         resources.add("Skills", vec!["humanizer".into()], vec!["~/h.md".into()]);
         let draw_with = |quiet: micro_config::QuietStartup| {
@@ -1065,7 +1093,8 @@ mod tests {
         assert!(header.contains(env!("CARGO_PKG_VERSION")), "{header}");
         assert!(header.contains("commands"), "{header}");
         assert!(!header.contains("[Skills]"), "{header}");
-        assert!(!header.contains("can explain"), "{header}");
+        assert!(header.contains("can explain"), "{header}");
+        assert!(header.contains("to show full startup help."), "{header}");
 
         let silent = draw_with(micro_config::QuietStartup::On);
         assert!(!silent.contains(env!("CARGO_PKG_VERSION")), "{silent}");
@@ -1116,6 +1145,267 @@ mod tests {
         app.handle(Action::ToggleFocused);
         terminal.draw(|frame| draw(frame, &mut app)).expect("draws");
         assert!(screen(&terminal).join("\n").contains("humanizer, shadcn"));
+    }
+
+    /// What a session that loaded a little of everything has to show on its first screen.
+    fn loaded() -> crate::app::Resources {
+        let mut resources = crate::app::Resources::default();
+        resources.add(
+            "Context",
+            vec!["~/.micro/AGENTS.md".into(), "AGENTS.md".into()],
+            vec!["~/.micro/AGENTS.md".into(), "~/code/app/AGENTS.md".into()],
+        );
+        resources.add(
+            "Skills",
+            vec![
+                "humanizer".into(),
+                "release-notes".into(),
+                "shadcn".into(),
+                "systematic-debugging".into(),
+            ],
+            vec![
+                "~/.micro/skills/humanizer/SKILL.md".into(),
+                "~/.micro/skills/release-notes/SKILL.md".into(),
+                "~/.micro/skills/shadcn/SKILL.md".into(),
+                ".micro/skills/systematic-debugging/SKILL.md".into(),
+            ],
+        );
+        resources.add(
+            "Extensions",
+            vec!["sandbox".into()],
+            vec!["~/.micro/extensions/sandbox/index.ts".into()],
+        );
+        resources
+    }
+
+    /// The opening screen as plain rows at this width, with the version written `X.Y.Z` so a
+    /// release leaves the expected text alone.
+    fn opening(
+        width: usize,
+        expanded: bool,
+        resources: Option<&crate::app::Resources>,
+    ) -> Vec<String> {
+        intro(&Theme::dark(), width, expanded, resources)
+            .iter()
+            .map(|line| {
+                line.spans
+                    .iter()
+                    .map(|span| span.content.as_ref())
+                    .collect::<String>()
+                    .replace(env!("CARGO_PKG_VERSION"), "X.Y.Z")
+                    .trim_end()
+                    .to_string()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn the_first_screen_puts_the_version_and_keys_beside_the_mark() {
+        let resources = loaded();
+        let rows = opening(100, false, Some(&resources));
+        println!("{}", rows.join("\n"));
+        assert_eq!(
+            rows,
+            [
+                "",
+                "█  █ vX.Y.Z",
+                "█▀▀▀ escape interrupt · ctrl+c/ctrl+d clear/exit · / commands · ! bash · ctrl+o more",
+                "Press ctrl+o to show full startup help and loaded resources.",
+                "",
+                "micro can explain its own features and look up its docs. Ask it how to use or extend micro.",
+                "",
+                "[Context]",
+                "  ~/.micro/AGENTS.md, AGENTS.md",
+                "",
+                "[Skills]",
+                "  humanizer, release-notes, shadcn, systematic-debugging",
+                "",
+                "[Extensions]",
+                "  sandbox",
+            ]
+        );
+    }
+
+    #[test]
+    fn opened_the_first_screen_lists_every_key_and_where_each_resource_came_from() {
+        let resources = loaded();
+        let rows = opening(100, true, Some(&resources));
+        println!("{}", rows.join("\n"));
+        let alt = hints::key_text("alt");
+        assert_eq!(
+            rows,
+            [
+                "".to_string(),
+                "█  █ vX.Y.Z".into(),
+                "█▀▀▀ escape to interrupt".into(),
+                "ctrl+c to clear".into(),
+                "ctrl+c twice to exit".into(),
+                "ctrl+d to exit (empty)".into(),
+                "ctrl+z to suspend".into(),
+                "ctrl+k to delete to end".into(),
+                "shift+tab to cycle thinking level".into(),
+                "ctrl+p/ctrl+shift+p to cycle models".into(),
+                "ctrl+l to select model".into(),
+                "ctrl+o to expand tools".into(),
+                "ctrl+t to expand thinking".into(),
+                "ctrl+g for external editor".into(),
+                "ctrl+f to search the transcript".into(),
+                "ctrl+x to copy the selection or last answer".into(),
+                "/ for commands".into(),
+                "! to run bash".into(),
+                "!! to run bash (no context)".into(),
+                format!("{alt}+enter to queue follow-up"),
+                format!("{alt}+up to edit all queued messages"),
+                "ctrl+v to paste image (with text fallback)".into(),
+                "drop files to attach".into(),
+                "".into(),
+                "micro can explain its own features and look up its docs. Ask it how to use or extend micro.".into(),
+                "".into(),
+                "[Context]".into(),
+                "  ~/.micro/AGENTS.md".into(),
+                "  ~/code/app/AGENTS.md".into(),
+                "".into(),
+                "[Skills]".into(),
+                "  ~/.micro/skills/humanizer/SKILL.md".into(),
+                "  ~/.micro/skills/release-notes/SKILL.md".into(),
+                "  ~/.micro/skills/shadcn/SKILL.md".into(),
+                "  .micro/skills/systematic-debugging/SKILL.md".into(),
+                "".into(),
+                "[Extensions]".into(),
+                "  ~/.micro/extensions/sandbox/index.ts".into(),
+            ]
+        );
+    }
+
+    #[test]
+    fn on_a_narrow_screen_the_keys_wrap_clear_of_the_mark() {
+        let resources = loaded();
+        let rows = opening(40, false, Some(&resources));
+        println!("{}", rows.join("\n"));
+        assert_eq!(
+            rows,
+            [
+                "",
+                "█  █ vX.Y.Z",
+                "█▀▀▀ escape interrupt · ctrl+c/ctrl+d",
+                "     clear/exit · / commands · ! bash ·",
+                "     ctrl+o more",
+                "Press ctrl+o to show full startup help",
+                "and loaded resources.",
+                "",
+                "micro can explain its own features and",
+                "look up its docs. Ask it how to use or",
+                "extend micro.",
+                "",
+                "[Context]",
+                "  ~/.micro/AGENTS.md, AGENTS.md",
+                "",
+                "[Skills]",
+                "  humanizer, release-notes, shadcn,",
+                "  systematic-debugging",
+                "",
+                "[Extensions]",
+                "  sandbox",
+            ]
+        );
+        assert!(rows.iter().all(|row| text_width(row) <= 40), "{rows:#?}");
+    }
+
+    #[test]
+    fn a_header_only_start_keeps_the_mark_keys_and_onboarding() {
+        let rows = opening(100, false, None);
+        println!("{}", rows.join("\n"));
+        assert_eq!(
+            rows,
+            [
+                "",
+                "█  █ vX.Y.Z",
+                "█▀▀▀ escape interrupt · ctrl+c/ctrl+d clear/exit · / commands · ! bash · ctrl+o more",
+                "Press ctrl+o to show full startup help.",
+                "",
+                "micro can explain its own features and look up its docs. Ask it how to use or extend micro.",
+            ]
+        );
+    }
+
+    #[test]
+    fn a_quiet_start_draws_nothing_before_the_conversation() {
+        let mut options = TuiOptions {
+            resources: loaded(),
+            ..TuiOptions::default()
+        };
+        options.settings.quiet_startup = micro_config::QuietStartup::On;
+        let mut app = App::new(&[], options);
+        let mut terminal = Terminal::new(TestBackend::new(100, 30)).expect("backend");
+        terminal.draw(|frame| draw(frame, &mut app)).expect("draws");
+        let rows = screen(&terminal);
+        let rule = rows
+            .iter()
+            .position(|row| row.trim_start().starts_with('\u{2500}'))
+            .expect("the input has a rule above it");
+        assert!(rows[..rule].iter().all(|row| row.is_empty()), "{rows:#?}");
+    }
+
+    #[test]
+    fn the_first_screen_gives_way_to_the_conversation() {
+        let mut app = App::new(
+            &[],
+            TuiOptions {
+                resources: loaded(),
+                ..TuiOptions::default()
+            },
+        );
+        app.transcript.push_user("first prompt");
+        let mut terminal = Terminal::new(TestBackend::new(100, 30)).expect("backend");
+        terminal.draw(|frame| draw(frame, &mut app)).expect("draws");
+        let drawn = screen(&terminal).join("\n");
+        assert!(drawn.contains("first prompt"), "{drawn}");
+        assert!(!drawn.contains("[Skills]"), "{drawn}");
+        assert!(!drawn.contains("█"), "{drawn}");
+    }
+
+    /// The key press a hint's chord, such as `ctrl+shift+p`, names.
+    fn press(chord: &str) -> Option<Event> {
+        let mut modifiers = KeyModifiers::NONE;
+        let mut parts: Vec<&str> = chord.split('+').collect();
+        let key = parts.pop()?;
+        for part in parts {
+            modifiers |= match part {
+                "ctrl" => KeyModifiers::CONTROL,
+                "shift" => KeyModifiers::SHIFT,
+                "alt" => KeyModifiers::ALT,
+                _ => return None,
+            };
+        }
+        let code = match key {
+            "escape" => KeyCode::Esc,
+            "enter" => KeyCode::Enter,
+            "tab" if modifiers.contains(KeyModifiers::SHIFT) => KeyCode::BackTab,
+            "up" => KeyCode::Up,
+            single if single.chars().count() == 1 => KeyCode::Char(single.chars().next()?),
+            _ => return None,
+        };
+        Some(Event::Key(KeyEvent::new(code, modifiers)))
+    }
+
+    /// Every key the first screen names does something when pressed.
+    #[test]
+    fn every_hinted_key_is_bound() {
+        let typed = ["/", "!", "!!"];
+        let gestures = ["ctrl+c twice", "drop files"];
+        for (keys, _) in HINTS.iter().chain(ALL_HINTS.iter()) {
+            if typed.contains(keys) || gestures.contains(keys) {
+                continue;
+            }
+            for chord in keys.split('/') {
+                let event = press(chord).unwrap_or_else(|| panic!("{chord} is not a key"));
+                let action = crate::event::action_for(&event);
+                assert!(
+                    !matches!(action, Action::Ignored | Action::Insert(_)),
+                    "{chord} does nothing"
+                );
+            }
+        }
     }
 
     /// A shelf with nothing on it is left out: an empty heading says less than no heading.
@@ -1242,7 +1532,7 @@ mod tests {
         assert_eq!(rows.len(), 50, "{rows:#?}");
         let logo = rows
             .iter()
-            .position(|row| row.trim().starts_with("micro v"))
+            .position(|row| row.ends_with(&format!("█ v{}", env!("CARGO_PKG_VERSION"))))
             .expect("the logo is drawn");
 
         assert!(logo > 30, "the opening sits above the input, at row {logo}");
@@ -1277,7 +1567,7 @@ mod tests {
         assert!(
             rows.iter().any(|row| {
                 row.trim()
-                == "escape interrupt · ctrl+c/ctrl+d clear/exit · / commands · ! bash · ctrl+o more"
+                    .ends_with(" escape interrupt · ctrl+c/ctrl+d clear/exit · / commands · ! bash · ctrl+o more")
             }),
             "{rows:#?}"
         );

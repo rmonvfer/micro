@@ -77,6 +77,8 @@ micro treats the current directory as the workspace. Use `-C` to select another 
 micro -C /path/to/project "run the tests and summarize the failures"
 ```
 
+Before the first message, the interface opens on micro's mark with the version and the most useful keys beside it, followed by the instruction files, skills, prompts and extensions that loaded. Press `ctrl+o` to list every key and the path each resource was read from; press it again to fold the list back. The screen gives way to the conversation once there is one, and `quiet_startup` in [Configuration](configuration.md) shortens or hides it.
+
 The default sandbox policy allows writes inside the workspace and blocks network access. Built-in file tools keep `.git` and `.micro` read-only; command-level protected-path enforcement is platform-specific. See [Security model](security.md) before changing the policy.
 
 ### Read the transcript
