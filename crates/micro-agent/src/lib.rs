@@ -735,6 +735,7 @@ impl Agent {
             content,
             is_error,
             mut usage,
+            cost,
             ..
         } = match (settled, runnable) {
             (Some((text, is_error)), _) => ToolOutput {
@@ -745,14 +746,21 @@ impl Agent {
                 let recorder = Arc::new(std::sync::Mutex::new(nested::Recorder::new()));
                 let scope = nested::NestedScope::new(self, events, &id, Arc::clone(&recorder));
                 let output = run_tool(tool, &id, &name, &arguments, events, &scope).await;
-                let (recorded, spent) = recorder
-                    .lock()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner())
-                    .take();
+                let (recorded, spent, spent_cost) = {
+                    let mut held = recorder
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner());
+                    let (recorded, spent) = held.take();
+                    (recorded, spent, held.take_cost())
+                };
                 nested_calls = recorded;
                 ToolOutput {
                     usage: match (output.usage, spent) {
                         (Some(own), Some(spent)) => Some(own.plus(spent)),
+                        (own, spent) => own.or(spent),
+                    },
+                    cost: match (output.cost, spent_cost) {
+                        (Some(own), Some(spent)) => Some(own + spent),
                         (own, spent) => own.or(spent),
                     },
                     ..output
@@ -778,6 +786,16 @@ impl Agent {
             output,
             is_error,
         });
+
+        // What a tool spent on models is part of what the session cost.
+        if let Some(cost) = cost.filter(|cost| cost.is_finite() && *cost > 0.0) {
+            self.record_event(LedgerEvent::ToolCost {
+                tool_call_id: id.clone(),
+                tool: name.clone(),
+                usage: usage.unwrap_or_default(),
+                cost,
+            });
+        }
 
         self.fitted(Message::ToolResult {
             tool_call_id: id,

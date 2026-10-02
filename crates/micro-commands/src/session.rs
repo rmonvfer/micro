@@ -318,7 +318,9 @@ pub(crate) async fn info(context: &CommandContext<'_>) -> CommandOutcome {
     let billed = crate::bill::bill(context.sessions, context.catalog, session_id)
         .await
         .ok()
-        .filter(|bill| bill.from_ledger || !bill.model_calls.is_empty());
+        .filter(|bill| {
+            bill.from_ledger || !bill.model_calls.is_empty() || !bill.tool_costs.is_empty()
+        });
     if let Some(bill) = billed {
         let spent = bill.by_model();
         if bill.total > 0.0 {

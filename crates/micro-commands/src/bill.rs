@@ -27,6 +27,8 @@ pub struct Bill {
     pub compactions: Vec<CompactionBill>,
     /// What extensions and scripts spent on image and classifier models.
     pub model_calls: Vec<ModelCallBill>,
+    /// What tools said they spent on models themselves, as they priced it.
+    pub tool_costs: Vec<ToolCostBill>,
     /// Models the catalog carries no price for, so their turns are billed at nothing.
     pub unpriced: Vec<String>,
 
@@ -107,6 +109,16 @@ pub struct ModelCallBill {
     pub cost: RequestCost,
 }
 
+/// What one tool call said it spent on models, its nested calls included.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ToolCostBill {
+    pub tool_call_id: String,
+    pub tool: String,
+    pub usage: Usage,
+    /// US dollars.
+    pub cost: f64,
+}
+
 /// What one summary cost.
 #[derive(Debug, Clone, PartialEq)]
 pub struct CompactionBill {
@@ -144,6 +156,7 @@ pub async fn bill(
     let mut usages: Vec<(u64, Usage, String, String)> = Vec::new();
     let mut compactions: Vec<CompactionBill> = Vec::new();
     let mut model_calls: Vec<(ModelCallBill, Option<ModelPricing>)> = Vec::new();
+    let mut tool_costs: Vec<ToolCostBill> = Vec::new();
     let mut unknown_attempts = Vec::new();
     let mut reached = 0;
     for recorded in session.events() {
@@ -208,6 +221,17 @@ pub async fn bill(
                     pricing: cost.pricing.clone(),
                 });
             }
+            LedgerEvent::ToolCost {
+                tool_call_id,
+                tool,
+                usage,
+                cost,
+            } => tool_costs.push(ToolCostBill {
+                tool_call_id: tool_call_id.clone(),
+                tool: tool.clone(),
+                usage: *usage,
+                cost: *cost,
+            }),
             LedgerEvent::ModelCall {
                 operation,
                 requested_by,
@@ -355,7 +379,8 @@ pub async fn bill(
     let calls_total = model_calls
         .iter()
         .map(|call| call.cost.total())
-        .sum::<f64>();
+        .sum::<f64>()
+        + tool_costs.iter().map(|spent| spent.cost).sum::<f64>();
 
     let total = turns.iter().map(TurnBill::total).sum::<f64>()
         + compactions
@@ -382,6 +407,7 @@ pub async fn bill(
         turns,
         compactions,
         model_calls,
+        tool_costs,
         total,
         current_branch_total,
         unknown_attempts,
@@ -595,8 +621,14 @@ impl Bill {
                     .iter()
                     .map(|call| (&call.provider, &call.model, call.cost.total())),
             );
-        for (provider, model, amount) in billed {
-            let name = format!("{provider}/{model}");
+        let tools = self
+            .tool_costs
+            .iter()
+            .map(|spent| (format!("{} tool", spent.tool), spent.cost));
+        let billed = billed
+            .map(|(provider, model, amount)| (format!("{provider}/{model}"), amount))
+            .chain(tools);
+        for (name, amount) in billed {
             match spent.iter_mut().find(|(known, _)| *known == name) {
                 Some((_, total)) => *total += amount,
                 None => spent.push((name, amount)),
@@ -675,7 +707,10 @@ impl Bill {
     pub fn report(&self) -> String {
         let mut out = format!("Bill for session {}\n", self.session_id);
 
-        if self.turns.is_empty() && self.unknown_attempts.is_empty() && self.model_calls.is_empty()
+        if self.turns.is_empty()
+            && self.unknown_attempts.is_empty()
+            && self.model_calls.is_empty()
+            && self.tool_costs.is_empty()
         {
             out.push_str("\nNothing was billed: no turn of this session reported any usage.\n");
             return out;
@@ -707,6 +742,21 @@ impl Bill {
                         call.operation, call.provider, call.model, call.requested_by
                     ),
                     money(call.cost.total())
+                ));
+            }
+        }
+        if !self.tool_costs.is_empty() {
+            out.push_str(
+                "
+Tools that ran models
+",
+            );
+            for spent in &self.tool_costs {
+                out.push_str(&format!(
+                    "  {:<42}{}
+",
+                    format!("{} ({})", spent.tool, spent.tool_call_id),
+                    money(spent.cost)
                 ));
             }
         }
@@ -1315,6 +1365,36 @@ mod tests {
         assert!(billed
             .report()
             .contains("generate_images openrouter/acme/painter (painter)"));
+    }
+
+    /// What a tool said it spent on models, such as a script's classifier calls or a nested
+    /// extension tool's, counts toward the session.
+    #[tokio::test]
+    async fn tool_costs_count_toward_the_session() {
+        let harness = Harness::new("bill-tool-costs");
+        let mut session = harness
+            .sessions
+            .create(&harness.workspace, "openai/test-model")
+            .await
+            .unwrap();
+        let turn = usage(1_000, 200, 0);
+        record_turn(&mut session, 1, turn).await;
+        session
+            .append_event(LedgerEvent::ToolCost {
+                tool_call_id: "call_1".into(),
+                tool: "codemode".into(),
+                usage: usage(40, 0, 0),
+                cost: 0.25,
+            })
+            .await
+            .unwrap();
+        let id = session.id().to_string();
+        drop(session);
+
+        let billed = bill(&harness.sessions, &catalog(), &id).await.unwrap();
+        assert!((billed.total - (spent(turn) + 0.25)).abs() < 1e-12);
+        assert_eq!(billed.by_model()[0], ("codemode tool".to_string(), 0.25));
+        assert!(billed.report().contains("codemode (call_1)"));
     }
 
     #[tokio::test]

@@ -884,6 +884,10 @@ impl Host {
                 .cloned(),
             is_error: answer.get("isError").and_then(Value::as_bool) == Some(true),
             usage: answer.get("usage").and_then(tool_usage),
+            cost: answer
+                .pointer("/usage/cost/total")
+                .and_then(Value::as_f64)
+                .filter(|cost| cost.is_finite() && *cost > 0.0),
         }
     }
 

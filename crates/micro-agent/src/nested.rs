@@ -48,6 +48,8 @@ pub(crate) struct Recorder {
     complete: bool,
     argument_bytes: usize,
     usage: Option<Usage>,
+    /// What the nested calls said they spent, in US dollars.
+    cost: Option<f64>,
 }
 
 impl Recorder {
@@ -89,6 +91,9 @@ impl Recorder {
         if let Some(usage) = output.usage {
             self.usage = Some(self.usage.map_or(usage, |sum| sum.plus(usage)));
         }
+        if let Some(cost) = output.cost {
+            self.cost = Some(self.cost.unwrap_or_default() + cost);
+        }
         let Some(index) = index else {
             return;
         };
@@ -105,6 +110,11 @@ impl Recorder {
                 call.error = Some(text.chars().take(MAX_ERROR_CHARS).collect());
             }
         }
+    }
+
+    /// What the nested calls spent in US dollars, taken once.
+    pub(crate) fn take_cost(&mut self) -> Option<f64> {
+        self.cost.take()
     }
 
     /// The record for the calling tool's result, and what the nested calls spent. The record is
@@ -275,6 +285,7 @@ impl ToolCaller for NestedScope<'_> {
                 structured: None,
                 is_error,
                 usage: output.usage,
+                cost: output.cost,
             },
         };
 

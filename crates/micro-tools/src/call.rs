@@ -26,6 +26,9 @@ pub struct ToolOutput {
     pub is_error: bool,
     /// Tokens the tool spent itself, such as on a model it ran.
     pub usage: Option<Usage>,
+    /// What the tool spent, in US dollars, when it knows: what `usage` cost at the rates of the
+    /// models that spent it.
+    pub cost: Option<f64>,
 }
 
 impl ToolOutput {

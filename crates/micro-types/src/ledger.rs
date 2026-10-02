@@ -122,6 +122,15 @@ pub enum LedgerEvent {
     },
     /// A run stopped because it had spent what it was allowed to.
     BudgetStop { limit: f64, spent: f64 },
+    /// What a tool call said it spent on models itself, its nested calls included, priced by the
+    /// tool that spent it.
+    ToolCost {
+        tool_call_id: String,
+        tool: String,
+        usage: Usage,
+        /// US dollars.
+        cost: f64,
+    },
     /// A request to an image or classifier model, made outside the conversation by an extension
     /// or a script, and what it was billed for.
     ModelCall {
@@ -444,6 +453,17 @@ mod tests {
             LedgerEvent::BudgetStop {
                 limit: 5.0,
                 spent: 5.2,
+            },
+            LedgerEvent::ToolCost {
+                tool_call_id: "call_1".into(),
+                tool: "codemode".into(),
+                usage: Usage {
+                    input: 40,
+                    output: 0,
+                    cache_read: 0,
+                    cache_write: 0,
+                },
+                cost: 0.25,
             },
             LedgerEvent::ModelCall {
                 operation: "generate_images".into(),
