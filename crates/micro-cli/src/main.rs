@@ -4,6 +4,7 @@ mod access;
 mod archive;
 mod bug_report;
 mod capabilities;
+mod codemode;
 mod commands;
 mod default_tools;
 mod extension_broker;
@@ -240,7 +241,7 @@ struct McpAddArgs {
     /// What the server offers, in a sentence, for the system prompt.
     #[arg(long)]
     description: Option<String>,
-    /// `direct` or `deferred`; without it the tool search threshold decides.
+    /// `direct`, `codemode` (the default), `deferred`, or `hidden`.
     #[arg(long)]
     exposure: Option<String>,
     /// A client registered with the authorization server ahead of time.

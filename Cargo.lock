@@ -2304,6 +2304,7 @@ dependencies = [
  "libc",
  "micro-agent",
  "micro-auth",
+ "micro-codemode",
  "micro-commands",
  "micro-config",
  "micro-context",
@@ -2327,6 +2328,19 @@ dependencies = [
  "serde_json",
  "sha2",
  "tempfile",
+ "tokio",
+]
+
+[[package]]
+name = "micro-codemode"
+version = "0.1.13"
+dependencies = [
+ "async-trait",
+ "futures",
+ "micro-tools",
+ "micro-types",
+ "rquickjs",
+ "serde_json",
  "tokio",
 ]
 
@@ -2382,6 +2396,7 @@ name = "micro-extensions"
 version = "0.1.13"
 dependencies = [
  "async-trait",
+ "futures",
  "micro-models",
  "micro-sandbox",
  "micro-tools",
@@ -2544,6 +2559,7 @@ name = "micro-testkit"
 version = "0.1.13"
 dependencies = [
  "async-trait",
+ "futures",
  "micro-agent",
  "micro-auth",
  "micro-context",
@@ -3502,6 +3518,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
 
 [[package]]
+name = "relative-path"
+version = "2.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bca40a312222d8ba74837cb474edef44b37f561da5f773981007a10bbaa992b0"
+dependencies = [
+ "serde",
+]
+
+[[package]]
 name = "reqwest"
 version = "0.12.28"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3601,6 +3626,35 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f1964b10c76125c36f8afe190065a4bf9a87bf324842c05701330bba9f1cacbb"
 dependencies = [
  "memchr",
+]
+
+[[package]]
+name = "rquickjs"
+version = "0.14.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a0a22bf72f515cc4189dd7c63d016f6de92a11eee98ddf7dd64794198f6eb34e"
+dependencies = [
+ "rquickjs-core",
+]
+
+[[package]]
+name = "rquickjs-core"
+version = "0.14.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6657979a24d543e5fc66f32cef2f47ca82ce8eb55cec5f7d59a12b7b570bbf24"
+dependencies = [
+ "hashbrown 0.17.1",
+ "relative-path",
+ "rquickjs-sys",
+]
+
+[[package]]
+name = "rquickjs-sys"
+version = "0.14.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cee271d0eeba64f0915b846cb7ae02e16faf3dfdffdca91731101d9d30fe3423"
+dependencies = [
+ "cc",
 ]
 
 [[package]]

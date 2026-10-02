@@ -15,6 +15,7 @@ micro gives the model a small built-in tool set. Extensions and MCP servers may 
 | `find`                   | Find paths by name or pattern.                        |
 | `micro_docs`             | Read or search documentation embedded in the binary. |
 | `bash`                   | Run a shell command.                                  |
+| `codemode`               | Run JavaScript that calls the other tools. Offered on request; see [Codemode](codemode.md). |
 
 The file tools resolve paths against the workspace selected by `-C` or the current directory. They reject absolute paths, lexical `..` traversal, and paths whose existing components resolve outside the workspace.
 
@@ -91,11 +92,11 @@ When the number of non-built-in tools exceeds `tool_search_threshold`, micro lea
 
 The default threshold is `15`. Set it to `0` to include every tool definition on every request.
 
-Built-in tools are never deferred, and neither are the tools of an MCP server with `"exposure": "direct"`. A server with `"exposure": "deferred"` connects in the background; `tool_search` waits for it before answering.
+Built-in tools are never deferred, and neither are the tools of an MCP server with `"exposure": "direct"`. The tools of servers with `codemode` or `deferred` exposure are never declared: those servers connect in the background, and `tool_search` waits for them before answering.
 
 ## Extension tools
 
-Extensions register tools through the host API. They are filtered by the same `--tools` and `--exclude-tools` options as built-ins and MCP tools.
+Extensions register tools through the host API. They are filtered by the same `--tools` and `--exclude-tools` options as built-ins and MCP tools, and an extension tool's `exposure` decides whether it is declared, searched for, or only called from other tools.
 
 An extension needs the `tools` capability to register one. See [Extensions](extensions.md).
 

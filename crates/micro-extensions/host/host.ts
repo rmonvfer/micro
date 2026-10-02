@@ -346,6 +346,10 @@ function describe(): Json {
 				constrained_sampling: tool.constrainedSampling ?? null,
 				render_shell: tool.renderShell ?? "default",
 				execution_mode: tool.executionMode ?? null,
+				exposure: tool.exposure ?? null,
+				namespace: tool.namespace ?? null,
+				annotations: tool.annotations ?? null,
+				output_schema: tool.outputSchema ?? null,
 			})),
 			commands: [...registration.commands.entries()].map(([name, command]) => ({
 				name,
@@ -549,7 +553,13 @@ async function handle(line: string): Promise<void> {
 				return;
 			}
 			const owner = found.registration.path;
-			await runTool(id, found.tool, (message.arguments as Json) ?? {}, await contextFor(uiFor(owner), owner));
+			await runTool(
+				id,
+				found.tool,
+				(message.arguments as Json) ?? {},
+				await contextFor(uiFor(owner), owner),
+				(message.tools as Json[]) ?? [],
+			);
 			return;
 		}
 		case "abort_tool":

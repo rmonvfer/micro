@@ -2,6 +2,7 @@
 
 mod access;
 mod bash;
+mod call;
 mod deferred;
 mod docs;
 mod files;
@@ -17,9 +18,17 @@ pub use access::AccessCapability;
 pub use access::AccessRequest;
 pub use access::RequestSandboxAccess;
 pub use bash::Bash;
+pub use call::spill;
+pub use call::CallableTool;
+pub use call::Loadout;
+pub use call::LoadoutChanges;
+pub use call::NestedOutcome;
+pub use call::ToolCaller;
+pub use call::ToolContext;
+pub use call::ToolOutput;
 pub use deferred::Arrivals;
-pub use deferred::Deferred;
 pub use deferred::Expected;
+pub use deferred::Exposed;
 pub use deferred::ToolSearch;
 pub use docs::MicroDocs;
 pub use files::Edit;
@@ -33,8 +42,11 @@ pub use search::Grep;
 
 use async_trait::async_trait;
 use micro_types::ContentBlock;
+use micro_types::ToolAnnotations;
 use micro_types::ToolDefinition;
 use micro_types::ToolExecutionMode;
+use micro_types::ToolExposure;
+use micro_types::ToolNamespace;
 use serde_json::Value;
 use std::path::Path;
 use std::path::PathBuf;
@@ -48,10 +60,33 @@ pub const MAX_OUTPUT_CHARS: usize = 30_000;
 pub trait Tool: Send + Sync {
     fn definition(&self) -> ToolDefinition;
 
-    /// Whether this tool is left out of the list the model is given, to be found by searching
-    /// instead.
-    fn deferred(&self) -> bool {
-        false
+    /// How the model reaches this tool: declared to it, or found by searching, or only through
+    /// other tools.
+    fn exposure(&self) -> ToolExposure {
+        ToolExposure::Direct
+    }
+
+    /// The group this tool belongs to, such as the MCP server that offers it.
+    fn namespace(&self) -> Option<ToolNamespace> {
+        None
+    }
+
+    /// Hints about what the tool does.
+    fn annotations(&self) -> Option<ToolAnnotations> {
+        None
+    }
+
+    /// The JSON Schema of the data the tool answers with in `ToolOutput::structured`, for tools
+    /// whose answer is data rather than text.
+    fn output_schema(&self) -> Option<Value> {
+        None
+    }
+
+    /// Change how the run's tools are presented to the model while this one is declared, for a
+    /// tool that orchestrates the others.
+    fn prepare_loadout(&self, loadout: &Loadout) -> LoadoutChanges {
+        let _ = loadout;
+        LoadoutChanges::default()
     }
 
     /// Whether this tool must run alone among a turn's tool calls, or may run alongside them.
@@ -79,6 +114,11 @@ pub trait Tool: Send + Sync {
         self.execute_reporting(arguments, progress)
             .await
             .map(|text| vec![ContentBlock::text(text)])
+    }
+
+    /// Answer one call, with everything the run hands a tool while it runs.
+    async fn call(&self, arguments: &Value, context: &ToolContext<'_>) -> ToolOutput {
+        ToolOutput::from_result(self.execute_content(arguments, &context.progress).await)
     }
 }
 

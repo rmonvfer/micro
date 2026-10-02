@@ -102,7 +102,31 @@ pub struct RegisteredTool {
     /// `"sequential"` or `"parallel"`.
     #[serde(default)]
     pub execution_mode: Option<String>,
+    /// `"direct"`, `"model-only"`, `"codemode"`, `"deferred"`, or `"hidden"`.
+    #[serde(default)]
+    pub exposure: Option<String>,
+    /// `{ name, description?, instructions? }`.
+    #[serde(default)]
+    pub namespace: Option<Value>,
+    /// MCP-style hints: `readOnlyHint`, `destructiveHint`, `idempotentHint`, `openWorldHint`.
+    #[serde(default)]
+    pub annotations: Option<Value>,
+    /// The JSON Schema of the tool's `structuredContent`.
+    #[serde(default)]
+    pub output_schema: Option<Value>,
 }
+
+/// A call an extension's running tool asked micro to make on its behalf.
+pub(crate) struct NestedRequest {
+    /// The request the answer goes back to.
+    id: String,
+    name: String,
+    arguments: Value,
+}
+
+/// Where the nested calls of each running tool call are handed to it, by host call id.
+type NestedRequests =
+    Arc<Mutex<HashMap<String, tokio::sync::mpsc::UnboundedSender<NestedRequest>>>>;
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct RegisteredCommand {
@@ -206,6 +230,7 @@ pub struct Host {
     pending: Arc<Mutex<HashMap<String, oneshot::Sender<Value>>>>,
 
     updates: Arc<Mutex<HashMap<String, micro_tools::Progress>>>,
+    nested: NestedRequests,
     /// Tells a call still in flight to stop: a turn that was abandoned, or one that ran past
     /// `TOOL_TIMEOUT`.
     cancel: tokio::sync::mpsc::UnboundedSender<String>,
@@ -298,6 +323,7 @@ impl Host {
             Arc::new(Mutex::new(HashMap::new()));
         let updates: Arc<Mutex<HashMap<String, micro_tools::Progress>>> =
             Arc::new(Mutex::new(HashMap::new()));
+        let nested: NestedRequests = Arc::new(Mutex::new(HashMap::new()));
         let (sender, incoming) = tokio::sync::mpsc::unbounded_channel();
         let (loaded_sender, loaded_receiver) = oneshot::channel();
 
@@ -305,6 +331,7 @@ impl Host {
             stdout,
             Arc::clone(&pending),
             Arc::clone(&updates),
+            Arc::clone(&nested),
             sender,
             loaded_sender,
         ));
@@ -371,6 +398,7 @@ impl Host {
             stdin,
             pending,
             updates,
+            nested,
             cancel,
             incoming: Mutex::new(Some(incoming)),
             loaded,
@@ -639,45 +667,124 @@ impl Host {
         arguments: &Value,
         progress: &micro_tools::Progress,
     ) -> Result<Vec<micro_types::ContentBlock>, String> {
+        let output = self
+            .run_tool(
+                name,
+                arguments,
+                &micro_tools::ToolContext::new("", progress.clone()),
+            )
+            .await;
+        match output.is_error {
+            true => Err(output.text_content()),
+            false => Ok(output.content),
+        }
+    }
+
+    /// Run one of their tools with everything the run hands a tool: what it reports goes to the
+    /// context's progress, and the calls it makes through `ctx.executeTool()` go to the context's
+    /// tools while it runs.
+    pub async fn run_tool(
+        &self,
+        name: &str,
+        arguments: &Value,
+        context: &micro_tools::ToolContext<'_>,
+    ) -> micro_tools::ToolOutput {
+        use futures::StreamExt as _;
+
         let id = self.claim_id();
-        let (sender, receiver) = oneshot::channel();
+        let (sender, mut receiver) = oneshot::channel();
         self.pending.lock().await.insert(id.clone(), sender);
         self.updates
             .lock()
             .await
-            .insert(id.clone(), progress.clone());
+            .insert(id.clone(), context.progress.clone());
+        let (asking, mut asked) = tokio::sync::mpsc::unbounded_channel();
+        self.nested.lock().await.insert(id.clone(), asking);
+        let callable: Vec<Value> = context
+            .tools()
+            .map(|tools| tools.callable().iter().map(callable_json).collect())
+            .unwrap_or_default();
 
-        write_line(
+        let written = write_line(
             &mut *self.stdin.lock().await,
             &serde_json::json!({
                 "type": "tool_call",
                 "id": id,
                 "name": name,
                 "arguments": arguments,
+                "tools": callable,
             }),
         )
-        .await?;
+        .await;
+        if let Err(error) = written {
+            self.forget_call(&id).await;
+            return micro_tools::ToolOutput::error(error);
+        }
 
         let guard = CancelOnDrop::new(id.clone(), self.cancel.clone());
-        let outcome = tokio::time::timeout(TOOL_TIMEOUT, receiver).await;
-
-        guard.disarm();
-        self.updates.lock().await.remove(&id);
-
-        let answer = match outcome {
-            Ok(Ok(answer)) => answer,
-            Ok(Err(_)) => return Err(format!("the extension host stopped while running {name}")),
-            Err(_) => {
-                let _ = self.cancel.send(id.clone());
-                self.pending.lock().await.remove(&id);
-                return Err(format!("{name} did not answer in time"));
+        let deadline = tokio::time::sleep(TOOL_TIMEOUT);
+        tokio::pin!(deadline);
+        let mut running = futures::stream::FuturesUnordered::new();
+        let outcome = loop {
+            tokio::select! {
+                answer = &mut receiver => break answer.map_err(|_| {
+                    format!("the extension host stopped while running {name}")
+                }),
+                Some(request) = asked.recv() => match context.tools() {
+                    Some(tools) => running.push(async move {
+                        let outcome = tools.call(&request.name, request.arguments.clone()).await;
+                        (request, outcome)
+                    }),
+                    None => {
+                        let _ = self
+                            .answer(
+                                &request.id,
+                                serde_json::json!({
+                                    "error": "this tool was not run by a session that lends it other tools",
+                                }),
+                            )
+                            .await;
+                    }
+                },
+                Some((request, outcome)) = running.next(), if !running.is_empty() => {
+                    let _ = self
+                        .answer(&request.id, serde_json::json!({
+                            "outcome": outcome_json(&request.name, &request.arguments, &outcome),
+                        }))
+                        .await;
+                }
+                () = &mut deadline => {
+                    let _ = self.cancel.send(id.clone());
+                    break Err(format!("{name} did not answer in time"));
+                }
             }
         };
+        guard.disarm();
+        self.forget_call(&id).await;
 
-        match answer.get("error").and_then(Value::as_str) {
-            Some(error) => Err(error.to_string()),
-            None => Ok(content_blocks(&answer)),
+        let answer = match outcome {
+            Ok(answer) => answer,
+            Err(error) => return micro_tools::ToolOutput::error(error),
+        };
+        if let Some(error) = answer.get("error").and_then(Value::as_str) {
+            return micro_tools::ToolOutput::error(error);
         }
+        micro_tools::ToolOutput {
+            content: content_blocks(&answer),
+            structured: answer
+                .get("structuredContent")
+                .filter(|structured| !structured.is_null())
+                .cloned(),
+            is_error: answer.get("isError").and_then(Value::as_bool) == Some(true),
+            usage: answer.get("usage").and_then(tool_usage),
+        }
+    }
+
+    /// Stop routing anything to a call that is over.
+    async fn forget_call(&self, id: &str) {
+        self.pending.lock().await.remove(id);
+        self.updates.lock().await.remove(id);
+        self.nested.lock().await.remove(id);
     }
 
     /// Ask a registered markdown transformer to rewrite this text, and hand back what it produced.
@@ -1021,6 +1128,7 @@ async fn read_host(
     stdout: tokio::process::ChildStdout,
     pending: Arc<Mutex<HashMap<String, oneshot::Sender<Value>>>>,
     updates: Arc<Mutex<HashMap<String, micro_tools::Progress>>>,
+    nested: NestedRequests,
     outgoing: tokio::sync::mpsc::UnboundedSender<FromHost>,
     loaded: oneshot::Sender<Loaded>,
 ) {
@@ -1102,6 +1210,23 @@ async fn read_host(
                     .and_then(Value::as_str)
                     .unwrap_or_default()
                     .to_string();
+                if request == "execute_tool" {
+                    let call = message
+                        .get("toolCallId")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default();
+                    if let Some(asking) = nested.lock().await.get(call) {
+                        let _ = asking.send(NestedRequest {
+                            id: id.to_string(),
+                            name: text(&message, "name"),
+                            arguments: message
+                                .get("arguments")
+                                .cloned()
+                                .unwrap_or_else(|| serde_json::json!({})),
+                        });
+                        continue;
+                    }
+                }
                 let extension = asker(&message);
                 let _ = outgoing.send(FromHost::Request {
                     id: id.to_string(),
@@ -1167,6 +1292,64 @@ fn content_blocks(message: &Value) -> Vec<micro_types::ContentBlock> {
             _ => micro_types::ContentBlock::text(text(block, "text")),
         })
         .collect()
+}
+
+/// A tool another tool may call, as `ctx.tools` lists it.
+fn callable_json(tool: &micro_tools::CallableTool) -> Value {
+    let mut described = serde_json::json!({
+        "name": tool.definition.name,
+        "description": tool.definition.description,
+        "parameters": tool.definition.parameters,
+        "exposure": tool.exposure.name(),
+    });
+    if let Some(namespace) = &tool.namespace {
+        described["namespace"] = serde_json::json!(namespace);
+    }
+    if let Some(annotations) = &tool.annotations {
+        described["annotations"] = serde_json::json!(annotations);
+    }
+    if let Some(schema) = &tool.output_schema {
+        described["outputSchema"] = schema.clone();
+    }
+    described
+}
+
+/// What a call made through `ctx.executeTool()` came to, in the shape pi hands it back.
+fn outcome_json(name: &str, arguments: &Value, outcome: &micro_tools::NestedOutcome) -> Value {
+    let mut result = serde_json::json!({
+        "content": outcome
+            .output
+            .content
+            .iter()
+            .map(crate::events::content_json)
+            .collect::<Vec<_>>(),
+        "isError": outcome.output.is_error,
+    });
+    if let Some(structured) = &outcome.output.structured {
+        result["structuredContent"] = structured.clone();
+    }
+    serde_json::json!({
+        "toolCall": { "id": outcome.id, "name": name, "arguments": arguments },
+        "result": result,
+        "isError": outcome.output.is_error,
+    })
+}
+
+/// The tokens a tool's result says it spent, in pi's usage shape.
+fn tool_usage(usage: &Value) -> Option<micro_types::Usage> {
+    let count = |key: &str| {
+        usage
+            .get(key)
+            .and_then(Value::as_u64)
+            .map(|count| count.min(u32::MAX as u64) as u32)
+    };
+    let usage = micro_types::Usage {
+        input: count("input").unwrap_or_default(),
+        output: count("output").unwrap_or_default(),
+        cache_read: count("cacheRead").unwrap_or_default(),
+        cache_write: count("cacheWrite").unwrap_or_default(),
+    };
+    (usage != micro_types::Usage::default()).then_some(usage)
 }
 
 /// Tells the host to stop a call this side gave up on before the call itself finished.

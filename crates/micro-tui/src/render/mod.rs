@@ -1,5 +1,6 @@
 //! Frame layout.
 
+mod codemode;
 mod editor;
 pub mod hints;
 pub mod links;

@@ -1,12 +1,18 @@
 //! An extension's tool, as the model sees it.
 
 use crate::host::Host;
+use crate::host::RegisteredTool;
 use micro_tools::Progress;
 use micro_tools::Tool;
+use micro_tools::ToolContext;
+use micro_tools::ToolOutput;
 use micro_types::ConstrainedSampling;
 use micro_types::ContentBlock;
+use micro_types::ToolAnnotations;
 use micro_types::ToolDefinition;
 use micro_types::ToolExecutionMode;
+use micro_types::ToolExposure;
+use micro_types::ToolNamespace;
 use serde_json::Value;
 use std::sync::Arc;
 
@@ -15,25 +21,55 @@ pub struct ExtensionTool {
     definition: ToolDefinition,
     /// How this tool's calls are scheduled against the rest of a turn's tool calls.
     execution_mode: Option<ToolExecutionMode>,
+    exposure: ToolExposure,
+    namespace: Option<ToolNamespace>,
+    annotations: Option<ToolAnnotations>,
+    output_schema: Option<Value>,
     host: Arc<Host>,
 }
 
 impl ExtensionTool {
-    /// `constrained_sampling` and `execution_mode` arrive as the host describes them on the wire.
-    pub fn new(
-        name: impl Into<String>,
-        description: impl Into<String>,
-        parameters: Value,
-        constrained_sampling: Option<Value>,
-        execution_mode: Option<String>,
-        host: Arc<Host>,
-    ) -> Self {
+    /// The tool as the host described its registration on the wire.
+    pub fn new(registered: RegisteredTool, host: Arc<Host>) -> Self {
         ExtensionTool {
-            definition: definition_for(name, description, parameters, constrained_sampling),
-            execution_mode: ToolExecutionMode::from_wire(execution_mode.as_deref()),
+            definition: definition_for(
+                registered.name,
+                registered.description,
+                registered.parameters,
+                registered.constrained_sampling,
+            ),
+            execution_mode: ToolExecutionMode::from_wire(registered.execution_mode.as_deref()),
+            exposure: registered
+                .exposure
+                .as_deref()
+                .and_then(ToolExposure::parse)
+                .unwrap_or_default(),
+            namespace: namespace_from_wire(registered.namespace),
+            annotations: ToolAnnotations::from_wire(registered.annotations.as_ref()),
+            output_schema: registered
+                .output_schema
+                .filter(|schema| schema.is_object() || schema.is_boolean()),
             host,
         }
     }
+}
+
+/// A namespace as an extension wrote it, when it has a name.
+fn namespace_from_wire(value: Option<Value>) -> Option<ToolNamespace> {
+    let value = value?;
+    let text = |key: &str| {
+        value
+            .get(key)
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|text| !text.is_empty())
+            .map(str::to_string)
+    };
+    Some(ToolNamespace {
+        name: text("name")?,
+        description: text("description"),
+        instructions: text("instructions"),
+    })
 }
 
 /// How a registration is described to the model.
@@ -64,6 +100,22 @@ impl Tool for ExtensionTool {
         self.execution_mode
     }
 
+    fn exposure(&self) -> ToolExposure {
+        self.exposure
+    }
+
+    fn namespace(&self) -> Option<ToolNamespace> {
+        self.namespace.clone()
+    }
+
+    fn annotations(&self) -> Option<ToolAnnotations> {
+        self.annotations
+    }
+
+    fn output_schema(&self) -> Option<Value> {
+        self.output_schema.clone()
+    }
+
     /// A caller with nowhere to send progress still needs a result.
     async fn execute(&self, arguments: &Value) -> Result<String, String> {
         self.execute_reporting(arguments, &Progress::default())
@@ -86,6 +138,12 @@ impl Tool for ExtensionTool {
     ) -> Result<Vec<ContentBlock>, String> {
         self.host
             .call_tool(&self.definition.name, arguments, progress)
+            .await
+    }
+
+    async fn call(&self, arguments: &Value, context: &ToolContext<'_>) -> ToolOutput {
+        self.host
+            .run_tool(&self.definition.name, arguments, context)
             .await
     }
 }
@@ -134,6 +192,24 @@ mod tests {
                 strict: micro_types::JsonSchemaStrictness::Prefer
             })
         );
+    }
+
+    #[test]
+    fn a_namespace_needs_a_name() {
+        let named = namespace_from_wire(Some(serde_json::json!({
+            "name": "deploys",
+            "description": "Ship things",
+            "instructions": "  ",
+        })))
+        .unwrap();
+        assert_eq!(named.name, "deploys");
+        assert_eq!(named.description.as_deref(), Some("Ship things"));
+        assert_eq!(named.instructions, None);
+        assert_eq!(
+            namespace_from_wire(Some(serde_json::json!({ "description": "x" }))),
+            None
+        );
+        assert_eq!(namespace_from_wire(None), None);
     }
 
     /// `ExtensionTool::new` reads `execution_mode` through [`ToolExecutionMode::from_wire`] with

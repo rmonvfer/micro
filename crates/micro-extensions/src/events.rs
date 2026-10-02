@@ -23,6 +23,9 @@ pub fn name_of(event: &AgentEvent) -> Option<&'static str> {
         AgentEvent::ToolStart { .. } => Some("tool_execution_start"),
         AgentEvent::ToolUpdate { .. } => Some("tool_execution_update"),
         AgentEvent::ToolEnd { .. } => Some("tool_execution_end"),
+        AgentEvent::NestedToolStart { .. } => Some("tool_execution_start"),
+        AgentEvent::NestedToolUpdate { .. } => Some("tool_execution_update"),
+        AgentEvent::NestedToolEnd { .. } => Some("tool_execution_end"),
 
         AgentEvent::Retry { .. } => None,
     }
@@ -95,6 +98,48 @@ impl Translator {
                     "toolName": name,
                     "result": tool_result_json(output),
                     "isError": is_error,
+                })
+            }
+            AgentEvent::NestedToolStart {
+                parent_id,
+                id,
+                name,
+                arguments,
+            } => {
+                self.tool_arguments.insert(id.clone(), arguments.clone());
+                json!({
+                    "toolCallId": id,
+                    "toolName": name,
+                    "args": arguments,
+                    "parentToolCallId": parent_id,
+                })
+            }
+            AgentEvent::NestedToolUpdate {
+                parent_id,
+                id,
+                name,
+                output,
+            } => json!({
+                "toolCallId": id,
+                "toolName": name,
+                "args": self.tool_arguments.get(id).cloned().unwrap_or_else(|| json!({})),
+                "partialResult": tool_result_json(output),
+                "parentToolCallId": parent_id,
+            }),
+            AgentEvent::NestedToolEnd {
+                parent_id,
+                id,
+                name,
+                output,
+                is_error,
+            } => {
+                self.tool_arguments.remove(id);
+                json!({
+                    "toolCallId": id,
+                    "toolName": name,
+                    "result": tool_result_json(output),
+                    "isError": is_error,
+                    "parentToolCallId": parent_id,
                 })
             }
             AgentEvent::Retry { .. } => json!({}),
@@ -325,15 +370,59 @@ pub fn message_json(message: &Message) -> Value {
             content,
             is_error,
             timestamp,
-        } => json!({
-            "role": "toolResult",
-            "toolCallId": tool_call_id,
-            "toolName": tool_name,
-            "content": content.iter().map(content_json).collect::<Vec<_>>(),
-            "isError": is_error,
-            "timestamp": timestamp,
-        }),
+            nested_calls,
+            usage,
+        } => {
+            let mut value = json!({
+                "role": "toolResult",
+                "toolCallId": tool_call_id,
+                "toolName": tool_name,
+                "content": content.iter().map(content_json).collect::<Vec<_>>(),
+                "isError": is_error,
+                "timestamp": timestamp,
+            });
+            if let Some(nested) = nested_calls {
+                value["nestedCalls"] = nested_calls_json(nested);
+            }
+            if let Some(usage) = usage {
+                value["usage"] = usage_json(usage);
+            }
+            value
+        }
     }
+}
+
+/// A tool result's nested calls in the shape pi's handlers are written against.
+fn nested_calls_json(nested: &micro_types::NestedToolCalls) -> Value {
+    let calls: Vec<Value> = nested
+        .calls
+        .iter()
+        .map(|call| {
+            let mut value = json!({
+                "id": call.id,
+                "name": call.name,
+                "status": match call.status {
+                    micro_types::NestedCallStatus::Ok => "ok",
+                    micro_types::NestedCallStatus::Error => "error",
+                    micro_types::NestedCallStatus::Unfinished => "unfinished",
+                },
+            });
+            if let Some(arguments) = &call.arguments {
+                value["arguments"] = arguments.clone();
+            }
+            if let Some(bytes) = call.arguments_bytes {
+                value["argumentsBytes"] = json!(bytes);
+            }
+            if let Some(duration) = call.duration_ms {
+                value["durationMs"] = json!(duration);
+            }
+            if let Some(error) = &call.error {
+                value["error"] = json!(error);
+            }
+            value
+        })
+        .collect();
+    json!({ "calls": calls, "complete": nested.complete })
 }
 
 /// A content block in the shape pi's handlers are written against.
@@ -417,6 +506,11 @@ pub fn message_from_json(value: &Value) -> Option<Message> {
                 .and_then(Value::as_bool)
                 .unwrap_or(false),
             timestamp: timestamp(),
+            nested_calls: None,
+            usage: value
+                .get("usage")
+                .is_some()
+                .then(|| usage_from_json(value.get("usage"))),
         }),
         _ => None,
     }
@@ -628,6 +722,8 @@ mod tests {
             content: vec![ContentBlock::text("contents")],
             is_error: false,
             timestamp: 0,
+            nested_calls: None,
+            usage: None,
         };
         let json = message_json(&message);
         assert_eq!(json["role"], "toolResult");
@@ -681,6 +777,8 @@ mod tests {
             content: vec![ContentBlock::text("file contents")],
             is_error: false,
             timestamp: 2,
+            nested_calls: None,
+            usage: None,
         };
         let first_turn = translator.payload_of(&AgentEvent::TurnEnd {
             messages: vec![first_reply.clone(), tool_result.clone()],
@@ -841,6 +939,8 @@ mod tests {
                 content: vec![ContentBlock::text("contents of a.txt")],
                 is_error: false,
                 timestamp: 12,
+                nested_calls: None,
+                usage: None,
             },
         ];
 

@@ -101,6 +101,29 @@ pub enum AgentEvent {
         name: String,
         output: String,
     },
+    /// A tool started a call to another tool while it ran.
+    NestedToolStart {
+        /// The call that made this one.
+        parent_id: String,
+        id: String,
+        name: String,
+        arguments: Value,
+    },
+    /// A call a tool made has said what it has done so far.
+    NestedToolUpdate {
+        parent_id: String,
+        id: String,
+        name: String,
+        output: String,
+    },
+    /// A call a tool made has answered.
+    NestedToolEnd {
+        parent_id: String,
+        id: String,
+        name: String,
+        output: String,
+        is_error: bool,
+    },
     /// Terminal: every message the loop produced this run.
     AgentEnd {
         messages: Vec<Message>,

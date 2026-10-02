@@ -1,10 +1,18 @@
 //! Tools the model is told about only once it goes looking for them.
 
 use crate::truncate;
+use crate::Loadout;
+use crate::LoadoutChanges;
 use crate::Tool;
+use crate::ToolContext;
+use crate::ToolOutput;
 use async_trait::async_trait;
 use micro_types::ContentBlock;
+use micro_types::ToolAnnotations;
 use micro_types::ToolDefinition;
+use micro_types::ToolExecutionMode;
+use micro_types::ToolExposure;
+use micro_types::ToolNamespace;
 use serde_json::json;
 use serde_json::Value;
 use std::sync::Arc;
@@ -17,26 +25,51 @@ const DEFAULT_LIMIT: usize = 8;
 /// How long a search waits for tools still on their way before answering with what it has.
 const ARRIVAL_WAIT: Duration = Duration::from_secs(30);
 
-pub struct Deferred(Arc<dyn Tool>);
+/// A tool reached in another way than it would be on its own, such as one left for the search to
+/// find.
+pub struct Exposed {
+    tool: Arc<dyn Tool>,
+    exposure: ToolExposure,
+}
 
-impl Deferred {
-    pub fn new(tool: Arc<dyn Tool>) -> Self {
-        Deferred(tool)
+impl Exposed {
+    pub fn new(tool: Arc<dyn Tool>, exposure: ToolExposure) -> Self {
+        Exposed { tool, exposure }
     }
 }
 
 #[async_trait]
-impl Tool for Deferred {
+impl Tool for Exposed {
     fn definition(&self) -> ToolDefinition {
-        self.0.definition()
+        self.tool.definition()
     }
 
-    fn deferred(&self) -> bool {
-        true
+    fn exposure(&self) -> ToolExposure {
+        self.exposure
+    }
+
+    fn namespace(&self) -> Option<ToolNamespace> {
+        self.tool.namespace()
+    }
+
+    fn annotations(&self) -> Option<ToolAnnotations> {
+        self.tool.annotations()
+    }
+
+    fn output_schema(&self) -> Option<Value> {
+        self.tool.output_schema()
+    }
+
+    fn execution_mode(&self) -> Option<ToolExecutionMode> {
+        self.tool.execution_mode()
+    }
+
+    fn prepare_loadout(&self, loadout: &Loadout) -> LoadoutChanges {
+        self.tool.prepare_loadout(loadout)
     }
 
     async fn execute(&self, arguments: &Value) -> Result<String, String> {
-        self.0.execute(arguments).await
+        self.tool.execute(arguments).await
     }
 
     async fn execute_reporting(
@@ -44,7 +77,7 @@ impl Tool for Deferred {
         arguments: &Value,
         progress: &crate::Progress,
     ) -> Result<String, String> {
-        self.0.execute_reporting(arguments, progress).await
+        self.tool.execute_reporting(arguments, progress).await
     }
 
     async fn execute_content(
@@ -52,7 +85,11 @@ impl Tool for Deferred {
         arguments: &Value,
         progress: &crate::Progress,
     ) -> Result<Vec<ContentBlock>, String> {
-        self.0.execute_content(arguments, progress).await
+        self.tool.execute_content(arguments, progress).await
+    }
+
+    async fn call(&self, arguments: &Value, context: &ToolContext<'_>) -> ToolOutput {
+        self.tool.call(arguments, context).await
     }
 }
 
@@ -172,7 +209,7 @@ impl ToolSearch {
         ToolSearch {
             hidden: tools
                 .iter()
-                .filter(|tool| tool.deferred())
+                .filter(|tool| tool.exposure().is_searchable())
                 .map(|tool| tool.definition())
                 .collect(),
             arrivals: None,
@@ -346,7 +383,10 @@ mod tests {
         tools
             .iter()
             .map(|(name, description)| {
-                Arc::new(Deferred::new(Arc::new(Named(name, description)))) as Arc<dyn Tool>
+                Arc::new(Exposed::new(
+                    Arc::new(Named(name, description)),
+                    ToolExposure::Deferred,
+                )) as Arc<dyn Tool>
             })
             .collect()
     }
@@ -361,9 +401,12 @@ mod tests {
 
     #[test]
     fn a_deferred_tool_is_still_the_tool_it_wraps() {
-        let tool = Deferred::new(Arc::new(Named("read", "Read a file")));
+        let tool = Exposed::new(
+            Arc::new(Named("read", "Read a file")),
+            ToolExposure::Deferred,
+        );
         assert_eq!(tool.definition().name, "read");
-        assert!(tool.deferred());
+        assert_eq!(tool.exposure(), ToolExposure::Deferred);
     }
 
     /// What the model is shown up front is a count and the groups, not every description.

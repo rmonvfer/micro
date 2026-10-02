@@ -1480,6 +1480,8 @@ mod tests {
             content: vec![image],
             is_error: false,
             timestamp: 0,
+            nested_calls: None,
+            usage: None,
         }]));
     }
 }

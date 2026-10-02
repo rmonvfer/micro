@@ -18,8 +18,12 @@ pub use transport::Authorizer;
 pub use transport::TransportError;
 
 use async_trait::async_trait;
+use micro_tools::ToolOutput;
 use micro_types::ContentBlock;
+use micro_types::ToolAnnotations;
 use micro_types::ToolDefinition;
+use micro_types::ToolExposure;
+use micro_types::ToolNamespace;
 use serde_json::json;
 use serde_json::Value;
 use std::collections::HashMap;
@@ -209,8 +213,13 @@ impl Client {
         self.instructions.as_deref()
     }
 
-    /// The tools this server offers, each ready to be called.
-    pub async fn tools(self: &Arc<Self>) -> Result<Vec<Arc<dyn micro_tools::Tool>>> {
+    /// The tools this server offers, each ready to be called and exposed as `exposure` says.
+    /// `description` says what the server offers, when its configuration says.
+    pub async fn tools(
+        self: &Arc<Self>,
+        exposure: Exposure,
+        description: Option<String>,
+    ) -> Result<Vec<Arc<dyn micro_tools::Tool>>> {
         let mut listed: Vec<Value> = Vec::new();
         let mut cursor: Option<String> = None;
         loop {
@@ -249,6 +258,18 @@ impl Client {
             .collect();
         let remote_names: Vec<String> = listed.iter().map(|(name, _)| name.clone()).collect();
         let names = names::tool_names(&self.name, &remote_names);
+        let namespace = ToolNamespace {
+            name: names::namespace(&self.name),
+            description: description
+                .as_deref()
+                .map(str::trim)
+                .filter(|description| !description.is_empty())
+                .or_else(|| self.instructions.as_deref())
+                .and_then(|text| text.lines().next())
+                .map(|line| line.trim().to_string())
+                .filter(|line| !line.is_empty()),
+            instructions: self.instructions.clone(),
+        };
 
         Ok(listed
             .into_iter()
@@ -256,6 +277,10 @@ impl Client {
             .map(|((remote, tool), name)| {
                 Arc::new(RemoteTool {
                     client: Arc::clone(self),
+                    exposure: exposure.tool_exposure(),
+                    namespace: namespace.clone(),
+                    annotations: ToolAnnotations::from_wire(tool.get("annotations")),
+                    output_schema: call_tool_result_schema(tool.get("outputSchema")),
                     definition: ToolDefinition {
                         name,
                         description: tool
@@ -351,12 +376,65 @@ struct RemoteTool {
     /// The name the server knows it by, which is not the one the model uses.
     remote: String,
     definition: ToolDefinition,
+    exposure: ToolExposure,
+    /// The server, as the group its tools belong to.
+    namespace: ToolNamespace,
+    annotations: Option<ToolAnnotations>,
+    output_schema: Value,
+}
+
+/// The JSON Schema of an MCP `CallToolResult`, with `structured` as the schema of its
+/// `structuredContent` when the tool declares one.
+fn call_tool_result_schema(structured: Option<&Value>) -> Value {
+    let mut properties = json!({
+        "_meta": { "type": "object" },
+        "content": { "type": "array", "items": { "type": "object" } },
+        "isError": { "type": "boolean" },
+    });
+    if let Some(structured) = structured.filter(|schema| schema.is_object()) {
+        properties["structuredContent"] = structured.clone();
+    }
+    json!({
+        "type": "object",
+        "properties": properties,
+        "required": ["content"],
+    })
+}
+
+impl RemoteTool {
+    /// Call the tool on the server, and hand back the `CallToolResult` it answered with.
+    async fn call_remote(&self, arguments: &Value) -> std::result::Result<Value, String> {
+        self.client
+            .request_within(
+                "tools/call",
+                json!({ "name": self.remote, "arguments": arguments }),
+                self.client.timeout.unwrap_or(DEFAULT_CALL_TIMEOUT),
+            )
+            .await
+            .map_err(|error| error.to_string())
+    }
 }
 
 #[async_trait]
 impl micro_tools::Tool for RemoteTool {
     fn definition(&self) -> ToolDefinition {
         self.definition.clone()
+    }
+
+    fn exposure(&self) -> ToolExposure {
+        self.exposure
+    }
+
+    fn namespace(&self) -> Option<ToolNamespace> {
+        Some(self.namespace.clone())
+    }
+
+    fn annotations(&self) -> Option<ToolAnnotations> {
+        self.annotations
+    }
+
+    fn output_schema(&self) -> Option<Value> {
+        Some(self.output_schema.clone())
     }
 
     async fn execute(&self, arguments: &Value) -> std::result::Result<String, String> {
@@ -370,21 +448,26 @@ impl micro_tools::Tool for RemoteTool {
         arguments: &Value,
         _progress: &micro_tools::Progress,
     ) -> std::result::Result<Vec<ContentBlock>, String> {
-        let result = self
-            .client
-            .request_within(
-                "tools/call",
-                json!({ "name": self.remote, "arguments": arguments }),
-                self.client.timeout.unwrap_or(DEFAULT_CALL_TIMEOUT),
-            )
-            .await
-            .map_err(|error| error.to_string())?;
-
+        let result = self.call_remote(arguments).await?;
         let blocks = content_blocks(&result);
 
         match result.get("isError").and_then(Value::as_bool) {
             Some(true) => Err(blocks.iter().map(ContentBlock::as_text).collect()),
             _ => Ok(blocks),
+        }
+    }
+
+    /// The model reads the result's content; a script reads the whole `CallToolResult`,
+    /// `isError` and `structuredContent` included.
+    async fn call(&self, arguments: &Value, _context: &micro_tools::ToolContext<'_>) -> ToolOutput {
+        match self.call_remote(arguments).await {
+            Err(error) => ToolOutput::error(error),
+            Ok(result) => ToolOutput {
+                content: content_blocks(&result),
+                is_error: result.get("isError").and_then(Value::as_bool) == Some(true),
+                structured: Some(result),
+                usage: None,
+            },
         }
     }
 }
@@ -511,6 +594,50 @@ mod tests {
         assert_eq!(said, "heard hello");
     }
 
+    /// A script reads the whole result, and the tool says which server it belongs to.
+    #[tokio::test]
+    async fn a_called_tool_answers_with_its_whole_result_and_names_its_server() {
+        let mut config = echo_server();
+        config.description = Some("Echo service\nmore".into());
+        config.exposure = Some(Exposure::Deferred);
+        let servers = servers(vec![entry("demo", config)]);
+        let tools = servers.connect("demo").await.unwrap();
+
+        let tool = &tools[0];
+        assert_eq!(tool.exposure(), ToolExposure::Deferred);
+        let namespace = tool.namespace().expect("it belongs to its server");
+        assert_eq!(namespace.name, "mcp__demo");
+        assert_eq!(namespace.description.as_deref(), Some("Echo service"));
+        assert_eq!(
+            namespace.instructions.as_deref(),
+            Some("Echoes things back.\nSecond line.")
+        );
+        let schema = tool.output_schema().expect("results are data");
+        assert_eq!(schema["properties"]["isError"]["type"], "boolean");
+
+        let output = tool
+            .call(
+                &json!({ "text": "hello" }),
+                &micro_tools::ToolContext::new("call_1", micro_tools::Progress::default()),
+            )
+            .await;
+        assert!(!output.is_error);
+        assert_eq!(output.text_content(), "heard hello");
+        assert_eq!(
+            output.structured.unwrap()["content"][0]["text"],
+            "heard hello"
+        );
+    }
+
+    #[test]
+    fn a_declared_output_schema_becomes_the_structured_content() {
+        let schema = call_tool_result_schema(Some(&json!({ "type": "object" })));
+        assert_eq!(schema["properties"]["structuredContent"]["type"], "object");
+        assert!(call_tool_result_schema(None)["properties"]
+            .get("structuredContent")
+            .is_none());
+    }
+
     #[tokio::test]
     async fn a_server_that_will_not_start_is_reported_and_skipped() {
         let servers = servers(vec![
@@ -579,7 +706,7 @@ mod tests {
         servers.connect("echo-box").await.unwrap();
 
         let section = servers
-            .prompt_section(&["docs".to_string(), "echo-box".to_string()])
+            .prompt_section(&["docs".to_string(), "echo-box".to_string()], false)
             .expect("there is something to list");
         assert!(section.contains("`tool_search`"), "{section}");
         assert!(
@@ -591,6 +718,9 @@ mod tests {
             "{section}"
         );
         assert!(!section.contains("Second line"), "{section}");
-        assert!(servers.prompt_section(&[]).is_none());
+        assert!(servers.prompt_section(&[], false).is_none());
+        let scripted = servers.prompt_section(&["docs".to_string()], true).unwrap();
+        assert!(scripted.contains("`codemode` scripts"), "{scripted}");
+        assert!(scripted.contains("`searchTools()`"), "{scripted}");
     }
 }

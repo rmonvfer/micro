@@ -1682,7 +1682,7 @@ done
     write_mcp_servers(
         &fixture,
         serde_json::json!({
-            "demo": { "command": server.to_string_lossy() },
+            "demo": { "command": server.to_string_lossy(), "exposure": "direct" },
             "off": { "command": "never-run-me", "enabled": false },
         }),
     );
@@ -1712,7 +1712,9 @@ fn an_mcp_server_that_will_not_start_is_reported() {
 
     write_mcp_servers(
         &fixture,
-        serde_json::json!({ "broken": { "command": "definitely-not-a-program-anyone-has" } }),
+        serde_json::json!({
+            "broken": { "command": "definitely-not-a-program-anyone-has", "exposure": "direct" },
+        }),
     );
 
     let output = fixture.print(&["-m", "test", "say hello"]);
@@ -1766,10 +1768,15 @@ fn write_mcp_servers(fixture: &Fixture, servers: serde_json::Value) {
     .expect("write mcp.json");
 }
 
-fn with_mcp_server(fixture: &Fixture, server: &std::path::Path, extra: serde_json::Value) {
+fn with_mcp_server(
+    fixture: &Fixture,
+    server: &std::path::Path,
+    exposure: &str,
+    extra: serde_json::Value,
+) {
     write_mcp_servers(
         fixture,
-        serde_json::json!({ "demo": { "command": server.to_string_lossy() } }),
+        serde_json::json!({ "demo": { "command": server.to_string_lossy(), "exposure": exposure } }),
     );
     let mut config = serde_json::json!({ "default_project_trust": "always" });
     for (key, value) in extra.as_object().expect("an object") {
@@ -1898,62 +1905,47 @@ fn servers_are_added_listed_and_removed_from_the_shell() {
         .expect_failure("names are letters, digits, - and _");
 }
 
-/// Past the threshold the extra tools stop being described and `tool_search` stands in for them.
+/// By default a server's tools are left to `codemode` scripts and the search: neither is
+/// declared, and `codemode` is offered to reach them.
 #[test]
-fn many_tools_are_left_to_be_searched_for() {
+fn a_servers_tools_are_left_to_scripts_by_default() {
     let api = FakeApi::start([Reply::text("done")]);
     let fixture = Fixture::new(&api);
     let server = fixture.workspace().join("many.sh");
     many_tool_server(&server, 20);
-    with_mcp_server(&fixture, &server, serde_json::json!({}));
+    write_mcp_servers(
+        &fixture,
+        serde_json::json!({ "demo": { "command": server.to_string_lossy() } }),
+    );
 
     fixture
         .print(&["-m", "test", "say hello"])
         .expect_success("micro --print");
 
-    let tools = offered_tools(&api.request(0));
+    let first = api.request(0);
+    let tools = offered_tools(&first);
+    assert!(tools.contains(&"codemode".to_string()), "{tools:?}");
     assert!(tools.contains(&"tool_search".to_string()), "{tools:?}");
     assert!(tools.contains(&"read".to_string()), "{tools:?}");
     assert!(
         !tools.iter().any(|name| name.starts_with("mcp__demo__")),
-        "the deferred tools should not be described, got {tools:?}"
+        "the server's tools should not be described, got {tools:?}"
+    );
+    assert!(
+        transcript(&first).contains("`codemode` scripts"),
+        "{}",
+        transcript(&first)
     );
 }
 
-/// Below the threshold nothing changes: a handful of tools is worth describing outright, and a
-/// search would only cost an exchange.
+/// A direct server's tools are described up front, however many there are.
 #[test]
-fn a_few_tools_are_still_described_up_front() {
+fn a_direct_servers_tools_are_described_up_front() {
     let api = FakeApi::start([Reply::text("done")]);
     let fixture = Fixture::new(&api);
     let server = fixture.workspace().join("few.sh");
-    many_tool_server(&server, 3);
-    with_mcp_server(&fixture, &server, serde_json::json!({}));
-
-    fixture
-        .print(&["-m", "test", "say hello"])
-        .expect_success("micro --print");
-
-    let tools = offered_tools(&api.request(0));
-    assert!(
-        tools.contains(&"mcp__demo__thing0".to_string()),
-        "{tools:?}"
-    );
-    assert!(!tools.contains(&"tool_search".to_string()), "{tools:?}");
-}
-
-/// A threshold of zero describes every tool however many there are.
-#[test]
-fn the_threshold_can_be_turned_off() {
-    let api = FakeApi::start([Reply::text("done")]);
-    let fixture = Fixture::new(&api);
-    let server = fixture.workspace().join("off.sh");
     many_tool_server(&server, 20);
-    with_mcp_server(
-        &fixture,
-        &server,
-        serde_json::json!({ "tool_search_threshold": 0 }),
-    );
+    with_mcp_server(&fixture, &server, "direct", serde_json::json!({}));
 
     fixture
         .print(&["-m", "test", "say hello"])
@@ -1965,6 +1957,57 @@ fn the_threshold_can_be_turned_off() {
         "{tools:?}"
     );
     assert!(!tools.contains(&"tool_search".to_string()), "{tools:?}");
+    assert!(!tools.contains(&"codemode".to_string()), "{tools:?}");
+}
+
+/// A `codemode` script calls a server's tool, reads its whole result, and only what the script
+/// returns reaches the model.
+#[test]
+fn a_codemode_script_calls_a_servers_tool() {
+    let api = FakeApi::start([
+        Reply::tool_call(
+            "call-1",
+            "codemode",
+            serde_json::json!({
+                "code": "const found = await searchTools('lookup thing');\nconst result = await tools.mcp__demo__lookup({ key: 'k' });\nreturn found[0].name + ' ' + result.structuredContent.answer;",
+            }),
+        ),
+        Reply::text("done"),
+    ]);
+    let fixture = Fixture::new(&api);
+    let server = fixture.workspace().join("lookup.sh");
+    std::fs::write(
+        &server,
+        r#"#!/bin/bash
+while IFS= read -r line; do
+  id=$(printf '%s' "$line" | sed -n 's/.*"id":\([0-9]*\).*/\1/p')
+  case "$line" in
+    *'"initialize"'*) printf '{"jsonrpc":"2.0","id":%s,"result":{}}\n' "$id" ;;
+    *'"tools/list"'*) printf '{"jsonrpc":"2.0","id":%s,"result":{"tools":[{"name":"lookup","description":"Look up a thing by key","inputSchema":{"type":"object"}}]}}\n' "$id" ;;
+    *'"tools/call"'*) printf '{"jsonrpc":"2.0","id":%s,"result":{"content":[{"type":"text","text":"a long answer"}],"structuredContent":{"answer":42}}}\n' "$id" ;;
+  esac
+done
+"#,
+    )
+    .expect("write the server");
+    std::fs::set_permissions(&server, std::os::unix::fs::PermissionsExt::from_mode(0o755))
+        .expect("make it runnable");
+    write_mcp_servers(
+        &fixture,
+        serde_json::json!({ "demo": { "command": server.to_string_lossy() } }),
+    );
+
+    fixture
+        .print(&["-m", "test", "look it up"])
+        .expect_success("micro --print");
+
+    let answered = transcript(&api.request(1));
+    assert!(answered.contains("Script completed"), "{answered}");
+    assert!(answered.contains("mcp__demo__lookup 42"), "{answered}");
+    assert!(
+        !answered.contains("a long answer"),
+        "only what the script returned reaches the model: {answered}"
+    );
 }
 
 #[test]
