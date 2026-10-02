@@ -536,6 +536,7 @@ pub async fn build(
     };
 
     let prefix = agent.prefix_control();
+    let cache_warming = agent.cache_warming_watch();
 
     let agent = match extensions.as_ref() {
         Some(host) => agent.with_hooks(Arc::new(crate::extensions::ExtensionHooks::new(
@@ -587,6 +588,7 @@ pub async fn build(
         scoped_models: settings.scoped_models.clone(),
         resources: selection.resources.clone(),
         tree_filter: settings.tree_filter_mode,
+        cache_warming: cache_warming.clone(),
         skills_enabled: settings.skill_commands,
         collapse_changelog: settings.collapse_changelog,
         thinking: selection.thinking,

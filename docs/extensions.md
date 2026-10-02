@@ -167,6 +167,12 @@ micro.on("tool_call", (event) => {
 });
 ```
 
+A `cache_warming_decision` handler runs before each [prompt-cache refresh](configuration.md#cache_warming) with micro's decision in `action` and its inputs `warmCost`, `missCost`, and `continuationProbability`. Returning `{ action: "warm" }` or `{ action: "stop" }` overrides it; `stop` ends warming until the next request, and the last handler that returns an action wins. The extension needs the `events` capability.
+
+```ts
+micro.on("cache_warming_decision", (event) => (event.missCost > 1 ? { action: "warm" } : undefined));
+```
+
 ## Terminal UI
 
 `ctx.ui` provides notifications, prompts, selectors, editors, status text, widgets, headers, footers, overlays, autocomplete, and custom editor components.

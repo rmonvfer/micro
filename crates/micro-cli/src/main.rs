@@ -813,6 +813,14 @@ async fn main() -> Result<()> {
 
     if let Some(asker) = &asker {
         built.commands.set_notifier(asker.clone());
+        let announcer = asker.clone();
+        built.agent.cache_warming_watch().on_warmed(move |notice| {
+            let announcer = announcer.clone();
+            let line = micro_agent::format_warm_notice(&notice);
+            tokio::spawn(async move {
+                announcer.ask("cache_warmed", line, None, Vec::new()).await;
+            });
+        });
     }
 
     let extensions = built.extensions.clone();

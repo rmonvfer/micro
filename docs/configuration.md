@@ -107,7 +107,7 @@ Command-line options take precedence over environment variables, which take prec
 | `quiet_startup` | `false` | `true` hides the startup introduction; `"header"` keeps the header with the version and key hints and hides the rest. |
 | `collapse_changelog` | `false` | Collapse changelog display. |
 | `warnings` | `true` | Show runtime warnings. |
-| `cache_miss_notices` | `false` | Report cache writes that did not record a cache read. |
+| `cache_miss_notices` | `false` | Report cache writes that did not record a cache read, and each prompt-cache refresh with its cost. |
 | `double_escape` | `tree` | `tree`, `fork`, or `none` when Escape is pressed twice on an empty prompt. |
 | `follow_up_mode` | `queue` | `queue` or `interrupt` for input submitted during a turn. |
 | `default_project_trust` | `ask` | `ask`, `always`, or `never`. |
@@ -240,7 +240,7 @@ Where hyperlinks work, the paths in `read`, `write`, `edit`, `multi_edit`, and `
 
 ### cache_miss_notices
 
-When enabled, micro reports turns that write a prompt cache without reading from it. Use `micro why-miss` for a local prefix and conversation diagnostic after the run.
+When enabled, micro reports turns that write a prompt cache without reading from it, and each refresh that kept a prompt cache warm, with its cost. Use `micro why-miss` for a local prefix and conversation diagnostic after the run.
 
 ### compaction
 
@@ -284,7 +284,7 @@ A provider's prompt cache expires a few minutes after its last use, so a tool th
 
 A refresh goes out at 90% of the cache lifetime, leaving at least ten seconds of margin, and only when it is expected to save at least $0.05: the extra cost of a cache miss, weighted by the chance that another request comes before expiry (certain while a run is going, 15% while idle), less the cost of the refresh. Warming stops after an hour, when a new request is sent, when the conversation is compacted or replaced, or when the model changes. Anthropic requests with extended thinking are never replayed, because the output cap changes the thinking budget their cache is keyed on.
 
-A model is eligible only when its cache lifetime is known. Anthropic's five-minute lifetime is built in; `prompt_cache_lifetimes` declares others, keyed by exact `provider/model` or by provider. Each refresh is recorded in the session ledger as `cache_warm` and counts toward the session bill, but never enters the conversation.
+A model is eligible only when its cache lifetime is known. Anthropic's five-minute lifetime is built in; `prompt_cache_lifetimes` declares others, keyed by exact `provider/model` or by provider. Each refresh is recorded in the session ledger as `cache_warm` and counts toward the session bill, but never enters the conversation; with `cache_miss_notices` on, the transcript shows each one with its cost. `/session` shows the mode, the next decision with its economics, or why nothing is being warmed, and extensions can override each decision with [`cache_warming_decision`](extensions.md#events).
 
 ```json
 { "cache_warming": "idle", "prompt_cache_lifetimes": { "openai": 300 } }

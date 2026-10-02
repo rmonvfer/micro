@@ -48,6 +48,7 @@
 - Add `compaction` token budgets (`reserve_tokens`, `keep_recent_tokens`) with per-model overrides.
 - Fit attached, `read`, and tool-result images to per-model `image_limits` once as they join the conversation, so history and prompt caches stay stable across model switches.
 - Keep valuable prompt caches warm during long tool runs, and optionally between runs, with cost-aware one-token refreshes (`cache_warming`, default `streaming`; `prompt_cache_lifetimes`). Refreshes are recorded as `cache_warm` ledger events and billed.
+- Show cache warming in `/session`: the mode, the next decision with its economics, or why nothing is being warmed. With `cache_miss_notices` on, the transcript shows each refresh with its cost, and extensions can override each decision with the `cache_warming_decision` event.
 - Add `/bug` to write a ZIP bug report with redacted settings, environment, extensions and recorded failures, optionally with the session transcript, for attaching to a GitHub issue.
 - Let an extension's `tool_call` handler return `terminate: true` with a block, ending the run without another model call when every call in the batch was blocked that way.
 

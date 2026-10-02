@@ -1289,6 +1289,14 @@ impl App {
                 request.answer(serde_json::json!({}));
                 return;
             }
+            "cache_warmed" => {
+                let mut request = request;
+                if self.settings.cache_miss_notices {
+                    self.notice(request.title.clone(), MessageKind::Info);
+                }
+                request.answer(serde_json::json!({}));
+                return;
+            }
 
             "tool_call_rendered" => {
                 let mut request = request;
@@ -4445,6 +4453,31 @@ mod tests {
         );
         app.ask_question(request);
         answered.try_recv().expect("ask_question answers at once")
+    }
+
+    /// A refresh that kept the prompt cache warm is announced only to whoever asked for cache
+    /// notices.
+    #[test]
+    fn a_cache_refresh_is_announced_with_cache_notices_on() {
+        let mut app = app();
+        ask(
+            &mut app,
+            "cache_warmed",
+            "Cache warmed: $0.030",
+            None,
+            vec![],
+        );
+        assert!(rendered_notices(&app).is_empty());
+
+        app.settings.cache_miss_notices = true;
+        ask(
+            &mut app,
+            "cache_warmed",
+            "Cache warmed: $0.030",
+            None,
+            vec![],
+        );
+        assert_eq!(rendered_notices(&app), vec!["Cache warmed: $0.030"]);
     }
 
     /// Letting an extension go takes back everything it drew.

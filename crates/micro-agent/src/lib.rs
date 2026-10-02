@@ -5,8 +5,17 @@ mod nested;
 mod summarizer;
 mod warming;
 
+pub use warming::format_warm_notice;
+pub use warming::format_warming_status;
 pub use warming::CacheWarming;
 pub use warming::CacheWarmingMode;
+pub use warming::WarmNotice;
+pub use warming::WarmingAction;
+pub use warming::WarmingDecision;
+pub use warming::WarmingPhase;
+pub use warming::WarmingState;
+pub use warming::WarmingStatus;
+pub use warming::WarmingWatch;
 
 pub use summarizer::ProviderSummarizer;
 
@@ -419,7 +428,7 @@ impl Agent {
 
     /// Point the agent at a different model, keeping the conversation.
     pub fn set_model(&mut self, swap: ModelSwap) {
-        self.warmer.stop();
+        self.warmer.stop("model changed");
         self.provider = swap.provider;
         self.model = swap.model;
         self.api_key = swap.api_key;
@@ -493,8 +502,14 @@ impl Agent {
 
     /// When to keep a prompt cache from expiring between requests.
     pub fn with_cache_warming(mut self, warming: CacheWarming) -> Self {
+        self.warmer.set_mode(warming.mode);
         self.cache_warming = warming;
         self
+    }
+
+    /// A handle onto what the cache warmer is doing.
+    pub fn cache_warming_watch(&self) -> WarmingWatch {
+        self.warmer.watch()
     }
 
     /// How large an image each model may be sent.
@@ -658,14 +673,14 @@ impl Agent {
         let summary = compacted.messages[0].clone();
         self.record_compaction(&compacted);
         self.charge(compacted.cost.usage);
-        self.warmer.stop();
+        self.warmer.stop("conversation compacted");
         self.messages = compacted.messages;
         Ok(summary)
     }
 
     /// Put the agent in a different conversation.
     pub fn set_messages(&mut self, messages: Vec<Message>) {
-        self.warmer.stop();
+        self.warmer.stop("conversation replaced");
         self.messages = messages;
 
         self.repairs = answer_abandoned_calls(&mut self.messages);
@@ -1340,7 +1355,7 @@ impl Agent {
         let summary = compacted.messages[0].clone();
         self.record_compaction(&compacted);
         self.charge(compacted.cost.usage);
-        self.warmer.stop();
+        self.warmer.stop("conversation compacted");
         self.messages = compacted.messages;
 
         events.send(AgentEvent::MessageStart {
@@ -1353,7 +1368,7 @@ impl Agent {
     /// Issue one model request, forwarding stream events and retrying transient failures that
     /// happen before any content is shown.
     async fn stream_once(&mut self, events: &Fan<'_>) -> AssistantMessage {
-        self.warmer.stop();
+        self.warmer.stop("a request is in flight");
         let context = self
             .prefix
             .ahead_of(self.messages.clone(), self.cache_key.clone());
@@ -1502,6 +1517,7 @@ impl Agent {
                 usage,
                 cost,
                 recorder: self.recorder.clone(),
+                hooks: self.hooks.clone(),
             },
         );
     }
@@ -2046,6 +2062,7 @@ mod tests {
                 ..ModelCost::default()
             },
             recorder: Some(recorder),
+            hooks: None,
         }
     }
 
@@ -2100,6 +2117,86 @@ mod tests {
             warm_request(&provider, recorder),
         );
         assert!(!warmer.is_running());
+    }
+
+    struct Refusing;
+
+    #[async_trait::async_trait]
+    impl Hooks for Refusing {
+        async fn cache_warming_decision(
+            &self,
+            decision: &WarmingDecision,
+        ) -> Option<WarmingAction> {
+            assert!(decision.warm, "micro would have warmed: {decision:?}");
+            Some(WarmingAction::Stop)
+        }
+    }
+
+    #[tokio::test]
+    async fn a_refresh_is_announced_and_the_status_follows_it() {
+        let provider = RecordingProvider::new("anthropic");
+        let (recorder, _recorded) = tokio::sync::mpsc::unbounded_channel();
+        let mut warmer = warming::Warmer::default();
+        let watch = warmer.watch();
+        let notices = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let heard = Arc::clone(&notices);
+        watch.on_warmed(move |notice| heard.lock().unwrap().push(notice));
+        let _running = warmer.run_started();
+        warmer.start(
+            &short_lived(CacheWarmingMode::Streaming),
+            warm_request(&provider, recorder),
+        );
+
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let status = watch.status();
+        assert_eq!(status.state, WarmingState::Scheduled);
+        let line = format_warming_status(&status, std::time::SystemTime::now());
+        assert!(line.starts_with("Decision in 1s ("), "{line}");
+        assert!(line.ends_with("-> warm)"), "{line}");
+
+        tokio::time::sleep(Duration::from_millis(1_400)).await;
+        let notices = notices.lock().unwrap().clone();
+        assert_eq!(notices.len(), 1);
+        assert!(!notices[0].extension_override);
+
+        warmer.stop("model changed");
+        assert_eq!(
+            format_warming_status(&watch.status(), std::time::SystemTime::now()),
+            "Inactive (model changed)"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_extension_can_stop_a_refresh_micro_would_send() {
+        let provider = RecordingProvider::new("anthropic");
+        let (recorder, _recorded) = tokio::sync::mpsc::unbounded_channel();
+        let mut warmer = warming::Warmer::default();
+        let _running = warmer.run_started();
+        let mut request = warm_request(&provider, recorder);
+        request.hooks = Some(Arc::new(Refusing));
+        warmer.start(&short_lived(CacheWarmingMode::Streaming), request);
+
+        tokio::time::sleep(Duration::from_millis(1_500)).await;
+        assert!(provider.calls().is_empty(), "the extension stopped it");
+        let status = warmer.watch().status();
+        assert_eq!(status.state, WarmingState::Inactive);
+        assert!(status.extension_override);
+        let line = format_warming_status(&status, std::time::SystemTime::now());
+        assert!(
+            line.starts_with("Stopped (extension override, 100% continuation"),
+            "{line}"
+        );
+    }
+
+    #[test]
+    fn warming_that_is_off_says_so() {
+        let mut warmer = warming::Warmer::default();
+        warmer.set_mode(CacheWarmingMode::Off);
+        warmer.stop("a request is in flight");
+        assert_eq!(
+            format_warming_status(&warmer.watch().status(), std::time::SystemTime::now()),
+            "Inactive (cache warming disabled)"
+        );
     }
 
     #[test]
@@ -2402,6 +2499,13 @@ pub trait Hooks: Send + Sync {
     /// Called with the answer, once it is complete.
     async fn after_response(&self, message: &AssistantMessage) {
         let _ = message;
+    }
+
+    /// Called before each prompt-cache refresh with micro's decision; an action returned
+    /// overrules it.
+    async fn cache_warming_decision(&self, decision: &WarmingDecision) -> Option<WarmingAction> {
+        let _ = decision;
+        None
     }
 }
 

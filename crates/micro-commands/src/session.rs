@@ -313,6 +313,16 @@ pub(crate) async fn info(context: &CommandContext<'_>) -> CommandOutcome {
         thousands(usage.total_tokens() as u64)
     ));
 
+    if let Some(warming) = &context.cache_warming {
+        out.push_str("\nCache Warming\n");
+        out.push_str(&format!("Mode: {}\n", warming.mode));
+        out.push_str(&format!("Status: {}\n", warming.status));
+        if let Some((miss_cost, warm_cost)) = warming.costs {
+            out.push_str(&format!("Cache miss penalty: ${miss_cost:.3}\n"));
+            out.push_str(&format!("Refresh cost: ${warm_cost:.3}\n"));
+        }
+    }
+
     if let Some(model) = context.model {
         let spent = model
             .price(
@@ -424,6 +434,31 @@ mod tests {
                 .unwrap();
         }
         session.id().to_string()
+    }
+
+    #[tokio::test]
+    async fn session_info_says_what_the_cache_warmer_is_doing() {
+        let harness = Harness::new("session-warming");
+        let id = record(&harness, 1).await;
+        let context = CommandContext {
+            session_id: Some(&id),
+            cache_warming: Some(crate::CacheWarmingReport {
+                mode: "idle".to_string(),
+                status: "Decision in 4m 30s (100% continuation probability)".to_string(),
+                costs: Some((0.345, 0.0301)),
+            }),
+            ..harness.context()
+        };
+
+        let outcome = dispatch("/session", &context).await.unwrap();
+        let said = text(&outcome);
+        assert!(
+            said.contains(
+                "Cache Warming\nMode: idle\nStatus: Decision in 4m 30s (100% continuation \
+                 probability)\nCache miss penalty: $0.345\nRefresh cost: $0.030"
+            ),
+            "{said}"
+        );
     }
 
     #[tokio::test]

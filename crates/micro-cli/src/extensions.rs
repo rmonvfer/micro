@@ -1851,11 +1851,62 @@ impl Hooks for ExtensionHooks {
         }
         context
     }
+
+    async fn cache_warming_decision(
+        &self,
+        decision: &micro_agent::WarmingDecision,
+    ) -> Option<micro_agent::WarmingAction> {
+        let answers = self
+            .host
+            .ask_event_attributed(
+                "cache_warming_decision",
+                json!({
+                    "type": "cache_warming_decision",
+                    "warmCost": decision.warm_cost,
+                    "missCost": decision.miss_cost,
+                    "continuationProbability": decision.continuation_probability,
+                    "action": decision.action().as_str(),
+                }),
+            )
+            .await
+            .ok()?;
+        warming_action(
+            self.broker
+                .heeded(answers, Capability::Events, "cache_warming_decision"),
+        )
+    }
+}
+
+/// The action the last answer to `cache_warming_decision` named, when any did.
+fn warming_action(answers: Vec<Value>) -> Option<micro_agent::WarmingAction> {
+    answers
+        .iter()
+        .filter_map(
+            |answer| match answer.get("action").and_then(Value::as_str) {
+                Some("warm") => Some(micro_agent::WarmingAction::Warm),
+                Some("stop") => Some(micro_agent::WarmingAction::Stop),
+                _ => None,
+            },
+        )
+        .next_back()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_last_extension_to_name_a_warming_action_wins() {
+        assert_eq!(
+            warming_action(vec![
+                json!({ "action": "stop" }),
+                json!({ "action": "warm" }),
+                json!({ "action": "maybe" }),
+            ]),
+            Some(micro_agent::WarmingAction::Warm)
+        );
+        assert_eq!(warming_action(vec![json!({})]), None);
+    }
 
     /// The policy these tests hand over.
     fn unconfined() -> micro_sandbox::Sandbox {
