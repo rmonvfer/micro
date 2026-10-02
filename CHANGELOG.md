@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- Complete slash commands when the prompt starts with whitespace.
+
 ## [0.1.13] - 2026-09-04
 
 - Show `micro — <workspace>` in terminal tabs and name Bun extension host processes.

@@ -62,7 +62,7 @@ impl Menu {
     /// The menu belonging to `line` with the cursor at byte offset `cursor`, or nothing when no
     /// menu belongs there.
     pub fn open_for(line: &str, cursor: usize, registered: &[MenuItem]) -> Option<Menu> {
-        let typed = line.get(..cursor)?;
+        let typed = line.get(..cursor)?.trim_start();
         if !typed.starts_with('/') || typed.contains(char::is_whitespace) {
             return None;
         }
@@ -411,6 +411,17 @@ mod files {
     #[test]
     fn a_name_matching_nothing_offers_nothing() {
         assert!(Menu::files_for("@zzzzz", 6, &paths()).is_none());
+    }
+
+    /// Whitespace typed before the slash still opens the command menu, and committing leaves it be.
+    #[test]
+    fn leading_whitespace_still_opens_the_command_menu() {
+        let menu = Menu::open_for("  /mod", 6, &[]).expect("it opens");
+        assert_eq!(menu.prefix(), "/mod");
+        assert!(menu
+            .commit()
+            .is_some_and(|written| written.starts_with("/mod")));
+        assert!(Menu::open_for("  /model x", 10, &[]).is_none());
     }
 
     /// A command still opens the command menu, not the file one.
