@@ -128,9 +128,10 @@ pub trait Commands: Send {
         false
     }
 
-    /// Tell whatever is listening that the reasoning effort changed.
-    async fn thinking_changed(&mut self, level: micro_types::ThinkingLevel) {
-        let _ = level;
+    /// Tell whatever is listening that the reasoning effort changed, and whether it is to be the
+    /// default for later sessions too.
+    async fn thinking_changed(&mut self, level: micro_types::ThinkingLevel, save: bool) {
+        let _ = (level, save);
     }
 
     /// Ask whatever is listening whether the conversation may be summarized.

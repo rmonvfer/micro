@@ -2115,6 +2115,7 @@ impl App {
                 Outcome::Handled
             }
             Action::PasteImage => self.paste_image(),
+            Action::SaveDefault => Outcome::Handled,
 
             Action::SelectStart { col, row }
                 if self.jump_label.is_some_and(|label| {
@@ -2512,6 +2513,12 @@ impl App {
             Action::MoveDown => picker.select_next(),
 
             Action::Tab => picker.toggle_scope(),
+            Action::SaveDefault if self.question.is_none() => {
+                if let Some(line) = picker.selected_item().and_then(|item| item.save.clone()) {
+                    self.picker = None;
+                    self.queue_line(line);
+                }
+            }
             Action::Insert(text) => picker.push(&text),
             Action::Backspace => picker.backspace(),
             Action::Submit => {
@@ -5367,6 +5374,33 @@ mod tests {
         app.handle(Action::PageUp);
         assert!(app.scroll() > 0);
         assert!(app.search().is_some());
+    }
+
+    #[test]
+    fn control_s_in_a_picker_dispatches_the_save_line_of_the_highlighted_item() {
+        let mut app = app();
+        app.open_picker(micro_commands::Picker::new(
+            "Reasoning effort",
+            vec![micro_commands::PickerItem::new("off", "", "/thinking off")
+                .saving("/thinking --default off")],
+        ));
+        app.handle(Action::SaveDefault);
+        assert!(app.picker().is_none());
+        assert_eq!(
+            app.take_submission().as_deref(),
+            Some("/thinking --default off")
+        );
+    }
+
+    #[test]
+    fn control_s_does_nothing_in_a_picker_without_defaults() {
+        let mut app = app();
+        app.open_picker(micro_commands::Picker::new(
+            "Sessions",
+            vec![micro_commands::PickerItem::new("one", "", "/resume one")],
+        ));
+        app.handle(Action::SaveDefault);
+        assert!(app.picker().is_some());
     }
 
     #[test]

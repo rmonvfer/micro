@@ -410,7 +410,7 @@ impl CliCommands {
             == micro_auth::canonical_provider(&self.model.provider)
         {
             let model = self.model.clone();
-            return match self.swap_to(&model).await {
+            return match self.swap_to(&model, false).await {
                 Applied::Model { swap, .. } => Applied::Model {
                     swap,
                     note: Some(format!("Signed in to {provider}.")),
@@ -424,7 +424,8 @@ impl CliCommands {
         ))
     }
 
-    async fn swap_to(&mut self, model: &ModelDef) -> Applied {
+    /// Switch the session to `model`, and make it the default for later sessions when `save` is set.
+    async fn swap_to(&mut self, model: &ModelDef, save: bool) -> Applied {
         let resolved = match micro_provider::resolve(&self.auth, model).await {
             Ok(resolved) => resolved,
             Err(error) => {
@@ -453,7 +454,10 @@ impl CliCommands {
             return Applied::error(format!("Could not update the session model: {error}"));
         }
 
-        let remembered = self.remember_model(model);
+        let remembered = match save {
+            true => self.remember_model(model),
+            false => Ok(()),
+        };
 
         if previous_model.qualified_id() != model.qualified_id() {
             crate::extensions::announce(
@@ -472,8 +476,10 @@ impl CliCommands {
             Some(warning) => format!("Model: {}\n{warning}", model.qualified_id()),
             None => format!("Model: {}", model.qualified_id()),
         };
-        if let Err(error) = remembered {
-            note.push_str(&format!("\nIt was not remembered for next time: {error}"));
+        match remembered {
+            Ok(()) if save => note.push_str("\nSaved as the default model."),
+            Ok(()) => {}
+            Err(error) => note.push_str(&format!("\nIt was not saved as the default: {error}")),
         }
 
         Applied::Model {
@@ -1019,11 +1025,13 @@ impl Commands for CliCommands {
         true
     }
 
-    async fn thinking_changed(&mut self, level: micro_types::ThinkingLevel) {
+    async fn thinking_changed(&mut self, level: micro_types::ThinkingLevel, save: bool) {
         let previous_level = self.thinking;
         self.thinking = level;
-        if let Err(error) = self.remember_thinking(level) {
-            eprintln!("note: thinking level was not remembered for next time: {error}");
+        if save {
+            if let Err(error) = self.remember_thinking(level) {
+                eprintln!("note: thinking level was not saved as the default: {error}");
+            }
         }
         crate::extensions::announce(
             self.extensions.as_ref(),
@@ -1215,7 +1223,7 @@ impl Commands for CliCommands {
 
             CommandOutcome::RemoteControl { action } => self.remote(action).await,
 
-            CommandOutcome::SetModel { model } => self.swap_to(&model).await,
+            CommandOutcome::SetModel { model, save } => self.swap_to(&model, save).await,
 
             CommandOutcome::SetProvider { provider } => {
                 let canonical = micro_auth::canonical_provider(provider).to_string();
@@ -1226,7 +1234,7 @@ impl Commands for CliCommands {
                     .find(|model| model.provider == canonical)
                     .cloned()
                 {
-                    Some(model) => self.swap_to(&model).await,
+                    Some(model) => self.swap_to(&model, false).await,
                     None => Applied::error(format!("No models are known for {provider}.")),
                 }
             }
@@ -1470,22 +1478,35 @@ mod tests {
         );
     }
 
-    /// Choosing a model is a decision about how to work, so the next run starts on it.
+    /// Choosing a model changes this session; saving it as the default is what the next run starts
+    /// on.
     #[tokio::test]
-    async fn switching_model_is_remembered_for_next_time() {
+    async fn switching_model_is_saved_for_next_time_only_when_asked() {
         let (mut host, root) = host("remember-model").await;
         host.auth.store_api_key("anthropic", "sk-ant-test").unwrap();
+        let settings = root.join("home").join(micro_config::FILE_NAME);
 
         let outcome = host
-            .dispatch("/model anthropic/claude-sonnet-5", state(0))
+            .dispatch("/model anthropic/claude-opus-5", state(0))
+            .await
+            .expect("a command");
+        let applied = host.apply(outcome).await;
+        assert!(!applied.is_error(), "{applied:?}");
+        let unsaved = micro_config::Config::load_from(&settings).expect("readable settings");
+        assert_eq!(unsaved.model, None, "a switch is for this session");
+        assert_eq!(
+            host.session.lock().await.meta().model_id,
+            "anthropic/claude-opus-5"
+        );
+
+        let outcome = host
+            .dispatch("/model --default anthropic/claude-sonnet-5", state(0))
             .await
             .expect("a command");
         let applied = host.apply(outcome).await;
         assert!(!applied.is_error(), "{applied:?}");
 
-        let saved =
-            micro_config::Config::load_from(root.join("home").join(micro_config::FILE_NAME))
-                .expect("the settings were written");
+        let saved = micro_config::Config::load_from(&settings).expect("the settings were written");
         assert_eq!(saved.model.as_deref(), Some("anthropic/claude-sonnet-5"));
         assert_eq!(saved.provider.as_deref(), Some("anthropic"));
         assert_eq!(
@@ -1552,15 +1573,18 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn cycling_thinking_is_remembered_for_next_time() {
+    async fn a_thinking_level_is_saved_only_when_asked() {
         let (mut host, root) = host("remember-thinking").await;
+        let settings = root.join("home").join(micro_config::FILE_NAME);
 
-        host.thinking_changed(micro_types::ThinkingLevel::High)
+        host.thinking_changed(micro_types::ThinkingLevel::Low, false)
             .await;
+        let unsaved = micro_config::Config::load_from(&settings).expect("readable settings");
+        assert_eq!(unsaved.thinking, None, "cycling is for this session");
 
-        let saved =
-            micro_config::Config::load_from(root.join("home").join(micro_config::FILE_NAME))
-                .expect("the settings were written");
+        host.thinking_changed(micro_types::ThinkingLevel::High, true)
+            .await;
+        let saved = micro_config::Config::load_from(&settings).expect("the settings were written");
         assert_eq!(saved.thinking, Some(micro_config::Thinking::High));
     }
 

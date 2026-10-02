@@ -113,12 +113,12 @@ Type `/help` in the interface for the list from the installed version.
 | Command                         | Purpose                                                                         |
 | ------------------------------- | ------------------------------------------------------------------------------- |
 | `/help`                         | List every command.                                                             |
-| `/model [query]`                | Choose or switch models.                                                        |
+| `/model [--default] [query]`    | Switch models for the session; `--default` or `ctrl+s` also saves it.           |
 | `/provider [name]`              | Choose or switch providers.                                                     |
 | `/login [provider]`             | Sign in to a provider.                                                          |
 | `/logout [provider]`            | Remove a stored provider credential.                                            |
 | `/auth`                         | Show which providers are signed in.                                             |
-| `/thinking [level]`             | Change reasoning effort.                                                        |
+| `/thinking [--default] [level]` | Change reasoning effort; `--default` or `ctrl+s` also saves it.                 |
 | `/theme [dark/light]`           | Change the terminal theme.                                                      |
 | `/sessions`                     | List sessions for the workspace.                                                |
 | `/session`                      | Show the current session information and usage.                                 |

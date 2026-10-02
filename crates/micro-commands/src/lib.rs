@@ -416,20 +416,42 @@ fn trust(argument: Option<&str>) -> CommandOutcome {
     }
 }
 
-/// `/thinking` with no argument offers the levels; with one, sets it.
+/// The flag that makes a choice the default for later sessions as well as this one.
+const DEFAULT_FLAG: &str = "--default";
+
+/// Split `--default` off the front of an argument: whether it was there, and what is left.
+pub(crate) fn as_default(argument: Option<&str>) -> (bool, Option<&str>) {
+    let Some(argument) = argument.map(str::trim) else {
+        return (false, None);
+    };
+    match argument.strip_prefix(DEFAULT_FLAG) {
+        Some(rest) if rest.is_empty() || rest.starts_with(char::is_whitespace) => {
+            let rest = rest.trim();
+            (true, (!rest.is_empty()).then_some(rest))
+        }
+        _ => (false, Some(argument)),
+    }
+}
+
+/// `/thinking` with no argument offers the levels; with one, sets it for this session, and with
+/// `--default` before it, for later sessions too.
 fn thinking(argument: Option<&str>) -> CommandOutcome {
+    let (save, argument) = as_default(argument);
     let Some(argument) = argument else {
         return CommandOutcome::Choose(Picker::new(
             "Reasoning effort",
             LEVELS
                 .iter()
-                .map(|(name, effort)| PickerItem::new(*name, *effort, format!("/thinking {name}")))
+                .map(|(name, effort)| {
+                    PickerItem::new(*name, *effort, format!("/thinking {name}"))
+                        .saving(format!("/thinking {DEFAULT_FLAG} {name}"))
+                })
                 .collect(),
         ));
     };
 
     match level_named(argument) {
-        Some(level) => CommandOutcome::SetThinking { level },
+        Some(level) => CommandOutcome::SetThinking { level, save },
         None => CommandOutcome::error(format!(
             "unknown reasoning effort `{argument}`: expected off, minimal, low, medium, high, xhigh or max"
         )),
@@ -1519,6 +1541,35 @@ pub(crate) mod testing {
 mod tests {
     use super::testing::*;
     use super::*;
+
+    #[test]
+    fn a_thinking_level_is_for_this_session_unless_saved_as_the_default() {
+        let CommandOutcome::SetThinking { level, save } = thinking(Some("high")) else {
+            panic!("expected a level");
+        };
+        assert_eq!(level, ThinkingLevel::High);
+        assert!(!save);
+
+        let offered = thinking(None);
+        let saving = picker(&offered).items[0].save.clone().expect("a save line");
+        assert_eq!(saving, "/thinking --default off");
+        let CommandOutcome::SetThinking { level, save } =
+            thinking(saving.strip_prefix("/thinking "))
+        else {
+            panic!("expected a level");
+        };
+        assert_eq!(level, ThinkingLevel::Off);
+        assert!(save);
+    }
+
+    #[test]
+    fn the_default_flag_is_split_off_the_argument() {
+        assert_eq!(as_default(None), (false, None));
+        assert_eq!(as_default(Some("opus")), (false, Some("opus")));
+        assert_eq!(as_default(Some("--default opus")), (true, Some("opus")));
+        assert_eq!(as_default(Some("--default")), (true, None));
+        assert_eq!(as_default(Some("--defaults")), (false, Some("--defaults")));
+    }
 
     #[test]
     fn every_command_is_listed_once_and_describes_itself() {

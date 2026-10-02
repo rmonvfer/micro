@@ -69,6 +69,8 @@ pub enum Action {
     SelectModel,
     /// Put the last answer on the system clipboard.
     CopyMessage,
+    /// Ctrl+S: make the highlighted model or thinking level the default for later sessions.
+    SaveDefault,
     /// Take an image off the clipboard and attach it to the next prompt.
     PasteImage,
     /// Drop to the shell, leaving the interface to be resumed.
@@ -213,6 +215,7 @@ fn control_action(character: char) -> Action {
         ']' => Action::ArmJump { forward: true },
         'p' => Action::CycleModel { forward: true },
         'x' => Action::CopyMessage,
+        's' => Action::SaveDefault,
         'v' => Action::PasteImage,
         'z' => Action::Suspend,
 
@@ -408,6 +411,14 @@ mod tests {
         assert_eq!(
             action_for(&key(KeyCode::Home, KeyModifiers::CONTROL)),
             Action::MoveLineStart
+        );
+    }
+
+    #[test]
+    fn control_s_saves_a_default() {
+        assert_eq!(
+            action_for(&key(KeyCode::Char('s'), KeyModifiers::CONTROL)),
+            Action::SaveDefault
         );
     }
 

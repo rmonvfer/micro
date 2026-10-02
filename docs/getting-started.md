@@ -125,6 +125,13 @@ micro -m anthropic/claude-sonnet-5 "review this patch"
 
 Model queries accept an exact ID, a provider-qualified ID, an alias, or a unique partial match. micro prints the candidates when a query is ambiguous.
 
+Inside the interface, `/model` and `/thinking` change the model and reasoning effort for the current session. Press `ctrl+s` on a model or level in their pickers, or put `--default` before the argument, to also save it as the default for new sessions:
+
+```text
+/model --default anthropic/claude-sonnet-5
+/thinking --default high
+```
+
 ## Resume work
 
 Sessions are saved while they run.

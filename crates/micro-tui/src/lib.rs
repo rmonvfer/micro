@@ -254,7 +254,7 @@ async fn run_loop(interface: &mut Interface<'_>) -> Result<()> {
                         Outcome::ThinkingChanged(level) => {
                             interface.agent.set_thinking(level);
                             if let Some(commands) = interface.commands.as_mut() {
-                                commands.thinking_changed(level).await;
+                                commands.thinking_changed(level, false).await;
                             }
                         }
 
@@ -869,10 +869,19 @@ async fn apply_outcome(
             }
         }
 
-        CommandOutcome::SetThinking { level } => {
+        CommandOutcome::SetThinking { level, save } => {
             agent.set_thinking(level);
             app.set_thinking(level);
-            commands.thinking_changed(level).await;
+            commands.thinking_changed(level, save).await;
+            if save {
+                app.notice(
+                    format!(
+                        "Thinking level {} saved as the default",
+                        app::thinking_name(level)
+                    ),
+                    MessageKind::Info,
+                );
+            }
         }
 
         CommandOutcome::CopyLastAnswer => app.copy_last_answer(),
