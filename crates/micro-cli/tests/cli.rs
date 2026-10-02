@@ -592,6 +592,79 @@ fn a_session_can_be_deleted() {
 }
 
 #[test]
+fn default_tools_from_the_user_and_the_project_choose_the_built_in_tools() {
+    let api = FakeApi::start([Reply::text("done")]);
+    let fixture = Fixture::new(&api);
+    std::fs::write(
+        fixture.home().join("config.json"),
+        r#"{"default_project_trust":"always","default_tools":["-bash"]}"#,
+    )
+    .unwrap();
+    fixture.write(".micro/settings.json", r#"{"default_tools":["-grep"]}"#);
+
+    fixture
+        .print(&["-m", "test", "hello"])
+        .expect_success("micro --print");
+
+    let request = api.request(0);
+    let offered: Vec<&str> = request["tools"]
+        .as_array()
+        .expect("tools were sent")
+        .iter()
+        .filter_map(|tool| tool["function"]["name"].as_str())
+        .collect();
+    assert!(offered.contains(&"read"), "{offered:?}");
+    assert!(!offered.contains(&"bash"), "{offered:?}");
+    assert!(!offered.contains(&"grep"), "{offered:?}");
+}
+
+#[test]
+fn leaving_before_anything_is_said_leaves_no_session() {
+    let api = FakeApi::start([]);
+    let fixture = Fixture::new(&api);
+    fixture
+        .print(&["-m", "test", "/name never used"])
+        .expect_success("micro --print /name");
+
+    assert!(fixture.session_logs().is_empty(), "no session was written");
+}
+
+#[test]
+fn a_chosen_session_id_is_started_then_carried_on() {
+    let api = FakeApi::start([Reply::text("first answer"), Reply::text("second answer")]);
+    let fixture = Fixture::new(&api);
+    let started = fixture.print(&["-m", "test", "--session-id", "nightly", "first question"]);
+    started.expect_success("micro --session-id on a fresh id");
+    assert!(
+        started.stderr.contains("starting one under it"),
+        "{}",
+        started.stderr
+    );
+
+    fixture
+        .print(&["-m", "test", "--session-id", "nightly", "second question"])
+        .expect_success("micro --session-id on a known id");
+
+    let sent = serde_json::to_string(&api.request(1)).unwrap();
+    assert!(sent.contains("first question"), "{sent}");
+    let listed = Output::run(fixture.micro().args(["sessions", "list"]));
+    assert!(listed.stdout.contains("nightly"), "{}", listed.stdout);
+    assert_eq!(fixture.session_logs().len(), 1);
+}
+
+#[test]
+fn a_session_can_be_named_from_the_command_line() {
+    let api = FakeApi::start([Reply::text("done")]);
+    let fixture = Fixture::new(&api);
+    fixture
+        .print(&["-m", "test", "-n", "Release prep", "hello"])
+        .expect_success("micro --name");
+
+    let listed = Output::run(fixture.micro().args(["sessions", "list"]));
+    assert!(listed.stdout.contains("Release prep"), "{}", listed.stdout);
+}
+
+#[test]
 fn sessions_are_scoped_to_a_workspace_and_follow_the_cwd_flag() {
     let api = FakeApi::start([Reply::text("done")]);
     let fixture = Fixture::new(&api);
@@ -1302,7 +1375,7 @@ fn an_extension_hears_the_moments_the_host_owns() {
     if which_bun().is_none() {
         return;
     }
-    let api = FakeApi::start([]);
+    let api = FakeApi::start([Reply::text("hello back")]);
     let fixture = Fixture::new(&api);
     fixture.write(
         ".micro/extensions/hostwatch.ts",
@@ -1320,7 +1393,10 @@ export default (micro) => {
 "#,
     );
 
-    let output = fixture.print(&["-m", "test", "/name the renamed one"]);
+    let greeted = fixture.print(&["-m", "test", "hello"]);
+    assert!(greeted.status.success(), "{}", greeted.stderr);
+
+    let output = fixture.print(&["-m", "test", "--continue", "/name the renamed one"]);
     assert!(output.status.success(), "{}", output.stderr);
 
     let report = fixture.print(&["-m", "test", "--continue", "/heard-host-events"]);

@@ -44,6 +44,17 @@ pub struct Selection {
     pub resources: Resources,
 }
 
+/// Which session a run opens, and what it is called, as the command line asked.
+#[derive(Debug, Clone, Default)]
+pub struct Opening {
+    /// A saved session to carry on.
+    pub resume: Option<String>,
+    /// An exact id to carry on in this workspace, or to start a session under when none has it.
+    pub session_id: Option<String>,
+    /// The name the session goes by from the start.
+    pub name: Option<String>,
+}
+
 /// Where a run looks for what it loads, when the command line says something about it.
 #[derive(Debug, Clone, Default)]
 pub struct Resources {
@@ -80,6 +91,8 @@ pub struct Runtime {
     /// Shared, because branching and renaming reach the same open session the writer task is
     /// appending to.
     pub session: Arc<Mutex<Session>>,
+    /// Whether the session was carried on from disk rather than started.
+    pub resumed: bool,
     pub history: Vec<Message>,
     pub model: ModelDef,
 
@@ -218,7 +231,7 @@ fn default_model(catalog: &Catalog, provider: Option<&str>) -> Result<ModelDef> 
 pub async fn build(
     root: &Path,
     selection: &Selection,
-    resume: Option<&str>,
+    opening: &Opening,
     settings: &micro_config::Settings,
     trusted: bool,
     has_ui: bool,
@@ -335,22 +348,17 @@ pub async fn build(
     }
 
     let sessions = SessionStore::from_env().context("cannot open the session store")?;
-    let (session, history) = match resume {
-        Some(id) => {
-            let loaded = sessions.load(id).await?;
-            if loaded.skipped_lines > 0 {
-                eprintln!(
-                    "note: skipped {} unreadable line(s) in session {id}",
-                    loaded.skipped_lines
-                );
-            }
-            (loaded.session, loaded.messages)
-        }
-        None => (
-            sessions.create(root, model.qualified_id()).await?,
-            Vec::new(),
-        ),
-    };
+    let (mut session, history, resumed) = open_session(&sessions, opening, root, &model).await?;
+    if let Some(name) = opening
+        .name
+        .as_deref()
+        .filter(|name| !name.trim().is_empty())
+    {
+        session
+            .rename(name)
+            .await
+            .context("cannot name the session")?;
+    }
 
     let (decisions, refusals) = tokio::sync::mpsc::unbounded_channel();
 
@@ -397,7 +405,18 @@ pub async fn build(
     );
     let mcp_section = mcp.prompt_section(&undeclared_servers(&mcp, &tools));
 
-    let tool_names: Vec<String> = tools.iter().map(|tool| tool.definition().name).collect();
+    let available_tools: Vec<String> = tools.iter().map(|tool| tool.definition().name).collect();
+    let default_tools = crate::default_tools::DefaultTools::new(
+        builtin.clone(),
+        settings.default_tools.clone(),
+        root,
+        trusted,
+        !selection.tools.is_empty(),
+    );
+    let initial_offer = default_tools.initial_offer(&available_tools);
+    let tool_names: Vec<String> = initial_offer
+        .clone()
+        .unwrap_or_else(|| available_tools.clone());
 
     let tool_definitions: Vec<micro_types::ToolDefinition> =
         tools.iter().map(|tool| tool.definition()).collect();
@@ -481,7 +500,8 @@ pub async fn build(
     let context_files = context.context_files.clone();
     let skills = context.skills.clone();
 
-    let offered_tools: Arc<std::sync::RwLock<Option<Vec<String>>>> = Arc::default();
+    let offered_tools: Arc<std::sync::RwLock<Option<Vec<String>>>> =
+        Arc::new(std::sync::RwLock::new(initial_offer));
     let agent = Agent::new(
         Arc::clone(&resolved.client),
         tools,
@@ -499,7 +519,10 @@ pub async fn build(
     .with_context_window(model.context_window as usize)
     .with_recorder(recorder)
     .with_observer(watching)
-    .with_cache_key(session.id());
+    .with_cache_key(session.id())
+    .with_compaction_budgets(compaction_budgets(&settings.compaction))
+    .with_image_limits(image_limits(&settings.image_limits))
+    .with_cache_warming(cache_warming(settings));
 
     let agent = match recorded_model_cost {
         Some(cost) => agent.with_model_cost(cost),
@@ -571,6 +594,9 @@ pub async fn build(
         tool_names: tool_names.clone(),
         mcp: mcp.clone(),
         mcp_section: mcp_section.clone(),
+        available_tools,
+        default_tools,
+        offered_tools: Arc::clone(&offered_tools),
         sandbox: guard.clone(),
         project_trusted: trusted,
         sandbox_overridden,
@@ -590,6 +616,7 @@ pub async fn build(
         offered_tools,
         self_framed_tools,
         session,
+        resumed,
         history,
 
         subscription: resolved.api_key.as_str().starts_with("sk-ant-oat"),
@@ -605,6 +632,127 @@ pub async fn build(
         context_files,
         skills,
     })
+}
+
+/// When the settings have micro keep a prompt cache warm, and how long each provider keeps one.
+pub fn cache_warming(settings: &micro_config::Settings) -> micro_agent::CacheWarming {
+    micro_agent::CacheWarming {
+        mode: match settings.cache_warming {
+            micro_config::CacheWarming::Off => micro_agent::CacheWarmingMode::Off,
+            micro_config::CacheWarming::Streaming => micro_agent::CacheWarmingMode::Streaming,
+            micro_config::CacheWarming::Idle => micro_agent::CacheWarmingMode::Idle,
+        },
+        lifetimes: settings
+            .prompt_cache_lifetimes
+            .iter()
+            .map(|(key, seconds)| (key.clone(), std::time::Duration::from_secs(*seconds)))
+            .collect(),
+    }
+}
+
+/// The compaction budgets the settings name, ordinary and per model, each model's falling back
+/// field by field to the ordinary ones.
+pub fn compaction_budgets(
+    settings: &micro_config::CompactionSettings,
+) -> micro_context::CompactionBudgets {
+    let tokens =
+        |value: Option<u64>| value.map(|value| usize::try_from(value).unwrap_or(usize::MAX));
+    let budget = |reserve: Option<u64>, keep: Option<u64>| micro_context::CompactionBudget {
+        reserve_tokens: tokens(reserve),
+        keep_recent_tokens: tokens(keep),
+    };
+    let ordinary = budget(settings.reserve_tokens, settings.keep_recent_tokens);
+    micro_context::CompactionBudgets {
+        ordinary,
+        models: settings
+            .model_overrides
+            .iter()
+            .map(|(model, own)| {
+                (
+                    model.clone(),
+                    budget(own.reserve_tokens, own.keep_recent_tokens).or(ordinary),
+                )
+            })
+            .collect(),
+    }
+}
+
+/// The image limits the settings name, ordinary and per model, each falling back limit by limit
+/// to the ordinary ones and then to micro's defaults.
+pub fn image_limits(
+    settings: &micro_config::ImageLimitSettings,
+) -> micro_tools::images::ImageLimitTable {
+    let limits = |values: micro_config::ImageLimitValues| {
+        let defaults = micro_tools::images::ImageLimits::default();
+        micro_tools::images::ImageLimits {
+            max_width: values.max_width.unwrap_or(defaults.max_width).max(1),
+            max_height: values.max_height.unwrap_or(defaults.max_height).max(1),
+            max_bytes: values
+                .max_bytes
+                .map(|bytes| usize::try_from(bytes).unwrap_or(usize::MAX))
+                .unwrap_or(defaults.max_bytes),
+            jpeg_quality: values
+                .jpeg_quality
+                .unwrap_or(defaults.jpeg_quality)
+                .clamp(1, 100),
+        }
+    };
+    micro_tools::images::ImageLimitTable {
+        ordinary: limits(settings.limits),
+        models: settings
+            .model_overrides
+            .iter()
+            .map(|(model, own)| (model.clone(), limits(own.or(settings.limits))))
+            .collect(),
+    }
+}
+
+/// Open the session a run asked for: one to resume, one under an exact id, or a fresh one.
+async fn open_session(
+    sessions: &SessionStore,
+    opening: &Opening,
+    root: &Path,
+    model: &ModelDef,
+) -> Result<(Session, Vec<Message>, bool)> {
+    let resume = match (&opening.resume, &opening.session_id) {
+        (Some(id), _) => Some(id.as_str()),
+        (None, Some(id)) if sessions.exists(id).await? => {
+            let workspace = sessions.meta(id).await?.workspace;
+            if !workspace.as_os_str().is_empty() && workspace != root {
+                return Err(anyhow!(
+                    "session {id} belongs to {}, not this workspace",
+                    workspace.display()
+                ));
+            }
+            Some(id.as_str())
+        }
+        (None, Some(id)) => {
+            eprintln!("note: no session in this workspace has id {id}; starting one under it");
+            let session = sessions
+                .create_with_id(id, root, model.qualified_id())
+                .await?;
+            return Ok((session, Vec::new(), false));
+        }
+        (None, None) => None,
+    };
+
+    match resume {
+        Some(id) => {
+            let loaded = sessions.load(id).await?;
+            if loaded.skipped_lines > 0 {
+                eprintln!(
+                    "note: skipped {} unreadable line(s) in session {id}",
+                    loaded.skipped_lines
+                );
+            }
+            Ok((loaded.session, loaded.messages, true))
+        }
+        None => Ok((
+            sessions.create(root, model.qualified_id()).await?,
+            Vec::new(),
+            false,
+        )),
+    }
 }
 
 /// Record tool policy decisions.

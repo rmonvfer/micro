@@ -113,6 +113,7 @@ Retries keep the same turn number and increment `attempt`. A failed attempt that
 | `prefix_changed`         | The cacheable prompt prefix changed.                               |
 | `budget_stop`            | The session reached its configured cost limit.                     |
 | `request_attempt_failed` | A provider attempt failed, including whether its usage is unknown. |
+| `cache_warm`             | A one-token replay kept a turn's prompt cache alive; billed beside that turn. |
 | `marker`                 | A named runtime marker without a dedicated event type.             |
 
 New event types may be added without changing the outer envelope version.

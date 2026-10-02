@@ -112,8 +112,14 @@ Command-line options take precedence over environment variables, which take prec
 | `follow_up_mode` | `queue` | `queue` or `interrupt` for input submitted during a turn. |
 | `default_project_trust` | `ask` | `ask`, `always`, or `never`. |
 | `http_idle_timeout` | `120` | Seconds without provider output before a request fails. |
+| `http_proxy` | unset | Proxy URL applied as `HTTP_PROXY` and `HTTPS_PROXY` to micro's HTTP clients. |
 | `scoped_models` | `[]` | Model queries allowed in the workspace. Empty permits the full catalog. |
 | `tool_search_threshold` | `15` | Number of non-built-in tools included directly before `tool_search` is used. |
+| `default_tools` | unset | Built-in tools a session starts with; `+name` and `-name` adjust the defaults. See [Tools](tools.md#select-tools). |
+| `compaction` | unset | Compaction budgets in tokens, with per-model overrides. |
+| `image_limits` | 2000×2000, 4.5 MiB | Size limits for images sent to a model, with per-model overrides. |
+| `cache_warming` | `streaming` | `off`, `streaming`, or `idle`: when to keep a provider's prompt cache from expiring. |
+| `prompt_cache_lifetimes` | `{}` | Prompt cache lifetimes in seconds, keyed by `provider/model` or provider. |
 | `anthropic_extra_usage` | `true` | Warn about per-token use of Anthropic subscription credentials in a third-party client. |
 | `transport` | `sse` | `sse` or `auto` for the ChatGPT Codex backend. |
 | `sandbox` | unset | Command policy; runtime default is `workspace-write`. |
@@ -226,6 +232,62 @@ Where hyperlinks work, the paths in `read`, `write`, `edit`, `multi_edit`, and `
 
 When enabled, micro reports turns that write a prompt cache without reading from it. Use `micro why-miss` for a local prefix and conversation diagnostic after the run.
 
+### compaction
+
+By default automatic compaction fires when the conversation passes 80% of the model's context window and keeps the most recent 30% verbatim. `reserve_tokens` replaces the trigger with an absolute reserve: compaction fires once the conversation needs more than the context window less this many tokens. `keep_recent_tokens` sets how many tokens of recent conversation survive automatic and manual compaction.
+
+`model_overrides` tunes the budgets for particular models, keyed by exact `provider/model`. Each value falls back on its own from the model override to the ordinary value to the default share, and values must be non-negative integers. The budgets in force follow the current model, so switching models changes the next check without changing anything already compacted.
+
+```json
+{
+  "compaction": {
+    "reserve_tokens": 16384,
+    "keep_recent_tokens": 20000,
+    "model_overrides": {
+      "some-provider/big-model": { "reserve_tokens": 400000 }
+    }
+  }
+}
+```
+
+For a model with a one-million-token window, this override fires compaction above 600,000 tokens and keeps the ordinary 20,000 recent tokens.
+
+### image_limits
+
+Images a user attaches, images `read` returns, and images other tools return are fitted to the current model's limits as they join the conversation. An image within the limits is sent byte for byte; a larger one is scaled down, keeping its proportions and EXIF orientation, and re-encoded as whichever of PNG and JPEG is smaller, then shrunk further until its base64 fits `max_bytes`. A resized image is followed by a note giving its original size so the model can map coordinates back. An image that cannot be made small enough is replaced by a note.
+
+Each image is fitted once and stored fitted in the session, so switching models never rewrites history and a cached prompt prefix stays valid. `max_bytes` limits the base64 payload. Omitted limits default to 2000 by 2000 pixels, 4.5 MiB, and JPEG quality 80. `model_overrides` sets limits for particular models, each falling back to the ordinary value.
+
+```json
+{
+  "image_limits": {
+    "model_overrides": {
+      "acme/vision-model": { "max_width": 1568, "max_height": 1568, "max_bytes": 524288, "jpeg_quality": 75 }
+    }
+  }
+}
+```
+
+### cache_warming
+
+A provider's prompt cache expires a few minutes after its last use, so a tool that runs longer than that makes the next request pay to write the whole prompt again. With `streaming`, micro replays the last request with a one-token output cap shortly before the cache would expire, for as long as the run is going. `idle` also keeps warming between runs, for up to 30 minutes; `off` never warms.
+
+A refresh goes out at 90% of the cache lifetime, leaving at least ten seconds of margin, and only when it is expected to save at least $0.05: the extra cost of a cache miss, weighted by the chance that another request comes before expiry (certain while a run is going, 15% while idle), less the cost of the refresh. Warming stops after an hour, when a new request is sent, when the conversation is compacted or replaced, or when the model changes. Anthropic requests with extended thinking are never replayed, because the output cap changes the thinking budget their cache is keyed on.
+
+A model is eligible only when its cache lifetime is known. Anthropic's five-minute lifetime is built in; `prompt_cache_lifetimes` declares others, keyed by exact `provider/model` or by provider. Each refresh is recorded in the session ledger as `cache_warm` and counts toward the session bill, but never enters the conversation.
+
+```json
+{ "cache_warming": "idle", "prompt_cache_lifetimes": { "openai": 300 } }
+```
+
+### http_proxy
+
+Routes micro's own HTTP traffic (provider requests, sign-in, model listings, sharing, and updates) through one proxy. At startup micro sets `HTTP_PROXY` and `HTTPS_PROXY` to this URL, except for a scheme whose variable the environment already sets in either case, so a proxy exported in the shell still wins. Commands the model runs inherit the same variables. The setting is read only from `config.json`, never from a project.
+
+```json
+{ "http_proxy": "http://proxy.internal:3128" }
+```
+
 ## auth.json
 
 `micro auth login` writes stored credentials here. Use the CLI rather than editing it manually:
@@ -290,7 +352,7 @@ See [MCP servers](mcp.md) for HTTP servers, OAuth, exposure, and the `micro mcp`
 
 ## Project configuration
 
-A trusted project may provide `.micro/settings.json`, `.micro/mcp.json`, extensions, skills, prompts, themes, `SYSTEM.md`, and `APPEND_SYSTEM.md`. Project `settings.json` accepts only `sandbox`; other user settings remain controlled by `config.json`, environment variables, and command-line options.
+A trusted project may provide `.micro/settings.json`, `.micro/mcp.json`, extensions, skills, prompts, themes, `SYSTEM.md`, and `APPEND_SYSTEM.md`. Project `settings.json` accepts `sandbox` and `default_tools`; other user settings remain controlled by `config.json`, environment variables, and command-line options.
 
 `--approve` and `--no-approve` override trust for one run. `/trust on` and `/trust off` save a decision for later runs.
 

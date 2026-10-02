@@ -29,14 +29,40 @@ use tokio::io::AsyncWrite;
 use tokio::io::AsyncWriteExt;
 use tokio::sync::Mutex;
 
+/// What a waiting message was sent as, so clearing the queue hands it back under the same name.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Queued {
+    Steer,
+    FollowUp,
+}
+
+/// What became of one submitted input, as its answer reports it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Disposition {
+    /// A run started for it.
+    Started,
+    /// It waits for a turn boundary or for the run to end.
+    Queued,
+}
+
+impl Disposition {
+    fn answer(self, id: Option<&str>, command: &str) -> Response {
+        let disposition = match self {
+            Disposition::Started => "started",
+            Disposition::Queued => "queued",
+        };
+        Response::with(id, command, json!({ "disposition": disposition }))
+    }
+}
+
 /// Everything the mode needs to answer a command.
 pub struct Rpc {
     agent: Agent,
     auth: Result<Arc<AuthStore>, String>,
     session: Arc<Mutex<Session>>,
     catalog: Catalog,
-    /// Prompts waiting behind the turn in flight.
-    pending: Vec<Message>,
+    /// Prompts waiting behind the turn in flight, with what each was sent as.
+    pending: Vec<(Queued, Message)>,
     auto_compaction: bool,
 }
 
@@ -89,8 +115,8 @@ impl Rpc {
             self.dispatch(command, &mut output, &mut incoming).await?;
             output.flush().await?;
 
-            while let Some(prompt) = self.pending.first().cloned() {
-                self.pending.remove(0);
+            while !self.pending.is_empty() {
+                let (_, prompt) = self.pending.remove(0);
                 self.turn(prompt, &mut output, &mut incoming).await?;
             }
         }
@@ -133,7 +159,7 @@ impl Rpc {
                 message, images, ..
             } => {
                 let prompt = build_prompt(&message, images);
-                let answer = Response::ok(id, name);
+                let answer = Disposition::Started.answer(id, name);
                 output.write_all(line(&answer).as_bytes()).await?;
                 output.flush().await?;
                 self.turn(prompt, output, incoming).await?;
@@ -141,12 +167,19 @@ impl Rpc {
 
             Command::Steer {
                 message, images, ..
+            } => {
+                self.pending
+                    .push((Queued::Steer, build_prompt(&message, images)));
+                let answer = Disposition::Queued.answer(id, name);
+                output.write_all(line(&answer).as_bytes()).await?;
+                output.flush().await?;
             }
-            | Command::FollowUp {
+            Command::FollowUp {
                 message, images, ..
             } => {
-                self.pending.push(build_prompt(&message, images));
-                let answer = Response::ok(id, name);
+                self.pending
+                    .push((Queued::FollowUp, build_prompt(&message, images)));
+                let answer = Disposition::Queued.answer(id, name);
                 output.write_all(line(&answer).as_bytes()).await?;
                 output.flush().await?;
             }
@@ -155,6 +188,12 @@ impl Rpc {
                 self.pending.clear();
                 let _ = self.agent.steering().take_all();
                 self.answer(Response::ok(id, name), output).await?;
+            }
+
+            Command::ClearQueue { .. } => {
+                let cleared = self.clear_queue();
+                self.answer(Response::with(id, name, cleared), output)
+                    .await?;
             }
 
             Command::NewSession { .. } => {
@@ -489,13 +528,28 @@ impl Rpc {
 
                             Ok(Command::Steer { id, message, images }) => {
                                 steering.steer(build_prompt(&message, images));
-                                let answer = Response::ok(id.as_deref(), "steer");
+                                let answer = Disposition::Queued.answer(id.as_deref(), "steer");
                                 output.write_all(line(&answer).as_bytes()).await?;
                                 output.flush().await?;
                             }
                             Ok(Command::FollowUp { id, message, images }) => {
                                 steering.follow_up(build_prompt(&message, images));
-                                let answer = Response::ok(id.as_deref(), "follow_up");
+                                let answer =
+                                    Disposition::Queued.answer(id.as_deref(), "follow_up");
+                                output.write_all(line(&answer).as_bytes()).await?;
+                                output.flush().await?;
+                            }
+                            Ok(Command::Prompt { id, message, images }) => {
+                                self.pending
+                                    .push((Queued::FollowUp, build_prompt(&message, images)));
+                                let answer = Disposition::Queued.answer(id.as_deref(), "prompt");
+                                output.write_all(line(&answer).as_bytes()).await?;
+                                output.flush().await?;
+                            }
+                            Ok(Command::ClearQueue { id }) => {
+                                let cleared = clear_queue(&steering, &mut self.pending);
+                                let answer =
+                                    Response::with(id.as_deref(), "clear_queue", cleared);
                                 output.write_all(line(&answer).as_bytes()).await?;
                                 output.flush().await?;
                             }
@@ -523,6 +577,11 @@ impl Rpc {
             }
         }
         Ok(())
+    }
+
+    /// Take every waiting message back out of both queues, and say what each one said.
+    fn clear_queue(&mut self) -> Value {
+        clear_queue(&self.agent.steering(), &mut self.pending)
     }
 
     async fn state(&self) -> SessionState {
@@ -773,6 +832,24 @@ fn build_prompt(message: &str, images: Vec<Image>) -> Message {
         content,
         timestamp: micro_types::now_ms(),
     }
+}
+
+/// Take every waiting message out of the agent's queues and the mode's own, and say what each one
+/// said, steering messages apart from follow-ups.
+fn clear_queue(steering: &micro_agent::Steering, pending: &mut Vec<(Queued, Message)>) -> Value {
+    let (mut steered, mut follow_up) = steering.take_queued();
+    for (queued, message) in pending.drain(..) {
+        match queued {
+            Queued::Steer => steered.push(message),
+            Queued::FollowUp => follow_up.push(message),
+        }
+    }
+    let texts =
+        |messages: Vec<Message>| -> Vec<String> { messages.iter().map(summary_text).collect() };
+    json!({
+        "steering": texts(steered),
+        "follow_up": texts(follow_up),
+    })
 }
 
 /// What a compaction summary says, for a caller that wants to show it.

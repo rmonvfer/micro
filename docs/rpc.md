@@ -38,7 +38,13 @@ JSON strings may contain escaped newlines. Records themselves are separated by t
 { "type": "prompt", "id": "p1", "message": "explain the request path" }
 ```
 
-micro first acknowledges the command, then streams serialized `AgentEvent` objects. Common event types include:
+micro first acknowledges the command, then streams serialized `AgentEvent` objects. The acknowledgement's `data.disposition` says what became of the prompt: `"started"` when a run began for it, or `"queued"` when it arrived during a run and waits for that run to finish. Either way the response confirms acceptance, not completion.
+
+```json
+{"type":"response","id":"p1","command":"prompt","success":true,"data":{"disposition":"started"}}
+```
+
+Common event types include:
 
 ```text
 agent_start        turn_start         message_start
@@ -51,15 +57,24 @@ The `agent_end` event contains the messages produced by the complete run. `agent
 
 ## Control a running turn
 
-Three commands are handled while a turn is active:
+These commands are handled while a turn is active:
 
 ```json
 {"type":"steer","id":"s1","message":"focus on the provider boundary"}
 {"type":"follow_up","id":"f1","message":"then list the relevant tests"}
+{"type":"clear_queue","id":"c1"}
 {"type":"abort","id":"a1"}
 ```
 
-`steer` reaches the active run at its next steering boundary. `follow_up` waits behind the active turn. `abort` drops the active turn and anything queued behind it.
+`steer` reaches the active run at its next steering boundary. `follow_up` waits behind the active turn. Both answer with `data.disposition` set to `"queued"`. A `prompt` sent during a turn is queued as a follow-up and answered the same way. `abort` drops the active turn and anything queued behind it.
+
+`clear_queue` removes every queued steering and follow-up message, unsent, and returns their text:
+
+```json
+{"type":"response","id":"c1","command":"clear_queue","success":true,"data":{"steering":["focus on the provider boundary"],"follow_up":["then list the relevant tests"]}}
+```
+
+To let a user take back what they queued, send `clear_queue` before `abort` and restore the returned text in the client's editor.
 
 Other commands received during a turn are held until that turn finishes.
 
@@ -83,6 +98,7 @@ Other commands received during a turn are held until that turn finishes.
 | `steer`                   | `message`              | Add direction to the active run.                                    |
 | `follow_up`               | `message`              | Queue another prompt in the same run.                               |
 | `abort`                   | none                   | Stop the active run or clear queued prompts.                        |
+| `clear_queue`             | none                   | Remove queued steering and follow-up messages and return their text. |
 | `new_session`             | none                   | Create and switch to a new session.                                 |
 | `get_state`               | none                   | Return model, provider, thinking, session, and queue state.         |
 | `set_model`               | `provider`, `model_id` | Select an exact catalog model.                                      |

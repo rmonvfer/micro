@@ -12,6 +12,8 @@ micro reads `AGENTS.md` and `CLAUDE.md` from:
 
 Files closer to the workspace are appended later. Use parent-directory files for rules shared by several repositories and a workspace file for project-specific instructions.
 
+A directory holding `AGENTS.override.md` contributes that file alone: it replaces that directory's `AGENTS.md` and `CLAUDE.md`, while instruction files from the configuration directory and other directories still load. Use it for a local variant of a checked-in `AGENTS.md` without editing the shared file.
+
 An instruction file may include another file with an `@path` line:
 
 ```text

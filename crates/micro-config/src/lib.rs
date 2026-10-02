@@ -4,6 +4,7 @@ use serde::Deserialize;
 use serde::Serialize;
 use serde_json::Map;
 use serde_json::Value;
+use std::collections::BTreeMap;
 use std::fmt;
 use std::fs;
 use std::io::Write as _;
@@ -357,6 +358,19 @@ impl From<ImageProtocolSetting> for Value {
     }
 }
 
+/// When micro keeps a provider's prompt cache from expiring.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum CacheWarming {
+    /// Never.
+    Off,
+    /// While a run is going, such as during a long tool call.
+    #[default]
+    Streaming,
+    /// While a run is going and between runs.
+    Idle,
+}
+
 /// The config file, as it is written on disk.
 #[derive(Debug, Clone, Default, PartialEq, Serialize)]
 pub struct Config {
@@ -449,12 +463,32 @@ pub struct Config {
     /// How long a request may go without producing anything, in seconds.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub http_idle_timeout: Option<u64>,
+    /// The proxy every HTTP client micro builds goes through, as `HTTP_PROXY` and `HTTPS_PROXY`
+    /// would name it. Only the user's own settings file can set it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub http_proxy: Option<String>,
     /// Models this workspace may use, when it should not have the whole catalog.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub scoped_models: Option<Vec<String>>,
     /// How many tools beyond the built-in ones are described to the model up front.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tool_search_threshold: Option<usize>,
+    /// Which built-in tools a session starts with: plain names replace the defaults, `+name` and
+    /// `-name` add to or take from them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_tools: Option<Vec<String>>,
+    /// Compaction budgets in tokens, with per-model overrides.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compaction: Option<CompactionSettings>,
+    /// How large an image a model is sent, with per-model overrides.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image_limits: Option<ImageLimitSettings>,
+    /// When to keep a provider's prompt cache from expiring.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cache_warming: Option<CacheWarming>,
+    /// How many seconds a provider keeps a prompt cache, keyed by `provider/model` or provider.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt_cache_lifetimes: Option<BTreeMap<String, u64>>,
     /// Warn that Anthropic subscription auth bills per token in a third-party harness.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub anthropic_extra_usage: Option<bool>,
@@ -548,6 +582,12 @@ pub struct Settings {
     pub http_idle_timeout: u64,
     pub scoped_models: Vec<String>,
     pub tool_search_threshold: usize,
+    /// The `default_tools` entries, as written; [`resolve_default_tools`] reads them.
+    pub default_tools: Option<Vec<String>>,
+    pub compaction: CompactionSettings,
+    pub image_limits: ImageLimitSettings,
+    pub cache_warming: CacheWarming,
+    pub prompt_cache_lifetimes: BTreeMap<String, u64>,
     pub anthropic_extra_usage: bool,
     pub transport: String,
     /// The sandbox policy the user settled on, if they settled on one.
@@ -615,6 +655,11 @@ impl Default for Settings {
             http_idle_timeout: DEFAULT_HTTP_IDLE_TIMEOUT,
             scoped_models: Vec::new(),
             tool_search_threshold: 15,
+            default_tools: None,
+            compaction: CompactionSettings::default(),
+            image_limits: ImageLimitSettings::default(),
+            cache_warming: CacheWarming::default(),
+            prompt_cache_lifetimes: BTreeMap::new(),
             anthropic_extra_usage: true,
             transport: DEFAULT_TRANSPORT.to_string(),
             sandbox: None,
@@ -833,6 +878,11 @@ impl Config {
             tool_search_threshold: self
                 .tool_search_threshold
                 .unwrap_or(defaults.tool_search_threshold),
+            default_tools: self.default_tools.clone(),
+            compaction: self.compaction.clone().unwrap_or_default(),
+            image_limits: self.image_limits.clone().unwrap_or_default(),
+            cache_warming: self.cache_warming.unwrap_or_default(),
+            prompt_cache_lifetimes: self.prompt_cache_lifetimes.clone().unwrap_or_default(),
             anthropic_extra_usage: self
                 .anthropic_extra_usage
                 .unwrap_or(defaults.anthropic_extra_usage),
@@ -901,8 +951,14 @@ impl Config {
             follow_up_mode: take(&mut fields, "follow_up_mode", path)?,
             default_project_trust: take(&mut fields, "default_project_trust", path)?,
             http_idle_timeout: take(&mut fields, "http_idle_timeout", path)?,
+            http_proxy: take(&mut fields, "http_proxy", path)?,
             scoped_models: take(&mut fields, "scoped_models", path)?,
             tool_search_threshold: take(&mut fields, "tool_search_threshold", path)?,
+            default_tools: take(&mut fields, "default_tools", path)?,
+            compaction: take(&mut fields, "compaction", path)?,
+            image_limits: take(&mut fields, "image_limits", path)?,
+            cache_warming: take(&mut fields, "cache_warming", path)?,
+            prompt_cache_lifetimes: take(&mut fields, "prompt_cache_lifetimes", path)?,
             anthropic_extra_usage: take(&mut fields, "anthropic_extra_usage", path)?,
             transport: take(&mut fields, "transport", path)?,
             sandbox: take(&mut fields, "sandbox", path)?,
@@ -918,6 +974,154 @@ impl Config {
             extra: fields,
         };
         Ok(config)
+    }
+}
+
+/// Compaction budgets in tokens. Each one a model override leaves out falls back to the ordinary
+/// value, and an ordinary value left out falls back to the share of the context window micro uses
+/// by default.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct CompactionSettings {
+    /// Tokens kept free below the context window; compaction fires past the window less this.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reserve_tokens: Option<u64>,
+    /// Tokens of recent conversation kept verbatim.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub keep_recent_tokens: Option<u64>,
+    /// Budgets for particular models, keyed by exact `provider/model`.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub model_overrides: BTreeMap<String, CompactionBudgetSettings>,
+}
+
+/// One model's compaction budgets.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct CompactionBudgetSettings {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reserve_tokens: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub keep_recent_tokens: Option<u64>,
+}
+
+/// How large an image a model is sent. Each limit a model override leaves out falls back to the
+/// ordinary value, and an ordinary value left out to micro's default.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ImageLimitSettings {
+    #[serde(flatten)]
+    pub limits: ImageLimitValues,
+    /// Limits for particular models, keyed by exact `provider/model`.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub model_overrides: BTreeMap<String, ImageLimitValues>,
+}
+
+/// One set of image limits, each absent unless written.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ImageLimitValues {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_width: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_height: Option<u32>,
+    /// The longest an image's base64 encoding may be.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_bytes: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub jpeg_quality: Option<u8>,
+}
+
+impl ImageLimitValues {
+    /// Each limit this sets, and `fallback`'s where it sets none.
+    pub fn or(self, fallback: ImageLimitValues) -> ImageLimitValues {
+        ImageLimitValues {
+            max_width: self.max_width.or(fallback.max_width),
+            max_height: self.max_height.or(fallback.max_height),
+            max_bytes: self.max_bytes.or(fallback.max_bytes),
+            jpeg_quality: self.jpeg_quality.or(fallback.jpeg_quality),
+        }
+    }
+}
+
+/// Whether a `default_tools` entry changes the inherited selection rather than naming a tool.
+fn is_tool_modifier(entry: &str) -> bool {
+    entry.starts_with('+') || entry.starts_with('-')
+}
+
+/// Lay one settings layer's `default_tools` over another's: a list naming any tool outright
+/// replaces what it inherits, while a list of only `+name` and `-name` entries is applied after it.
+pub fn merge_default_tools(
+    base: Option<Vec<String>>,
+    over: Option<Vec<String>>,
+) -> Option<Vec<String>> {
+    match (base, over) {
+        (base, None) => base,
+        (Some(mut base), Some(over)) if over.iter().all(|entry| is_tool_modifier(entry)) => {
+            base.extend(over);
+            Some(base)
+        }
+        (_, over) => over,
+    }
+}
+
+/// The built-in tools a `default_tools` list selects. Plain names replace `defaults`; then each
+/// `+name` adds a tool and each `-name` removes one, in list order. An empty list selects none.
+pub fn resolve_default_tools(entries: &[String], defaults: &[String]) -> Vec<String> {
+    let plain: Vec<String> = entries
+        .iter()
+        .filter(|entry| !is_tool_modifier(entry))
+        .map(|entry| entry.trim().to_string())
+        .filter(|entry| !entry.is_empty())
+        .collect();
+    let mut tools = match plain.is_empty() && !entries.is_empty() {
+        true => defaults.to_vec(),
+        false => plain,
+    };
+    for entry in entries.iter().filter(|entry| is_tool_modifier(entry)) {
+        let name = entry[1..].trim();
+        if name.is_empty() {
+            continue;
+        }
+        let position = tools.iter().position(|tool| tool == name);
+        match (entry.starts_with('+'), position) {
+            (true, None) => tools.push(name.to_string()),
+            (false, Some(position)) => {
+                tools.remove(position);
+            }
+            _ => {}
+        }
+    }
+    tools
+}
+
+/// The proxy variables a configured `http_proxy` supplies: `HTTP_PROXY` and `HTTPS_PROXY`, each
+/// only where the environment does not already name a proxy for that scheme in either case.
+pub fn proxy_variables(
+    configured: Option<&str>,
+    environment: impl Fn(&str) -> Option<String>,
+) -> Vec<(&'static str, String)> {
+    let Some(proxy) = configured.map(str::trim).filter(|proxy| !proxy.is_empty()) else {
+        return Vec::new();
+    };
+    let named = |variable: &str| {
+        [variable.to_string(), variable.to_lowercase()]
+            .iter()
+            .any(|name| environment(name).is_some_and(|value| !value.trim().is_empty()))
+    };
+    ["HTTP_PROXY", "HTTPS_PROXY"]
+        .into_iter()
+        .filter(|variable| !named(variable))
+        .map(|variable| (variable, proxy.to_string()))
+        .collect()
+}
+
+/// Route every HTTP client built after this through the configured `http_proxy`, leaving a proxy
+/// the environment already names alone.
+///
+/// Call it at startup, before any other thread reads the environment.
+pub fn apply_http_proxy(configured: Option<&str>) {
+    for (variable, proxy) in proxy_variables(configured, |name| std::env::var(name).ok()) {
+        std::env::set_var(variable, proxy);
     }
 }
 
@@ -1042,6 +1246,146 @@ mod tests {
     use std::collections::HashMap;
     use std::sync::atomic::AtomicU32;
     use std::sync::atomic::Ordering;
+
+    fn names(entries: &[&str]) -> Vec<String> {
+        entries.iter().map(|entry| entry.to_string()).collect()
+    }
+
+    #[test]
+    fn compaction_and_image_limits_are_read_with_their_model_overrides() {
+        let directory = scratch("budgets");
+        let path = directory.join(FILE_NAME);
+        fs::write(
+            &path,
+            r#"{
+                "compaction": {
+                    "reserve_tokens": 16384,
+                    "model_overrides": { "acme/big-model": { "reserve_tokens": 400000 } }
+                },
+                "image_limits": {
+                    "max_width": 1568,
+                    "model_overrides": { "acme/vision": { "max_bytes": 524288 } }
+                }
+            }"#,
+        )
+        .unwrap();
+
+        let settings = Config::load_from(&path)
+            .unwrap()
+            .resolve(&Overrides::default(), no_environment)
+            .unwrap();
+        assert_eq!(settings.compaction.reserve_tokens, Some(16_384));
+        assert_eq!(
+            settings.compaction.model_overrides["acme/big-model"].reserve_tokens,
+            Some(400_000)
+        );
+        assert_eq!(settings.image_limits.limits.max_width, Some(1568));
+        assert_eq!(
+            settings.image_limits.model_overrides["acme/vision"].or(settings.image_limits.limits),
+            ImageLimitValues {
+                max_width: Some(1568),
+                max_bytes: Some(524_288),
+                ..ImageLimitValues::default()
+            }
+        );
+    }
+
+    #[test]
+    fn cache_warming_runs_during_streaming_unless_told_otherwise() {
+        assert_eq!(Settings::default().cache_warming, CacheWarming::Streaming);
+
+        let directory = scratch("cache-warming");
+        let path = directory.join(FILE_NAME);
+        fs::write(
+            &path,
+            r#"{"cache_warming":"idle","prompt_cache_lifetimes":{"openai":600}}"#,
+        )
+        .unwrap();
+        let settings = Config::load_from(&path)
+            .unwrap()
+            .resolve(&Overrides::default(), no_environment)
+            .unwrap();
+        assert_eq!(settings.cache_warming, CacheWarming::Idle);
+        assert_eq!(settings.prompt_cache_lifetimes["openai"], 600);
+    }
+
+    #[test]
+    fn a_negative_budget_is_refused() {
+        let directory = scratch("negative-budget");
+        let path = directory.join(FILE_NAME);
+        fs::write(&path, r#"{"compaction":{"reserve_tokens":-1}}"#).unwrap();
+        assert!(Config::load_from(&path).is_err());
+    }
+
+    #[test]
+    fn plain_tool_names_replace_the_defaults() {
+        let defaults = names(&["read", "bash", "edit"]);
+        assert_eq!(
+            resolve_default_tools(&names(&["read", "grep"]), &defaults),
+            names(&["read", "grep"])
+        );
+        assert!(resolve_default_tools(&[], &defaults).is_empty());
+    }
+
+    #[test]
+    fn modifiers_change_the_defaults_in_order() {
+        let defaults = names(&["read", "bash", "edit"]);
+        assert_eq!(
+            resolve_default_tools(&names(&["-bash", "+find", "+read"]), &defaults),
+            names(&["read", "edit", "find"])
+        );
+        assert_eq!(
+            resolve_default_tools(&names(&["read", "+ls", "-read"]), &defaults),
+            names(&["ls"])
+        );
+    }
+
+    #[test]
+    fn a_project_list_of_modifiers_applies_on_top_of_the_user_list() {
+        let merged = merge_default_tools(Some(names(&["read", "bash"])), Some(names(&["-bash"])));
+        assert_eq!(merged, Some(names(&["read", "bash", "-bash"])));
+
+        let replaced = merge_default_tools(Some(names(&["read", "bash"])), Some(names(&["ls"])));
+        assert_eq!(replaced, Some(names(&["ls"])));
+
+        assert_eq!(
+            merge_default_tools(None, Some(names(&["+ls"]))),
+            Some(names(&["+ls"]))
+        );
+        assert_eq!(
+            merge_default_tools(Some(names(&["ls"])), None),
+            Some(names(&["ls"]))
+        );
+    }
+
+    #[test]
+    fn a_configured_proxy_fills_both_schemes() {
+        let variables = proxy_variables(Some(" http://proxy:8080 "), |_| None);
+        assert_eq!(
+            variables,
+            vec![
+                ("HTTP_PROXY", "http://proxy:8080".to_string()),
+                ("HTTPS_PROXY", "http://proxy:8080".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_proxy_the_environment_names_is_left_alone() {
+        let variables = proxy_variables(Some("http://proxy:8080"), |name| {
+            (name == "https_proxy").then(|| "http://elsewhere:3128".to_string())
+        });
+        assert_eq!(
+            variables,
+            vec![("HTTP_PROXY", "http://proxy:8080".to_string())]
+        );
+    }
+
+    #[test]
+    fn no_configured_proxy_sets_nothing() {
+        assert!(proxy_variables(None, |_| None).is_empty());
+        assert!(proxy_variables(Some("  "), |_| None).is_empty());
+    }
 
     /// A directory of this process's own, so no test reads or writes a real config.
     fn scratch(label: &str) -> PathBuf {
