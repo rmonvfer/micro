@@ -69,6 +69,12 @@ pub struct CliCommands {
     model_source: &'static str,
     /// Every tool this run actually offers the model.
     tool_names: Vec<String>,
+    /// The configured MCP servers, for `/mcp`.
+    mcp: micro_mcp::Servers,
+    /// What the system prompt says about servers whose tools are not declared.
+    mcp_section: Option<String>,
+    /// Where something finished in the background, such as a sign-in, is announced.
+    notifier: Option<micro_tui::UiAsker>,
     /// The policy that commands in this session currently use.
     sandbox: micro_tools::Guard,
     /// Whether this workspace was trusted when the session started.
@@ -102,6 +108,8 @@ pub struct HostParts {
     pub prompts: Vec<micro_prompts::PromptTemplate>,
     pub skills: Vec<micro_skills::Skill>,
     pub tool_names: Vec<String>,
+    pub mcp: micro_mcp::Servers,
+    pub mcp_section: Option<String>,
     pub sandbox: micro_tools::Guard,
     pub project_trusted: bool,
     pub sandbox_overridden: bool,
@@ -144,10 +152,18 @@ impl CliCommands {
             remote_started: false,
             model_source: "set",
             tool_names: parts.tool_names,
+            mcp: parts.mcp,
+            mcp_section: parts.mcp_section,
+            notifier: None,
             sandbox: parts.sandbox,
             project_trusted: parts.project_trusted,
             sandbox_overridden: parts.sandbox_overridden,
         }
+    }
+
+    /// Announce what finishes in the background through `notifier`.
+    pub fn set_notifier(&mut self, notifier: micro_tui::UiAsker) {
+        self.notifier = Some(notifier);
     }
 
     /// Resolve a model into everything the agent needs to run it: a client for its provider and a
@@ -796,6 +812,7 @@ impl CliCommands {
             &self.resources,
             self.extensions.as_deref(),
             &self.tool_names,
+            self.mcp_section.as_deref(),
             "reload",
         )
         .await;
@@ -1172,6 +1189,9 @@ impl Commands for CliCommands {
         if let Some(("sandbox", argument)) = command_parts(line) {
             return Some(self.sandbox_command(Some(argument)));
         }
+        if let Some(("mcp", argument)) = command_parts(line) {
+            return Some(crate::mcp::command(&self.mcp, argument));
+        }
 
         let claimed =
             command_parts(line).is_some_and(|(name, _)| micro_commands::find(name).is_some());
@@ -1206,6 +1226,10 @@ impl Commands for CliCommands {
             CommandOutcome::Trust { trusted } => self.trust(trusted).await,
 
             CommandOutcome::Sandbox { argument } => self.sandbox(argument.as_deref()).await,
+
+            CommandOutcome::Mcp { argument } => {
+                crate::mcp::apply(&self.mcp, &argument, self.notifier.as_ref()).await
+            }
 
             CommandOutcome::Reload => self.reload().await,
 
@@ -1356,6 +1380,8 @@ mod tests {
             prompts: Vec::new(),
             skills: Vec::new(),
             tool_names: Vec::new(),
+            mcp: micro_mcp::Servers::new(Default::default(), &root),
+            mcp_section: None,
             sandbox,
 
             project_trusted: false,

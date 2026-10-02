@@ -2882,7 +2882,15 @@ mod tests {
             .collect();
         assert_eq!(
             names,
-            vec!["clone", "changelog", "copy", "compact", "clear", "cwd"]
+            vec![
+                "clone",
+                "changelog",
+                "copy",
+                "compact",
+                "clear",
+                "cwd",
+                "mcp"
+            ]
         );
     }
 

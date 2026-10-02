@@ -105,6 +105,10 @@ pub enum CommandOutcome {
     Sandbox {
         argument: Option<String>,
     },
+    /// Inspect MCP servers, sign in to them, or reconnect them, in the interactive host.
+    Mcp {
+        argument: String,
+    },
     /// Offer a choice.
     Choose(Picker),
     /// Ask the user for a key, then hand it to [`micro_auth::AuthStore::store_api_key`].
@@ -401,6 +405,10 @@ impl fmt::Debug for CommandOutcome {
                 .finish(),
             CommandOutcome::Sandbox { argument } => formatter
                 .debug_struct("Sandbox")
+                .field("argument", argument)
+                .finish(),
+            CommandOutcome::Mcp { argument } => formatter
+                .debug_struct("Mcp")
                 .field("argument", argument)
                 .finish(),
             CommandOutcome::Choose(picker) => {

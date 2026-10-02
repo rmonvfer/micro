@@ -168,6 +168,11 @@ static COMMANDS: &[Command] = &[
         description: "Save project trust decision for future sessions",
     },
     Command {
+        name: "mcp",
+        argument: Some("[server|login|logout|reconnect]"),
+        description: "show MCP servers, sign in to them, or reconnect them",
+    },
+    Command {
         name: "sandbox",
         argument: Some("[session|user|project]"),
         description: "inspect and configure command access",
@@ -333,6 +338,9 @@ pub async fn run(
         "name" => session::name(argument, context).await,
         "skills" => skills(context).await,
         "settings" => settings(context),
+        "mcp" => CommandOutcome::Mcp {
+            argument: argument.unwrap_or_default().trim().to_string(),
+        },
         "sandbox" => CommandOutcome::Sandbox {
             argument: argument.map(str::to_string),
         },

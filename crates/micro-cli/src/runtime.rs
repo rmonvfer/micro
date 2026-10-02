@@ -384,16 +384,18 @@ pub async fn build(
         }
     }
 
-    let mut mcp_notices = Vec::new();
-    if !settings.mcp_servers.is_empty() {
-        let configured = mcp_servers(settings, &mut mcp_notices);
-        let (found, problems) = micro_mcp::connect(&configured).await;
-        tools.extend(found);
-        mcp_notices.extend(problems.iter().map(|problem| problem.to_string()));
-    }
+    let mcp = mcp_servers(root, trusted, &store, selection);
+    let (mut kept, mcp_notices) = connect_mcp(&mcp, &mut tools).await;
+    kept.extend(builtin.iter().cloned());
 
     let tools = offered(tools, &selection.tools, &selection.exclude_tools);
-    let tools = searchable_beyond(tools, &builtin, settings.tool_search_threshold);
+    let tools = searchable_beyond(
+        tools,
+        &kept,
+        settings.tool_search_threshold,
+        &mcp.arrivals(),
+    );
+    let mcp_section = mcp.prompt_section(&undeclared_servers(&mcp, &tools));
 
     let tool_names: Vec<String> = tools.iter().map(|tool| tool.definition().name).collect();
 
@@ -407,6 +409,7 @@ pub async fn build(
         &selection.resources,
         extensions.as_deref(),
         &tool_names,
+        mcp_section.as_deref(),
         "startup",
     )
     .await;
@@ -489,6 +492,7 @@ pub async fn build(
         resolved.api_key.clone(),
     )
     .with_offered_tools(Arc::clone(&offered_tools))
+    .with_arrivals(mcp.arrivals())
     .with_prefix_spans(context.prefix_spans)
     .with_system_prompt(context.system_prompt)
     .with_history(history.clone())
@@ -565,6 +569,8 @@ pub async fn build(
         prompts,
         skills: skills.clone(),
         tool_names: tool_names.clone(),
+        mcp: mcp.clone(),
+        mcp_section: mcp_section.clone(),
         sandbox: guard.clone(),
         project_trusted: trusted,
         sandbox_overridden,
@@ -857,6 +863,7 @@ async fn read_prompt_file(root: &Path, home: &Path, name: &str, trusted: bool) -
     None
 }
 
+#[allow(clippy::too_many_arguments)]
 pub async fn load_context(
     root: &Path,
     skills_enabled: bool,
@@ -864,6 +871,7 @@ pub async fn load_context(
     resources: &Resources,
     extensions: Option<&micro_extensions::Host>,
     active_tools: &[String],
+    mcp_section: Option<&str>,
     reason: &str,
 ) -> LoadedContext {
     let instructions = match resources.no_context_files {
@@ -975,6 +983,15 @@ pub async fn load_context(
             micro_types::EventSource::Skill(String::new()),
         ));
     }
+    if let Some(section) = mcp_section {
+        system_prompt.push_str("\n\n");
+        system_prompt.push_str(section);
+        prefix_spans.push(span(
+            &system_prompt,
+            &mut spanned,
+            micro_types::EventSource::Tool(String::new()),
+        ));
+    }
 
     let mut context_files = Vec::new();
     for path in &instructions.sources {
@@ -1006,53 +1023,120 @@ pub async fn load_context(
     }
 }
 
-/// Start the extension host, if there is anything to load.
+/// Past `threshold` tools beyond those `kept` in view, the rest are left for `tool_search` to find.
+/// The search also reaches tools still arriving from servers that connect in the background.
 fn searchable_beyond(
     tools: Vec<Arc<dyn micro_tools::Tool>>,
-    builtin: &[String],
+    kept: &[String],
     threshold: usize,
+    arrivals: &micro_tools::Arrivals,
 ) -> Vec<Arc<dyn micro_tools::Tool>> {
     let extra = tools
         .iter()
-        .filter(|tool| !builtin.contains(&tool.definition().name))
+        .filter(|tool| !kept.contains(&tool.definition().name))
         .count();
 
-    if threshold == 0 || extra <= threshold {
-        return tools;
-    }
+    let mut tools: Vec<Arc<dyn micro_tools::Tool>> = match threshold == 0 || extra <= threshold {
+        true => tools,
+        false => tools
+            .into_iter()
+            .map(|tool| match kept.contains(&tool.definition().name) {
+                true => tool,
+                false => Arc::new(micro_tools::Deferred::new(tool)) as Arc<dyn micro_tools::Tool>,
+            })
+            .collect(),
+    };
 
-    let mut deferred: Vec<Arc<dyn micro_tools::Tool>> = tools
-        .into_iter()
-        .map(|tool| match builtin.contains(&tool.definition().name) {
-            true => tool,
-            false => Arc::new(micro_tools::Deferred::new(tool)),
-        })
-        .collect();
-
-    let search = micro_tools::ToolSearch::new(&deferred);
+    let search = micro_tools::ToolSearch::new(&tools);
+    let search = match arrivals.is_empty() {
+        true => search,
+        false => search.with_arrivals(arrivals.clone()),
+    };
     if !search.is_empty() {
-        deferred.push(Arc::new(search));
+        tools.push(Arc::new(search));
     }
-    deferred
+    tools
 }
 
-/// The MCP servers the settings describe, as the shapes needed to start them.
+/// The MCP servers `mcp.json` describes: the global file, and the project's once it is trusted.
 fn mcp_servers(
-    settings: &micro_config::Settings,
-    problems: &mut Vec<String>,
-) -> std::collections::HashMap<String, micro_mcp::ServerConfig> {
-    settings
-        .mcp_servers
+    root: &Path,
+    trusted: bool,
+    store: &Arc<AuthStore>,
+    selection: &Selection,
+) -> micro_mcp::Servers {
+    let servers = micro_mcp::Servers::new(micro_mcp::config::load(root, trusted), root)
+        .with_providers(Arc::clone(store))
+        .with_tool_filter(selection.tools.clone(), selection.exclude_tools.clone());
+    match micro_mcp::oauth::CredentialStore::open() {
+        Some(credentials) => servers.with_credentials(credentials),
+        None => servers,
+    }
+}
+
+/// Connect the configured servers side by side. Servers whose tools are deferred connect in the
+/// background, so the first prompt does not wait for them; the rest are waited for, and their
+/// tools join `tools`. Says which tools must stay declared whatever the threshold, and what went
+/// wrong.
+async fn connect_mcp(
+    mcp: &micro_mcp::Servers,
+    tools: &mut Vec<Arc<dyn micro_tools::Tool>>,
+) -> (Vec<String>, Vec<String>) {
+    let mut notices: Vec<String> = mcp.errors().to_vec();
+    let enabled: Vec<micro_mcp::ServerEntry> = mcp
+        .entries()
+        .into_iter()
+        .filter(|entry| entry.config.enabled)
+        .collect();
+
+    let mut waited = Vec::new();
+    for entry in &enabled {
+        match entry.config.exposure {
+            Some(micro_mcp::Exposure::Deferred) => mcp.connect_in_background(&entry.name),
+            _ => waited.push(entry.name.clone()),
+        }
+    }
+    let (found, problems) = mcp.connect_each(&waited).await;
+
+    let direct: Vec<String> = enabled
         .iter()
-        .filter_map(|(name, value)| {
-            match serde_json::from_value::<micro_mcp::ServerConfig>(value.clone()) {
-                Ok(config) => Some((name.clone(), config)),
-                Err(error) => {
-                    problems.push(format!("mcp_servers.{name}: {error}"));
-                    None
-                }
-            }
+        .filter(|entry| entry.config.exposure == Some(micro_mcp::Exposure::Direct))
+        .map(|entry| format!("{}__", micro_mcp::names::namespace(&entry.name)))
+        .collect();
+    let kept = found
+        .iter()
+        .map(|tool| tool.definition().name)
+        .filter(|name| direct.iter().any(|prefix| name.starts_with(prefix)))
+        .collect();
+    tools.extend(found);
+
+    for problem in problems {
+        if let micro_mcp::McpError::AuthRequired { server } = &problem {
+            // A sign-in during the session brings these tools in through the search.
+            mcp.arrivals().announce(micro_mcp::names::namespace(server));
+        }
+        notices.push(problem.to_string());
+    }
+    (kept, notices)
+}
+
+/// The servers whose tools the model is not told about up front: those connecting in the
+/// background, and those whose tools the threshold left for the search.
+fn undeclared_servers(
+    mcp: &micro_mcp::Servers,
+    tools: &[Arc<dyn micro_tools::Tool>],
+) -> Vec<String> {
+    mcp.entries()
+        .into_iter()
+        .filter(|entry| entry.config.enabled)
+        .filter(|entry| {
+            let prefix = format!("{}__", micro_mcp::names::namespace(&entry.name));
+            entry.config.exposure == Some(micro_mcp::Exposure::Deferred)
+                || tools
+                    .iter()
+                    .any(|tool| tool.deferred() && tool.definition().name.starts_with(&prefix))
         })
+        .map(|entry| entry.name)
         .collect()
 }
 

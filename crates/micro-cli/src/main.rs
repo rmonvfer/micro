@@ -6,6 +6,7 @@ mod commands;
 mod extension_broker;
 mod extensions;
 mod headless;
+mod mcp;
 mod remote;
 mod runtime;
 mod sandbox;
@@ -196,6 +197,84 @@ enum Command {
     },
     /// Check the latest release and update this managed installation.
     Update,
+    /// Configure MCP servers, check them, and sign in to them.
+    Mcp {
+        #[command(subcommand)]
+        action: McpAction,
+    },
+}
+
+#[derive(clap::Args)]
+struct McpAddArgs {
+    name: String,
+    /// The streamable HTTP endpoint, instead of a command.
+    #[arg(long)]
+    url: Option<String>,
+    /// An HTTP header, as NAME=VALUE (repeatable).
+    #[arg(long = "header", value_name = "NAME=VALUE")]
+    headers: Vec<String>,
+    /// Send `Authorization: Bearer ${NAME}`.
+    #[arg(long, value_name = "NAME")]
+    bearer_token_env_var: Option<String>,
+    /// An environment variable for a stdio server, as NAME=VALUE (repeatable).
+    #[arg(long = "env", value_name = "NAME=VALUE")]
+    env: Vec<String>,
+    /// Where a stdio server runs.
+    #[arg(long)]
+    cwd: Option<String>,
+    /// What the server offers, in a sentence, for the system prompt.
+    #[arg(long)]
+    description: Option<String>,
+    /// `direct` or `deferred`; without it the tool search threshold decides.
+    #[arg(long)]
+    exposure: Option<String>,
+    /// A client registered with the authorization server ahead of time.
+    #[arg(long)]
+    oauth_client_id: Option<String>,
+    /// Its secret; may be `${NAME}` or `!command`.
+    #[arg(long)]
+    oauth_client_secret: Option<String>,
+    /// The fixed loopback port that client was registered with.
+    #[arg(long)]
+    oauth_callback_port: Option<u16>,
+    /// The client name micro registers under.
+    #[arg(long)]
+    oauth_client_name: Option<String>,
+    /// Send this provider's micro credential instead of signing in (global file only).
+    #[arg(long, value_name = "PROVIDER")]
+    auth_provider: Option<String>,
+    /// Write the project's .micro/mcp.json instead of the global file.
+    #[arg(short, long)]
+    local: bool,
+    /// The program and its arguments, after `--`.
+    #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+    command: Vec<String>,
+}
+
+#[derive(Subcommand)]
+enum McpAction {
+    /// Add or replace a server: `-- <command> [args...]` for stdio, `--url` for HTTP.
+    Add(Box<McpAddArgs>),
+    /// Remove a server.
+    Remove {
+        name: String,
+        #[arg(short, long)]
+        local: bool,
+    },
+    /// Connect every server and show its state and tools; exits 1 when one fails.
+    List {
+        #[arg(long)]
+        json: bool,
+    },
+    /// Sign in to a server through the browser.
+    Login {
+        name: String,
+        /// Seconds to wait for the browser.
+        #[arg(long)]
+        timeout: Option<u64>,
+    },
+    /// Forget a server's stored sign-in.
+    Logout { name: String },
 }
 
 #[derive(Subcommand)]
@@ -340,14 +419,21 @@ fn parse_thinking(value: &str) -> Result<ThinkingLevel, String> {
     }
 }
 
-/// Every long flag micro itself declares: those that stand alone, and those that take a value.
-fn own_flags() -> (Vec<String>, Vec<String>) {
+/// Every long flag micro itself declares for these arguments: those that stand alone, and those
+/// that take a value. A subcommand's flags count only when the arguments name the subcommand, so
+/// an extension may declare a flag a subcommand also has.
+fn own_flags(arguments: &[String]) -> (Vec<String>, Vec<String>) {
     use clap::CommandFactory;
 
     let mut switches = Vec::new();
     let mut valued = Vec::new();
 
-    fn walk(command: &clap::Command, switches: &mut Vec<String>, valued: &mut Vec<String>) {
+    fn walk(
+        command: &clap::Command,
+        arguments: &[String],
+        switches: &mut Vec<String>,
+        valued: &mut Vec<String>,
+    ) {
         for argument in command.get_arguments() {
             let names = argument
                 .get_long()
@@ -361,11 +447,16 @@ fn own_flags() -> (Vec<String>, Vec<String>) {
             into.extend(names.map(str::to_string));
         }
         for inner in command.get_subcommands() {
-            walk(inner, switches, valued);
+            let invoked = std::iter::once(inner.get_name())
+                .chain(inner.get_all_aliases())
+                .any(|name| arguments.iter().any(|argument| argument == name));
+            if invoked {
+                walk(inner, arguments, switches, valued);
+            }
         }
     }
 
-    walk(&Cli::command(), &mut switches, &mut valued);
+    walk(&Cli::command(), arguments, &mut switches, &mut valued);
 
     switches.push("help".to_string());
     switches.push("version".to_string());
@@ -408,9 +499,10 @@ async fn main() -> Result<()> {
         }
     }
 
-    let (switches, valued) = own_flags();
+    let arguments: Vec<String> = std::env::args().collect();
+    let (switches, valued) = own_flags(&arguments);
     let (mine, given) = micro_extensions::split_unknown(
-        std::env::args(),
+        arguments,
         &switches.iter().map(String::as_str).collect::<Vec<_>>(),
         &valued.iter().map(String::as_str).collect::<Vec<_>>(),
     );
@@ -461,6 +553,33 @@ async fn main() -> Result<()> {
                 SandboxAction::Try { sandbox, command } => {
                     sandbox::try_command(&root, sandbox.as_deref(), &settings, command).await
                 }
+            };
+        }
+        Some(Command::Mcp { action }) => {
+            let root = runtime::workspace(&cli.cwd)?;
+            return match action {
+                McpAction::Add(add) => {
+                    let options = mcp::AddOptions {
+                        url: add.url.clone(),
+                        headers: add.headers.clone(),
+                        bearer_token_env_var: add.bearer_token_env_var.clone(),
+                        env: add.env.clone(),
+                        cwd: add.cwd.clone(),
+                        description: add.description.clone(),
+                        exposure: add.exposure.clone(),
+                        oauth_client_id: add.oauth_client_id.clone(),
+                        oauth_client_secret: add.oauth_client_secret.clone(),
+                        oauth_callback_port: add.oauth_callback_port,
+                        oauth_client_name: add.oauth_client_name.clone(),
+                        auth_provider: add.auth_provider.clone(),
+                        command: add.command.clone(),
+                    };
+                    mcp::add(&root, &add.name, add.local, &options).await
+                }
+                McpAction::Remove { name, local } => mcp::remove(&root, name, *local).await,
+                McpAction::List { json } => mcp::list(&root, *json).await,
+                McpAction::Login { name, timeout } => mcp::login(&root, name, *timeout).await,
+                McpAction::Logout { name } => mcp::logout(&root, name).await,
             };
         }
         Some(Command::Update) => {
@@ -584,6 +703,10 @@ async fn main() -> Result<()> {
         cli.sandbox.is_some(),
     )
     .await?;
+
+    if let Some(asker) = &asker {
+        built.commands.set_notifier(asker.clone());
+    }
 
     let extensions = built.extensions.clone();
     if let Some(host) = extensions.as_ref() {
@@ -906,7 +1029,11 @@ mod flag_tests {
 
     #[test]
     fn every_flag_micro_declares_is_known_to_be_its_own() {
-        let (switches, valued) = own_flags();
+        let invoked: Vec<String> = ["micro", "install", "models", "sessions", "show", "bill"]
+            .iter()
+            .map(|argument| argument.to_string())
+            .collect();
+        let (switches, valued) = own_flags(&invoked);
         let known = |name: &str| {
             switches.iter().any(|flag| flag == name) || valued.iter().any(|flag| flag == name)
         };
@@ -970,5 +1097,21 @@ mod flag_tests {
                 "`--{flag}` takes a value on a subcommand"
             );
         }
+    }
+
+    /// An extension may declare a flag that only a subcommand also declares.
+    #[test]
+    fn a_subcommand_flag_belongs_to_micro_only_when_the_subcommand_runs() {
+        let session = vec!["micro".to_string(), "--env=staging".to_string()];
+        let (switches, valued) = own_flags(&session);
+        assert!(!valued.iter().any(|flag| flag == "env"));
+        assert!(!switches.iter().any(|flag| flag == "env"));
+
+        let adding: Vec<String> = ["micro", "mcp", "add", "x", "--env", "A=b"]
+            .iter()
+            .map(|argument| argument.to_string())
+            .collect();
+        let (_, valued) = own_flags(&adding);
+        assert!(valued.iter().any(|flag| flag == "env"));
     }
 }

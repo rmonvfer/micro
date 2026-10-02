@@ -276,7 +276,15 @@ mod tests {
         let menu = Menu::open_for("/c", 2, &[]).unwrap();
         assert_eq!(
             values(&menu),
-            vec!["clone", "changelog", "copy", "compact", "clear", "cwd"]
+            vec![
+                "clone",
+                "changelog",
+                "copy",
+                "compact",
+                "clear",
+                "cwd",
+                "mcp"
+            ]
         );
     }
 
