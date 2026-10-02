@@ -43,8 +43,24 @@ pub enum TransportError {
     AuthRequired(Challenge),
     /// The server answered with a failure status.
     Http { status: u16, message: String },
+    /// The request never reached the server, or its answer never arrived.
+    Network(String),
     /// Anything else, already worded.
     Other(String),
+}
+
+impl TransportError {
+    /// Whether another attempt may succeed: the network failed, or the server was overloaded,
+    /// restarting, or slow to answer.
+    pub fn is_transient(&self) -> bool {
+        match self {
+            TransportError::Network(_) => true,
+            TransportError::Http { status, .. } => is_transient(*status) && *status != 501,
+            TransportError::Closed | TransportError::AuthRequired(_) | TransportError::Other(_) => {
+                false
+            }
+        }
+    }
 }
 
 /// Something that can give an HTTP server its bearer token and act on the server turning it down.
@@ -356,7 +372,7 @@ impl HttpShared {
             let response = build(request)
                 .send()
                 .await
-                .map_err(|error| TransportError::Other(network_error(&error)))?;
+                .map_err(|error| TransportError::Network(network_error(&error)))?;
             if !needs_authorization(&response) {
                 return Ok(response);
             }
@@ -411,31 +427,82 @@ impl HttpShared {
         }
     }
 
-    /// Read the event stream answering one request. A stream that ends before the answer is
-    /// turned into an error answer, so the request does not wait for nothing.
+    /// Read the event stream answering one request. A stream that ends before the answer, after
+    /// the server numbered its events, is resumed from the last one with GET, retrying network
+    /// failures and transient statuses with backoff. A stream that cannot be resumed is turned into
+    /// an error answer, so the request does not wait for nothing.
     async fn answer_stream(&self, response: reqwest::Response, request_id: Value) {
         let mut answered = false;
-        let outcome = self
-            .read_events(response, &mut None, |message| {
-                if message.get("id") == Some(&request_id)
-                    && (message.get("result").is_some() || message.get("error").is_some())
-                {
-                    answered = true;
+        let mut last_event_id: Option<String> = None;
+        let mut response = Some(response);
+        let mut attempt = 0;
+        let reason = loop {
+            let mut received = false;
+            let outcome = match response.take() {
+                Some(response) => {
+                    self.read_events(response, &mut last_event_id, |message| {
+                        received = true;
+                        if message.get("id") == Some(&request_id)
+                            && (message.get("result").is_some() || message.get("error").is_some())
+                        {
+                            answered = true;
+                        }
+                    })
+                    .await
                 }
-            })
-            .await;
-        if answered {
-            return;
-        }
-        let reason = match outcome {
-            Ok(()) => "the stream ended without an answer".to_string(),
-            Err(error) => error,
+                None => Ok(()),
+            };
+            if answered {
+                return;
+            }
+            let reason = match &outcome {
+                Ok(()) => "the stream ended without an answer".to_string(),
+                Err(error) => error.clone(),
+            };
+            if received {
+                attempt = 0;
+            }
+            let Some(resume_from) = last_event_id.clone() else {
+                break reason;
+            };
+            if attempt >= STREAM_RETRIES {
+                break reason;
+            }
+            attempt += 1;
+            tokio::time::sleep(backoff(attempt)).await;
+            match self.resumed_stream(&resume_from).await {
+                Ok(resumed) => response = Some(resumed),
+                Err(error) if error.is_transient() => {}
+                Err(error) => break describe_transport_error(&error),
+            }
         };
         let _ = self.incoming.send(json!({
             "jsonrpc": "2.0",
             "id": request_id,
             "error": { "code": -32603, "message": format!("the response stream failed: {reason}") },
         }));
+    }
+
+    /// A GET stream that picks up after the event `last_event_id`.
+    async fn resumed_stream(
+        &self,
+        last_event_id: &str,
+    ) -> Result<reqwest::Response, TransportError> {
+        let response = self
+            .authorized(reqwest::Method::GET, |request| {
+                request
+                    .header("Accept", "text/event-stream")
+                    .header("Last-Event-ID", last_event_id)
+            })
+            .await?;
+        let response = self.checked(response).await?;
+        match content_type(&response).as_deref() {
+            Some("text/event-stream") => Ok(response),
+            other => Err(TransportError::Other(format!(
+                "unsupported resumed stream content type: {}",
+                other.unwrap_or("missing")
+            ))),
+        }
     }
 
     /// Keep the server-to-client stream open, reopening it with backoff when it drops.
@@ -663,6 +730,16 @@ fn describe_failure(status: u16, body: &str) -> String {
         true => format!("HTTP {status}"),
         false if snippet.len() < text.len() => format!("HTTP {status}: {snippet}…"),
         false => format!("HTTP {status}: {snippet}"),
+    }
+}
+
+fn describe_transport_error(error: &TransportError) -> String {
+    match error {
+        TransportError::Closed => "the connection closed".to_string(),
+        TransportError::AuthRequired(_) => "the server asked for a sign-in".to_string(),
+        TransportError::Http { message, .. }
+        | TransportError::Network(message)
+        | TransportError::Other(message) => message.clone(),
     }
 }
 

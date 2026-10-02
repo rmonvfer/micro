@@ -42,7 +42,9 @@ Servers live in `mcp.json` in micro's configuration directory and, once the proj
 
 Stdio servers use `command`, `args`, `env`, and `cwd`; a relative `cwd` is taken from the workspace and a leading `~/` names the home directory. HTTP servers use `url`, `headers`, `oauth`, and `auth`. The legacy SSE transport is rejected; such servers usually offer streamable HTTP at `/mcp`. Values in `env`, `headers`, and `oauth.clientSecret` may name environment variables as `${NAME}`, or be the output of a command written as `!command`.
 
-Every server also accepts `enabled: false` to keep the entry without connecting, `timeout` in seconds for each request (60 by default, 120 for tool calls), `description` for the system prompt, and `exposure`.
+Every server also accepts `enabled: false` to keep the entry without connecting, `timeout` in seconds for each request (60 by default, 120 for tool calls), `description` for the system prompt, `exposure`, and `toolExposure`.
+
+Connecting to an HTTP server is retried twice after a network failure or a transient status (408, 429, or 5xx other than 501). An answer stream that breaks off after the server numbered its events is resumed from the last one, retrying the same failures with backoff. Tool calls are never sent twice, since the server may already have run them.
 
 Server names may use letters, digits, `_`, and `-`. Tools are named `mcp__<server>__<tool>`, with every other character, including `-`, written as `_`. Tools of one server whose names then collide all get a hash suffix, and server names that differ only in `-` and `_` are rejected. An invalid entry is reported and skipped; the other servers still connect.
 

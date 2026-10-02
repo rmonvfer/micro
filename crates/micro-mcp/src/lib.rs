@@ -61,6 +61,10 @@ pub enum McpError {
     #[error("{server}: {message}")]
     Protocol { server: String, message: String },
 
+    /// The network failed, or the server answered with a status worth another attempt.
+    #[error("{server}: {message}")]
+    Unavailable { server: String, message: String },
+
     #[error("{server}: stopped answering")]
     Closed { server: String },
 
@@ -79,6 +83,7 @@ impl McpError {
         match self {
             McpError::Start { server, .. }
             | McpError::Protocol { server, .. }
+            | McpError::Unavailable { server, .. }
             | McpError::Closed { server }
             | McpError::TimedOut { server, .. }
             | McpError::AuthRequired { server }
@@ -86,14 +91,23 @@ impl McpError {
         }
     }
 
+    /// Whether connecting again may succeed.
+    pub fn is_transient(&self) -> bool {
+        matches!(self, McpError::Unavailable { .. })
+    }
+
     fn carrying(server: &str, error: TransportError) -> McpError {
         let server = server.to_string();
+        let transient = error.is_transient();
         match error {
             TransportError::Closed => McpError::Closed { server },
             TransportError::AuthRequired(_) => McpError::AuthRequired { server },
-            TransportError::Http { message, .. } | TransportError::Other(message) => {
-                McpError::Protocol { server, message }
-            }
+            TransportError::Http { message, .. }
+            | TransportError::Network(message)
+            | TransportError::Other(message) => match transient {
+                true => McpError::Unavailable { server, message },
+                false => McpError::Protocol { server, message },
+            },
         }
     }
 }

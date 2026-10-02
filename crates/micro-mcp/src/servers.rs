@@ -23,6 +23,11 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::Mutex;
+use std::time::Duration;
+
+/// How long to wait before each further attempt to connect to an HTTP server that failed in a
+/// way another attempt may not.
+const CONNECT_RETRY_DELAYS: [Duration; 2] = [Duration::from_millis(250), Duration::from_secs(1)];
 
 /// Characters of one server's summary in the system prompt.
 const MAX_SUMMARY_CHARS: usize = 250;
@@ -235,19 +240,20 @@ impl Servers {
         }
         self.update(name, |state| state.status = Status::Connecting);
 
-        let connected = self.open(&entry).await;
-        let tools = match connected {
-            Ok(client) => match client
-                .tools(
-                    |tool| entry.config.exposure_of(tool),
-                    entry.config.description.clone(),
-                )
-                .await
-            {
-                Ok(tools) => Ok((client, tools)),
-                Err(error) => Err(error),
-            },
-            Err(error) => Err(error),
+        let retries: &[Duration] = match entry.config.url() {
+            Some(_) => &CONNECT_RETRY_DELAYS,
+            None => &[],
+        };
+        let mut attempt = 0;
+        let tools = loop {
+            let tools = self.open_with_tools(&entry).await;
+            match (&tools, retries.get(attempt)) {
+                (Err(error), Some(delay)) if error.is_transient() => {
+                    attempt += 1;
+                    tokio::time::sleep(*delay).await;
+                }
+                _ => break tools,
+            }
         };
 
         match tools {
@@ -277,6 +283,21 @@ impl Servers {
                 Err(error)
             }
         }
+    }
+
+    /// Connect once, and list the server's tools.
+    async fn open_with_tools(
+        &self,
+        entry: &ServerEntry,
+    ) -> Result<(Arc<Client>, Vec<Arc<dyn micro_tools::Tool>>)> {
+        let client = self.open(entry).await?;
+        let tools = client
+            .tools(
+                |tool| entry.config.exposure_of(tool),
+                entry.config.description.clone(),
+            )
+            .await?;
+        Ok((client, tools))
     }
 
     fn offers(&self, tool: &str) -> bool {
