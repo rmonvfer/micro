@@ -1222,24 +1222,26 @@ pub async fn load_context(
     }
 }
 
-/// Past `threshold` tools beyond those `kept` in view, the rest are left for `tool_search` to find.
-/// The search also reaches tools still arriving from servers that connect in the background.
+/// Past `threshold` directly exposed tools beyond those `kept` in view, the rest are left for
+/// `tool_search` to find; tools exposed any other way keep their exposure. The search also reaches
+/// tools still arriving from servers that connect in the background.
 fn searchable_beyond(
     tools: Vec<Arc<dyn micro_tools::Tool>>,
     kept: &[String],
     threshold: usize,
     arrivals: &micro_tools::Arrivals,
 ) -> Vec<Arc<dyn micro_tools::Tool>> {
-    let extra = tools
-        .iter()
-        .filter(|tool| !kept.contains(&tool.definition().name))
-        .count();
+    let deferrable = |tool: &Arc<dyn micro_tools::Tool>| {
+        tool.exposure() == micro_types::ToolExposure::Direct
+            && !kept.contains(&tool.definition().name)
+    };
+    let extra = tools.iter().filter(|tool| deferrable(tool)).count();
 
     let mut tools: Vec<Arc<dyn micro_tools::Tool>> = match threshold == 0 || extra <= threshold {
         true => tools,
         false => tools
             .into_iter()
-            .map(|tool| match kept.contains(&tool.definition().name) {
+            .map(|tool| match !deferrable(&tool) {
                 true => tool,
                 false => Arc::new(micro_tools::Exposed::new(
                     tool,
@@ -1722,4 +1724,73 @@ pub(crate) fn with_host(
         model.base_url = base_url.to_string();
     }
     model
+}
+
+#[cfg(test)]
+mod searchable {
+    use super::*;
+
+    /// A tool that does nothing, for asking how it is exposed.
+    struct Named(&'static str);
+
+    #[async_trait::async_trait]
+    impl micro_tools::Tool for Named {
+        fn definition(&self) -> micro_types::ToolDefinition {
+            micro_types::ToolDefinition {
+                name: self.0.into(),
+                description: String::new(),
+                parameters: serde_json::json!({ "type": "object", "properties": {} }),
+                constrained_sampling: None,
+            }
+        }
+        async fn execute(&self, _arguments: &serde_json::Value) -> Result<String, String> {
+            Ok(String::new())
+        }
+    }
+
+    fn exposed(
+        name: &'static str,
+        exposure: micro_types::ToolExposure,
+    ) -> Arc<dyn micro_tools::Tool> {
+        Arc::new(micro_tools::Exposed::new(Arc::new(Named(name)), exposure))
+    }
+
+    fn exposure_of(tools: &[Arc<dyn micro_tools::Tool>], name: &str) -> micro_types::ToolExposure {
+        tools
+            .iter()
+            .find(|tool| tool.definition().name == name)
+            .map(|tool| tool.exposure())
+            .unwrap()
+    }
+
+    /// Past the threshold, direct tools are left to be searched for, and a tool exposed some other
+    /// way keeps its exposure, so a hidden tool never becomes searchable.
+    #[test]
+    fn only_direct_tools_are_left_to_be_searched_for() {
+        let tools = vec![
+            Arc::new(Named("one")) as Arc<dyn micro_tools::Tool>,
+            Arc::new(Named("two")),
+            exposed("secret", micro_types::ToolExposure::Hidden),
+            exposed("asker", micro_types::ToolExposure::ModelOnly),
+        ];
+
+        let tools = searchable_beyond(tools, &[], 1, &micro_tools::Arrivals::default());
+
+        assert_eq!(
+            exposure_of(&tools, "one"),
+            micro_types::ToolExposure::Deferred
+        );
+        assert_eq!(
+            exposure_of(&tools, "two"),
+            micro_types::ToolExposure::Deferred
+        );
+        assert_eq!(
+            exposure_of(&tools, "secret"),
+            micro_types::ToolExposure::Hidden
+        );
+        assert_eq!(
+            exposure_of(&tools, "asker"),
+            micro_types::ToolExposure::ModelOnly
+        );
+    }
 }

@@ -127,7 +127,7 @@ struct Cli {
     #[arg(long = "no-context-files")]
     no_context_files: bool,
 
-    /// Palette to paint in: dark, light, or auto.
+    /// Palette to paint in: system, dark, light, auto, or the name of a custom theme.
     #[arg(long = "theme", value_name = "NAME")]
     theme: Option<String>,
 
