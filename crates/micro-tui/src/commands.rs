@@ -286,6 +286,8 @@ pub struct Preferences {
     pub terminal: crate::capabilities::Overrides,
     /// The command ctrl+g opens the prompt in, ahead of `$VISUAL` and `$EDITOR`.
     pub external_editor: Option<String>,
+    /// Put text on the clipboard as soon as the mouse selects it.
+    pub copy_on_select: bool,
 }
 
 impl Default for Preferences {
@@ -314,6 +316,7 @@ impl Default for Preferences {
             follow_up_interrupts: false,
             terminal: crate::capabilities::Overrides::default(),
             external_editor: None,
+            copy_on_select: true,
         }
     }
 }
@@ -362,6 +365,7 @@ impl From<&micro_config::Settings> for Preferences {
             clear_on_shrink: settings.clear_on_shrink,
             terminal: crate::capabilities::Overrides::from_settings(settings),
             external_editor: settings.external_editor.clone(),
+            copy_on_select: settings.copy_on_select,
         }
     }
 }

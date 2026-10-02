@@ -397,6 +397,8 @@ pub struct App {
     pending_completion_request: Option<CompletionRequest>,
     /// Mouse text selection in screen coordinates.
     selection: Option<crate::render::selection::Selection>,
+    /// The last press of the mouse button: when, where, and how many presses in a row landed there.
+    last_click: Option<(std::time::Instant, (u16, u16), u8)>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -656,6 +658,7 @@ impl App {
             pending_suggestion_request: None,
             pending_completion_request: None,
             selection: None,
+            last_click: None,
         };
 
         if let Some(notice) = notice {
@@ -818,10 +821,40 @@ impl App {
         self.selection.as_ref()
     }
 
-    pub fn clear_copy_pending(&mut self) {
-        if let Some(selection) = self.selection.as_mut() {
-            selection.copy_pending = false;
+    /// Put the selected text on the clipboard, once the frame it was read from has been laid out.
+    pub fn copy_selection(&mut self, text: &str) {
+        let Some(request) = self
+            .selection
+            .as_mut()
+            .and_then(|selection| selection.copy_pending.take())
+        else {
+            return;
+        };
+        if text.is_empty() {
+            return;
         }
+        let copied = clipboard::write_text(text);
+        if request == crate::render::selection::CopyRequest::Asked {
+            match copied {
+                true => self.notice("Copied selection to clipboard", MessageKind::Info),
+                false => self.notice("No clipboard on this system.", MessageKind::Error),
+            }
+        }
+    }
+
+    /// How many presses in a row have landed at this point, counting this one.
+    fn count_click(&mut self, at: (u16, u16)) -> u8 {
+        let now = std::time::Instant::now();
+        let count = match self.last_click {
+            Some((then, place, count))
+                if place == at && now.duration_since(then) <= MULTI_CLICK_INTERVAL =>
+            {
+                count % 3 + 1
+            }
+            _ => 1,
+        };
+        self.last_click = Some((now, at, count));
+        count
     }
 
     /// Whether something is holding the keyboard.
@@ -2040,13 +2073,23 @@ impl App {
                 Outcome::Handled
             }
             Action::CopyMessage => {
-                self.copy_last_answer();
+                match self.selection.as_mut() {
+                    Some(selection) if !selection.is_empty() => {
+                        selection.copy_pending = Some(crate::render::selection::CopyRequest::Asked);
+                    }
+                    _ => self.copy_last_answer(),
+                }
                 Outcome::Handled
             }
             Action::PasteImage => self.paste_image(),
 
             Action::SelectStart { col, row } => {
-                self.selection = Some(crate::render::selection::Selection::new(col, row));
+                let clicks = self.count_click((col, row));
+                self.selection = Some(crate::render::selection::Selection::at(
+                    col,
+                    row,
+                    crate::render::selection::Granularity::for_clicks(clicks),
+                ));
                 Outcome::Handled
             }
             Action::SelectDrag { col, row } => {
@@ -2062,8 +2105,9 @@ impl App {
                     selection.dragging = false;
                     if selection.is_empty() {
                         self.selection = None;
-                    } else {
-                        selection.copy_pending = true;
+                    } else if self.settings.copy_on_select {
+                        selection.copy_pending =
+                            Some(crate::render::selection::CopyRequest::Released);
                     }
                 }
                 Outcome::Handled
@@ -2725,6 +2769,10 @@ impl App {
     }
 }
 
+/// How soon a press must follow the last at the same place to count toward a double or triple
+/// click.
+const MULTI_CLICK_INTERVAL: std::time::Duration = std::time::Duration::from_millis(500);
+
 /// The next reasoning level, wrapping at the top.
 fn next_level(level: ThinkingLevel) -> ThinkingLevel {
     match level {
@@ -2856,6 +2904,18 @@ mod tests {
 
     fn type_text(app: &mut App, text: &str) {
         app.handle(Action::Insert(text.to_string()));
+    }
+
+    /// The text of every notice in the transcript, oldest first.
+    fn rendered_notices(app: &App) -> Vec<String> {
+        app.transcript
+            .entries()
+            .iter()
+            .filter_map(|entry| match entry {
+                crate::transcript::Entry::Notice { text, .. } => Some(text.clone()),
+                _ => None,
+            })
+            .collect()
     }
 
     #[test]
@@ -5000,11 +5060,63 @@ mod tests {
         let sel = app.selection().unwrap();
         assert_eq!(sel.current, (12, 1));
         assert!(!sel.dragging);
-        assert!(sel.copy_pending);
+        assert_eq!(
+            sel.copy_pending,
+            Some(crate::render::selection::CopyRequest::Released)
+        );
 
         // Escape clears selection
         app.handle(Action::Cancel);
         assert!(app.selection().is_none());
+    }
+
+    #[test]
+    fn a_selection_waits_for_the_copy_key_when_it_does_not_copy_itself() {
+        let mut options = TuiOptions::default();
+        options.settings.copy_on_select = false;
+        let mut app = App::new(&[], options);
+        app.handle(Action::SelectStart { col: 2, row: 1 });
+        app.handle(Action::SelectDrag { col: 9, row: 1 });
+        app.handle(Action::SelectEnd { col: 9, row: 1 });
+        assert_eq!(app.selection().unwrap().copy_pending, None);
+
+        app.handle(Action::CopyMessage);
+        assert_eq!(
+            app.selection().unwrap().copy_pending,
+            Some(crate::render::selection::CopyRequest::Asked)
+        );
+    }
+
+    #[test]
+    fn the_copy_key_without_a_selection_copies_the_last_answer() {
+        let mut app = app();
+        app.handle(Action::CopyMessage);
+        assert!(app.selection().is_none());
+        assert!(rendered_notices(&app)
+            .iter()
+            .any(|notice| notice.contains("No agent messages to copy")));
+    }
+
+    #[test]
+    fn a_second_and_third_click_select_a_word_then_a_paragraph() {
+        use crate::render::selection::Granularity;
+
+        let mut app = app();
+        let click = |app: &mut App| {
+            app.handle(Action::SelectStart { col: 4, row: 2 });
+            app.handle(Action::SelectEnd { col: 4, row: 2 });
+            app.selection().map(|selection| selection.granularity)
+        };
+        assert_eq!(click(&mut app), None, "one click selects nothing");
+        assert_eq!(click(&mut app), Some(Granularity::Word));
+        assert_eq!(click(&mut app), Some(Granularity::Paragraph));
+
+        app.handle(Action::SelectStart { col: 9, row: 2 });
+        assert_eq!(
+            app.selection().map(|selection| selection.granularity),
+            Some(Granularity::Character),
+            "a click somewhere else starts over"
+        );
     }
 
     #[test]

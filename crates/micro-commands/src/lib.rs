@@ -630,6 +630,11 @@ fn settings(context: &CommandContext<'_>) -> CommandOutcome {
             "/set terminal_progress",
         ),
         PickerItem::new(
+            "Copy on select",
+            on_off(now.copy_on_select),
+            "/set copy_on_select",
+        ),
+        PickerItem::new(
             "Quiet startup",
             now.quiet_startup.to_string(),
             "/set quiet_startup",
@@ -866,6 +871,7 @@ fn settable(config: &micro_config::Config, name: &str) -> Option<Vec<PickerItem>
             ]
         }
         "clear_on_shrink" => switch(now.clear_on_shrink),
+        "copy_on_select" => switch(now.copy_on_select),
         "steering_mode" => {
             let now = kebab(&format!("{:?}", now.steering_mode));
             vec![
@@ -1044,6 +1050,7 @@ fn describe(config: &micro_config::Config, name: &str) -> Option<String> {
         "terminal_progress" => {
             format!("terminal_progress is {} (on or off)", now.terminal_progress)
         }
+        "copy_on_select" => format!("copy_on_select is {} (on or off)", now.copy_on_select),
         "quiet_startup" => format!(
             "quiet_startup is {} (on, off, or header)",
             now.quiet_startup
@@ -1155,6 +1162,7 @@ fn assign(config: &mut micro_config::Config, name: &str, value: &str) -> Result<
         "show_hardware_cursor" => config.show_hardware_cursor = Some(flag()?),
         "terminal_progress" => config.terminal_progress = Some(flag()?),
         "quiet_startup" => config.quiet_startup = Some(value.parse()?),
+        "copy_on_select" => config.copy_on_select = Some(flag()?),
         "collapse_changelog" => config.collapse_changelog = Some(flag()?),
         "warnings" => config.warnings = Some(flag()?),
         "cache_miss_notices" => config.cache_miss_notices = Some(flag()?),
@@ -1622,6 +1630,7 @@ mod tests {
             ("show_hardware_cursor", "on"),
             ("terminal_progress", "off"),
             ("quiet_startup", "header"),
+            ("copy_on_select", "off"),
             ("collapse_changelog", "on"),
             ("warnings", "off"),
             ("cache_miss_notices", "on"),
@@ -1648,6 +1657,7 @@ mod tests {
         assert_eq!(now.scoped_models, vec!["anthropic/", "google/gemini-3-pro"]);
         assert_eq!(now.content_padding, 2);
         assert_eq!(now.output_pad, 0);
+        assert!(!now.copy_on_select);
         assert_eq!(now.quiet_startup, micro_config::QuietStartup::Header);
         assert_eq!(now.transport, "auto");
     }

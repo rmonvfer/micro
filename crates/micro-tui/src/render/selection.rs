@@ -4,6 +4,38 @@ use ratatui::buffer::Buffer;
 use ratatui::style::Modifier;
 use ratatui::style::Style;
 
+/// How far a selection reaches past the cells the pointer covered.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Granularity {
+    /// Exactly the cells dragged across.
+    #[default]
+    Character,
+    /// Out to the whole words at either end, as a double click selects.
+    Word,
+    /// Out to the blank rows around it, as a triple click selects.
+    Paragraph,
+}
+
+impl Granularity {
+    /// What the `count`th click in a row at the same place selects.
+    pub fn for_clicks(count: u8) -> Self {
+        match count {
+            2 => Granularity::Word,
+            3 => Granularity::Paragraph,
+            _ => Granularity::Character,
+        }
+    }
+}
+
+/// Why the selected text is about to be copied.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CopyRequest {
+    /// The mouse was released over it, and selections copy themselves.
+    Released,
+    /// The copy key was pressed while it was showing.
+    Asked,
+}
+
 /// An active mouse text selection across terminal coordinates.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Selection {
@@ -13,22 +45,33 @@ pub struct Selection {
     pub current: (u16, u16),
     /// True while the mouse button is held down.
     pub dragging: bool,
-    /// Set on mouse release so the next render pass copies the text to the clipboard.
-    pub copy_pending: bool,
+    /// Set when the next render pass should copy the text to the clipboard, and why.
+    pub copy_pending: Option<CopyRequest>,
+    /// How far past the covered cells it reaches.
+    pub granularity: Granularity,
 }
 
 impl Selection {
+    /// A plain selection starting at a point.
+    #[cfg(test)]
     pub fn new(col: u16, row: u16) -> Self {
+        Selection::at(col, row, Granularity::Character)
+    }
+
+    /// A selection starting at a point, reaching as far as `granularity` says.
+    pub fn at(col: u16, row: u16, granularity: Granularity) -> Self {
         Self {
             origin: (col, row),
             current: (col, row),
             dragging: true,
-            copy_pending: false,
+            copy_pending: None,
+            granularity,
         }
     }
 
+    /// Whether it covers nothing: a plain click selects nothing, a double or triple click does.
     pub fn is_empty(&self) -> bool {
-        self.origin == self.current
+        self.origin == self.current && self.granularity == Granularity::Character
     }
 
     /// Normalized (start, end) where start <= end in reading order.
@@ -43,6 +86,49 @@ impl Selection {
     }
 }
 
+/// The cells a selection covers on this buffer, reaching out to whole words or paragraphs when it
+/// was made by more than one click.
+pub fn covered(buffer: &Buffer, selection: &Selection) -> ((u16, u16), (u16, u16)) {
+    let ((start_x, start_y), (end_x, end_y)) = selection.range();
+    let area = buffer.area;
+    let last_x = area.width.saturating_sub(1);
+    let last_y = area.height.saturating_sub(1);
+    let (start_y, end_y) = (start_y.min(last_y), end_y.min(last_y));
+    let (start_x, end_x) = (start_x.min(last_x), end_x.min(last_x));
+    let blank = |x: u16, y: u16| buffer[(x, y)].symbol().trim().is_empty();
+    let blank_row = |y: u16| (0..area.width).all(|x| blank(x, y));
+
+    match selection.granularity {
+        Granularity::Character => ((start_x, start_y), (end_x, end_y)),
+        Granularity::Word => {
+            let mut from = start_x;
+            if !blank(from, start_y) {
+                while from > 0 && !blank(from - 1, start_y) {
+                    from -= 1;
+                }
+            }
+            let mut to = end_x;
+            if !blank(to, end_y) {
+                while to < last_x && !blank(to + 1, end_y) {
+                    to += 1;
+                }
+            }
+            ((from, start_y), (to, end_y))
+        }
+        Granularity::Paragraph => {
+            let mut top = start_y;
+            while top > 0 && !blank_row(top) && !blank_row(top - 1) {
+                top -= 1;
+            }
+            let mut bottom = end_y;
+            while bottom < last_y && !blank_row(bottom) && !blank_row(bottom + 1) {
+                bottom += 1;
+            }
+            ((0, top), (last_x, bottom))
+        }
+    }
+}
+
 /// Extract selected text from the terminal buffer, trimming trailing line padding.
 pub fn extract_text(buffer: &Buffer, selection: &Selection) -> String {
     if selection.is_empty() {
@@ -53,7 +139,7 @@ pub fn extract_text(buffer: &Buffer, selection: &Selection) -> String {
         return String::new();
     }
 
-    let ((start_x, start_y), (end_x, end_y)) = selection.range();
+    let ((start_x, start_y), (end_x, end_y)) = covered(buffer, selection);
     if start_y >= area.height {
         return String::new();
     }
@@ -101,7 +187,7 @@ pub fn apply_selection(buffer: &mut Buffer, selection: &Selection) {
         return;
     }
 
-    let ((start_x, start_y), (end_x, end_y)) = selection.range();
+    let ((start_x, start_y), (end_x, end_y)) = covered(buffer, selection);
     if start_y >= area.height {
         return;
     }
@@ -166,7 +252,8 @@ mod tests {
             origin: (5, 2),
             current: (15, 4),
             dragging: false,
-            copy_pending: false,
+            copy_pending: None,
+            granularity: Granularity::Character,
         };
         assert_eq!(forward.range(), ((5, 2), (15, 4)));
 
@@ -174,7 +261,8 @@ mod tests {
             origin: (15, 4),
             current: (5, 2),
             dragging: false,
-            copy_pending: false,
+            copy_pending: None,
+            granularity: Granularity::Character,
         };
         assert_eq!(backward.range(), ((5, 2), (15, 4)));
 
@@ -182,7 +270,8 @@ mod tests {
             origin: (20, 3),
             current: (10, 3),
             dragging: false,
-            copy_pending: false,
+            copy_pending: None,
+            granularity: Granularity::Character,
         };
         assert_eq!(same_row_backward.range(), ((10, 3), (20, 3)));
     }
@@ -235,6 +324,32 @@ mod tests {
                 "cell {x} should not be reversed"
             );
         }
+    }
+
+    #[test]
+    fn a_double_click_takes_the_whole_word_under_it() {
+        let buffer = sample_buffer(40, 3, &["open src/main.rs now", "next line"]);
+        let selection = Selection::at(8, 0, Granularity::Word);
+        assert!(!selection.is_empty());
+        assert_eq!(extract_text(&buffer, &selection), "src/main.rs");
+    }
+
+    #[test]
+    fn a_triple_click_takes_the_rows_between_blank_ones() {
+        let buffer = sample_buffer(
+            30,
+            6,
+            &["before", "", "first row", "second row", "", "after"],
+        );
+        let selection = Selection::at(3, 3, Granularity::Paragraph);
+        assert_eq!(extract_text(&buffer, &selection), "first row\nsecond row");
+    }
+
+    #[test]
+    fn the_click_count_picks_how_far_a_selection_reaches() {
+        assert_eq!(Granularity::for_clicks(1), Granularity::Character);
+        assert_eq!(Granularity::for_clicks(2), Granularity::Word);
+        assert_eq!(Granularity::for_clicks(3), Granularity::Paragraph);
     }
 
     #[test]

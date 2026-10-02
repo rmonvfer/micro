@@ -161,18 +161,15 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     }
     draw_status(frame, inset_by(status_area, content_padding), app, &theme);
 
-    app.links().apply(frame.buffer_mut(), area);
-
     if let Some(selection) = app.selection().copied() {
-        if selection.copy_pending {
+        if selection.copy_pending.is_some() {
             let text = selection::extract_text(frame.buffer_mut(), &selection);
-            if !text.is_empty() {
-                crate::clipboard::write_text(&text);
-            }
-            app.clear_copy_pending();
+            app.copy_selection(&text);
         }
         selection::apply_selection(frame.buffer_mut(), &selection);
     }
+
+    app.links().apply(frame.buffer_mut(), area);
 
     let first_visible = app
         .lines()

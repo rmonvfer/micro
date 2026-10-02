@@ -477,6 +477,9 @@ pub struct Config {
     /// The command ctrl+g opens the prompt in, ahead of `$VISUAL` and `$EDITOR`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub external_editor: Option<String>,
+    /// Put text on the clipboard as soon as the mouse selects it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub copy_on_select: Option<bool>,
     /// Whether text can be made clickable, in place of what the terminal is detected to support.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub terminal_hyperlinks: Option<Capability>,
@@ -552,6 +555,7 @@ pub struct Settings {
     pub budget: f64,
     pub extensions: Vec<String>,
     pub external_editor: Option<String>,
+    pub copy_on_select: bool,
     pub terminal_hyperlinks: Capability,
     pub terminal_images: ImageProtocolSetting,
     pub terminal_true_color: Capability,
@@ -616,6 +620,7 @@ impl Default for Settings {
             budget: 0.0,
             extensions: Vec::new(),
             external_editor: None,
+            copy_on_select: true,
             terminal_hyperlinks: Capability::Auto,
             terminal_images: ImageProtocolSetting::Auto,
             terminal_true_color: Capability::Auto,
@@ -818,6 +823,7 @@ impl Config {
                 .external_editor
                 .clone()
                 .filter(|command| !command.trim().is_empty()),
+            copy_on_select: self.copy_on_select.unwrap_or(defaults.copy_on_select),
             terminal_hyperlinks: self
                 .terminal_hyperlinks
                 .unwrap_or(defaults.terminal_hyperlinks),
@@ -880,6 +886,7 @@ impl Config {
             budget: take(&mut fields, "budget", path)?,
             extensions: take(&mut fields, "extensions", path)?,
             external_editor: take(&mut fields, "external_editor", path)?,
+            copy_on_select: take(&mut fields, "copy_on_select", path)?,
             terminal_hyperlinks: take(&mut fields, "terminal_hyperlinks", path)?,
             terminal_images: take(&mut fields, "terminal_images", path)?,
             terminal_true_color: take(&mut fields, "terminal_true_color", path)?,
