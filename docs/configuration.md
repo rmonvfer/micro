@@ -93,6 +93,7 @@ Command-line options take precedence over environment variables, which take prec
 | `block_images` | `false` | Reject image attachments. |
 | `skill_commands` | `true` | Advertise discovered skills to the model. |
 | `content_padding` | `1` | Horizontal padding around prompt and lower UI content. |
+| `output_pad` | `1` | Columns of padding beside the transcript's text, `0` or `1`. Message bands always span the full width. |
 | `interface_padding` | `0` | Padding between the interface and terminal edges. |
 | `steering_mode` | `one-at-a-time` | `one-at-a-time` or `all` for queued steering messages. |
 | `tree_filter_mode` | `default` | `default`, `no-tools`, `user-only`, `labeled-only`, or `all`. |

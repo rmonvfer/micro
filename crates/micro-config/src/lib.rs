@@ -407,6 +407,9 @@ pub struct Config {
     /// Columns and rows kept clear between the terminal's edges and the interface.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub interface_padding: Option<u16>,
+    /// Columns of ground either side of the transcript's text, zero or one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub output_pad: Option<u16>,
     pub steering_mode: Option<SteeringMode>,
     pub tree_filter_mode: Option<TreeFilter>,
     pub fullscreen_exit_output: Option<ExitOutput>,
@@ -517,6 +520,7 @@ pub struct Settings {
     pub skill_commands: bool,
     pub content_padding: u16,
     pub interface_padding: u16,
+    pub output_pad: u16,
     pub steering_mode: SteeringMode,
     pub tree_filter_mode: TreeFilter,
     pub fullscreen_exit_output: ExitOutput,
@@ -581,6 +585,7 @@ impl Default for Settings {
             skill_commands: true,
             content_padding: 1,
             interface_padding: 0,
+            output_pad: 1,
             steering_mode: SteeringMode::default(),
             tree_filter_mode: TreeFilter::default(),
             fullscreen_exit_output: ExitOutput::default(),
@@ -764,6 +769,7 @@ impl Config {
             skill_commands: self.skill_commands.unwrap_or(defaults.skill_commands),
             content_padding: self.content_padding.unwrap_or(defaults.content_padding),
             interface_padding: self.interface_padding.unwrap_or(defaults.interface_padding),
+            output_pad: self.output_pad.unwrap_or(defaults.output_pad).min(1),
             autocomplete_max_items: self
                 .autocomplete_max_items
                 .unwrap_or(defaults.autocomplete_max_items)
@@ -844,6 +850,7 @@ impl Config {
             skill_commands: take(&mut fields, "skill_commands", path)?,
             content_padding: take(&mut fields, "content_padding", path)?,
             interface_padding: take(&mut fields, "interface_padding", path)?,
+            output_pad: take(&mut fields, "output_pad", path)?,
             autocomplete_max_items: take(&mut fields, "autocomplete_max_items", path)?,
             show_hardware_cursor: take(&mut fields, "show_hardware_cursor", path)?,
             terminal_progress: take(&mut fields, "terminal_progress", path)?,
@@ -1352,6 +1359,22 @@ mod tests {
         assert_eq!("header".parse::<QuietStartup>(), Ok(QuietStartup::Header));
         assert_eq!("on".parse::<QuietStartup>(), Ok(QuietStartup::On));
         assert!("sometimes".parse::<QuietStartup>().is_err());
+    }
+
+    #[test]
+    fn transcript_padding_is_zero_or_one() {
+        let resolved = |pad: u16| {
+            Config {
+                output_pad: Some(pad),
+                ..Config::default()
+            }
+            .resolve(&Overrides::default(), no_environment)
+            .unwrap()
+            .output_pad
+        };
+        assert_eq!(Settings::default().output_pad, 1);
+        assert_eq!(resolved(0), 0);
+        assert_eq!(resolved(4), 1);
     }
 
     #[test]

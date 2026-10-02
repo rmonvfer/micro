@@ -610,6 +610,11 @@ fn settings(context: &CommandContext<'_>) -> CommandOutcome {
             "/set content_padding",
         ),
         PickerItem::new(
+            "Transcript padding",
+            now.output_pad.to_string(),
+            "/set output_pad",
+        ),
+        PickerItem::new(
             "Autocomplete max items",
             now.autocomplete_max_items.to_string(),
             "/set autocomplete_max_items",
@@ -968,6 +973,7 @@ fn settable(config: &micro_config::Config, name: &str) -> Option<Vec<PickerItem>
 fn numbered(name: &str, now: &micro_config::Settings) -> Option<Vec<PickerItem>> {
     let (range, unit, current): (Vec<u64>, &str, u64) = match name {
         "content_padding" => ((0..=3).collect(), "columns", now.content_padding as u64),
+        "output_pad" => ((0..=1).collect(), "columns", now.output_pad as u64),
         "interface_padding" => (
             (0..=3).collect(),
             "columns and rows",
@@ -1019,6 +1025,10 @@ fn describe(config: &micro_config::Config, name: &str) -> Option<String> {
         "block_images" => format!("block_images is {} (on or off)", now.block_images),
         "skill_commands" => format!("skill_commands is {} (on or off)", now.skill_commands),
         "content_padding" => format!("content_padding is {} (columns)", now.content_padding),
+        "output_pad" => format!(
+            "output_pad is {} (columns beside the transcript, 0 or 1)",
+            now.output_pad
+        ),
         "interface_padding" => format!(
             "interface_padding is {} (columns and rows around the interface)",
             now.interface_padding
@@ -1125,6 +1135,13 @@ fn assign(config: &mut micro_config::Config, name: &str, value: &str) -> Result<
                     .map_err(|_| format!("`{value}` is not a number"))?
                     .min(20),
             )
+        }
+        "output_pad" => {
+            config.output_pad = Some(match value {
+                "0" => 0,
+                "1" => 1,
+                other => return Err(format!("`{other}` is not 0 or 1")),
+            })
         }
         "interface_padding" => {
             config.interface_padding = Some(
@@ -1599,11 +1616,12 @@ mod tests {
             ("block_images", "on"),
             ("skill_commands", "off"),
             ("content_padding", "2"),
+            ("output_pad", "0"),
             ("interface_padding", "2"),
             ("autocomplete_max_items", "12"),
             ("show_hardware_cursor", "on"),
             ("terminal_progress", "off"),
-            ("quiet_startup", "on"),
+            ("quiet_startup", "header"),
             ("collapse_changelog", "on"),
             ("warnings", "off"),
             ("cache_miss_notices", "on"),
@@ -1629,6 +1647,8 @@ mod tests {
         assert_eq!(now.follow_up_mode, micro_config::FollowUpMode::Interrupt);
         assert_eq!(now.scoped_models, vec!["anthropic/", "google/gemini-3-pro"]);
         assert_eq!(now.content_padding, 2);
+        assert_eq!(now.output_pad, 0);
+        assert_eq!(now.quiet_startup, micro_config::QuietStartup::Header);
         assert_eq!(now.transport, "auto");
     }
 
@@ -1639,6 +1659,8 @@ mod tests {
         assert!(assign(&mut config, "image_width_cells", "wide").is_err());
         assert!(assign(&mut config, "http_idle_timeout", "0").is_err());
         assert!(assign(&mut config, "double_escape", "sideways").is_err());
+        assert!(assign(&mut config, "output_pad", "2").is_err());
+        assert!(assign(&mut config, "quiet_startup", "sometimes").is_err());
 
         assert!(assign(&mut config, "transport", "websocket").is_err());
         assert!(assign(&mut config, "nothing_like_this", "on").is_err());

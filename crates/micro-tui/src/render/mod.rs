@@ -60,6 +60,8 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     let content_width = content_width(area.width, content_padding);
 
     app.set_frame(content_width as usize, area.height);
+    let output_pad = app.settings().output_pad;
+    app.set_transcript_width(area.width.saturating_sub(output_pad * 2) as usize);
     let chrome = chrome(app, &theme, area.width, area.height);
     let transcript_rows = area.height.saturating_sub(chrome.rows());
     app.set_viewport(transcript_rows as usize);

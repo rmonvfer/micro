@@ -24,10 +24,12 @@ const INDENT: usize = 2;
 /// Width of the line-number column beside a search hit.
 const NUMBER_WIDTH: usize = 5;
 
-/// Where clickable paths are recorded, and what relative ones are resolved against.
-pub struct Linking<'a> {
+/// What a call is drawn among: where clickable paths are recorded, what relative ones are resolved
+/// against, and the ground either side of its band.
+pub struct Surroundings<'a> {
     pub links: &'a mut Links,
     pub workspace: &'a Path,
+    pub pad: usize,
 }
 
 pub fn lines(
@@ -35,10 +37,10 @@ pub fn lines(
     focused: bool,
     theme: &Theme,
     width: usize,
-    linking: &mut Linking<'_>,
+    surroundings: &mut Surroundings<'_>,
 ) -> Vec<Line<'static>> {
     if tool.has_custom_render() {
-        return custom_lines(tool, focused, theme, width);
+        return custom_lines(tool, focused, theme, width, surroundings.pad);
     }
 
     let view = tools::view(
@@ -49,7 +51,7 @@ pub fn lines(
     );
 
     let listed = tool.expanded && !view.arguments.is_empty();
-    let mut rows = header(tool, &view, !listed, width, theme, linking);
+    let mut rows = header(tool, &view, !listed, width, theme, surroundings);
     if listed {
         for argument in &view.arguments {
             rows.extend(wrap_spans_hard(
@@ -75,7 +77,7 @@ pub fn lines(
         ));
     }
 
-    band(rows, width, ground(tool, focused, theme))
+    band(rows, width, surroundings.pad, ground(tool, focused, theme))
 }
 
 /// A call an extension is drawing itself, through renderCall/renderResult.
@@ -84,6 +86,7 @@ fn custom_lines(
     focused: bool,
     theme: &Theme,
     width: usize,
+    pad: usize,
 ) -> Vec<Line<'static>> {
     let rows: Vec<Line<'static>> = tool
         .render_lines()
@@ -95,7 +98,7 @@ fn custom_lines(
         return std::iter::once(Line::default()).chain(rows).collect();
     }
 
-    band(rows, width, ground(tool, focused, theme))
+    band(rows, width, pad, ground(tool, focused, theme))
 }
 
 fn ground(tool: &ToolEntry, focused: bool, theme: &Theme) -> Color {
@@ -117,7 +120,7 @@ fn header(
     with_subject: bool,
     width: usize,
     theme: &Theme,
-    linking: &mut Linking<'_>,
+    surroundings: &mut Surroundings<'_>,
 ) -> Vec<Line<'static>> {
     let mut spans = vec![Span::styled(
         tool.name.clone(),
@@ -129,9 +132,9 @@ fn header(
     if with_subject && !view.subject.is_empty() {
         let style = Style::new().fg(theme.accent);
         let style = match tools::names_a_file(&tool.name) {
-            true => linking
+            true => surroundings
                 .links
-                .mark(style, file_url(&view.subject, linking.workspace)),
+                .mark(style, file_url(&view.subject, surroundings.workspace)),
             false => style,
         };
         spans.push(Span::raw(" "));
@@ -260,9 +263,10 @@ mod tests {
             focused,
             theme,
             width,
-            &mut Linking {
+            &mut Surroundings {
                 links: &mut Links::disabled(),
                 workspace: Path::new("/work"),
+                pad: crate::render::transcript::PADDING,
             },
         )
     }
@@ -277,9 +281,10 @@ mod tests {
             false,
             &theme,
             60,
-            &mut Linking {
+            &mut Surroundings {
                 links: &mut links,
                 workspace: Path::new("/work"),
+                pad: crate::render::transcript::PADDING,
             },
         );
         assert_eq!(links.url(0), Some("file:///work/src/a.rs"));
@@ -295,9 +300,10 @@ mod tests {
             false,
             &theme,
             60,
-            &mut Linking {
+            &mut Surroundings {
                 links: &mut links,
                 workspace: Path::new("/work"),
+                pad: crate::render::transcript::PADDING,
             },
         );
         assert!(links.is_empty());

@@ -36,6 +36,8 @@ pub struct Display {
     pub hidden_thinking_label: Cow<'static, str>,
     /// The directory relative paths in tool calls are resolved against.
     pub workspace: std::path::PathBuf,
+    /// Columns of ground either side of a message's text.
+    pub pad: usize,
 }
 
 /// The transcript as drawn, with the first line of each entry.
@@ -105,9 +107,10 @@ pub fn append(
                 display.focus == Some(index),
                 theme,
                 display.width,
-                &mut tool::Linking {
+                &mut tool::Surroundings {
                     links,
                     workspace: &display.workspace,
+                    pad: display.pad,
                 },
             )),
             Entry::Compaction { summary, expanded } => {
@@ -126,7 +129,7 @@ pub fn append(
                 .first()
                 .is_some_and(|span| span.style.bg.is_some());
             if !banded {
-                *line = indented(std::mem::take(line));
+                *line = indented(std::mem::take(line), display.pad);
             }
         }
 
@@ -153,23 +156,24 @@ fn assistant_leads_into_tool(entries: &[Entry], index: usize) -> bool {
 pub(super) fn band(
     rows: Vec<Line<'static>>,
     width: usize,
+    pad: usize,
     background: Color,
 ) -> Vec<Line<'static>> {
     std::iter::once(Line::default())
         .chain(rows)
         .chain(std::iter::once(Line::default()))
-        .map(|line| super::tint(indented(line), width + PADDING * 2, background))
+        .map(|line| super::tint(indented(line, pad), width + pad * 2, background))
         .collect()
 }
 
-/// Columns of ground either side of a message's text, inside its own band.
+/// Columns of ground either side of a message's text when nothing says otherwise.
 pub(crate) const PADDING: usize = 1;
 
-fn indented(line: Line<'static>) -> Line<'static> {
-    match line.spans.is_empty() {
+fn indented(line: Line<'static>, pad: usize) -> Line<'static> {
+    match line.spans.is_empty() || pad == 0 {
         true => line,
         false => {
-            let mut spans = vec![Span::raw(" ".repeat(PADDING))];
+            let mut spans = vec![Span::raw(" ".repeat(pad))];
             spans.extend(line.spans);
             Line::from(spans)
         }
@@ -187,7 +191,12 @@ fn push_user(out: &mut Vec<Line<'static>>, text: &str, theme: &Theme, display: &
         let spans = vec![Span::styled(line.to_string(), body)];
         rows.extend(wrap_spans(&spans, display.width, 0));
     }
-    out.extend(band(rows, display.width, theme.user_message_bg));
+    out.extend(band(
+        rows,
+        display.width,
+        display.pad,
+        theme.user_message_bg,
+    ));
 }
 
 /// A command the user ran themselves, written the way they typed it.
@@ -216,7 +225,12 @@ fn push_bash(
     }
 
     match shared {
-        true => out.extend(band(rows, display.width, theme.user_message_bg)),
+        true => out.extend(band(
+            rows,
+            display.width,
+            display.pad,
+            theme.user_message_bg,
+        )),
         false => out.extend(rows),
     }
 }
@@ -300,7 +314,12 @@ fn push_compaction(
         ])),
     }
 
-    out.extend(band(rows, display.width, theme.custom_message_bg));
+    out.extend(band(
+        rows,
+        display.width,
+        display.pad,
+        theme.custom_message_bg,
+    ));
 }
 
 /// Roughly how much the summarized stretch was worth, from what stands in for it.
@@ -394,7 +413,12 @@ fn push_custom(
             0,
         ));
     }
-    out.extend(band(rows, display.width, theme.custom_message_bg));
+    out.extend(band(
+        rows,
+        display.width,
+        display.pad,
+        theme.custom_message_bg,
+    ));
 }
 
 #[cfg(test)]
@@ -418,6 +442,7 @@ mod tests {
             resize_images: true,
             hidden_thinking_label: Cow::Borrowed("Thinking..."),
             workspace: std::path::PathBuf::from("/work"),
+            pad: PADDING,
         }
     }
 
@@ -446,6 +471,30 @@ mod tests {
             rendered(&transcript, &display(10)),
             vec!["", "one two", "three four", ""]
         );
+    }
+
+    #[test]
+    fn without_padding_text_starts_at_the_edge_and_bands_still_fill_the_row() {
+        let theme = Theme::dark();
+        let mut transcript = Transcript::new();
+        transcript.push_user("hello");
+        let display = Display {
+            pad: 0,
+            ..display(30)
+        };
+
+        let drawn = lines(&transcript, &theme, &display).lines;
+        let widths: Vec<usize> = drawn
+            .iter()
+            .map(|line| line.spans.iter().map(|s| text_width(&s.content)).sum())
+            .collect();
+        assert!(widths.iter().all(|width| *width == 30), "{widths:?}");
+        let text: String = drawn[1]
+            .spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect();
+        assert!(text.starts_with("hello"), "{text:?}");
     }
 
     #[test]

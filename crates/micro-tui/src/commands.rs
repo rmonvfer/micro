@@ -264,6 +264,8 @@ pub struct Preferences {
     pub content_padding: u16,
     /// Columns and rows kept clear between the terminal's edges and the interface.
     pub interface_padding: u16,
+    /// Columns of ground either side of the transcript's text.
+    pub output_pad: u16,
     /// How many completions the command menu offers at once.
     pub autocomplete_max_items: usize,
     /// Let the terminal draw its own cursor.
@@ -299,6 +301,7 @@ impl Default for Preferences {
             block_images: false,
             content_padding: 1,
             interface_padding: 0,
+            output_pad: crate::render::transcript::PADDING as u16,
             autocomplete_max_items: crate::menu::MAX_VISIBLE,
             show_hardware_cursor: false,
             terminal_progress: true,
@@ -322,6 +325,7 @@ impl From<&micro_config::Settings> for Preferences {
             block_images: settings.block_images,
             content_padding: settings.content_padding,
             interface_padding: settings.interface_padding,
+            output_pad: settings.output_pad,
             autocomplete_max_items: settings.autocomplete_max_items,
             show_hardware_cursor: settings.show_hardware_cursor,
             terminal_progress: settings.terminal_progress,

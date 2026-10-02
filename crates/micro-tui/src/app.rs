@@ -320,6 +320,8 @@ pub struct App {
     viewport: usize,
     /// The columns content wraps to, and the rows the whole frame has.
     width: usize,
+    /// The columns the transcript's text wraps to.
+    transcript_width: usize,
     rows: u16,
     cache: Cache,
     /// Set by jump-to-char: the next printable key moves the cursor to it.
@@ -615,6 +617,7 @@ impl App {
             scroll: 0,
             viewport: 0,
             width: 80,
+            transcript_width: 80,
             rows: 24,
             cache: Cache::default(),
             jump: None,
@@ -721,11 +724,18 @@ impl App {
         self.attachments.len()
     }
 
-    /// The frame the next repaint will be laid out in.
+    /// The frame the next repaint will be laid out in. The transcript wraps to the same width
+    /// until [`App::set_transcript_width`] says otherwise.
     pub fn set_frame(&mut self, width: usize, rows: u16) {
         self.width = width.max(1);
+        self.transcript_width = self.width;
         self.rows = rows;
         self.refresh_inspection_body();
+    }
+
+    /// The columns the transcript's text wraps to, inside its padding.
+    pub fn set_transcript_width(&mut self, width: usize) {
+        self.transcript_width = width.max(1);
     }
 
     /// How many rows the transcript has to draw in.
@@ -1788,7 +1798,7 @@ impl App {
     /// nothing that affects them has changed.
     pub fn refresh_lines(&mut self) {
         let shape = Shape {
-            width: self.width,
+            width: self.transcript_width,
             show_thinking: self.show_thinking,
             focus: self.focus,
         };
@@ -1834,7 +1844,7 @@ impl App {
                         self.settings.image_width_cells as usize,
                         self.settings.auto_resize_images,
                     )
-                    .indented(crate::render::transcript::PADDING),
+                    .indented(self.settings.output_pad as usize),
             },
             _ => {
                 let mut kept = std::mem::take(&mut self.cache.rendered);
@@ -1852,7 +1862,7 @@ impl App {
             &self.transcript,
             &self.theme,
             &Display {
-                width: self.width,
+                width: self.transcript_width,
                 show_thinking: self.show_thinking,
                 focus: self.focus,
                 from,
@@ -1865,6 +1875,7 @@ impl App {
                     self.hidden_thinking_label().to_string(),
                 ),
                 workspace: self.workspace.clone(),
+                pad: self.settings.output_pad as usize,
             },
             &mut rendered,
             &mut self.cache.starts,
