@@ -49,3 +49,4 @@ tokio = { workspace = true }
 
 [dev-dependencies]
 micro-extensions = { workspace = true }
+micro-testkit = { workspace = true }

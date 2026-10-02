@@ -889,6 +889,7 @@ async fn main() -> Result<()> {
         let _ = host.notify("session_start", started).await;
     }
 
+    let mut extension_state = None;
     if let Some(host) = extensions.as_ref() {
         let declared = host.flags();
         for flag in &given {
@@ -949,6 +950,7 @@ async fn main() -> Result<()> {
             models: Some(built.models.clone()),
             mcp: Some(built.mcp.clone()),
         }));
+        extension_state = Some(std::sync::Arc::clone(&state));
         tokio::spawn(extensions::serve(
             std::sync::Arc::clone(host),
             root.clone(),
@@ -972,6 +974,12 @@ async fn main() -> Result<()> {
             ));
         }
     }
+    tokio::spawn(extensions::follow_selection(
+        built.selections,
+        extensions.clone(),
+        extension_state,
+        std::sync::Arc::clone(&built.snapshot),
+    ));
 
     let session = std::sync::Arc::clone(&built.session);
     let writer = runtime::persist(built.session, built.recorder);

@@ -85,6 +85,46 @@ pub struct ModelSwap {
     pub context_window: usize,
     /// What this model's tokens are charged at.
     pub cost: ModelCost,
+    /// What the model is called where people read it.
+    pub name: String,
+    /// How the model came to be chosen.
+    pub source: ModelSource,
+}
+
+/// How a model came to be chosen, in the words pi's `model_select` event uses.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ModelSource {
+    /// Named outright.
+    Set,
+    /// Stepped to from the one before it.
+    Cycle,
+    /// Brought back with a session that was using it.
+    Restore,
+}
+
+impl ModelSource {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            ModelSource::Set => "set",
+            ModelSource::Cycle => "cycle",
+            ModelSource::Restore => "restore",
+        }
+    }
+}
+
+/// What the agent answers with from now on, told to whoever watches it each time its model or
+/// its reasoning level is set.
+#[derive(Debug, Clone, PartialEq)]
+pub enum SelectionChange {
+    /// A model was set, carrying the reasoning level it allows nearest to the one asked for.
+    Model {
+        model: Model,
+        name: String,
+        context_window: usize,
+        source: ModelSource,
+    },
+    /// The reasoning level was set, as near to the one asked for as the model allows.
+    Thinking { level: ThinkingLevel },
 }
 
 impl std::fmt::Debug for ModelSwap {
@@ -322,6 +362,8 @@ pub struct Agent {
     observer: Option<UnboundedSender<AgentEvent>>,
     /// Anything allowed to change what the run does.
     hooks: Option<Arc<dyn Hooks>>,
+    /// Whoever is told each time the model or the reasoning level is set.
+    selection_watch: Option<UnboundedSender<SelectionChange>>,
     /// What this conversation is called, for a provider that caches against it.
     cache_key: Option<String>,
     summarizer: Arc<dyn Summarizer>,
@@ -385,6 +427,7 @@ impl Agent {
             recorder: None,
             observer: None,
             hooks: None,
+            selection_watch: None,
             cache_key: None,
             summarizer,
             compaction: Some(CompactionConfig::default()),
@@ -435,6 +478,7 @@ impl Agent {
         self.warmer.stop("model changed");
         self.provider = swap.provider;
         self.model = swap.model;
+        self.model.thinking = self.model.clamp_thinking(self.model.thinking);
         self.api_key = swap.api_key;
         self.context_window = swap.context_window;
         self.model_cost = Some(swap.cost.clone());
@@ -443,6 +487,18 @@ impl Agent {
             budget.cost = swap.cost;
         }
         self.summarizer = self.provider_summarizer();
+        self.tell_selection(SelectionChange::Model {
+            model: self.model.clone(),
+            name: swap.name,
+            context_window: self.context_window,
+            source: swap.source,
+        });
+    }
+
+    fn tell_selection(&self, change: SelectionChange) {
+        if let Some(watch) = &self.selection_watch {
+            let _ = watch.send(change);
+        }
     }
 
     fn provider_summarizer(&self) -> Arc<dyn Summarizer> {
@@ -480,6 +536,9 @@ impl Agent {
     /// Reason this hard from the next turn on, or as near to it as the model offers.
     pub fn set_thinking(&mut self, level: ThinkingLevel) {
         self.model.thinking = self.model.clamp_thinking(level);
+        self.tell_selection(SelectionChange::Thinking {
+            level: self.model.thinking,
+        });
     }
 
     /// The model's context window in tokens, which decides when compaction fires.
@@ -666,6 +725,12 @@ impl Agent {
     /// Send every event to `observer` as well as to whoever asked for the turn.
     pub fn with_observer(mut self, observer: UnboundedSender<AgentEvent>) -> Self {
         self.observer = Some(observer);
+        self
+    }
+
+    /// Tell `watch` the model and reasoning level each time either is set.
+    pub fn with_selection_watch(mut self, watch: UnboundedSender<SelectionChange>) -> Self {
+        self.selection_watch = Some(watch);
         self
     }
 
@@ -2414,6 +2479,63 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn setting_the_model_or_reasoning_level_tells_the_selection_watch() {
+        let reasoning_model = Model {
+            reasoning: true,
+            ..Model::anthropic("thinker").with_thinking(ThinkingLevel::High)
+        };
+        let plain_model = Model {
+            reasoning: false,
+            ..Model::anthropic("plain").with_thinking(ThinkingLevel::High)
+        };
+        let (watch, mut watched) = tokio::sync::mpsc::unbounded_channel();
+        let mut agent = Agent::new(
+            Arc::new(RecordingProvider::new("anthropic")),
+            Vec::new(),
+            reasoning_model.clone(),
+            "key",
+        )
+        .with_selection_watch(watch);
+
+        agent.set_thinking(ThinkingLevel::Low);
+        assert_eq!(
+            watched.try_recv().unwrap(),
+            SelectionChange::Thinking {
+                level: ThinkingLevel::Low
+            }
+        );
+
+        agent.set_model(ModelSwap {
+            provider: Arc::new(RecordingProvider::new("anthropic")),
+            model: plain_model.clone(),
+            api_key: "key".into(),
+            context_window: 32_000,
+            cost: ModelCost::default(),
+            name: "Plain".into(),
+            source: ModelSource::Cycle,
+        });
+        assert_eq!(
+            watched.try_recv().unwrap(),
+            SelectionChange::Model {
+                model: plain_model.with_thinking(ThinkingLevel::Off),
+                name: "Plain".into(),
+                context_window: 32_000,
+                source: ModelSource::Cycle,
+            }
+        );
+        assert_eq!(agent.model().thinking, ThinkingLevel::Off);
+
+        agent.set_thinking(ThinkingLevel::High);
+        assert_eq!(
+            watched.try_recv().unwrap(),
+            SelectionChange::Thinking {
+                level: ThinkingLevel::Off
+            }
+        );
+        assert!(watched.try_recv().is_err());
+    }
+
+    #[tokio::test]
     async fn a_model_swap_replaces_every_model_dependent_part() {
         let old_provider = RecordingProvider::new("old");
         let new_provider = RecordingProvider::new("new");
@@ -2470,6 +2592,8 @@ mod tests {
             api_key: "new-key".into(),
             context_window: 64_000,
             cost: new_cost.clone(),
+            name: "New Model".into(),
+            source: ModelSource::Set,
         });
 
         assert_eq!(agent.provider.name(), "new");

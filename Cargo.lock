@@ -2319,6 +2319,7 @@ dependencies = [
  "micro-sandbox",
  "micro-session",
  "micro-skills",
+ "micro-testkit",
  "micro-tools",
  "micro-tui",
  "micro-types",
