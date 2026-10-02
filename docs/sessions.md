@@ -25,7 +25,23 @@ micro --continue
 
 `--continue` selects the latest session for the current workspace.
 
+A session file is written when the first message is sent, so leaving micro before saying anything leaves nothing behind.
+
+Scripts can pin a session to an id of their choosing. `--session-id` resumes this workspace's session with that exact id, or starts one under it when none exists; an id that belongs to another workspace is refused.
+
+```bash
+micro -p --session-id nightly-review "Summarize today's changes"
+```
+
 Inside the interface, use `/sessions`, `/resume`, `/tree`, `/fork`, and `/clone` to navigate or branch a conversation.
+
+## Naming sessions
+
+`--name` (or `-n`) gives the session its display name from the start, in the interface, `--print`, and `--rpc` alike. `/name` renames it later.
+
+```bash
+micro -n "Release prep"
+```
 
 ## Inspect a session
 

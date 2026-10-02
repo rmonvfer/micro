@@ -28,6 +28,9 @@ With no subcommand, micro opens the terminal interface. A prompt on the command 
 | `--thinking <LEVEL>`    | Set reasoning effort. Supported levels are model-dependent.                  |
 | `--resume <ID>`         | Resume a saved session.                                                      |
 | `--continue`            | Resume the latest session for the workspace.                                 |
+| `--session-id <ID>`     | Resume this workspace's session with this exact ID, or start one under it.   |
+| `-n`, `--name <NAME>`   | Set the session display name at startup.                                     |
+
 | `--budget <USD>`        | Stop at the first turn boundary after the session total reaches this amount. |
 
 ## Tools and project resources

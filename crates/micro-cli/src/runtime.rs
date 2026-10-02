@@ -44,6 +44,17 @@ pub struct Selection {
     pub resources: Resources,
 }
 
+/// Which session a run opens, and what it is called, as the command line asked.
+#[derive(Debug, Clone, Default)]
+pub struct Opening {
+    /// A saved session to carry on.
+    pub resume: Option<String>,
+    /// An exact id to carry on in this workspace, or to start a session under when none has it.
+    pub session_id: Option<String>,
+    /// The name the session goes by from the start.
+    pub name: Option<String>,
+}
+
 /// Where a run looks for what it loads, when the command line says something about it.
 #[derive(Debug, Clone, Default)]
 pub struct Resources {
@@ -80,6 +91,8 @@ pub struct Runtime {
     /// Shared, because branching and renaming reach the same open session the writer task is
     /// appending to.
     pub session: Arc<Mutex<Session>>,
+    /// Whether the session was carried on from disk rather than started.
+    pub resumed: bool,
     pub history: Vec<Message>,
     pub model: ModelDef,
 
@@ -218,7 +231,7 @@ fn default_model(catalog: &Catalog, provider: Option<&str>) -> Result<ModelDef> 
 pub async fn build(
     root: &Path,
     selection: &Selection,
-    resume: Option<&str>,
+    opening: &Opening,
     settings: &micro_config::Settings,
     trusted: bool,
     has_ui: bool,
@@ -335,22 +348,17 @@ pub async fn build(
     }
 
     let sessions = SessionStore::from_env().context("cannot open the session store")?;
-    let (session, history) = match resume {
-        Some(id) => {
-            let loaded = sessions.load(id).await?;
-            if loaded.skipped_lines > 0 {
-                eprintln!(
-                    "note: skipped {} unreadable line(s) in session {id}",
-                    loaded.skipped_lines
-                );
-            }
-            (loaded.session, loaded.messages)
-        }
-        None => (
-            sessions.create(root, model.qualified_id()).await?,
-            Vec::new(),
-        ),
-    };
+    let (mut session, history, resumed) = open_session(&sessions, opening, root, &model).await?;
+    if let Some(name) = opening
+        .name
+        .as_deref()
+        .filter(|name| !name.trim().is_empty())
+    {
+        session
+            .rename(name)
+            .await
+            .context("cannot name the session")?;
+    }
 
     let (decisions, refusals) = tokio::sync::mpsc::unbounded_channel();
 
@@ -584,6 +592,7 @@ pub async fn build(
         offered_tools,
         self_framed_tools,
         session,
+        resumed,
         history,
 
         subscription: resolved.api_key.as_str().starts_with("sk-ant-oat"),
@@ -599,6 +608,54 @@ pub async fn build(
         context_files,
         skills,
     })
+}
+
+/// Open the session a run asked for: one to resume, one under an exact id, or a fresh one.
+async fn open_session(
+    sessions: &SessionStore,
+    opening: &Opening,
+    root: &Path,
+    model: &ModelDef,
+) -> Result<(Session, Vec<Message>, bool)> {
+    let resume = match (&opening.resume, &opening.session_id) {
+        (Some(id), _) => Some(id.as_str()),
+        (None, Some(id)) if sessions.exists(id).await? => {
+            let workspace = sessions.meta(id).await?.workspace;
+            if !workspace.as_os_str().is_empty() && workspace != root {
+                return Err(anyhow!(
+                    "session {id} belongs to {}, not this workspace",
+                    workspace.display()
+                ));
+            }
+            Some(id.as_str())
+        }
+        (None, Some(id)) => {
+            eprintln!("note: no session in this workspace has id {id}; starting one under it");
+            let session = sessions
+                .create_with_id(id, root, model.qualified_id())
+                .await?;
+            return Ok((session, Vec::new(), false));
+        }
+        (None, None) => None,
+    };
+
+    match resume {
+        Some(id) => {
+            let loaded = sessions.load(id).await?;
+            if loaded.skipped_lines > 0 {
+                eprintln!(
+                    "note: skipped {} unreadable line(s) in session {id}",
+                    loaded.skipped_lines
+                );
+            }
+            Ok((loaded.session, loaded.messages, true))
+        }
+        None => Ok((
+            sessions.create(root, model.qualified_id()).await?,
+            Vec::new(),
+            false,
+        )),
+    }
 }
 
 /// Record tool policy decisions.

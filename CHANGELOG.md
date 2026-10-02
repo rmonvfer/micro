@@ -3,6 +3,7 @@
 ## [Unreleased]
 
 - Write the session file when the first message is sent, so leaving before saying anything leaves no file.
+- Add `--session-id <id>` to resume or start a workspace session under an exact id, and `--name`/`-n` to name the session at startup in every mode.
 
 ## [0.1.13] - 2026-09-04
 
