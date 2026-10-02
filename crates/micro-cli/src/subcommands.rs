@@ -156,18 +156,19 @@ fn pick<'a>(answer: &str, options: &'a [micro_auth::LoginOption]) -> Option<&'a 
 }
 
 /// One line from the terminal, or nothing at the end of input, read off the async runtime so the
-/// browser can finish the sign-in meanwhile.
+/// browser can finish the sign-in meanwhile. The read runs on a thread of its own, which the process
+/// does not wait for when the browser finishes first.
 async fn read_pasted_line() -> Option<String> {
-    tokio::task::spawn_blocking(|| {
+    let (sender, receiver) = tokio::sync::oneshot::channel();
+    std::thread::spawn(move || {
         let mut line = String::new();
-        match std::io::stdin().lock().read_line(&mut line) {
+        let read = match std::io::stdin().lock().read_line(&mut line) {
             Ok(0) | Err(_) => None,
             Ok(_) => Some(line.trim().to_string()).filter(|line| !line.is_empty()),
-        }
-    })
-    .await
-    .ok()
-    .flatten()
+        };
+        let _ = sender.send(read);
+    });
+    receiver.await.ok().flatten()
 }
 
 /// What an auth command is about, as given on the command line.
