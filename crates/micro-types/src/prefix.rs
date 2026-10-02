@@ -149,11 +149,12 @@ mod tests {
     fn a_prefix_in_front_of_a_conversation_is_a_request() {
         let prefix = Prefix::new(Some("be brief".into()), vec![tool("read")], spans());
 
-        let context = prefix.ahead_of(vec![Message::user("go")], Some("session-1".into()));
+        let said = Message::user("go");
+        let context = prefix.ahead_of(vec![said.clone()], Some("session-1".into()));
 
         assert_eq!(context.system_prompt.as_deref(), Some("be brief"));
         assert_eq!(context.tools, vec![tool("read")]);
-        assert_eq!(context.messages, vec![Message::user("go")]);
+        assert_eq!(context.messages, vec![said]);
         assert_eq!(context.cache_key.as_deref(), Some("session-1"));
     }
 }
