@@ -1628,21 +1628,19 @@ impl Hooks for ExtensionHooks {
 
         let answers = self.broker.heeded(answers, Capability::Events, "tool_call");
 
-        let refusal =
-            answers.iter().find_map(
-                |answer| match answer.get("block").and_then(Value::as_bool) {
-                    Some(true) => Some(
-                        answer
-                            .get("reason")
-                            .and_then(Value::as_str)
-                            .unwrap_or("an extension blocked this call")
-                            .to_string(),
-                    ),
-                    _ => None,
-                },
-            );
-        if let Some(reason) = refusal {
-            return ToolDecision::Refuse(reason);
+        let refusal = answers
+            .iter()
+            .find(|answer| answer.get("block").and_then(Value::as_bool) == Some(true));
+        if let Some(answer) = refusal {
+            let reason = answer
+                .get("reason")
+                .and_then(Value::as_str)
+                .unwrap_or("an extension blocked this call")
+                .to_string();
+            return match answer.get("terminate").and_then(Value::as_bool) {
+                Some(true) => ToolDecision::Terminate(reason),
+                _ => ToolDecision::Refuse(reason),
+            };
         }
 
         answers

@@ -598,6 +598,25 @@ impl Agent {
         self.messages.push(message);
     }
 
+    /// Add what the user queued for after the run to the conversation, saying whether there was
+    /// anything.
+    fn commit_follow_ups(&mut self, events: &Fan<'_>, produced: &mut Vec<Message>) -> bool {
+        let queued = self.steering.take_follow_up();
+        if queued.is_empty() {
+            return false;
+        }
+        for said in queued {
+            events.send(AgentEvent::MessageStart {
+                message: said.clone(),
+            });
+            events.send(AgentEvent::MessageEnd {
+                message: said.clone(),
+            });
+            self.commit(said, produced);
+        }
+        true
+    }
+
     /// What anything watching the run has decided about this call.
     async fn decide(&self, id: &str, name: &str, arguments: &Value) -> ToolDecision {
         match &self.hooks {
@@ -989,18 +1008,8 @@ impl Agent {
                     messages: produced.clone(),
                 });
 
-                let queued = self.steering.take_follow_up();
-                if queued.is_empty() {
+                if !self.commit_follow_ups(events, &mut produced) {
                     break;
-                }
-                for said in queued {
-                    events.send(AgentEvent::MessageStart {
-                        message: said.clone(),
-                    });
-                    events.send(AgentEvent::MessageEnd {
-                        message: said.clone(),
-                    });
-                    self.commit(said, &mut produced);
                 }
                 continue;
             }
@@ -1014,6 +1023,7 @@ impl Agent {
             });
 
             let mut prepared = Vec::with_capacity(calls.len());
+            let mut terminating = !truncated;
             for (id, name, arguments) in calls {
                 let mut arguments = arguments;
                 let mut settled = None;
@@ -1028,8 +1038,10 @@ impl Agent {
                         true,
                     ));
                 } else {
-                    match self.decide(&id, &name, &arguments).await {
-                        ToolDecision::Refuse(reason) => {
+                    let decision = self.decide(&id, &name, &arguments).await;
+                    terminating &= matches!(decision, ToolDecision::Terminate(_));
+                    match decision {
+                        ToolDecision::Refuse(reason) | ToolDecision::Terminate(reason) => {
                             self.record_event(LedgerEvent::ToolDenied {
                                 tool: name.clone(),
                                 reason: reason.clone(),
@@ -1095,6 +1107,10 @@ impl Agent {
             events.send(AgentEvent::TurnEnd {
                 messages: produced.clone(),
             });
+
+            if terminating && !self.commit_follow_ups(events, &mut produced) {
+                break;
+            }
         }
 
         events.send(AgentEvent::AgentEnd {
@@ -1916,6 +1932,9 @@ pub enum ToolDecision {
     Rewrite(Value),
     /// Do not run it.
     Refuse(String),
+    /// Do not run it, and when every call in its batch is stopped this way, end the run instead of
+    /// asking the model again.
+    Terminate(String),
 }
 
 #[async_trait::async_trait]
