@@ -3,6 +3,7 @@ mod events;
 mod ledger;
 mod model;
 mod prefix;
+mod sections;
 mod tool;
 
 pub use compat::CacheControlFormat;
@@ -24,6 +25,9 @@ pub use ledger::SCHEMA_VERSION;
 pub use model::Model;
 pub use model::ThinkingLevel;
 pub use prefix::Prefix;
+pub use sections::read_section_update;
+pub use sections::section_update;
+pub use sections::SectionUpdate;
 pub use tool::ConstrainedSampling;
 pub use tool::GrammarVariants;
 pub use tool::JsonSchemaStrictness;

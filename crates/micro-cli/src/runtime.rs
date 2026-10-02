@@ -407,7 +407,9 @@ pub async fn build(
         settings.tool_search_threshold,
         &mcp.arrivals(),
     );
-    let mcp_section = mcp.prompt_section(&undeclared_servers(&mcp, &tools), codemode);
+    let undeclared = undeclared_servers(&mcp, &tools);
+    let mcp_section = mcp.prompt_section(&undeclared, codemode);
+    let servers_section = crate::mcp::ServersSection::new(mcp.clone(), undeclared, codemode);
 
     let available_tools: Vec<String> = tools.iter().map(|tool| tool.definition().name).collect();
     let default_tools = crate::default_tools::DefaultTools::new(
@@ -519,6 +521,7 @@ pub async fn build(
     )
     .with_offered_tools(Arc::clone(&offered_tools))
     .with_arrivals(mcp.arrivals())
+    .with_live_section(Arc::new(servers_section), mcp_section.clone())
     .with_prefix_spans(context.prefix_spans)
     .with_system_prompt(context.system_prompt)
     .with_history(history.clone())

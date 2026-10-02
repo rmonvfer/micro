@@ -745,7 +745,7 @@ impl Transcript {
             Message::User { content, .. } => {
                 self.push_images(content);
                 let text = text_of(content);
-                if text.is_empty() {
+                if text.is_empty() || micro_types::read_section_update(&text).is_some() {
                     return;
                 }
 
@@ -1075,6 +1075,23 @@ mod tests {
             panic!("expected an assistant entry");
         };
         assert!(!entry.streaming);
+    }
+
+    /// A system prompt section said in the conversation is for the model, not the reader.
+    #[test]
+    fn a_section_update_is_not_shown_as_something_the_user_said() {
+        let messages = vec![
+            Message::user(micro_types::section_update(
+                "mcp_servers",
+                Some("- mcp__docs"),
+            )),
+            Message::user("read a.txt"),
+        ];
+        let transcript = Transcript::from_messages(&messages);
+        assert_eq!(
+            transcript.entries(),
+            &[Entry::User("read a.txt".into())][..]
+        );
     }
 
     #[test]

@@ -493,6 +493,35 @@ async fn sign_in(servers: &Servers, name: &str, notifier: Option<&micro_tui::UiA
     Applied::note(announced)
 }
 
+/// The `mcp_servers` system prompt section as the servers stand when a run starts, so a server
+/// that connected since, and said what it offers, is listed with it.
+pub struct ServersSection {
+    servers: Servers,
+    /// The servers whose tools are not declared to the model.
+    undeclared: Vec<String>,
+    codemode: bool,
+}
+
+impl ServersSection {
+    pub fn new(servers: Servers, undeclared: Vec<String>, codemode: bool) -> Self {
+        ServersSection {
+            servers,
+            undeclared,
+            codemode,
+        }
+    }
+}
+
+impl micro_agent::LiveSection for ServersSection {
+    fn name(&self) -> &str {
+        "mcp_servers"
+    }
+
+    fn render(&self) -> Option<String> {
+        self.servers.prompt_section(&self.undeclared, self.codemode)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

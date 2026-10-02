@@ -343,6 +343,9 @@ pub struct Agent {
     offered: Option<Arc<std::sync::RwLock<Option<Vec<String>>>>>,
     /// Tools that became callable after the agent was built, never declared to the model.
     arrivals: Option<micro_tools::Arrivals>,
+    /// Parts of the system prompt that can change while the session runs, each with what the
+    /// system prompt says for it.
+    live_sections: Vec<(Arc<dyn LiveSection>, Option<String>)>,
 
     turn: u64,
     /// Results written to answer tool calls a conversation arrived with unanswered, waiting for a
@@ -394,6 +397,7 @@ impl Agent {
             steering: Steering::default(),
             offered: None,
             arrivals: None,
+            live_sections: Vec::new(),
             turn: 0,
             repairs: Vec::new(),
             stored_blobs: HashSet::new(),
@@ -617,6 +621,43 @@ impl Agent {
     }
 
     /// Let something decide what the run may do.
+    /// Keep `section` current: the system prompt says `in_system_prompt` for it, and a run that
+    /// finds it reading otherwise adds the change to the conversation ahead of its prompt.
+    pub fn with_live_section(
+        mut self,
+        section: Arc<dyn LiveSection>,
+        in_system_prompt: Option<String>,
+    ) -> Self {
+        self.live_sections.push((section, in_system_prompt));
+        self
+    }
+
+    /// The messages saying which live sections read otherwise than the conversation last said.
+    fn section_updates(&self) -> Vec<Message> {
+        self.live_sections
+            .iter()
+            .filter_map(|(section, in_system_prompt)| {
+                let name = section.name();
+                let said = self
+                    .messages
+                    .iter()
+                    .rev()
+                    .filter_map(|message| match message {
+                        Message::User { content, .. } => {
+                            micro_types::read_section_update(&text_of(content))
+                        }
+                        _ => None,
+                    })
+                    .find(|update| update.name == name)
+                    .map(|update| update.body)
+                    .unwrap_or_else(|| in_system_prompt.clone());
+                let now = section.render();
+                (now != said)
+                    .then(|| Message::user(micro_types::section_update(name, now.as_deref())))
+            })
+            .collect()
+    }
+
     pub fn with_hooks(mut self, hooks: Arc<dyn Hooks>) -> Self {
         self.hooks = Some(hooks);
         self
@@ -1145,6 +1186,15 @@ impl Agent {
         }
 
         events.send(AgentEvent::AgentStart);
+        for update in self.section_updates() {
+            events.send(AgentEvent::MessageStart {
+                message: update.clone(),
+            });
+            events.send(AgentEvent::MessageEnd {
+                message: update.clone(),
+            });
+            self.commit(update, &mut produced);
+        }
         events.send(AgentEvent::MessageStart {
             message: prompt.clone(),
         });
@@ -2119,6 +2169,71 @@ mod tests {
         assert!(!warmer.is_running());
     }
 
+    /// What a user message says.
+    fn said(message: &Message) -> String {
+        match message {
+            Message::User { content, .. } => text_of(content),
+            _ => String::new(),
+        }
+    }
+
+    /// A section whose text the test sets.
+    struct Servers(Arc<std::sync::Mutex<Option<String>>>);
+
+    impl LiveSection for Servers {
+        fn name(&self) -> &str {
+            "mcp_servers"
+        }
+
+        fn render(&self) -> Option<String> {
+            self.0.lock().unwrap().clone()
+        }
+    }
+
+    #[tokio::test]
+    async fn a_changed_section_joins_the_conversation_and_the_system_prompt_stays() {
+        let now = Arc::new(std::sync::Mutex::new(Some("- mcp__docs".to_string())));
+        let mut agent = Agent::new(
+            Arc::new(RecordingProvider::new("anthropic")),
+            Vec::new(),
+            plain_model("anthropic", "claude"),
+            "key",
+        )
+        .with_system_prompt("prompt\n\n- mcp__docs")
+        .with_live_section(
+            Arc::new(Servers(Arc::clone(&now))),
+            Some("- mcp__docs".to_string()),
+        );
+        let (events, _received) = tokio::sync::mpsc::unbounded_channel();
+
+        agent.run(Message::user("first"), &events).await;
+        assert_eq!(agent.messages().len(), 2, "nothing changed yet");
+
+        *now.lock().unwrap() = Some("- mcp__docs: Search the docs".to_string());
+        agent.run(Message::user("second"), &events).await;
+        let update = said(&agent.messages()[2]);
+        assert_eq!(
+            micro_types::read_section_update(&update).and_then(|update| update.body),
+            Some("- mcp__docs: Search the docs".to_string())
+        );
+        assert_eq!(said(&agent.messages()[3]), "second");
+        assert_eq!(
+            agent.prefix().system_prompt(),
+            Some("prompt\n\n- mcp__docs")
+        );
+
+        agent.run(Message::user("third"), &events).await;
+        assert_eq!(agent.messages().len(), 7, "the update is said once");
+
+        *now.lock().unwrap() = None;
+        agent.run(Message::user("fourth"), &events).await;
+        let update = said(&agent.messages()[7]);
+        assert_eq!(
+            micro_types::read_section_update(&update).map(|update| update.body),
+            Some(None)
+        );
+    }
+
     struct Refusing;
 
     #[async_trait::async_trait]
@@ -2463,6 +2578,23 @@ pub enum ToolDecision {
     /// Do not run it, and when every call in its batch is stopped this way, end the run instead of
     /// asking the model again.
     Terminate(String),
+}
+
+/// A part of the system prompt that can change while a session runs, such as the list of MCP
+/// servers. Rewriting the system prompt would throw away the prefix the provider cached, so each
+/// run compares what the section reads now with what the conversation last said, and adds a
+/// change to the conversation instead.
+pub trait LiveSection: Send + Sync {
+    /// The section's name, which marks its updates in the conversation.
+    fn name(&self) -> &str;
+
+    /// What the section reads now, or `None` when it has nothing to say.
+    fn render(&self) -> Option<String>;
+}
+
+/// The text of a message's blocks, joined.
+fn text_of(content: &[ContentBlock]) -> String {
+    content.iter().map(ContentBlock::as_text).collect()
 }
 
 #[async_trait::async_trait]

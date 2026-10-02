@@ -54,7 +54,7 @@ A server's `exposure` decides how the model reaches its tools. With `codemode`, 
 
 Servers with `codemode` or `deferred` exposure connect in the background, so the first prompt does not wait for them; `tool_search` waits for them when it runs, and so does a script that mentions `mcp__` or searches for tools. Their tools are reachable both ways: scripts call them, and `tool_search` finds them.
 
-Servers whose tools are not declared are listed in the system prompt with one line each, from `description` or, once connected, from the first line of what the server says about itself.
+Servers whose tools are not declared are listed in the system prompt with one line each, from `description` or, once connected, from the first line of what the server says about itself. The list is checked at the start of each prompt. When it changed, for example after a server connected and said what it offers, the new list is added to the conversation ahead of the prompt, so the system prompt and the prefix the provider cached stay as they were.
 
 ```json
 { "mcpServers": { "github": { "url": "https://api.githubcopilot.com/mcp/", "exposure": "deferred" } } }
