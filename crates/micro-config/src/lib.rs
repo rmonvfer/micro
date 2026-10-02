@@ -187,6 +187,81 @@ pub enum Mermaid {
     Streaming,
 }
 
+/// How much of the introduction a session opens with, written `false`, `true`, or `"header"`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(try_from = "Value", into = "Value")]
+pub enum QuietStartup {
+    /// The header with the version and key hints, and everything that was loaded.
+    #[default]
+    Off,
+    /// The header alone, without the listing of what was loaded.
+    Header,
+    /// Nothing at all.
+    On,
+}
+
+impl QuietStartup {
+    /// Whether the header with the version and key hints is shown.
+    pub fn shows_header(self) -> bool {
+        !matches!(self, QuietStartup::On)
+    }
+
+    /// Whether what was loaded, and what went wrong loading it, is reported on startup.
+    pub fn lists_resources(self) -> bool {
+        matches!(self, QuietStartup::Off)
+    }
+}
+
+impl fmt::Display for QuietStartup {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(match self {
+            QuietStartup::Off => "off",
+            QuietStartup::Header => "header",
+            QuietStartup::On => "on",
+        })
+    }
+}
+
+impl FromStr for QuietStartup {
+    type Err = String;
+
+    fn from_str(value: &str) -> std::result::Result<Self, Self::Err> {
+        match value.to_ascii_lowercase().as_str() {
+            "header" => Ok(QuietStartup::Header),
+            other => match other.parse::<BoolSetting>() {
+                Ok(BoolSetting(true)) => Ok(QuietStartup::On),
+                Ok(BoolSetting(false)) => Ok(QuietStartup::Off),
+                Err(_) => Err(format!("`{value}` is not on, off, or header")),
+            },
+        }
+    }
+}
+
+impl TryFrom<Value> for QuietStartup {
+    type Error = String;
+
+    fn try_from(value: Value) -> std::result::Result<Self, Self::Error> {
+        match value {
+            Value::Bool(true) => Ok(QuietStartup::On),
+            Value::Bool(false) => Ok(QuietStartup::Off),
+            Value::String(word) if word.eq_ignore_ascii_case("header") => Ok(QuietStartup::Header),
+            other => Err(format!(
+                "expected true, false, or \"header\", found {other}"
+            )),
+        }
+    }
+}
+
+impl From<QuietStartup> for Value {
+    fn from(quiet: QuietStartup) -> Self {
+        match quiet {
+            QuietStartup::Off => Value::Bool(false),
+            QuietStartup::Header => Value::from("header"),
+            QuietStartup::On => Value::Bool(true),
+        }
+    }
+}
+
 /// Whether a terminal capability is taken from detection or forced, written `true`, `false`, or
 /// `"auto"`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -347,9 +422,9 @@ pub struct Config {
     /// Report progress to the terminal while a turn runs.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub terminal_progress: Option<bool>,
-    /// Open without the introduction.
+    /// Open without the introduction, or with only its header.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub quiet_startup: Option<bool>,
+    pub quiet_startup: Option<QuietStartup>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
     pub collapse_changelog: Option<bool>,
@@ -451,7 +526,7 @@ pub struct Settings {
     pub autocomplete_max_items: usize,
     pub show_hardware_cursor: bool,
     pub terminal_progress: bool,
-    pub quiet_startup: bool,
+    pub quiet_startup: QuietStartup,
     pub collapse_changelog: bool,
     pub warnings: bool,
     pub cache_miss_notices: bool,
@@ -515,7 +590,7 @@ impl Default for Settings {
             autocomplete_max_items: DEFAULT_AUTOCOMPLETE_MAX_ITEMS,
             show_hardware_cursor: false,
             terminal_progress: true,
-            quiet_startup: false,
+            quiet_startup: QuietStartup::Off,
             collapse_changelog: false,
             warnings: true,
             cache_miss_notices: false,
@@ -1248,6 +1323,35 @@ mod tests {
             Thinking::Medium.to_string().parse::<Thinking>().unwrap(),
             Thinking::Medium
         );
+    }
+
+    #[test]
+    fn quiet_startup_takes_a_flag_or_the_header_only_form() {
+        let path = scratch("quiet").join("config.json");
+        for (written, read) in [
+            ("true", QuietStartup::On),
+            ("false", QuietStartup::Off),
+            ("\"header\"", QuietStartup::Header),
+        ] {
+            fs::write(&path, format!("{{\"quiet_startup\": {written}}}")).unwrap();
+            let config = Config::load_from(&path).unwrap();
+            assert_eq!(config.quiet_startup, Some(read), "{written}");
+
+            config.save_to(&path).unwrap();
+            let saved = fs::read_to_string(&path).unwrap();
+            assert!(
+                saved.contains(&format!("\"quiet_startup\": {written}")),
+                "{saved}"
+            );
+        }
+
+        assert!(QuietStartup::Header.shows_header());
+        assert!(!QuietStartup::Header.lists_resources());
+        assert!(!QuietStartup::On.shows_header());
+        assert!(QuietStartup::Off.lists_resources());
+        assert_eq!("header".parse::<QuietStartup>(), Ok(QuietStartup::Header));
+        assert_eq!("on".parse::<QuietStartup>(), Ok(QuietStartup::On));
+        assert!("sometimes".parse::<QuietStartup>().is_err());
     }
 
     #[test]

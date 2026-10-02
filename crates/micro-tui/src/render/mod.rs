@@ -66,7 +66,8 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
 
     app.refresh_lines();
 
-    let opening = match app.lines().is_empty() && !app.settings().quiet_startup {
+    let quiet = app.settings().quiet_startup;
+    let opening = match app.lines().is_empty() && quiet.shows_header() {
         true => match app.header_override() {
             Some(lines) => lines
                 .iter()
@@ -76,7 +77,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
                 &theme,
                 content_width as usize,
                 app.startup_expanded(),
-                app.resources(),
+                quiet.lists_resources().then(|| app.resources()),
             ),
         },
         false => Vec::new(),
@@ -567,11 +568,13 @@ const ALL_HINTS: [(&str, &str); 19] = [
     ("drop files", "to attach"),
 ];
 
+/// The opening screen: the name and version, the keys worth knowing, and, when they are given,
+/// what was loaded.
 fn intro(
     theme: &Theme,
     width: usize,
     expanded: bool,
-    resources: &crate::app::Resources,
+    resources: Option<&crate::app::Resources>,
 ) -> Vec<Line<'static>> {
     let dim = Style::new().fg(theme.dim);
 
@@ -597,12 +600,13 @@ fn intro(
     match expanded {
         false => {
             out.extend(wrap_spans(&hints::hints(&HINTS, theme), width, 0));
+            let more = match resources {
+                Some(_) => "full startup help and loaded resources",
+                None => "full startup help",
+            };
             out.extend(wrap_spans(
                 &[Span::styled(
-                    format!(
-                        "Press {} to show full startup help and loaded resources.",
-                        hints::key_text("ctrl+o")
-                    ),
+                    format!("Press {} to show {more}.", hints::key_text("ctrl+o")),
                     dim,
                 )],
                 width,
@@ -616,9 +620,11 @@ fn intro(
         }
     }
 
-    out.push(Line::default());
-    out.extend(wrap_spans(&onboarding, width, 0));
-    out.extend(resource_lines(resources, theme, width, expanded));
+    if let Some(resources) = resources {
+        out.push(Line::default());
+        out.extend(wrap_spans(&onboarding, width, 0));
+        out.extend(resource_lines(resources, theme, width, expanded));
+    }
     out
 }
 
@@ -959,6 +965,32 @@ mod tests {
                     .to_string()
             })
             .collect()
+    }
+
+    #[test]
+    fn a_header_only_start_keeps_the_version_and_keys_and_drops_the_rest() {
+        let mut resources = crate::app::Resources::default();
+        resources.add("Skills", vec!["humanizer".into()], vec!["~/h.md".into()]);
+        let draw_with = |quiet: micro_config::QuietStartup| {
+            let mut options = TuiOptions {
+                resources: resources.clone(),
+                ..TuiOptions::default()
+            };
+            options.settings.quiet_startup = quiet;
+            let mut app = App::new(&[], options);
+            let mut terminal = Terminal::new(TestBackend::new(70, 30)).expect("backend");
+            terminal.draw(|frame| draw(frame, &mut app)).expect("draws");
+            screen(&terminal).join("\n")
+        };
+
+        let header = draw_with(micro_config::QuietStartup::Header);
+        assert!(header.contains(env!("CARGO_PKG_VERSION")), "{header}");
+        assert!(header.contains("commands"), "{header}");
+        assert!(!header.contains("[Skills]"), "{header}");
+        assert!(!header.contains("can explain"), "{header}");
+
+        let silent = draw_with(micro_config::QuietStartup::On);
+        assert!(!silent.contains(env!("CARGO_PKG_VERSION")), "{silent}");
     }
 
     #[test]

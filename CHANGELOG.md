@@ -2,6 +2,7 @@
 
 ## [Unreleased]
 
+- Accept `quiet_startup: "header"` to keep the startup header with the version and key hints and hide the rest.
 - Link file paths in built-in file tool titles with OSC 8 `file://` hyperlinks.
 - Add `terminal_hyperlinks`, `terminal_images`, and `terminal_true_color` to override detected terminal capabilities, and draw themes with the 256-color palette on terminals without 24-bit color.
 - Show the arguments of tool calls without a custom renderer as `key=value` pairs when collapsed and `key: value` lines when expanded.

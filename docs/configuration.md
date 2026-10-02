@@ -103,7 +103,7 @@ Command-line options take precedence over environment variables, which take prec
 | `autocomplete_max_items` | `5` | Maximum command-completion rows. |
 | `show_hardware_cursor` | `false` | Keep the terminal's hardware cursor visible. |
 | `terminal_progress` | `true` | Show progress while a turn runs. |
-| `quiet_startup` | `false` | Suppress the startup introduction. |
+| `quiet_startup` | `false` | `true` hides the startup introduction; `"header"` keeps the header with the version and key hints and hides the rest. |
 | `collapse_changelog` | `false` | Collapse changelog display. |
 | `warnings` | `true` | Show runtime warnings. |
 | `cache_miss_notices` | `false` | Report cache writes that did not record a cache read. |

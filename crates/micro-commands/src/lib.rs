@@ -626,7 +626,7 @@ fn settings(context: &CommandContext<'_>) -> CommandOutcome {
         ),
         PickerItem::new(
             "Quiet startup",
-            on_off(now.quiet_startup),
+            now.quiet_startup.to_string(),
             "/set quiet_startup",
         ),
         PickerItem::new(
@@ -806,7 +806,22 @@ fn settable(config: &micro_config::Config, name: &str) -> Option<Vec<PickerItem>
         "skill_commands" => switch(now.skill_commands),
         "show_hardware_cursor" => switch(now.show_hardware_cursor),
         "terminal_progress" => switch(now.terminal_progress),
-        "quiet_startup" => switch(now.quiet_startup),
+        "quiet_startup" => {
+            let now = now.quiet_startup;
+            vec![
+                (
+                    "off",
+                    "the header and what was loaded",
+                    now == micro_config::QuietStartup::Off,
+                ),
+                (
+                    "header",
+                    "the header alone",
+                    now == micro_config::QuietStartup::Header,
+                ),
+                ("on", "nothing", now == micro_config::QuietStartup::On),
+            ]
+        }
         "collapse_changelog" => switch(now.collapse_changelog),
         "warnings" => switch(now.warnings),
         "cache_miss_notices" => switch(now.cache_miss_notices),
@@ -1019,7 +1034,10 @@ fn describe(config: &micro_config::Config, name: &str) -> Option<String> {
         "terminal_progress" => {
             format!("terminal_progress is {} (on or off)", now.terminal_progress)
         }
-        "quiet_startup" => format!("quiet_startup is {} (on or off)", now.quiet_startup),
+        "quiet_startup" => format!(
+            "quiet_startup is {} (on, off, or header)",
+            now.quiet_startup
+        ),
         "collapse_changelog" => {
             format!(
                 "collapse_changelog is {} (on or off)",
@@ -1119,7 +1137,7 @@ fn assign(config: &mut micro_config::Config, name: &str, value: &str) -> Result<
         "autocomplete_max_items" => config.autocomplete_max_items = Some(number(50)? as usize),
         "show_hardware_cursor" => config.show_hardware_cursor = Some(flag()?),
         "terminal_progress" => config.terminal_progress = Some(flag()?),
-        "quiet_startup" => config.quiet_startup = Some(flag()?),
+        "quiet_startup" => config.quiet_startup = Some(value.parse()?),
         "collapse_changelog" => config.collapse_changelog = Some(flag()?),
         "warnings" => config.warnings = Some(flag()?),
         "cache_miss_notices" => config.cache_miss_notices = Some(flag()?),

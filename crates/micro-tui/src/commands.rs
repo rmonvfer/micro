@@ -270,8 +270,8 @@ pub struct Preferences {
     pub show_hardware_cursor: bool,
     /// Report progress to the terminal while a turn runs.
     pub terminal_progress: bool,
-    /// Open without the introduction.
-    pub quiet_startup: bool,
+    /// Open without the introduction, or with only its header.
+    pub quiet_startup: micro_config::QuietStartup,
     /// Show warnings at all.
     pub warnings: bool,
     /// Say when a request paid to write a cache it could have read.
@@ -302,7 +302,7 @@ impl Default for Preferences {
             autocomplete_max_items: crate::menu::MAX_VISIBLE,
             show_hardware_cursor: false,
             terminal_progress: true,
-            quiet_startup: false,
+            quiet_startup: micro_config::QuietStartup::Off,
             warnings: true,
             cache_miss_notices: false,
             double_escape: DoubleEscape::Tree,
