@@ -2,12 +2,14 @@
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-10-02
+
 ### MCP
 
 - Configure MCP servers in `mcp.json`, globally and in trusted projects, instead of `mcp_servers` in settings. Entries use the `mcpServers` shape shared with other MCP clients and may carry a `description`.
 - Connect to MCP servers over streamable HTTP, with `url` and `headers`, alongside stdio.
 - Sign in to MCP servers with OAuth: discovery, dynamic client registration with `oauth.clientName`, PKCE with a loopback callback and a clickable sign-in link, `oauth.authServerMetadataUrl`, RFC 9207 issuer checks, refresh, and step-up sign-in that keeps granted scopes. Credentials are stored per server name and URL, readable only by their owner.
-- Send a provider's micro credential to an HTTP MCP server with `"auth": { "provider": "<name>" }`, allowed only in the global `mcp.json`.
+- Send a provider's micro credential to an HTTP MCP server with `"auth": { "provider": "<name>" }`, allowed in the global `mcp.json` and from extensions you install, never from a project.
 - Add `micro mcp add|remove|list|login|logout` and the `/mcp` command.
 - Make `codemode` the default MCP exposure: servers connect in the background and their tools are called from scripts, which search for them. `codemode-deferred` is another name for it, `deferred` servers are found by `tool_search`, and `hidden` leaves a server unconnected.
 - Expose single MCP tools apart from their server with `toolExposure`, keyed by tool name or `*` pattern.
