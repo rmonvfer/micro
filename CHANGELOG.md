@@ -18,6 +18,19 @@
 - Use Anthropic workload identity federation from `ANTHROPIC_FEDERATION_RULE_ID`, `ANTHROPIC_ORGANIZATION_ID` and `ANTHROPIC_IDENTITY_TOKEN_FILE`.
 - Add `micro auth check`, `micro auth print-api-key` and `micro auth print-bearer-token`.
 - Label `/login` and `/logout` entries as `not configured`, or as an API key, `subscription` or `account`.
+- Add the `system` theme, now the default, which derives colors from the terminal's reported foreground, background, and ANSI palette, keeps pastel palettes pastel, and rebuilds when the terminal regains focus after switching between light and dark.
+- Accept `#rgb`, `oklch()`, and `okhsl()` colors and an optional `appearance` field in theme files.
+- Keep `/model` and `/thinking` choices to the current session, and save one as the default with `ctrl+s` in their pickers or `--default` before the argument.
+- Search the fullscreen transcript with `ctrl+f`: matches are highlighted, `enter` and `shift+enter` step between them, and `escape` closes the search.
+- Show a clickable jump-to-latest label while the fullscreen transcript is scrolled up, return with `end`, and add `half_page_scroll` for half-page Page Up and Page Down.
+- Select a word with a double click and a paragraph with a triple click, copy the active selection with `ctrl+x`, and add `copy_on_select` to turn off automatic selection copy.
+- Add `external_editor` to choose the `ctrl+g` editor ahead of `$VISUAL` and `$EDITOR`, and run editor commands that carry arguments.
+- Add `output_pad` to set the transcript's horizontal padding apart from `content_padding`.
+- Accept `quiet_startup: "header"` to keep the startup header with the version and key hints and hide the rest.
+- Link file paths in built-in file tool titles with OSC 8 `file://` hyperlinks.
+- Add `terminal_hyperlinks`, `terminal_images`, and `terminal_true_color` to override detected terminal capabilities, and draw themes with the 256-color palette on terminals without 24-bit color.
+- Show the arguments of tool calls without a custom renderer as `key=value` pairs when collapsed and `key: value` lines when expanded.
+- Complete slash commands when the prompt starts with whitespace.
 
 ## [0.1.13] - 2026-09-04
 

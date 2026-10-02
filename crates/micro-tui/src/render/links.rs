@@ -97,6 +97,29 @@ impl Links {
     }
 }
 
+/// A `file://` URL for a path a tool was given, resolved against the workspace the way the tool
+/// resolved it.
+pub fn file_url(path: &str, workspace: &std::path::Path) -> String {
+    let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
+    let absolute = match (path.strip_prefix('~'), home) {
+        (Some(rest), Some(home)) if rest.is_empty() || rest.starts_with('/') => {
+            home.join(rest.trim_start_matches('/'))
+        }
+        _ => workspace.join(path),
+    };
+
+    let mut url = String::from("file://");
+    for byte in absolute.to_string_lossy().bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'/' | b'-' | b'_' | b'.' | b'~' => {
+                url.push(byte as char)
+            }
+            other => url.push_str(&format!("%{other:02X}")),
+        }
+    }
+    url
+}
+
 /// Links are numbered from a base far above any palette index a theme would use.
 const BASE: u8 = 16;
 
@@ -257,6 +280,25 @@ mod tests {
             .replace("\x1b]8;;\x07", "");
 
         assert!(visible.starts_with("see the docs now"), "{visible:?}");
+    }
+
+    #[test]
+    fn a_relative_path_resolves_against_the_workspace() {
+        let workspace = std::path::Path::new("/work/repo");
+        assert_eq!(
+            file_url("src/main.rs", workspace),
+            "file:///work/repo/src/main.rs"
+        );
+        assert_eq!(file_url("/etc/hosts", workspace), "file:///etc/hosts");
+    }
+
+    #[test]
+    fn a_path_is_percent_encoded_where_a_url_needs_it() {
+        let workspace = std::path::Path::new("/work");
+        assert_eq!(
+            file_url("my notes#1?.md", workspace),
+            "file:///work/my%20notes%231%3F.md"
+        );
     }
 
     #[test]

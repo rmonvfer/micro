@@ -129,9 +129,10 @@ pub trait Commands: Send {
         false
     }
 
-    /// Tell whatever is listening that the reasoning effort changed.
-    async fn thinking_changed(&mut self, level: micro_types::ThinkingLevel) {
-        let _ = level;
+    /// Tell whatever is listening that the reasoning effort changed, and whether it is to be the
+    /// default for later sessions too.
+    async fn thinking_changed(&mut self, level: micro_types::ThinkingLevel, save: bool) {
+        let _ = (level, save);
     }
 
     /// Ask whatever is listening whether the conversation may be summarized.
@@ -273,14 +274,16 @@ pub struct Preferences {
     pub content_padding: u16,
     /// Columns and rows kept clear between the terminal's edges and the interface.
     pub interface_padding: u16,
+    /// Columns of ground either side of the transcript's text.
+    pub output_pad: u16,
     /// How many completions the command menu offers at once.
     pub autocomplete_max_items: usize,
     /// Let the terminal draw its own cursor.
     pub show_hardware_cursor: bool,
     /// Report progress to the terminal while a turn runs.
     pub terminal_progress: bool,
-    /// Open without the introduction.
-    pub quiet_startup: bool,
+    /// Open without the introduction, or with only its header.
+    pub quiet_startup: micro_config::QuietStartup,
     /// Show warnings at all.
     pub warnings: bool,
     /// Say when a request paid to write a cache it could have read.
@@ -289,6 +292,16 @@ pub struct Preferences {
     pub double_escape: DoubleEscape,
     /// Send a prompt written mid-answer straight away, interrupting what is running.
     pub follow_up_interrupts: bool,
+    /// What the user said the terminal supports, in place of what it is detected to.
+    pub terminal: crate::capabilities::Overrides,
+    /// The command ctrl+g opens the prompt in, ahead of `$VISUAL` and `$EDITOR`.
+    pub external_editor: Option<String>,
+    /// Put text on the clipboard as soon as the mouse selects it.
+    pub copy_on_select: bool,
+    /// The theme asked for: `system`, a built-in or user theme's name, or a `light/dark` pair.
+    pub theme: String,
+    /// Move the conversation half a page at a time with the page keys.
+    pub half_page_scroll: bool,
 }
 
 impl Default for Preferences {
@@ -306,14 +319,20 @@ impl Default for Preferences {
             block_images: false,
             content_padding: 1,
             interface_padding: 0,
+            output_pad: crate::render::transcript::PADDING as u16,
             autocomplete_max_items: crate::menu::MAX_VISIBLE,
             show_hardware_cursor: false,
             terminal_progress: true,
-            quiet_startup: false,
+            quiet_startup: micro_config::QuietStartup::Off,
             warnings: true,
             cache_miss_notices: false,
             double_escape: DoubleEscape::Tree,
             follow_up_interrupts: false,
+            terminal: crate::capabilities::Overrides::default(),
+            external_editor: None,
+            copy_on_select: true,
+            theme: crate::theme::SYSTEM.to_string(),
+            half_page_scroll: false,
         }
     }
 }
@@ -328,6 +347,7 @@ impl From<&micro_config::Settings> for Preferences {
             block_images: settings.block_images,
             content_padding: settings.content_padding,
             interface_padding: settings.interface_padding,
+            output_pad: settings.output_pad,
             autocomplete_max_items: settings.autocomplete_max_items,
             show_hardware_cursor: settings.show_hardware_cursor,
             terminal_progress: settings.terminal_progress,
@@ -359,6 +379,11 @@ impl From<&micro_config::Settings> for Preferences {
                 micro_config::ExitOutput::ResumeHint => ExitOutput::ResumeHint,
             },
             clear_on_shrink: settings.clear_on_shrink,
+            terminal: crate::capabilities::Overrides::from_settings(settings),
+            external_editor: settings.external_editor.clone(),
+            copy_on_select: settings.copy_on_select,
+            theme: settings.theme.clone(),
+            half_page_scroll: settings.half_page_scroll,
         }
     }
 }

@@ -91,6 +91,8 @@ Extensions register tools through the host API. They are filtered by the same `-
 
 An extension needs the `tools` capability to register one. See [Extensions](extensions.md).
 
+A call to a tool without its own renderer, MCP tools included, is titled by its arguments. Collapsed, they follow the tool name as `key=value` pairs cut to 100 characters; expanded with `ctrl+o`, each argument gets its own `key: value` line, with strings written as they are.
+
 ## Mermaid diagrams
 
 The terminal recognizes Mermaid code blocks in model responses and renders supported diagrams as Unicode art. Unsupported or invalid diagrams fall back to a framed source view.

@@ -57,8 +57,8 @@ pub fn experimental_enabled() -> bool {
     std::env::var(EXPERIMENTAL_ENV).is_ok_and(|value| value == "1")
 }
 
-/// The palette to use when the config names none.
-pub const DEFAULT_THEME: &str = "dark";
+/// The palette to use when the config names none: the one built from the terminal's own colors.
+pub const DEFAULT_THEME: &str = "system";
 
 pub type Result<T, E = ConfigError> = std::result::Result<T, E>;
 
@@ -187,6 +187,176 @@ pub enum Mermaid {
     Streaming,
 }
 
+/// How much of the introduction a session opens with, written `false`, `true`, or `"header"`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(try_from = "Value", into = "Value")]
+pub enum QuietStartup {
+    /// The header with the version and key hints, and everything that was loaded.
+    #[default]
+    Off,
+    /// The header alone, without the listing of what was loaded.
+    Header,
+    /// Nothing at all.
+    On,
+}
+
+impl QuietStartup {
+    /// Whether the header with the version and key hints is shown.
+    pub fn shows_header(self) -> bool {
+        !matches!(self, QuietStartup::On)
+    }
+
+    /// Whether what was loaded, and what went wrong loading it, is reported on startup.
+    pub fn lists_resources(self) -> bool {
+        matches!(self, QuietStartup::Off)
+    }
+}
+
+impl fmt::Display for QuietStartup {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(match self {
+            QuietStartup::Off => "off",
+            QuietStartup::Header => "header",
+            QuietStartup::On => "on",
+        })
+    }
+}
+
+impl FromStr for QuietStartup {
+    type Err = String;
+
+    fn from_str(value: &str) -> std::result::Result<Self, Self::Err> {
+        match value.to_ascii_lowercase().as_str() {
+            "header" => Ok(QuietStartup::Header),
+            other => match other.parse::<BoolSetting>() {
+                Ok(BoolSetting(true)) => Ok(QuietStartup::On),
+                Ok(BoolSetting(false)) => Ok(QuietStartup::Off),
+                Err(_) => Err(format!("`{value}` is not on, off, or header")),
+            },
+        }
+    }
+}
+
+impl TryFrom<Value> for QuietStartup {
+    type Error = String;
+
+    fn try_from(value: Value) -> std::result::Result<Self, Self::Error> {
+        match value {
+            Value::Bool(true) => Ok(QuietStartup::On),
+            Value::Bool(false) => Ok(QuietStartup::Off),
+            Value::String(word) if word.eq_ignore_ascii_case("header") => Ok(QuietStartup::Header),
+            other => Err(format!(
+                "expected true, false, or \"header\", found {other}"
+            )),
+        }
+    }
+}
+
+impl From<QuietStartup> for Value {
+    fn from(quiet: QuietStartup) -> Self {
+        match quiet {
+            QuietStartup::Off => Value::Bool(false),
+            QuietStartup::Header => Value::from("header"),
+            QuietStartup::On => Value::Bool(true),
+        }
+    }
+}
+
+/// Whether a terminal capability is taken from detection or forced, written `true`, `false`, or
+/// `"auto"`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(try_from = "Value", into = "Value")]
+pub enum Capability {
+    /// Whatever the terminal is detected to support.
+    #[default]
+    Auto,
+    /// Supported, whatever detection says.
+    On,
+    /// Unsupported, whatever detection says.
+    Off,
+}
+
+impl Capability {
+    /// The capability in force, given what detection found.
+    pub fn applied_to(self, detected: bool) -> bool {
+        match self {
+            Capability::Auto => detected,
+            Capability::On => true,
+            Capability::Off => false,
+        }
+    }
+}
+
+impl TryFrom<Value> for Capability {
+    type Error = String;
+
+    fn try_from(value: Value) -> std::result::Result<Self, Self::Error> {
+        match value {
+            Value::Bool(true) => Ok(Capability::On),
+            Value::Bool(false) => Ok(Capability::Off),
+            Value::String(word) if word.eq_ignore_ascii_case("auto") => Ok(Capability::Auto),
+            other => Err(format!("expected true, false, or \"auto\", found {other}")),
+        }
+    }
+}
+
+impl From<Capability> for Value {
+    fn from(capability: Capability) -> Self {
+        match capability {
+            Capability::Auto => Value::from("auto"),
+            Capability::On => Value::Bool(true),
+            Capability::Off => Value::Bool(false),
+        }
+    }
+}
+
+/// How the terminal draws images, written `"kitty"`, `"iterm2"`, `false`, or `"auto"`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(try_from = "Value", into = "Value")]
+pub enum ImageProtocolSetting {
+    /// Whatever the terminal is detected to speak.
+    #[default]
+    Auto,
+    /// Kitty's graphics protocol.
+    Kitty,
+    /// iTerm2's inline image escape.
+    ITerm2,
+    /// No images at all.
+    Off,
+}
+
+impl TryFrom<Value> for ImageProtocolSetting {
+    type Error = String;
+
+    fn try_from(value: Value) -> std::result::Result<Self, Self::Error> {
+        let word = match &value {
+            Value::Bool(false) => return Ok(ImageProtocolSetting::Off),
+            Value::String(word) => word.to_ascii_lowercase(),
+            _ => String::new(),
+        };
+        match word.as_str() {
+            "auto" => Ok(ImageProtocolSetting::Auto),
+            "kitty" => Ok(ImageProtocolSetting::Kitty),
+            "iterm2" => Ok(ImageProtocolSetting::ITerm2),
+            "none" | "off" => Ok(ImageProtocolSetting::Off),
+            _ => Err(format!(
+                "expected \"kitty\", \"iterm2\", false, or \"auto\", found {value}"
+            )),
+        }
+    }
+}
+
+impl From<ImageProtocolSetting> for Value {
+    fn from(setting: ImageProtocolSetting) -> Self {
+        match setting {
+            ImageProtocolSetting::Auto => Value::from("auto"),
+            ImageProtocolSetting::Kitty => Value::from("kitty"),
+            ImageProtocolSetting::ITerm2 => Value::from("iterm2"),
+            ImageProtocolSetting::Off => Value::Bool(false),
+        }
+    }
+}
+
 /// The config file, as it is written on disk.
 #[derive(Debug, Clone, Default, PartialEq, Serialize)]
 pub struct Config {
@@ -237,6 +407,9 @@ pub struct Config {
     /// Columns and rows kept clear between the terminal's edges and the interface.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub interface_padding: Option<u16>,
+    /// Columns of ground either side of the transcript's text, zero or one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub output_pad: Option<u16>,
     pub steering_mode: Option<SteeringMode>,
     pub tree_filter_mode: Option<TreeFilter>,
     pub fullscreen_exit_output: Option<ExitOutput>,
@@ -252,9 +425,9 @@ pub struct Config {
     /// Report progress to the terminal while a turn runs.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub terminal_progress: Option<bool>,
-    /// Open without the introduction.
+    /// Open without the introduction, or with only its header.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub quiet_startup: Option<bool>,
+    pub quiet_startup: Option<QuietStartup>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
     pub collapse_changelog: Option<bool>,
@@ -300,6 +473,24 @@ pub struct Config {
     /// This installation's stable UUID, created the first time a sign-in needs one.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub device_id: Option<String>,
+    /// The command ctrl+g opens the prompt in, ahead of `$VISUAL` and `$EDITOR`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub external_editor: Option<String>,
+    /// Put text on the clipboard as soon as the mouse selects it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub copy_on_select: Option<bool>,
+    /// Move the conversation half a page at a time with the page keys.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub half_page_scroll: Option<bool>,
+    /// Whether text can be made clickable, in place of what the terminal is detected to support.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub terminal_hyperlinks: Option<Capability>,
+    /// How images are drawn, in place of what the terminal is detected to speak.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub terminal_images: Option<ImageProtocolSetting>,
+    /// Whether colors are written as 24-bit, in place of what the terminal is detected to support.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub terminal_true_color: Option<Capability>,
 
     /// Keys written by a version that knew more than this one.
     #[serde(flatten)]
@@ -337,6 +528,7 @@ pub struct Settings {
     pub skill_commands: bool,
     pub content_padding: u16,
     pub interface_padding: u16,
+    pub output_pad: u16,
     pub steering_mode: SteeringMode,
     pub tree_filter_mode: TreeFilter,
     pub fullscreen_exit_output: ExitOutput,
@@ -346,7 +538,7 @@ pub struct Settings {
     pub autocomplete_max_items: usize,
     pub show_hardware_cursor: bool,
     pub terminal_progress: bool,
-    pub quiet_startup: bool,
+    pub quiet_startup: QuietStartup,
     pub collapse_changelog: bool,
     pub warnings: bool,
     pub cache_miss_notices: bool,
@@ -363,6 +555,12 @@ pub struct Settings {
     /// What one session may spend before it stops, in US dollars.
     pub budget: f64,
     pub extensions: Vec<String>,
+    pub external_editor: Option<String>,
+    pub copy_on_select: bool,
+    pub half_page_scroll: bool,
+    pub terminal_hyperlinks: Capability,
+    pub terminal_images: ImageProtocolSetting,
+    pub terminal_true_color: Capability,
 }
 
 /// The widest an image is drawn when nothing says otherwise.
@@ -397,6 +595,7 @@ impl Default for Settings {
             skill_commands: true,
             content_padding: 1,
             interface_padding: 0,
+            output_pad: 1,
             steering_mode: SteeringMode::default(),
             tree_filter_mode: TreeFilter::default(),
             fullscreen_exit_output: ExitOutput::default(),
@@ -406,7 +605,7 @@ impl Default for Settings {
             autocomplete_max_items: DEFAULT_AUTOCOMPLETE_MAX_ITEMS,
             show_hardware_cursor: false,
             terminal_progress: true,
-            quiet_startup: false,
+            quiet_startup: QuietStartup::Off,
             collapse_changelog: false,
             warnings: true,
             cache_miss_notices: false,
@@ -421,6 +620,12 @@ impl Default for Settings {
             sandbox: None,
             budget: 0.0,
             extensions: Vec::new(),
+            external_editor: None,
+            copy_on_select: true,
+            half_page_scroll: false,
+            terminal_hyperlinks: Capability::Auto,
+            terminal_images: ImageProtocolSetting::Auto,
+            terminal_true_color: Capability::Auto,
         }
     }
 }
@@ -598,6 +803,7 @@ impl Config {
             skill_commands: self.skill_commands.unwrap_or(defaults.skill_commands),
             content_padding: self.content_padding.unwrap_or(defaults.content_padding),
             interface_padding: self.interface_padding.unwrap_or(defaults.interface_padding),
+            output_pad: self.output_pad.unwrap_or(defaults.output_pad).min(1),
             autocomplete_max_items: self
                 .autocomplete_max_items
                 .unwrap_or(defaults.autocomplete_max_items)
@@ -636,6 +842,19 @@ impl Config {
 
             budget: self.budget.unwrap_or(defaults.budget).max(0.0),
             extensions: self.extensions.clone().unwrap_or(defaults.extensions),
+            external_editor: self
+                .external_editor
+                .clone()
+                .filter(|command| !command.trim().is_empty()),
+            copy_on_select: self.copy_on_select.unwrap_or(defaults.copy_on_select),
+            half_page_scroll: self.half_page_scroll.unwrap_or(defaults.half_page_scroll),
+            terminal_hyperlinks: self
+                .terminal_hyperlinks
+                .unwrap_or(defaults.terminal_hyperlinks),
+            terminal_images: self.terminal_images.unwrap_or(defaults.terminal_images),
+            terminal_true_color: self
+                .terminal_true_color
+                .unwrap_or(defaults.terminal_true_color),
         })
     }
 
@@ -670,6 +889,7 @@ impl Config {
             skill_commands: take(&mut fields, "skill_commands", path)?,
             content_padding: take(&mut fields, "content_padding", path)?,
             interface_padding: take(&mut fields, "interface_padding", path)?,
+            output_pad: take(&mut fields, "output_pad", path)?,
             autocomplete_max_items: take(&mut fields, "autocomplete_max_items", path)?,
             show_hardware_cursor: take(&mut fields, "show_hardware_cursor", path)?,
             terminal_progress: take(&mut fields, "terminal_progress", path)?,
@@ -689,6 +909,12 @@ impl Config {
             budget: take(&mut fields, "budget", path)?,
             extensions: take(&mut fields, "extensions", path)?,
             device_id: take(&mut fields, "device_id", path)?,
+            external_editor: take(&mut fields, "external_editor", path)?,
+            copy_on_select: take(&mut fields, "copy_on_select", path)?,
+            half_page_scroll: take(&mut fields, "half_page_scroll", path)?,
+            terminal_hyperlinks: take(&mut fields, "terminal_hyperlinks", path)?,
+            terminal_images: take(&mut fields, "terminal_images", path)?,
+            terminal_true_color: take(&mut fields, "terminal_true_color", path)?,
             extra: fields,
         };
         Ok(config)
@@ -1098,7 +1324,7 @@ mod tests {
 
         assert_eq!(settings, Settings::default());
         assert_eq!(settings.thinking, Thinking::Off);
-        assert_eq!(settings.theme, "dark");
+        assert_eq!(settings.theme, "system");
         assert!(!settings.live_models);
         assert_eq!(settings.model, None);
     }
@@ -1161,6 +1387,99 @@ mod tests {
             Thinking::Medium.to_string().parse::<Thinking>().unwrap(),
             Thinking::Medium
         );
+    }
+
+    #[test]
+    fn quiet_startup_takes_a_flag_or_the_header_only_form() {
+        let path = scratch("quiet").join("config.json");
+        for (written, read) in [
+            ("true", QuietStartup::On),
+            ("false", QuietStartup::Off),
+            ("\"header\"", QuietStartup::Header),
+        ] {
+            fs::write(&path, format!("{{\"quiet_startup\": {written}}}")).unwrap();
+            let config = Config::load_from(&path).unwrap();
+            assert_eq!(config.quiet_startup, Some(read), "{written}");
+
+            config.save_to(&path).unwrap();
+            let saved = fs::read_to_string(&path).unwrap();
+            assert!(
+                saved.contains(&format!("\"quiet_startup\": {written}")),
+                "{saved}"
+            );
+        }
+
+        assert!(QuietStartup::Header.shows_header());
+        assert!(!QuietStartup::Header.lists_resources());
+        assert!(!QuietStartup::On.shows_header());
+        assert!(QuietStartup::Off.lists_resources());
+        assert_eq!("header".parse::<QuietStartup>(), Ok(QuietStartup::Header));
+        assert_eq!("on".parse::<QuietStartup>(), Ok(QuietStartup::On));
+        assert!("sometimes".parse::<QuietStartup>().is_err());
+    }
+
+    #[test]
+    fn transcript_padding_is_zero_or_one() {
+        let resolved = |pad: u16| {
+            Config {
+                output_pad: Some(pad),
+                ..Config::default()
+            }
+            .resolve(&Overrides::default(), no_environment)
+            .unwrap()
+            .output_pad
+        };
+        assert_eq!(Settings::default().output_pad, 1);
+        assert_eq!(resolved(0), 0);
+        assert_eq!(resolved(4), 1);
+    }
+
+    #[test]
+    fn terminal_capabilities_are_detected_or_forced() {
+        let path = scratch("capabilities").join("config.json");
+        fs::write(
+            &path,
+            r#"{"terminal_hyperlinks": false, "terminal_images": "iterm2", "terminal_true_color": "auto"}"#,
+        )
+        .unwrap();
+
+        let settings = Config::load_from(&path)
+            .unwrap()
+            .resolve(&Overrides::default(), no_environment)
+            .unwrap();
+        assert_eq!(settings.terminal_hyperlinks, Capability::Off);
+        assert_eq!(settings.terminal_images, ImageProtocolSetting::ITerm2);
+        assert_eq!(settings.terminal_true_color, Capability::Auto);
+        assert!(!settings.terminal_hyperlinks.applied_to(true));
+        assert!(settings.terminal_true_color.applied_to(true));
+
+        fs::write(&path, r#"{"terminal_images": false}"#).unwrap();
+        assert_eq!(
+            Config::load_from(&path).unwrap().terminal_images,
+            Some(ImageProtocolSetting::Off)
+        );
+
+        fs::write(&path, r#"{"terminal_true_color": "sometimes"}"#).unwrap();
+        let error = Config::load_from(&path).unwrap_err().to_string();
+        assert!(error.contains("field `terminal_true_color`"), "{error}");
+    }
+
+    #[test]
+    fn a_forced_capability_is_written_the_way_it_is_read() {
+        let path = scratch("capabilities-save").join("config.json");
+        let config = Config {
+            terminal_hyperlinks: Some(Capability::On),
+            terminal_images: Some(ImageProtocolSetting::Off),
+            ..Config::default()
+        };
+        config.save_to(&path).unwrap();
+        let written = fs::read_to_string(&path).unwrap();
+        assert!(
+            written.contains(r#""terminal_hyperlinks": true"#),
+            "{written}"
+        );
+        assert!(written.contains(r#""terminal_images": false"#), "{written}");
+        assert_eq!(Config::load_from(&path).unwrap(), config);
     }
 
     #[test]

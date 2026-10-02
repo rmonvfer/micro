@@ -424,20 +424,42 @@ fn trust(argument: Option<&str>) -> CommandOutcome {
     }
 }
 
-/// `/thinking` with no argument offers the levels; with one, sets it.
+/// The flag that makes a choice the default for later sessions as well as this one.
+const DEFAULT_FLAG: &str = "--default";
+
+/// Split `--default` off the front of an argument: whether it was there, and what is left.
+pub(crate) fn as_default(argument: Option<&str>) -> (bool, Option<&str>) {
+    let Some(argument) = argument.map(str::trim) else {
+        return (false, None);
+    };
+    match argument.strip_prefix(DEFAULT_FLAG) {
+        Some(rest) if rest.is_empty() || rest.starts_with(char::is_whitespace) => {
+            let rest = rest.trim();
+            (true, (!rest.is_empty()).then_some(rest))
+        }
+        _ => (false, Some(argument)),
+    }
+}
+
+/// `/thinking` with no argument offers the levels; with one, sets it for this session, and with
+/// `--default` before it, for later sessions too.
 fn thinking(argument: Option<&str>) -> CommandOutcome {
+    let (save, argument) = as_default(argument);
     let Some(argument) = argument else {
         return CommandOutcome::Choose(Picker::new(
             "Reasoning effort",
             LEVELS
                 .iter()
-                .map(|(name, effort)| PickerItem::new(*name, *effort, format!("/thinking {name}")))
+                .map(|(name, effort)| {
+                    PickerItem::new(*name, *effort, format!("/thinking {name}"))
+                        .saving(format!("/thinking {DEFAULT_FLAG} {name}"))
+                })
                 .collect(),
         ));
     };
 
     match level_named(argument) {
-        Some(level) => CommandOutcome::SetThinking { level },
+        Some(level) => CommandOutcome::SetThinking { level, save },
         None => CommandOutcome::error(format!(
             "unknown reasoning effort `{argument}`: expected off, minimal, low, medium, high, xhigh or max"
         )),
@@ -477,7 +499,8 @@ fn theme(argument: Option<&str>) -> CommandOutcome {
                 vec![
                     PickerItem::new("dark", "dark palette", "/theme dark"),
                     PickerItem::new("light", "light palette", "/theme light"),
-                    PickerItem::new("auto", "follow the terminal", "/theme auto"),
+                    PickerItem::new("system", "the terminal's own colors", "/theme system"),
+                    PickerItem::new("auto", "light or dark, as the terminal is", "/theme auto"),
                 ],
             )
             .columns(12, 32),
@@ -491,11 +514,14 @@ fn theme(argument: Option<&str>) -> CommandOutcome {
         "light" => CommandOutcome::SetTheme {
             theme: ThemeChoice::Light,
         },
-        "auto" | "system" => CommandOutcome::SetTheme {
+        "auto" => CommandOutcome::SetTheme {
             theme: ThemeChoice::Auto,
         },
+        "system" => CommandOutcome::SetTheme {
+            theme: ThemeChoice::System,
+        },
         other => CommandOutcome::error(format!(
-            "unknown theme `{other}`: expected dark, light or auto"
+            "unknown theme `{other}`: expected system, dark, light or auto"
         )),
     }
 }
@@ -618,6 +644,11 @@ fn settings(context: &CommandContext<'_>) -> CommandOutcome {
             "/set content_padding",
         ),
         PickerItem::new(
+            "Transcript padding",
+            now.output_pad.to_string(),
+            "/set output_pad",
+        ),
+        PickerItem::new(
             "Autocomplete max items",
             now.autocomplete_max_items.to_string(),
             "/set autocomplete_max_items",
@@ -633,8 +664,18 @@ fn settings(context: &CommandContext<'_>) -> CommandOutcome {
             "/set terminal_progress",
         ),
         PickerItem::new(
+            "Copy on select",
+            on_off(now.copy_on_select),
+            "/set copy_on_select",
+        ),
+        PickerItem::new(
+            "Half-page scrolling",
+            on_off(now.half_page_scroll),
+            "/set half_page_scroll",
+        ),
+        PickerItem::new(
             "Quiet startup",
-            on_off(now.quiet_startup),
+            now.quiet_startup.to_string(),
             "/set quiet_startup",
         ),
         PickerItem::new(
@@ -814,7 +855,22 @@ fn settable(config: &micro_config::Config, name: &str) -> Option<Vec<PickerItem>
         "skill_commands" => switch(now.skill_commands),
         "show_hardware_cursor" => switch(now.show_hardware_cursor),
         "terminal_progress" => switch(now.terminal_progress),
-        "quiet_startup" => switch(now.quiet_startup),
+        "quiet_startup" => {
+            let now = now.quiet_startup;
+            vec![
+                (
+                    "off",
+                    "the header and what was loaded",
+                    now == micro_config::QuietStartup::Off,
+                ),
+                (
+                    "header",
+                    "the header alone",
+                    now == micro_config::QuietStartup::Header,
+                ),
+                ("on", "nothing", now == micro_config::QuietStartup::On),
+            ]
+        }
         "collapse_changelog" => switch(now.collapse_changelog),
         "warnings" => switch(now.warnings),
         "cache_miss_notices" => switch(now.cache_miss_notices),
@@ -854,6 +910,8 @@ fn settable(config: &micro_config::Config, name: &str) -> Option<Vec<PickerItem>
             ]
         }
         "clear_on_shrink" => switch(now.clear_on_shrink),
+        "copy_on_select" => switch(now.copy_on_select),
+        "half_page_scroll" => switch(now.half_page_scroll),
         "steering_mode" => {
             let now = kebab(&format!("{:?}", now.steering_mode));
             vec![
@@ -961,6 +1019,7 @@ fn settable(config: &micro_config::Config, name: &str) -> Option<Vec<PickerItem>
 fn numbered(name: &str, now: &micro_config::Settings) -> Option<Vec<PickerItem>> {
     let (range, unit, current): (Vec<u64>, &str, u64) = match name {
         "content_padding" => ((0..=3).collect(), "columns", now.content_padding as u64),
+        "output_pad" => ((0..=1).collect(), "columns", now.output_pad as u64),
         "interface_padding" => (
             (0..=3).collect(),
             "columns and rows",
@@ -1012,6 +1071,10 @@ fn describe(config: &micro_config::Config, name: &str) -> Option<String> {
         "block_images" => format!("block_images is {} (on or off)", now.block_images),
         "skill_commands" => format!("skill_commands is {} (on or off)", now.skill_commands),
         "content_padding" => format!("content_padding is {} (columns)", now.content_padding),
+        "output_pad" => format!(
+            "output_pad is {} (columns beside the transcript, 0 or 1)",
+            now.output_pad
+        ),
         "interface_padding" => format!(
             "interface_padding is {} (columns and rows around the interface)",
             now.interface_padding
@@ -1027,7 +1090,12 @@ fn describe(config: &micro_config::Config, name: &str) -> Option<String> {
         "terminal_progress" => {
             format!("terminal_progress is {} (on or off)", now.terminal_progress)
         }
-        "quiet_startup" => format!("quiet_startup is {} (on or off)", now.quiet_startup),
+        "copy_on_select" => format!("copy_on_select is {} (on or off)", now.copy_on_select),
+        "half_page_scroll" => format!("half_page_scroll is {} (on or off)", now.half_page_scroll),
+        "quiet_startup" => format!(
+            "quiet_startup is {} (on, off, or header)",
+            now.quiet_startup
+        ),
         "collapse_changelog" => {
             format!(
                 "collapse_changelog is {} (on or off)",
@@ -1116,6 +1184,13 @@ fn assign(config: &mut micro_config::Config, name: &str, value: &str) -> Result<
                     .min(20),
             )
         }
+        "output_pad" => {
+            config.output_pad = Some(match value {
+                "0" => 0,
+                "1" => 1,
+                other => return Err(format!("`{other}` is not 0 or 1")),
+            })
+        }
         "interface_padding" => {
             config.interface_padding = Some(
                 value
@@ -1127,7 +1202,9 @@ fn assign(config: &mut micro_config::Config, name: &str, value: &str) -> Result<
         "autocomplete_max_items" => config.autocomplete_max_items = Some(number(50)? as usize),
         "show_hardware_cursor" => config.show_hardware_cursor = Some(flag()?),
         "terminal_progress" => config.terminal_progress = Some(flag()?),
-        "quiet_startup" => config.quiet_startup = Some(flag()?),
+        "quiet_startup" => config.quiet_startup = Some(value.parse()?),
+        "copy_on_select" => config.copy_on_select = Some(flag()?),
+        "half_page_scroll" => config.half_page_scroll = Some(flag()?),
         "collapse_changelog" => config.collapse_changelog = Some(flag()?),
         "warnings" => config.warnings = Some(flag()?),
         "cache_miss_notices" => config.cache_miss_notices = Some(flag()?),
@@ -1478,6 +1555,35 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_thinking_level_is_for_this_session_unless_saved_as_the_default() {
+        let CommandOutcome::SetThinking { level, save } = thinking(Some("high")) else {
+            panic!("expected a level");
+        };
+        assert_eq!(level, ThinkingLevel::High);
+        assert!(!save);
+
+        let offered = thinking(None);
+        let saving = picker(&offered).items[0].save.clone().expect("a save line");
+        assert_eq!(saving, "/thinking --default off");
+        let CommandOutcome::SetThinking { level, save } =
+            thinking(saving.strip_prefix("/thinking "))
+        else {
+            panic!("expected a level");
+        };
+        assert_eq!(level, ThinkingLevel::Off);
+        assert!(save);
+    }
+
+    #[test]
+    fn the_default_flag_is_split_off_the_argument() {
+        assert_eq!(as_default(None), (false, None));
+        assert_eq!(as_default(Some("opus")), (false, Some("opus")));
+        assert_eq!(as_default(Some("--default opus")), (true, Some("opus")));
+        assert_eq!(as_default(Some("--default")), (true, None));
+        assert_eq!(as_default(Some("--defaults")), (false, Some("--defaults")));
+    }
+
+    #[test]
     fn every_command_is_listed_once_and_describes_itself() {
         let mut names: Vec<&str> = commands().iter().map(|command| command.name).collect();
         let listed = names.len();
@@ -1589,11 +1695,14 @@ mod tests {
             ("block_images", "on"),
             ("skill_commands", "off"),
             ("content_padding", "2"),
+            ("output_pad", "0"),
             ("interface_padding", "2"),
             ("autocomplete_max_items", "12"),
             ("show_hardware_cursor", "on"),
             ("terminal_progress", "off"),
-            ("quiet_startup", "on"),
+            ("quiet_startup", "header"),
+            ("copy_on_select", "off"),
+            ("half_page_scroll", "on"),
             ("collapse_changelog", "on"),
             ("warnings", "off"),
             ("cache_miss_notices", "on"),
@@ -1619,6 +1728,10 @@ mod tests {
         assert_eq!(now.follow_up_mode, micro_config::FollowUpMode::Interrupt);
         assert_eq!(now.scoped_models, vec!["anthropic/", "google/gemini-3-pro"]);
         assert_eq!(now.content_padding, 2);
+        assert_eq!(now.output_pad, 0);
+        assert!(!now.copy_on_select);
+        assert!(now.half_page_scroll);
+        assert_eq!(now.quiet_startup, micro_config::QuietStartup::Header);
         assert_eq!(now.transport, "auto");
     }
 
@@ -1629,6 +1742,8 @@ mod tests {
         assert!(assign(&mut config, "image_width_cells", "wide").is_err());
         assert!(assign(&mut config, "http_idle_timeout", "0").is_err());
         assert!(assign(&mut config, "double_escape", "sideways").is_err());
+        assert!(assign(&mut config, "output_pad", "2").is_err());
+        assert!(assign(&mut config, "quiet_startup", "sometimes").is_err());
 
         assert!(assign(&mut config, "transport", "websocket").is_err());
         assert!(assign(&mut config, "nothing_like_this", "on").is_err());

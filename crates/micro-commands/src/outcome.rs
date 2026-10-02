@@ -26,8 +26,10 @@ pub enum RemoteAction {
 pub enum ThemeChoice {
     Dark,
     Light,
-    /// Work it out from the terminal's background, the way an unconfigured launch does.
+    /// The built-in light or dark palette, whichever matches the terminal's background.
     Auto,
+    /// Built from the terminal's own colors, the way an unconfigured launch does.
+    System,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -52,17 +54,19 @@ pub enum CommandOutcome {
     Send {
         prompt: String,
     },
-    /// Use this model from the next turn on.
+    /// Use this model from the next turn on, and for every later session too when `save` is set.
     SetModel {
         model: Box<ModelDef>,
+        save: bool,
     },
     /// Use this provider from the next turn on.
     SetProvider {
         provider: &'static str,
     },
-    /// Reason this hard from the next turn on.
+    /// Reason this hard from the next turn on, and for every later session too when `save` is set.
     SetThinking {
         level: micro_types::ThinkingLevel,
+        save: bool,
     },
     /// Repaint in this theme.
     SetTheme {
@@ -320,6 +324,8 @@ pub struct PickerItem {
     /// A line shown under the list while this row is the chosen one, for what does not fit on the
     /// row itself.
     pub note: Option<String>,
+    /// The command line that makes this item the default for later sessions, dispatched by ctrl+s.
+    pub save: Option<String>,
 }
 
 impl PickerItem {
@@ -335,6 +341,7 @@ impl PickerItem {
             current: false,
             search: None,
             note: None,
+            save: None,
         }
     }
 
@@ -352,6 +359,12 @@ impl PickerItem {
     /// What is said under the list while this row is chosen.
     pub fn noting(mut self, note: impl Into<String>) -> Self {
         self.note = Some(note.into());
+        self
+    }
+
+    /// The command line that saves this item as the default, offered on ctrl+s.
+    pub fn saving(mut self, command: impl Into<String>) -> Self {
+        self.save = Some(command.into());
         self
     }
 }
@@ -372,17 +385,19 @@ impl fmt::Debug for CommandOutcome {
                 .field("text", text)
                 .field("items", items)
                 .finish(),
-            CommandOutcome::SetModel { model } => formatter
+            CommandOutcome::SetModel { model, save } => formatter
                 .debug_struct("SetModel")
                 .field("model", &model.qualified_id())
+                .field("save", save)
                 .finish(),
             CommandOutcome::SetProvider { provider } => formatter
                 .debug_struct("SetProvider")
                 .field("provider", provider)
                 .finish(),
-            CommandOutcome::SetThinking { level } => formatter
+            CommandOutcome::SetThinking { level, save } => formatter
                 .debug_struct("SetThinking")
                 .field("level", level)
+                .field("save", save)
                 .finish(),
             CommandOutcome::SetTheme { theme } => formatter
                 .debug_struct("SetTheme")

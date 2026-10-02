@@ -413,7 +413,7 @@ pub async fn build(
         "startup",
     )
     .await;
-    if !settings.quiet_startup {
+    if settings.quiet_startup.lists_resources() {
         for diagnostic in &context.diagnostics {
             eprintln!("note: {diagnostic}");
         }
@@ -1204,7 +1204,7 @@ async fn load_extensions(
 
     match micro_extensions::Host::start(&home, &paths, root, has_ui, trusted, mode).await {
         Ok(mut host) => {
-            if !settings.quiet_startup {
+            if settings.quiet_startup.lists_resources() {
                 for failure in &host.loaded().errors {
                     eprintln!("note: {} was not loaded: {}", failure.path, failure.error);
                 }
@@ -1217,7 +1217,7 @@ async fn load_extensions(
             (Some(Arc::new(host)), resolved.grants, notices)
         }
         Err(error) => {
-            if !settings.quiet_startup {
+            if settings.quiet_startup.lists_resources() {
                 eprintln!("note: extensions were not loaded: {error}");
             }
             (None, micro_extensions::Grants::default(), Vec::new())
@@ -1270,7 +1270,7 @@ fn apply_declared_providers(
         let declared = match micro_extensions::declare(&registered.name, &registered.config) {
             Ok(declared) => declared,
             Err(error) => {
-                if !settings.quiet_startup {
+                if settings.quiet_startup.lists_resources() {
                     eprintln!("note: {error}");
                 }
                 continue;
@@ -1278,7 +1278,7 @@ fn apply_declared_providers(
         };
 
         if let Err(error) = catalog.apply_overrides(&declared.catalog.to_string()) {
-            if !settings.quiet_startup {
+            if settings.quiet_startup.lists_resources() {
                 eprintln!("note: {} was not applied: {error}", declared.name);
             }
             continue;
