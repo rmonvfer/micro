@@ -28,3 +28,4 @@ pub use instructions::InstructionLoader;
 pub use instructions::Instructions;
 pub use instructions::DEFAULT_MAX_IMPORT_DEPTH;
 pub use instructions::INSTRUCTION_FILE_NAMES;
+pub use instructions::OVERRIDE_FILE_NAME;

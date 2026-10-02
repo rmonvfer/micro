@@ -10,6 +10,10 @@ use std::path::PathBuf;
 /// `AGENTS.md` is micro's own file.
 pub const INSTRUCTION_FILE_NAMES: &[&str] = &["CLAUDE.md", "AGENTS.md"];
 
+/// A file that, when present, is the only instruction file read from its directory, in place of
+/// the ones [`INSTRUCTION_FILE_NAMES`] lists.
+pub const OVERRIDE_FILE_NAME: &str = "AGENTS.override.md";
+
 /// How many levels of `@import` are followed before a directive is left as written.
 pub const DEFAULT_MAX_IMPORT_DEPTH: usize = 5;
 
@@ -76,10 +80,7 @@ impl InstructionLoader {
     }
 
     fn global_candidates(&self) -> Vec<PathBuf> {
-        INSTRUCTION_FILE_NAMES
-            .iter()
-            .map(|name| self.global_dir.join(name))
-            .collect()
+        directory_candidates(&self.global_dir)
     }
 }
 
@@ -89,16 +90,24 @@ fn project_candidates(workspace: &Path) -> Vec<PathBuf> {
     let mut cursor = Some(workspace);
 
     while let Some(directory) = cursor {
-        per_directory.push(
-            INSTRUCTION_FILE_NAMES
-                .iter()
-                .map(|name| directory.join(name))
-                .collect(),
-        );
+        per_directory.push(directory_candidates(directory));
         cursor = directory.parent();
     }
 
     per_directory.into_iter().rev().flatten().collect()
+}
+
+/// The instruction files one directory may hold: its override alone when it has one, otherwise
+/// the usual names.
+fn directory_candidates(directory: &Path) -> Vec<PathBuf> {
+    let override_file = directory.join(OVERRIDE_FILE_NAME);
+    if override_file.is_file() {
+        return vec![override_file];
+    }
+    INSTRUCTION_FILE_NAMES
+        .iter()
+        .map(|name| directory.join(name))
+        .collect()
 }
 
 /// Accumulates instruction text, inlining imports and refusing to visit a file twice.
@@ -354,6 +363,37 @@ mod tests {
         let agents = loaded.text.find("agents rule").unwrap();
         assert!(claude < agents);
         assert_eq!(loaded.sources.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn an_override_replaces_its_own_directory_files_only() {
+        let root = scratch("override");
+        write(&root, "global/AGENTS.md", "global rule");
+        write(&root, "project/AGENTS.md", "parent rule");
+        write(&root, "project/app/CLAUDE.md", "claude rule");
+        write(&root, "project/app/AGENTS.md", "agents rule");
+        write(&root, "project/app/AGENTS.override.md", "override rule");
+
+        let loaded = loader(&root).load(root.join("project/app")).await.unwrap();
+        assert!(loaded.text.contains("global rule"));
+        assert!(loaded.text.contains("parent rule"));
+        assert!(loaded.text.contains("override rule"));
+        assert!(!loaded.text.contains("claude rule"));
+        assert!(!loaded.text.contains("agents rule"));
+        assert!(loaded.text.find("parent rule") < loaded.text.find("override rule"));
+    }
+
+    #[tokio::test]
+    async fn a_global_override_replaces_the_global_files() {
+        let root = scratch("override-global");
+        write(&root, "global/AGENTS.md", "global rule");
+        write(&root, "global/AGENTS.override.md", "global override");
+        write(&root, "project/AGENTS.md", "project rule");
+
+        let loaded = loader(&root).load(root.join("project")).await.unwrap();
+        assert!(loaded.text.contains("global override"));
+        assert!(!loaded.text.contains("global rule"));
+        assert!(loaded.text.contains("project rule"));
     }
 
     #[tokio::test]
