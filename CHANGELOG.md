@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-10-02
+
+### Fixed
+
+- Update rustls to 0.23.45 for RUSTSEC-2026-0285, which accepted TLS 1.3 handshake messages across encryption level boundaries.
+
 ## [0.2.0] - 2026-10-02
 
 ### MCP
