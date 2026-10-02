@@ -1154,9 +1154,13 @@ async fn carry_out(
             ) else {
                 return;
             };
-            let registered =
-                micro_mcp::config::registered(name, config, std::path::Path::new(extension))
-                    .and_then(|entry| servers.register(entry));
+            let registered = micro_mcp::config::registered(
+                name,
+                config,
+                std::path::Path::new(extension),
+                servers.workspace(),
+            )
+            .and_then(|entry| servers.register(entry));
             if let Err(error) = registered {
                 eprintln!("note: an extension could not add the MCP server {name}: {error}");
             }

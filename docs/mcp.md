@@ -113,7 +113,7 @@ OAuth applies to HTTP servers without an `Authorization` header or `auth`. The `
 { "mcpServers": { "hosted": { "url": "https://mcp.example.com/mcp", "auth": { "provider": "openai" } } } }
 ```
 
-Only the global `mcp.json` may use it, so a repository cannot choose where your credential goes, and the URL must use https except on loopback.
+The global `mcp.json` and extensions you install may use it; a project's `mcp.json` and the extensions a project keeps in `.micro/extensions` may not, so a repository cannot choose where your credential goes. The URL must use https except on loopback.
 
 ## Manage servers
 

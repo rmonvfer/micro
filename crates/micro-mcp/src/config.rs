@@ -310,17 +310,47 @@ pub fn clash(servers: &[ServerEntry], name: &str) -> Option<String> {
         .map(|other| other.name.clone())
 }
 
-/// A server an extension registered: the `mcpServers` shape, where `auth.provider` is allowed as
-/// in the global file, since only extensions the user installed run.
-pub fn registered(name: &str, value: &Value, extension: &Path) -> Result<ServerEntry, String> {
+/// A server an extension registered: the `mcpServers` shape. `auth.provider` is allowed for
+/// extensions the user installed, as in the global file, and refused for the extensions a project
+/// keeps in its `.micro` directory, as in the project's file, so a repository cannot choose where a
+/// credential goes.
+pub fn registered(
+    name: &str,
+    value: &Value,
+    extension: &Path,
+    workspace: &Path,
+) -> Result<ServerEntry, String> {
     let config =
         parse_server(name, value).map_err(|error| format!("{}: {error}", extension.display()))?;
+    let sends_credential = matches!(
+        config.transport,
+        Transport::Http {
+            provider: Some(_),
+            ..
+        }
+    );
+    if sends_credential && kept_by_project(extension, workspace) {
+        return Err(format!(
+            "{}: server \"{name}\": auth is not allowed from a project's own extensions",
+            extension.display()
+        ));
+    }
     Ok(ServerEntry {
         name: name.to_string(),
         config,
         source: extension.to_path_buf(),
         scope: Scope::Extension,
     })
+}
+
+/// Whether `extension` lives in the project's `.micro` directory, where the repository puts it.
+fn kept_by_project(extension: &Path, workspace: &Path) -> bool {
+    let project = workspace.join(".micro");
+    let project = project.canonicalize().unwrap_or(project);
+    let extension = extension
+        .canonicalize()
+        .unwrap_or_else(|_| extension.to_path_buf());
+    extension.starts_with(project)
 }
 
 /// The global `mcp.json`, in micro's configuration directory.

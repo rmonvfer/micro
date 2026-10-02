@@ -720,6 +720,7 @@ mod tests {
             "added",
             &json!({ "command": "bash", "args": ["-c", "exit 1"], "exposure": "deferred" }),
             Path::new("/x/ext.ts"),
+            Path::new("/workspace"),
         )
         .unwrap();
         assert_eq!(registered.scope, config::Scope::Extension);
@@ -748,7 +749,20 @@ mod tests {
     fn a_registration_may_name_a_provider_and_yields_to_the_files() {
         let auth =
             json!({ "url": "https://mcp.example.com/mcp", "auth": { "provider": "openai" } });
-        let entry = config::registered("hosted", &auth, Path::new("/x/ext.ts")).unwrap();
+        let entry = config::registered(
+            "hosted",
+            &auth,
+            Path::new("/x/ext.ts"),
+            Path::new("/workspace"),
+        )
+        .unwrap();
+        let from_project = config::registered(
+            "hosted",
+            &auth,
+            Path::new("/workspace/.micro/extensions/ext.ts"),
+            Path::new("/workspace"),
+        );
+        assert!(from_project.is_err(), "{from_project:?}");
         let mut loaded = LoadedConfig {
             servers: vec![self::entry("hosted", echo_server())],
             errors: Vec::new(),

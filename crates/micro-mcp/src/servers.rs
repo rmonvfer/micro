@@ -131,6 +131,11 @@ struct Inner {
 }
 
 impl Servers {
+    /// The workspace the servers belong to.
+    pub fn workspace(&self) -> &Path {
+        &self.inner.workspace
+    }
+
     /// The servers `config` names, none of them connected yet. Relative working directories are
     /// taken from `workspace`.
     pub fn new(config: LoadedConfig, workspace: &Path) -> Servers {

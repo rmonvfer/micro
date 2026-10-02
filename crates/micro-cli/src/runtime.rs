@@ -1274,7 +1274,12 @@ fn mcp_servers(
         .map(micro_extensions::Host::mcp_servers)
         .unwrap_or_default()
     {
-        match micro_mcp::config::registered(&server.name, &server.config, Path::new(&extension)) {
+        match micro_mcp::config::registered(
+            &server.name,
+            &server.config,
+            Path::new(&extension),
+            root,
+        ) {
             Ok(entry) => loaded.add_registered(entry),
             Err(error) => loaded.errors.push(error),
         }
