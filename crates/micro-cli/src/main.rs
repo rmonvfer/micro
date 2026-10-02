@@ -884,6 +884,7 @@ async fn main() -> Result<()> {
             skills: built.skills.clone(),
             tool_snippets,
             prompt_guidelines,
+            mcp: Some(built.mcp.clone()),
         }));
         tokio::spawn(extensions::serve(
             std::sync::Arc::clone(host),

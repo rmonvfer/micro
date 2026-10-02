@@ -48,6 +48,8 @@ Connecting to an HTTP server is retried twice after a network failure or a trans
 
 Server names may use letters, digits, `_`, and `-`. Tools are named `mcp__<server>__<tool>`, with every other character, including `-`, written as `_`. Tools of one server whose names then collide all get a hash suffix, and server names that differ only in `-` and `_` are rejected. An invalid entry is reported and skipped; the other servers still connect.
 
+Extensions can add servers for the session with [`micro.registerMcpServer()`](extensions.md#add-mcp-servers); they appear in `/mcp` with the `extension` scope.
+
 ## Control exposure
 
 A server's `exposure` decides how the model reaches its tools. With `codemode`, the default, the tools are callable from [`codemode`](codemode.md) scripts, which find them with `searchTools()` or `describeNamespace()`, but they are neither declared to the model nor listed in the `codemode` description; micro offers `codemode` whenever such a server is enabled. `codemode-deferred` is another name for `codemode`. With `deferred`, `tool_search` finds the tools and the model then calls them by name. With `direct`, the tools are declared like built-in ones, and the first prompt waits for the server. With `hidden`, the server is not connected at all.

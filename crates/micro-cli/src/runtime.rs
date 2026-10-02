@@ -121,6 +121,8 @@ pub struct Runtime {
     /// What was loaded before the session started, for the first screen to name.
     pub resources: micro_tui::Resources,
 
+    /// The session's MCP servers, which extensions may add to while it runs.
+    pub mcp: micro_mcp::Servers,
     pub system_prompt: String,
 
     pub custom_prompt: Option<String>,
@@ -390,7 +392,7 @@ pub async fn build(
         }
     }
 
-    let mcp = mcp_servers(root, trusted, &store, selection);
+    let mcp = mcp_servers(root, trusted, &store, selection, extensions.as_deref());
     let (mut kept, mcp_notices) = connect_mcp(&mcp, &mut tools).await;
     kept.extend(builtin.iter().cloned());
 
@@ -634,6 +636,7 @@ pub async fn build(
         recorder: receiver,
         forwarder,
         commands,
+        mcp,
         system_prompt,
         custom_prompt,
         appended_prompt,
@@ -1217,14 +1220,26 @@ fn searchable_beyond(
     tools
 }
 
-/// The MCP servers `mcp.json` describes: the global file, and the project's once it is trusted.
+/// The MCP servers `mcp.json` describes, the global file and the project's once it is trusted,
+/// and those the extensions registered while they loaded.
 fn mcp_servers(
     root: &Path,
     trusted: bool,
     store: &Arc<AuthStore>,
     selection: &Selection,
+    extensions: Option<&micro_extensions::Host>,
 ) -> micro_mcp::Servers {
-    let servers = micro_mcp::Servers::new(micro_mcp::config::load(root, trusted), root)
+    let mut loaded = micro_mcp::config::load(root, trusted);
+    for (extension, server) in extensions
+        .map(micro_extensions::Host::mcp_servers)
+        .unwrap_or_default()
+    {
+        match micro_mcp::config::registered(&server.name, &server.config, Path::new(&extension)) {
+            Ok(entry) => loaded.add_registered(entry),
+            Err(error) => loaded.errors.push(error),
+        }
+    }
+    let servers = micro_mcp::Servers::new(loaded, root)
         .with_providers(Arc::clone(store))
         .with_tool_filter(selection.tools.clone(), selection.exclude_tools.clone());
     let servers = match micro_mcp::ServerLog::in_data_dir() {

@@ -981,6 +981,11 @@ fn model_catalog(payload: &Value) -> Value {
     micro_models::catalog_json(&catalog, provider_filter)
 }
 
+/// The session's MCP servers, when there is a session to have them.
+async fn mcp_of(state: Option<&Arc<tokio::sync::RwLock<State>>>) -> Option<micro_mcp::Servers> {
+    state?.read().await.mcp.clone()
+}
+
 /// Something an extension asked to have done.
 #[allow(clippy::too_many_arguments)]
 async fn carry_out(
@@ -1082,6 +1087,41 @@ async fn carry_out(
             };
             if let Err(error) = session.lock().await.rename(name).await {
                 eprintln!("note: an extension could not name the session: {error}");
+            }
+        }
+
+        "register_mcp_server" => {
+            let Some(servers) = mcp_of(state).await else {
+                return;
+            };
+            let (Some(name), Some(config), Some(extension)) = (
+                payload.get("name").and_then(Value::as_str),
+                payload.get("config"),
+                extension,
+            ) else {
+                return;
+            };
+            let registered =
+                micro_mcp::config::registered(name, config, std::path::Path::new(extension))
+                    .and_then(|entry| servers.register(entry));
+            if let Err(error) = registered {
+                eprintln!("note: an extension could not add the MCP server {name}: {error}");
+            }
+        }
+        "unregister_mcp_server" => {
+            let Some(servers) = mcp_of(state).await else {
+                return;
+            };
+            let (Some(name), Some(extension)) =
+                (payload.get("name").and_then(Value::as_str), extension)
+            else {
+                return;
+            };
+            let owned = servers
+                .entry(name)
+                .is_some_and(|entry| entry.source == std::path::Path::new(extension));
+            if owned {
+                servers.unregister(name);
             }
         }
 
@@ -1557,6 +1597,8 @@ pub struct State {
 
     pub tool_snippets: Value,
     pub prompt_guidelines: Vec<String>,
+    /// The session's MCP servers, which extensions may add to while it runs.
+    pub mcp: Option<micro_mcp::Servers>,
 }
 
 /// Tell the extensions something happened somewhere other than inside a turn.
@@ -2122,6 +2164,7 @@ mod tests {
             skills: Vec::new(),
             tool_snippets: json!({}),
             prompt_guidelines: Vec::new(),
+            mcp: None,
         }));
         let session = scratch_session().await;
         let workspace = std::env::temp_dir();

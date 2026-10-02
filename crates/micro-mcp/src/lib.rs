@@ -710,6 +710,58 @@ mod tests {
         assert!(logged.contains("[chatty] notice index ready"), "{logged}");
     }
 
+    /// A server an extension adds while the session runs connects in the background, and taking
+    /// it away takes its tools; a configured server of the same name is left alone.
+    #[tokio::test]
+    async fn an_extension_adds_and_takes_away_a_server() {
+        let servers = servers(vec![entry("configured", echo_server())]);
+        let registered = config::registered(
+            "added",
+            &json!({ "command": "bash", "args": ["-c", "exit 1"], "exposure": "deferred" }),
+            Path::new("/x/ext.ts"),
+        )
+        .unwrap();
+        assert_eq!(registered.scope, config::Scope::Extension);
+        let mut echo = registered.clone();
+        echo.config = echo_server();
+        echo.config.exposure = Some(Exposure::Deferred);
+        servers.register(echo).unwrap();
+
+        let arrivals = servers.arrivals();
+        arrivals.settled(Duration::from_secs(10)).await;
+        assert!(arrivals.find("mcp__added__echo").is_some());
+
+        servers.unregister("added");
+        assert!(arrivals.find("mcp__added__echo").is_none());
+        assert!(servers.entry("added").is_none());
+
+        let mut clashing = registered;
+        clashing.name = "configured".into();
+        assert!(servers.register(clashing).is_err());
+        servers.unregister("configured");
+        assert!(servers.entry("configured").is_some());
+    }
+
+    /// An extension may send a provider credential, which a project file may not.
+    #[test]
+    fn a_registration_may_name_a_provider_and_yields_to_the_files() {
+        let auth =
+            json!({ "url": "https://mcp.example.com/mcp", "auth": { "provider": "openai" } });
+        let entry = config::registered("hosted", &auth, Path::new("/x/ext.ts")).unwrap();
+        let mut loaded = LoadedConfig {
+            servers: vec![self::entry("hosted", echo_server())],
+            errors: Vec::new(),
+        };
+        loaded.add_registered(entry.clone());
+        assert_eq!(loaded.servers.len(), 1);
+        assert_eq!(loaded.servers[0].scope, config::Scope::Global);
+
+        let mut renamed = entry;
+        renamed.name = "other".into();
+        loaded.add_registered(renamed);
+        assert_eq!(loaded.servers[1].scope, config::Scope::Extension);
+    }
+
     #[test]
     fn a_declared_output_schema_becomes_the_structured_content() {
         let schema = call_tool_result_schema(Some(&json!({ "type": "object" })));

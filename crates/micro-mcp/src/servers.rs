@@ -111,6 +111,12 @@ pub struct Servers {
     inner: Arc<Inner>,
 }
 
+impl std::fmt::Debug for Servers {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.debug_list().entries(self.lock().keys()).finish()
+    }
+}
+
 struct Inner {
     workspace: PathBuf,
     credentials: Option<CredentialStore>,
@@ -343,6 +349,71 @@ impl Servers {
         (tools, problems)
     }
 
+    /// Add a server an extension registered while the session runs, replacing that extension's
+    /// earlier registration of the name, and connect it in the background when it is enabled and
+    /// any of its tools is reachable. A configuration file's entry of the same name takes
+    /// precedence.
+    pub fn register(&self, entry: ServerEntry) -> std::result::Result<(), String> {
+        {
+            let mut states = self.lock();
+            if let Some(held) = states.get(&entry.name) {
+                if held.entry.scope != config::Scope::Extension {
+                    return Err(format!(
+                        "{} configures a server called {} already",
+                        held.entry.source.display(),
+                        entry.name
+                    ));
+                }
+            }
+            let held: Vec<ServerEntry> = states.values().map(|state| state.entry.clone()).collect();
+            if let Some(clash) = config::clash(&held, &entry.name) {
+                return Err(format!(
+                    "server \"{}\" conflicts with \"{clash}\"",
+                    entry.name
+                ));
+            }
+            let status = match entry.config.enabled {
+                true => Status::Connecting,
+                false => Status::Disabled,
+            };
+            states.insert(
+                entry.name.clone(),
+                State {
+                    entry: entry.clone(),
+                    status,
+                    client: None,
+                    tools: Vec::new(),
+                    challenge: Arc::default(),
+                },
+            );
+        }
+        self.inner
+            .arrivals
+            .remove_prefixed(&format!("{}__", names::namespace(&entry.name)));
+        if entry.config.enabled && entry.config.is_reachable() {
+            self.connect_in_background(&entry.name);
+        }
+        Ok(())
+    }
+
+    /// Take away a server an extension registered, and its tools with it.
+    pub fn unregister(&self, name: &str) {
+        let removed = {
+            let mut states = self.lock();
+            match states.get(name) {
+                Some(state) if state.entry.scope == config::Scope::Extension => {
+                    states.remove(name).is_some()
+                }
+                _ => false,
+            }
+        };
+        if removed {
+            self.inner
+                .arrivals
+                .remove_prefixed(&format!("{}__", names::namespace(name)));
+        }
+    }
+
     /// Connect a server without waiting for it. Its tools are delivered to the arrivals, and a
     /// tool search waits for them.
     pub fn connect_in_background(&self, name: &str) {
@@ -351,7 +422,10 @@ impl Servers {
         let name = name.to_string();
         tokio::spawn(async move {
             if let Ok(tools) = servers.connect(&name).await {
-                servers.inner.arrivals.add(tools);
+                // A server taken away while it connected offers nothing.
+                if servers.entry(&name).is_some() {
+                    servers.inner.arrivals.add(tools);
+                }
             }
             drop(expected);
         });

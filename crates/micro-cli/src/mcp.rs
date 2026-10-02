@@ -494,10 +494,10 @@ async fn sign_in(servers: &Servers, name: &str, notifier: Option<&micro_tui::UiA
 }
 
 /// The `mcp_servers` system prompt section as the servers stand when a run starts, so a server
-/// that connected since, and said what it offers, is listed with it.
+/// that connected since, and said what it offers, or that an extension added, is listed with it.
 pub struct ServersSection {
     servers: Servers,
-    /// The servers whose tools are not declared to the model.
+    /// The servers whose tools were not declared to the model when the session started.
     undeclared: Vec<String>,
     codemode: bool,
 }
@@ -518,7 +518,13 @@ impl micro_agent::LiveSection for ServersSection {
     }
 
     fn render(&self) -> Option<String> {
-        self.servers.prompt_section(&self.undeclared, self.codemode)
+        let mut undeclared = self.undeclared.clone();
+        for entry in self.servers.entries() {
+            if entry.config.has_undeclared_tools() && !undeclared.contains(&entry.name) {
+                undeclared.push(entry.name);
+            }
+        }
+        self.servers.prompt_section(&undeclared, self.codemode)
     }
 }
 

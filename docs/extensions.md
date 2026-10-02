@@ -59,7 +59,7 @@ tools              commands           events
 exec               builtin_tools      provider_stream
 send_user_message  send_message       session_write
 session_control    context            ui
-providers          flags
+providers          flags              mcp_servers
 ```
 
 Read-only getters do not require a capability. Host operations outside the declared set return a named error. The session continues and the request is recorded as an `extension_crossing` event.
@@ -128,6 +128,17 @@ async execute(_callId, params, _signal, _onUpdate, ctx) {
   return { content: isError ? [{ type: "text", text: "unreadable" }] : result.content };
 }
 ```
+
+## Add MCP servers
+
+`micro.registerMcpServer(name, config)` adds an [MCP server](mcp.md) for the current session, with `config` in the shape of an `mcpServers` entry. Unlike a project `mcp.json`, it may use `"auth": { "provider": "<name>" }`. The extension needs the `mcp_servers` capability, since these servers run, or are reached, outside the command sandbox.
+
+```ts
+micro.registerMcpServer("jira", { url: "https://mcp.example.com/jira", exposure: "deferred" });
+micro.unregisterMcpServer("jira");
+```
+
+Servers registered while the extension loads connect with the `mcp.json` servers. Servers registered later connect right away, and their tools are reached through `tool_search` or `codemode` when the session offers them; `unregisterMcpServer()` makes a server's tools unreachable. Registrations are not saved, so register again on every load. An `mcp.json` entry of the same name takes precedence, a name another extension registered throws, and `micro.getMcpServers()` lists every registration with the extension that made it.
 
 ## Run commands
 

@@ -246,17 +246,19 @@ impl ServerConfig {
     }
 }
 
-/// Which file an entry came from.
+/// Where an entry came from: one of the files, or an extension that registered it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Scope {
     Global,
     Project,
+    Extension,
 }
 
 impl Scope {
     pub fn name(self) -> &'static str {
         match self {
             Scope::Global => "global",
+            Scope::Extension => "extension",
             Scope::Project => "project",
         }
     }
@@ -282,6 +284,43 @@ impl LoadedConfig {
     pub fn get(&self, name: &str) -> Option<&ServerEntry> {
         self.servers.iter().find(|entry| entry.name == name)
     }
+
+    /// Add a server an extension registered. A configuration file's entry of the same name takes
+    /// precedence, so the registration is left out.
+    pub fn add_registered(&mut self, entry: ServerEntry) {
+        if self.get(&entry.name).is_some() {
+            return;
+        }
+        match clash(&self.servers, &entry.name) {
+            Some(clash) => self.errors.push(format!(
+                "{}: server \"{}\" conflicts with \"{clash}\"",
+                entry.source.display(),
+                entry.name
+            )),
+            None => self.servers.push(entry),
+        }
+    }
+}
+
+/// The server already among `servers` whose name differs from `name` only in `-` and `_`.
+pub fn clash(servers: &[ServerEntry], name: &str) -> Option<String> {
+    servers
+        .iter()
+        .find(|other| other.name != name && names::namespace(&other.name) == names::namespace(name))
+        .map(|other| other.name.clone())
+}
+
+/// A server an extension registered: the `mcpServers` shape, where `auth.provider` is allowed as
+/// in the global file, since only extensions the user installed run.
+pub fn registered(name: &str, value: &Value, extension: &Path) -> Result<ServerEntry, String> {
+    let config =
+        parse_server(name, value).map_err(|error| format!("{}: {error}", extension.display()))?;
+    Ok(ServerEntry {
+        name: name.to_string(),
+        config,
+        source: extension.to_path_buf(),
+        scope: Scope::Extension,
+    })
 }
 
 /// The global `mcp.json`, in micro's configuration directory.
@@ -355,14 +394,10 @@ fn read_file(path: &Path, scope: Scope, loaded: &mut LoadedConfig) {
             ));
             continue;
         }
-        let clash = loaded.servers.iter().find(|other| {
-            other.name != name && names::namespace(&other.name) == names::namespace(&name)
-        });
-        if let Some(clash) = clash {
+        if let Some(clash) = clash(&loaded.servers, &name) {
             loaded.errors.push(format!(
-                "{}: server \"{name}\" conflicts with \"{}\"",
-                path.display(),
-                clash.name
+                "{}: server \"{name}\" conflicts with \"{clash}\"",
+                path.display()
             ));
             continue;
         }
