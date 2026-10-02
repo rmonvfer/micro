@@ -116,6 +116,8 @@ Command-line options take precedence over environment variables, which take prec
 | `mcp_servers` | `{}` | Named MCP server definitions. |
 | `tool_search_threshold` | `15` | Number of non-built-in tools included directly before `tool_search` is used. |
 | `default_tools` | unset | Built-in tools a session starts with; `+name` and `-name` adjust the defaults. See [Tools](tools.md#select-tools). |
+| `compaction` | unset | Compaction budgets in tokens, with per-model overrides. |
+| `image_limits` | 2000×2000, 4.5 MiB | Size limits for images sent to a model, with per-model overrides. |
 | `anthropic_extra_usage` | `true` | Warn about per-token use of Anthropic subscription credentials in a third-party client. |
 | `transport` | `sse` | `sse` or `auto` for the ChatGPT Codex backend. |
 | `sandbox` | unset | Command policy; runtime default is `workspace-write`. |
@@ -194,6 +196,42 @@ When extensions and MCP servers add more tools than this threshold, micro expose
 ### cache_miss_notices
 
 When enabled, micro reports turns that write a prompt cache without reading from it. Use `micro why-miss` for a local prefix and conversation diagnostic after the run.
+
+### compaction
+
+By default automatic compaction fires when the conversation passes 80% of the model's context window and keeps the most recent 30% verbatim. `reserve_tokens` replaces the trigger with an absolute reserve: compaction fires once the conversation needs more than the context window less this many tokens. `keep_recent_tokens` sets how many tokens of recent conversation survive automatic and manual compaction.
+
+`model_overrides` tunes the budgets for particular models, keyed by exact `provider/model`. Each value falls back on its own from the model override to the ordinary value to the default share, and values must be non-negative integers. The budgets in force follow the current model, so switching models changes the next check without changing anything already compacted.
+
+```json
+{
+  "compaction": {
+    "reserve_tokens": 16384,
+    "keep_recent_tokens": 20000,
+    "model_overrides": {
+      "some-provider/big-model": { "reserve_tokens": 400000 }
+    }
+  }
+}
+```
+
+For a model with a one-million-token window, this override fires compaction above 600,000 tokens and keeps the ordinary 20,000 recent tokens.
+
+### image_limits
+
+Images a user attaches, images `read` returns, and images other tools return are fitted to the current model's limits as they join the conversation. An image within the limits is sent byte for byte; a larger one is scaled down, keeping its proportions and EXIF orientation, and re-encoded as whichever of PNG and JPEG is smaller, then shrunk further until its base64 fits `max_bytes`. A resized image is followed by a note giving its original size so the model can map coordinates back. An image that cannot be made small enough is replaced by a note.
+
+Each image is fitted once and stored fitted in the session, so switching models never rewrites history and a cached prompt prefix stays valid. `max_bytes` limits the base64 payload. Omitted limits default to 2000 by 2000 pixels, 4.5 MiB, and JPEG quality 80. `model_overrides` sets limits for particular models, each falling back to the ordinary value.
+
+```json
+{
+  "image_limits": {
+    "model_overrides": {
+      "acme/vision-model": { "max_width": 1568, "max_height": 1568, "max_bytes": 524288, "jpeg_quality": 75 }
+    }
+  }
+}
+```
 
 ### http_proxy
 

@@ -515,7 +515,9 @@ pub async fn build(
     .with_context_window(model.context_window as usize)
     .with_recorder(recorder)
     .with_observer(watching)
-    .with_cache_key(session.id());
+    .with_cache_key(session.id())
+    .with_compaction_budgets(compaction_budgets(&settings.compaction))
+    .with_image_limits(image_limits(&settings.image_limits));
 
     let agent = match recorded_model_cost {
         Some(cost) => agent.with_model_cost(cost),
@@ -623,6 +625,63 @@ pub async fn build(
         context_files,
         skills,
     })
+}
+
+/// The compaction budgets the settings name, ordinary and per model, each model's falling back
+/// field by field to the ordinary ones.
+pub fn compaction_budgets(
+    settings: &micro_config::CompactionSettings,
+) -> micro_context::CompactionBudgets {
+    let tokens =
+        |value: Option<u64>| value.map(|value| usize::try_from(value).unwrap_or(usize::MAX));
+    let budget = |reserve: Option<u64>, keep: Option<u64>| micro_context::CompactionBudget {
+        reserve_tokens: tokens(reserve),
+        keep_recent_tokens: tokens(keep),
+    };
+    let ordinary = budget(settings.reserve_tokens, settings.keep_recent_tokens);
+    micro_context::CompactionBudgets {
+        ordinary,
+        models: settings
+            .model_overrides
+            .iter()
+            .map(|(model, own)| {
+                (
+                    model.clone(),
+                    budget(own.reserve_tokens, own.keep_recent_tokens).or(ordinary),
+                )
+            })
+            .collect(),
+    }
+}
+
+/// The image limits the settings name, ordinary and per model, each falling back limit by limit
+/// to the ordinary ones and then to micro's defaults.
+pub fn image_limits(
+    settings: &micro_config::ImageLimitSettings,
+) -> micro_tools::images::ImageLimitTable {
+    let limits = |values: micro_config::ImageLimitValues| {
+        let defaults = micro_tools::images::ImageLimits::default();
+        micro_tools::images::ImageLimits {
+            max_width: values.max_width.unwrap_or(defaults.max_width).max(1),
+            max_height: values.max_height.unwrap_or(defaults.max_height).max(1),
+            max_bytes: values
+                .max_bytes
+                .map(|bytes| usize::try_from(bytes).unwrap_or(usize::MAX))
+                .unwrap_or(defaults.max_bytes),
+            jpeg_quality: values
+                .jpeg_quality
+                .unwrap_or(defaults.jpeg_quality)
+                .clamp(1, 100),
+        }
+    };
+    micro_tools::images::ImageLimitTable {
+        ordinary: limits(settings.limits),
+        models: settings
+            .model_overrides
+            .iter()
+            .map(|(model, own)| (model.clone(), limits(own.or(settings.limits))))
+            .collect(),
+    }
 }
 
 /// Open the session a run asked for: one to resume, one under an exact id, or a fresh one.

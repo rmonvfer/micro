@@ -14,6 +14,8 @@ pub use compaction::render_transcript;
 pub use compaction::summary_message;
 pub use compaction::summary_text;
 pub use compaction::Compacted;
+pub use compaction::CompactionBudget;
+pub use compaction::CompactionBudgets;
 pub use compaction::CompactionConfig;
 pub use compaction::Compactor;
 pub use compaction::Summarizer;

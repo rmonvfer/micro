@@ -6,6 +6,7 @@ mod summarizer;
 pub use summarizer::ProviderSummarizer;
 
 use micro_context::Compacted;
+use micro_context::CompactionBudgets;
 use micro_context::CompactionConfig;
 use micro_context::Compactor;
 use micro_context::Summarizer;
@@ -13,6 +14,7 @@ use micro_models::ModelCost;
 use micro_models::TokenUsage;
 use micro_provider::ApiKey;
 use micro_provider::Provider;
+use micro_tools::images::ImageLimitTable;
 use micro_tools::Tool;
 use micro_types::content_hash;
 use micro_types::now_ms;
@@ -305,6 +307,11 @@ pub struct Agent {
     cache_key: Option<String>,
     summarizer: Arc<dyn Summarizer>,
     compaction: Option<CompactionConfig>,
+    /// Compaction budgets in tokens, ordinary and per model, laid over the compaction policy.
+    compaction_budgets: CompactionBudgets,
+    /// How large an image each model may be sent; images are fitted once, as they join the
+    /// conversation.
+    image_limits: ImageLimitTable,
     context_window: usize,
     /// The rates in force for requests made with the current model.
     model_cost: Option<ModelCost>,
@@ -352,6 +359,8 @@ impl Agent {
             cache_key: None,
             summarizer,
             compaction: Some(CompactionConfig::default()),
+            compaction_budgets: CompactionBudgets::default(),
+            image_limits: ImageLimitTable::default(),
             context_window: DEFAULT_CONTEXT_WINDOW,
             model_cost: None,
             steering: Steering::default(),
@@ -452,6 +461,34 @@ impl Agent {
         }
         self.summarizer = self.provider_summarizer();
         self
+    }
+
+    /// Compaction budgets in tokens, ordinary and per model, in place of the policy's fractions.
+    pub fn with_compaction_budgets(mut self, budgets: CompactionBudgets) -> Self {
+        self.compaction_budgets = budgets;
+        self
+    }
+
+    /// How large an image each model may be sent.
+    pub fn with_image_limits(mut self, limits: ImageLimitTable) -> Self {
+        self.image_limits = limits;
+        self
+    }
+
+    /// The `provider/model` the run is using now, which per-model settings are keyed by.
+    fn qualified_model(&self) -> String {
+        format!("{}/{}", self.model.provider, self.model.id)
+    }
+
+    /// The compaction policy in force for the current model.
+    fn compaction_for_model(&self, config: CompactionConfig) -> CompactionConfig {
+        config.with_budget(self.compaction_budgets.for_model(&self.qualified_model()))
+    }
+
+    /// A message from outside the model with its images fitted to the current model's limits.
+    async fn fitted(&self, message: Message) -> Message {
+        let limits = self.image_limits.for_model(&self.qualified_model());
+        micro_tools::images::fit_message(message, limits).await
     }
 
     pub fn with_compaction(mut self, config: CompactionConfig) -> Self {
@@ -570,10 +607,14 @@ impl Agent {
     /// Summarize the conversation now, whether or not it has grown enough to trigger on its own,
     /// and continue from the summary.
     pub async fn compact_now(&mut self) -> std::result::Result<Message, CompactionRefusal> {
-        let config = self.compaction.unwrap_or_default();
+        let config = self.compaction_for_model(self.compaction.unwrap_or_default());
+        let keep_recent_tokens = config
+            .budget
+            .keep_recent_tokens
+            .unwrap_or(MANUAL_COMPACTION_KEEP_RECENT_TOKENS);
         let compactor = Compactor::new(self.summarizer.clone(), config);
         let compacted = compactor
-            .compact_with_keep_recent_tokens(&self.messages, MANUAL_COMPACTION_KEEP_RECENT_TOKENS)
+            .compact_with_keep_recent_tokens(&self.messages, keep_recent_tokens)
             .await
             .map_err(|error| match error {
                 micro_context::ContextError::NothingToCompact => CompactionRefusal::TooSmall,
@@ -657,7 +698,8 @@ impl Agent {
             is_error,
         });
 
-        Message::tool_result_content(id, name, content, is_error)
+        self.fitted(Message::tool_result_content(id, name, content, is_error))
+            .await
     }
 
     /// Both places an event goes, as one thing to send to.
@@ -905,6 +947,7 @@ impl Agent {
             Some(hooks) => hooks.before_agent_start(&prompt).await.unwrap_or(prompt),
             None => prompt,
         };
+        let prompt = self.fitted(prompt).await;
         let mut produced = Vec::new();
 
         let installed = std::mem::take(&mut self.repairs);
@@ -926,6 +969,7 @@ impl Agent {
 
         loop {
             for said in self.steering.take_steering() {
+                let said = self.fitted(said).await;
                 events.send(AgentEvent::MessageStart {
                     message: said.clone(),
                 });
@@ -996,6 +1040,7 @@ impl Agent {
                     break;
                 }
                 for said in queued {
+                    let said = self.fitted(said).await;
                     events.send(AgentEvent::MessageStart {
                         message: said.clone(),
                     });
@@ -1114,6 +1159,7 @@ impl Agent {
         let Some(config) = self.compaction else {
             return Ok(());
         };
+        let config = self.compaction_for_model(config);
 
         let compactor = Compactor::new(self.summarizer.clone(), config);
         let Some(compacted) = compactor
@@ -1710,6 +1756,110 @@ mod tests {
             written.try_recv().unwrap(),
             Record::Message(agent.messages()[0].clone())
         );
+    }
+
+    fn plain_model(provider: &str, id: &str) -> Model {
+        Model {
+            id: id.into(),
+            provider: provider.into(),
+            base_url: "https://example.invalid".into(),
+            max_tokens: 1_000,
+            thinking: ThinkingLevel::Off,
+            reasoning: false,
+            compat: Default::default(),
+            headers: Default::default(),
+        }
+    }
+
+    fn png(width: u32, height: u32) -> String {
+        let pixels = image::RgbImage::from_fn(width, height, |x, y| {
+            image::Rgb([(x % 256) as u8, (y % 256) as u8, ((x * y) % 256) as u8])
+        });
+        let mut bytes = Vec::new();
+        image::DynamicImage::ImageRgb8(pixels)
+            .write_to(
+                &mut std::io::Cursor::new(&mut bytes),
+                image::ImageFormat::Png,
+            )
+            .unwrap();
+        base64::Engine::encode(&base64::engine::general_purpose::STANDARD, bytes)
+    }
+
+    #[tokio::test]
+    async fn an_attached_image_is_fitted_to_the_models_limits_as_it_joins() {
+        let provider = RecordingProvider::new("acme");
+        let small = micro_tools::images::ImageLimits {
+            max_width: 50,
+            max_height: 50,
+            ..Default::default()
+        };
+        let mut agent = Agent::new(
+            Arc::new(provider),
+            Vec::new(),
+            plain_model("acme", "vision"),
+            "key",
+        )
+        .with_image_limits(ImageLimitTable {
+            ordinary: Default::default(),
+            models: [("acme/vision".to_string(), small)].into(),
+        });
+
+        let (events, _ignored) = tokio::sync::mpsc::unbounded_channel();
+        agent
+            .run(
+                Message::User {
+                    content: vec![
+                        ContentBlock::text("what is this"),
+                        ContentBlock::Image {
+                            data: png(200, 100),
+                            mime_type: "image/png".into(),
+                        },
+                    ],
+                    timestamp: 0,
+                },
+                &events,
+            )
+            .await;
+
+        let Message::User { content, .. } = &agent.messages()[0] else {
+            panic!("the prompt comes first");
+        };
+        let ContentBlock::Image { data, .. } = &content[1] else {
+            panic!("the image is kept");
+        };
+        let bytes =
+            base64::Engine::decode(&base64::engine::general_purpose::STANDARD, data).unwrap();
+        let fitted = image::load_from_memory(&bytes).unwrap();
+        assert_eq!((fitted.width(), fitted.height()), (50, 25));
+        assert!(content[2].as_text().contains("original 200x100"));
+    }
+
+    #[test]
+    fn compaction_budgets_follow_the_current_model() {
+        let agent = Agent::new(
+            Arc::new(NoProvider),
+            Vec::new(),
+            plain_model("acme", "big-model"),
+            "key",
+        )
+        .with_compaction_budgets(CompactionBudgets {
+            ordinary: micro_context::CompactionBudget {
+                reserve_tokens: Some(16_384),
+                keep_recent_tokens: Some(20_000),
+            },
+            models: [(
+                "acme/big-model".to_string(),
+                micro_context::CompactionBudget {
+                    reserve_tokens: Some(400_000),
+                    keep_recent_tokens: None,
+                },
+            )]
+            .into(),
+        });
+
+        let config = agent.compaction_for_model(CompactionConfig::default());
+        assert_eq!(config.trigger_tokens(1_000_000), 600_000);
+        assert_eq!(config.keep_recent_tokens(1_000_000), 20_000);
     }
 
     #[tokio::test]

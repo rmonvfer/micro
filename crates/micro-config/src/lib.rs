@@ -4,6 +4,7 @@ use serde::Deserialize;
 use serde::Serialize;
 use serde_json::Map;
 use serde_json::Value;
+use std::collections::BTreeMap;
 use std::fmt;
 use std::fs;
 use std::io::Write as _;
@@ -294,6 +295,12 @@ pub struct Config {
     /// `-name` add to or take from them.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default_tools: Option<Vec<String>>,
+    /// Compaction budgets in tokens, with per-model overrides.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compaction: Option<CompactionSettings>,
+    /// How large an image a model is sent, with per-model overrides.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image_limits: Option<ImageLimitSettings>,
     /// Warn that Anthropic subscription auth bills per token in a third-party harness.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub anthropic_extra_usage: Option<bool>,
@@ -368,6 +375,8 @@ pub struct Settings {
     pub tool_search_threshold: usize,
     /// The `default_tools` entries, as written; [`resolve_default_tools`] reads them.
     pub default_tools: Option<Vec<String>>,
+    pub compaction: CompactionSettings,
+    pub image_limits: ImageLimitSettings,
     pub anthropic_extra_usage: bool,
     pub transport: String,
     /// The sandbox policy the user settled on, if they settled on one.
@@ -430,6 +439,8 @@ impl Default for Settings {
             mcp_servers: Map::new(),
             tool_search_threshold: 15,
             default_tools: None,
+            compaction: CompactionSettings::default(),
+            image_limits: ImageLimitSettings::default(),
             anthropic_extra_usage: true,
             transport: DEFAULT_TRANSPORT.to_string(),
             sandbox: None,
@@ -621,6 +632,8 @@ impl Config {
                 .tool_search_threshold
                 .unwrap_or(defaults.tool_search_threshold),
             default_tools: self.default_tools.clone(),
+            compaction: self.compaction.clone().unwrap_or_default(),
+            image_limits: self.image_limits.clone().unwrap_or_default(),
             anthropic_extra_usage: self
                 .anthropic_extra_usage
                 .unwrap_or(defaults.anthropic_extra_usage),
@@ -680,6 +693,8 @@ impl Config {
             mcp_servers: take(&mut fields, "mcp_servers", path)?,
             tool_search_threshold: take(&mut fields, "tool_search_threshold", path)?,
             default_tools: take(&mut fields, "default_tools", path)?,
+            compaction: take(&mut fields, "compaction", path)?,
+            image_limits: take(&mut fields, "image_limits", path)?,
             anthropic_extra_usage: take(&mut fields, "anthropic_extra_usage", path)?,
             transport: take(&mut fields, "transport", path)?,
             sandbox: take(&mut fields, "sandbox", path)?,
@@ -688,6 +703,72 @@ impl Config {
             extra: fields,
         };
         Ok(config)
+    }
+}
+
+/// Compaction budgets in tokens. Each one a model override leaves out falls back to the ordinary
+/// value, and an ordinary value left out falls back to the share of the context window micro uses
+/// by default.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct CompactionSettings {
+    /// Tokens kept free below the context window; compaction fires past the window less this.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reserve_tokens: Option<u64>,
+    /// Tokens of recent conversation kept verbatim.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub keep_recent_tokens: Option<u64>,
+    /// Budgets for particular models, keyed by exact `provider/model`.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub model_overrides: BTreeMap<String, CompactionBudgetSettings>,
+}
+
+/// One model's compaction budgets.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct CompactionBudgetSettings {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reserve_tokens: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub keep_recent_tokens: Option<u64>,
+}
+
+/// How large an image a model is sent. Each limit a model override leaves out falls back to the
+/// ordinary value, and an ordinary value left out to micro's default.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ImageLimitSettings {
+    #[serde(flatten)]
+    pub limits: ImageLimitValues,
+    /// Limits for particular models, keyed by exact `provider/model`.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub model_overrides: BTreeMap<String, ImageLimitValues>,
+}
+
+/// One set of image limits, each absent unless written.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ImageLimitValues {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_width: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_height: Option<u32>,
+    /// The longest an image's base64 encoding may be.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_bytes: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub jpeg_quality: Option<u8>,
+}
+
+impl ImageLimitValues {
+    /// Each limit this sets, and `fallback`'s where it sets none.
+    pub fn or(self, fallback: ImageLimitValues) -> ImageLimitValues {
+        ImageLimitValues {
+            max_width: self.max_width.or(fallback.max_width),
+            max_height: self.max_height.or(fallback.max_height),
+            max_bytes: self.max_bytes.or(fallback.max_bytes),
+            jpeg_quality: self.jpeg_quality.or(fallback.jpeg_quality),
+        }
     }
 }
 
@@ -897,6 +978,53 @@ mod tests {
 
     fn names(entries: &[&str]) -> Vec<String> {
         entries.iter().map(|entry| entry.to_string()).collect()
+    }
+
+    #[test]
+    fn compaction_and_image_limits_are_read_with_their_model_overrides() {
+        let directory = scratch("budgets");
+        let path = directory.join(FILE_NAME);
+        fs::write(
+            &path,
+            r#"{
+                "compaction": {
+                    "reserve_tokens": 16384,
+                    "model_overrides": { "acme/big-model": { "reserve_tokens": 400000 } }
+                },
+                "image_limits": {
+                    "max_width": 1568,
+                    "model_overrides": { "acme/vision": { "max_bytes": 524288 } }
+                }
+            }"#,
+        )
+        .unwrap();
+
+        let settings = Config::load_from(&path)
+            .unwrap()
+            .resolve(&Overrides::default(), no_environment)
+            .unwrap();
+        assert_eq!(settings.compaction.reserve_tokens, Some(16_384));
+        assert_eq!(
+            settings.compaction.model_overrides["acme/big-model"].reserve_tokens,
+            Some(400_000)
+        );
+        assert_eq!(settings.image_limits.limits.max_width, Some(1568));
+        assert_eq!(
+            settings.image_limits.model_overrides["acme/vision"].or(settings.image_limits.limits),
+            ImageLimitValues {
+                max_width: Some(1568),
+                max_bytes: Some(524_288),
+                ..ImageLimitValues::default()
+            }
+        );
+    }
+
+    #[test]
+    fn a_negative_budget_is_refused() {
+        let directory = scratch("negative-budget");
+        let path = directory.join(FILE_NAME);
+        fs::write(&path, r#"{"compaction":{"reserve_tokens":-1}}"#).unwrap();
+        assert!(Config::load_from(&path).is_err());
     }
 
     #[test]

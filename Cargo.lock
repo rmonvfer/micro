@@ -2263,7 +2263,9 @@ name = "micro-agent"
 version = "0.1.13"
 dependencies = [
  "async-trait",
+ "base64",
  "futures",
+ "image",
  "micro-context",
  "micro-models",
  "micro-provider",
@@ -2548,6 +2550,7 @@ dependencies = [
  "async-trait",
  "base64",
  "ignore",
+ "image",
  "micro-sandbox",
  "micro-types",
  "regex",

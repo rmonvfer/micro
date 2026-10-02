@@ -10,6 +10,8 @@
 - Honor `Retry-After` (seconds or HTTP date) and `retry-after-ms` when retrying provider requests, falling back to exponential backoff when absent or unreadable.
 - Add RPC `clear_queue`, which removes and returns queued steering and follow-up messages, and report each `prompt`, `steer`, and `follow_up` disposition (`started` or `queued`) in its response.
 - Add the `default_tools` setting (user and trusted project) with `+name`/`-name` entries; `/reload` turns on tools newly added to it, and `--tools` still overrides it.
+- Add `compaction` token budgets (`reserve_tokens`, `keep_recent_tokens`) with per-model overrides.
+- Fit attached, `read`, and tool-result images to per-model `image_limits` once as they join the conversation, so history and prompt caches stay stable across model switches.
 
 ## [0.1.13] - 2026-09-04
 
