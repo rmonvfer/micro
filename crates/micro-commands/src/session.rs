@@ -140,6 +140,9 @@ pub(crate) async fn tree(argument: Option<&str>, context: &CommandContext<'_>) -
 
     let loaded = match context.sessions.load(session_id).await {
         Ok(loaded) => loaded,
+        Err(micro_session::SessionError::NotFound(_)) => {
+            return CommandOutcome::info("No entries in session")
+        }
         Err(error) => return CommandOutcome::error(format!("cannot read the session: {error}")),
     };
 
@@ -255,6 +258,12 @@ pub(crate) async fn info(context: &CommandContext<'_>) -> CommandOutcome {
 
     let loaded = match context.sessions.load(session_id).await {
         Ok(loaded) => loaded,
+        Err(micro_session::SessionError::NotFound(_)) => {
+            return CommandOutcome::info(format!(
+                "Session Info\n\nID: {session_id}\nNothing said yet: the session is written with \
+                 the first message."
+            ))
+        }
         Err(error) => return CommandOutcome::error(format!("cannot read the session: {error}")),
     };
 
@@ -392,6 +401,9 @@ pub(crate) async fn clone(context: &CommandContext<'_>) -> CommandOutcome {
 
     let loaded = match context.sessions.load(session_id).await {
         Ok(loaded) => loaded,
+        Err(micro_session::SessionError::NotFound(_)) => {
+            return CommandOutcome::info("Nothing to clone yet")
+        }
         Err(error) => return CommandOutcome::error(format!("cannot read the session: {error}")),
     };
     if loaded.messages.is_empty() {

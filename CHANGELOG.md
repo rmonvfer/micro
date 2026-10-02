@@ -15,6 +15,40 @@
 - Register virtual models with `micro.registerVirtualModel()`: a router picks a physical model and thinking level for every request, keeps state on the session branch, and the footer shows the routed model. `/session` lists cost per physical model, and turns are billed at the rates of the model that answered.
 - Connect to a llama.cpp router with `micro llama connect`, and list, search Hugging Face, download, load and unload its models with `micro llama`. Loaded models are chat models under `llama.cpp` and classifiers read from next-token label probabilities; their runtime context windows are remembered between runs.
 - Add the `provider_stream_event` extension event with each parsed provider stream event before micro normalizes it.
+- Sign in to Anthropic with a Claude Pro/Max subscription, by browser or by pasting the code Anthropic shows when the browser runs elsewhere.
+- Sign in with ChatGPT for the `openai` provider, and sign in to `openai-codex` by browser or device code.
+- Sign in to OpenRouter (pasting the redirect URL over SSH), xAI with SuperGrok or X Premium, and Kimi Code.
+- Refresh expiring OAuth tokens under the credential file lock.
+- Open Anthropic subscription requests with Claude Code's identity.
+- Use Anthropic workload identity federation from `ANTHROPIC_FEDERATION_RULE_ID`, `ANTHROPIC_ORGANIZATION_ID` and `ANTHROPIC_IDENTITY_TOKEN_FILE`.
+- Add `micro auth check`, `micro auth print-api-key` and `micro auth print-bearer-token`.
+- Label `/login` and `/logout` entries as `not configured`, or as an API key, `subscription` or `account`.
+- Add the `system` theme, now the default, which derives colors from the terminal's reported foreground, background, and ANSI palette, keeps pastel palettes pastel, and rebuilds when the terminal regains focus after switching between light and dark.
+- Accept `#rgb`, `oklch()`, and `okhsl()` colors and an optional `appearance` field in theme files.
+- Keep `/model` and `/thinking` choices to the current session, and save one as the default with `ctrl+s` in their pickers or `--default` before the argument.
+- Search the fullscreen transcript with `ctrl+f`: matches are highlighted, `enter` and `shift+enter` step between them, and `escape` closes the search.
+- Show a clickable jump-to-latest label while the fullscreen transcript is scrolled up, return with `end`, and add `half_page_scroll` for half-page Page Up and Page Down.
+- Select a word with a double click and a paragraph with a triple click, copy the active selection with `ctrl+x`, and add `copy_on_select` to turn off automatic selection copy.
+- Add `external_editor` to choose the `ctrl+g` editor ahead of `$VISUAL` and `$EDITOR`, and run editor commands that carry arguments.
+- Add `output_pad` to set the transcript's horizontal padding apart from `content_padding`.
+- Accept `quiet_startup: "header"` to keep the startup header with the version and key hints and hide the rest.
+- Link file paths in built-in file tool titles with OSC 8 `file://` hyperlinks.
+- Add `terminal_hyperlinks`, `terminal_images`, and `terminal_true_color` to override detected terminal capabilities, and draw themes with the 256-color palette on terminals without 24-bit color.
+- Show the arguments of tool calls without a custom renderer as `key=value` pairs when collapsed and `key: value` lines when expanded.
+- Complete slash commands when the prompt starts with whitespace.
+- Write the session file when the first message is sent, so leaving before saying anything leaves no file.
+- Add `--session-id <id>` to resume or start a workspace session under an exact id, and `--name`/`-n` to name the session at startup in every mode.
+- Save truncated `bash` output in full to a private temporary file and name its path in the result.
+- Read `AGENTS.override.md` in place of a directory's `AGENTS.md` and `CLAUDE.md`, keeping instructions from other directories.
+- Add a global `http_proxy` setting applied as `HTTP_PROXY` and `HTTPS_PROXY` to micro's HTTP clients.
+- Honor `Retry-After` (seconds or HTTP date) and `retry-after-ms` when retrying provider requests, falling back to exponential backoff when absent or unreadable.
+- Add RPC `clear_queue`, which removes and returns queued steering and follow-up messages, and report each `prompt`, `steer`, and `follow_up` disposition (`started` or `queued`) in its response.
+- Add the `default_tools` setting (user and trusted project) with `+name`/`-name` entries; `/reload` turns on tools newly added to it, and `--tools` still overrides it.
+- Add `compaction` token budgets (`reserve_tokens`, `keep_recent_tokens`) with per-model overrides.
+- Fit attached, `read`, and tool-result images to per-model `image_limits` once as they join the conversation, so history and prompt caches stay stable across model switches.
+- Keep valuable prompt caches warm during long tool runs, and optionally between runs, with cost-aware one-token refreshes (`cache_warming`, default `streaming`; `prompt_cache_lifetimes`). Refreshes are recorded as `cache_warm` ledger events and billed.
+- Add `/bug` to write a ZIP bug report with redacted settings, environment, extensions and recorded failures, optionally with the session transcript, for attaching to a GitHub issue.
+- Let an extension's `tool_call` handler return `terminate: true` with a block, ending the run without another model call when every call in the batch was blocked that way.
 
 ## [0.1.13] - 2026-09-04
 

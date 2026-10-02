@@ -50,6 +50,13 @@ pub enum Action {
     /// Move the conversation by a few lines, from the wheel or arrows.
     ScrollUp,
     ScrollDown,
+    /// End: back to the latest message when the conversation is scrolled up, otherwise the end of
+    /// the line.
+    JumpToLatest,
+    /// Ctrl+F: open or close the transcript search in full screen, otherwise one character right.
+    Find,
+    /// Ctrl+Shift+G: the previous search match while searching, otherwise the external editor.
+    FindPrevious,
     /// Arm jump-to-char: the next printable key moves the cursor to it.
     ArmJump {
         forward: bool,
@@ -62,6 +69,8 @@ pub enum Action {
     SelectModel,
     /// Put the last answer on the system clipboard.
     CopyMessage,
+    /// Ctrl+S: make the highlighted model or thinking level the default for later sessions.
+    SaveDefault,
     /// Take an image off the clipboard and attach it to the next prompt.
     PasteImage,
     /// Drop to the shell, leaving the interface to be resumed.
@@ -166,12 +175,13 @@ fn key_action(key: &KeyEvent) -> Action {
         KeyCode::PageDown => Action::PageDown,
 
         KeyCode::Home => Action::MoveLineStart,
-        KeyCode::End => Action::MoveLineEnd,
+        KeyCode::End => Action::JumpToLatest,
 
         KeyCode::Esc => Action::Cancel,
 
         KeyCode::Char(']') if control && alt => Action::ArmJump { forward: false },
         KeyCode::Char('p' | 'P') if control && shift => Action::CycleModel { forward: false },
+        KeyCode::Char('g' | 'G') if control && shift => Action::FindPrevious,
         KeyCode::Char(character) if control => control_action(character),
         KeyCode::Char(character) if alt => alt_action(character),
         KeyCode::Char(character) => Action::Insert(character.to_string()),
@@ -191,7 +201,7 @@ fn control_action(character: char) -> Action {
         'a' => Action::MoveLineStart,
         'e' => Action::MoveLineEnd,
         'b' => Action::MoveLeft,
-        'f' => Action::MoveRight,
+        'f' => Action::Find,
         'w' => Action::DeleteWordBefore,
         'u' => Action::DeleteToLineStart,
         'k' => Action::DeleteToLineEnd,
@@ -205,6 +215,7 @@ fn control_action(character: char) -> Action {
         ']' => Action::ArmJump { forward: true },
         'p' => Action::CycleModel { forward: true },
         'x' => Action::CopyMessage,
+        's' => Action::SaveDefault,
         'v' => Action::PasteImage,
         'z' => Action::Suspend,
 
@@ -400,6 +411,49 @@ mod tests {
         assert_eq!(
             action_for(&key(KeyCode::Home, KeyModifiers::CONTROL)),
             Action::MoveLineStart
+        );
+    }
+
+    #[test]
+    fn control_s_saves_a_default() {
+        assert_eq!(
+            action_for(&key(KeyCode::Char('s'), KeyModifiers::CONTROL)),
+            Action::SaveDefault
+        );
+    }
+
+    #[test]
+    fn control_f_finds_and_control_shift_g_steps_back() {
+        assert_eq!(
+            action_for(&key(KeyCode::Char('f'), KeyModifiers::CONTROL)),
+            Action::Find
+        );
+        assert_eq!(
+            action_for(&key(
+                KeyCode::Char('F'),
+                KeyModifiers::CONTROL | KeyModifiers::SHIFT
+            )),
+            Action::Find
+        );
+        assert_eq!(
+            action_for(&key(
+                KeyCode::Char('G'),
+                KeyModifiers::CONTROL | KeyModifiers::SHIFT
+            )),
+            Action::FindPrevious
+        );
+        assert_eq!(
+            action_for(&key(KeyCode::Char('g'), KeyModifiers::CONTROL)),
+            Action::ExternalEditor
+        );
+    }
+
+    #[test]
+    fn end_asks_for_the_latest_message_and_control_e_for_the_line_end() {
+        assert_eq!(action_for(&plain(KeyCode::End)), Action::JumpToLatest);
+        assert_eq!(
+            action_for(&key(KeyCode::Char('e'), KeyModifiers::CONTROL)),
+            Action::MoveLineEnd
         );
     }
 

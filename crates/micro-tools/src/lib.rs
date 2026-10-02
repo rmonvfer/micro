@@ -7,6 +7,7 @@ mod docs;
 mod files;
 mod fuzzy;
 mod guard;
+pub mod images;
 mod mutations;
 mod search;
 

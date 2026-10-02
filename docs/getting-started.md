@@ -79,6 +79,12 @@ micro -C /path/to/project "run the tests and summarize the failures"
 
 The default sandbox policy allows writes inside the workspace and blocks network access. Built-in file tools keep `.git` and `.micro` read-only; command-level protected-path enforcement is platform-specific. See [Security model](security.md) before changing the policy.
 
+### Read the transcript
+
+In fullscreen mode, Page Up and Page Down scroll the transcript, and a "Jump to latest message" label appears while it is scrolled up; click it or press `end` to follow new output again. `ctrl+f` opens a search box at the top right: type to find text in the rendered transcript, press `enter` or `ctrl+g` for the next match and `shift+enter` or `ctrl+shift+g` for the previous one, and `escape` to close it. In regular mode `ctrl+f` keeps moving the cursor right.
+
+Dragging the mouse selects text, a double click selects a word, and a triple click selects a paragraph. Selections are copied as soon as they are made unless `copy_on_select` is off; `ctrl+x` copies the active selection, or the last answer when nothing is selected.
+
 ## Run without the interface
 
 `--print` runs the prompt to completion and exits:
@@ -118,6 +124,13 @@ micro -m anthropic/claude-sonnet-5 "review this patch"
 ```
 
 Model queries accept an exact ID, a provider-qualified ID, an alias, or a unique partial match. micro prints the candidates when a query is ambiguous.
+
+Inside the interface, `/model` and `/thinking` change the model and reasoning effort for the current session. Press `ctrl+s` on a model or level in their pickers, or put `--default` before the argument, to also save it as the default for new sessions:
+
+```text
+/model --default anthropic/claude-sonnet-5
+/thinking --default high
+```
 
 ## Resume work
 

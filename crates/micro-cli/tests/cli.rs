@@ -592,6 +592,79 @@ fn a_session_can_be_deleted() {
 }
 
 #[test]
+fn default_tools_from_the_user_and_the_project_choose_the_built_in_tools() {
+    let api = FakeApi::start([Reply::text("done")]);
+    let fixture = Fixture::new(&api);
+    std::fs::write(
+        fixture.home().join("config.json"),
+        r#"{"default_project_trust":"always","default_tools":["-bash"]}"#,
+    )
+    .unwrap();
+    fixture.write(".micro/settings.json", r#"{"default_tools":["-grep"]}"#);
+
+    fixture
+        .print(&["-m", "test", "hello"])
+        .expect_success("micro --print");
+
+    let request = api.request(0);
+    let offered: Vec<&str> = request["tools"]
+        .as_array()
+        .expect("tools were sent")
+        .iter()
+        .filter_map(|tool| tool["function"]["name"].as_str())
+        .collect();
+    assert!(offered.contains(&"read"), "{offered:?}");
+    assert!(!offered.contains(&"bash"), "{offered:?}");
+    assert!(!offered.contains(&"grep"), "{offered:?}");
+}
+
+#[test]
+fn leaving_before_anything_is_said_leaves_no_session() {
+    let api = FakeApi::start([]);
+    let fixture = Fixture::new(&api);
+    fixture
+        .print(&["-m", "test", "/name never used"])
+        .expect_success("micro --print /name");
+
+    assert!(fixture.session_logs().is_empty(), "no session was written");
+}
+
+#[test]
+fn a_chosen_session_id_is_started_then_carried_on() {
+    let api = FakeApi::start([Reply::text("first answer"), Reply::text("second answer")]);
+    let fixture = Fixture::new(&api);
+    let started = fixture.print(&["-m", "test", "--session-id", "nightly", "first question"]);
+    started.expect_success("micro --session-id on a fresh id");
+    assert!(
+        started.stderr.contains("starting one under it"),
+        "{}",
+        started.stderr
+    );
+
+    fixture
+        .print(&["-m", "test", "--session-id", "nightly", "second question"])
+        .expect_success("micro --session-id on a known id");
+
+    let sent = serde_json::to_string(&api.request(1)).unwrap();
+    assert!(sent.contains("first question"), "{sent}");
+    let listed = Output::run(fixture.micro().args(["sessions", "list"]));
+    assert!(listed.stdout.contains("nightly"), "{}", listed.stdout);
+    assert_eq!(fixture.session_logs().len(), 1);
+}
+
+#[test]
+fn a_session_can_be_named_from_the_command_line() {
+    let api = FakeApi::start([Reply::text("done")]);
+    let fixture = Fixture::new(&api);
+    fixture
+        .print(&["-m", "test", "-n", "Release prep", "hello"])
+        .expect_success("micro --name");
+
+    let listed = Output::run(fixture.micro().args(["sessions", "list"]));
+    assert!(listed.stdout.contains("Release prep"), "{}", listed.stdout);
+}
+
+#[test]
 fn sessions_are_scoped_to_a_workspace_and_follow_the_cwd_flag() {
     let api = FakeApi::start([Reply::text("done")]);
     let fixture = Fixture::new(&api);
@@ -1225,10 +1298,10 @@ export default (micro) => {{
     );
 }
 
-/// An extension generates images with a provider's credential, without ever seeing it, and what
-/// the request cost is billed to the session.
+/// An extension generates images with a provider's credential, without ever seeing it, and learns
+/// what the request cost.
 #[test]
-fn an_extension_generates_images_billed_to_the_session() {
+fn an_extension_generates_images_with_a_providers_credential() {
     if which_bun().is_none() {
         return;
     }
@@ -1298,13 +1371,6 @@ export default (micro) => {{
         .headers(0)
         .get("authorization")
         .is_some_and(|authorization| authorization.contains("sk-painter")));
-
-    let recorded = written_under(&fixture.home());
-    assert!(
-        recorded.contains(r#""type":"model_call""#)
-            && recorded.contains(r#""operation":"generate_images""#),
-        "the call is billed in the ledger"
-    );
 }
 
 /// An extension can refuse a tool call, and the model is told why instead of getting the tool's
@@ -1351,6 +1417,38 @@ export default (micro) => {
                 .is_some_and(|text| text.contains("no writing to environment files"))
         });
     assert!(refused, "the reason reached the model: {second:#?}");
+}
+
+/// A block that asks to terminate ends the run once every call in the batch was stopped that way,
+/// so the model is not asked again.
+#[test]
+fn an_extension_can_end_the_run_by_blocking_every_call() {
+    if which_bun().is_none() {
+        return;
+    }
+    let api = FakeApi::start([
+        Reply::tool_call(
+            "call_1",
+            "write",
+            json!({ "path": "secrets.env", "content": "x" }),
+        ),
+        Reply::text("never asked"),
+    ]);
+    let fixture = Fixture::new(&api);
+    fixture.write(
+        ".micro/extensions/guard.ts",
+        r#"
+export default (micro) => {
+    micro.on("tool_call", () => ({ block: true, reason: "stopping here", terminate: true }));
+};
+"#,
+    );
+
+    let output = fixture.print(&["-m", "test", "write the file"]);
+    assert!(output.status.success(), "{}", output.stderr);
+
+    assert!(!fixture.exists("secrets.env"), "the call did not run");
+    assert_eq!(api.request_count(), 1, "the model was not asked again");
 }
 
 /// An extension can rewrite what a tool returned before the model reads it.
@@ -1465,7 +1563,7 @@ fn an_extension_hears_the_moments_the_host_owns() {
     if which_bun().is_none() {
         return;
     }
-    let api = FakeApi::start([]);
+    let api = FakeApi::start([Reply::text("hello back")]);
     let fixture = Fixture::new(&api);
     fixture.write(
         ".micro/extensions/hostwatch.ts",
@@ -1483,7 +1581,10 @@ export default (micro) => {
 "#,
     );
 
-    let output = fixture.print(&["-m", "test", "/name the renamed one"]);
+    let greeted = fixture.print(&["-m", "test", "hello"]);
+    assert!(greeted.status.success(), "{}", greeted.stderr);
+
+    let output = fixture.print(&["-m", "test", "--continue", "/name the renamed one"]);
     assert!(output.status.success(), "{}", output.stderr);
 
     let report = fixture.print(&["-m", "test", "--continue", "/heard-host-events"]);

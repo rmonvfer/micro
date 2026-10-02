@@ -173,14 +173,8 @@ async fn run(
         .await
         .map_err(|error| format!("{provider} request failed: {error}"))?;
 
-    let status = response.status();
-    if !status.is_success() {
-        let body = response.text().await.unwrap_or_default();
-        return Err(format!(
-            "{provider} returned {}: {}",
-            status.as_u16(),
-            body.trim()
-        ));
+    if !response.status().is_success() {
+        return Err(crate::retry::refusal(&provider, response).await);
     }
 
     let mut state = Accumulator::new(&provider, &model);

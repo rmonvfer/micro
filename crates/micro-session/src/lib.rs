@@ -25,11 +25,14 @@ use micro_types::StopReason;
 use micro_types::ToolDefinition;
 use micro_types::Usage;
 use micro_types::SCHEMA_VERSION;
+use std::collections::HashSet;
 use std::io::ErrorKind;
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt as _;
 use std::path::Path;
 use std::path::PathBuf;
+use std::sync::Mutex;
+use std::sync::OnceLock;
 use std::time::SystemTime;
 use std::time::UNIX_EPOCH;
 use tokio::fs::File;
@@ -41,6 +44,13 @@ pub const SESSIONS_DIR: &str = "sessions";
 
 /// How many ids to try when several sessions are created within one millisecond.
 const MAX_ID_ATTEMPTS: u32 = 1000;
+
+/// Logs this process has promised to sessions that have not written them yet, so two sessions
+/// started within one millisecond are not handed the same id.
+fn promised_logs() -> &'static Mutex<HashSet<PathBuf>> {
+    static PROMISED: OnceLock<Mutex<HashSet<PathBuf>>> = OnceLock::new();
+    PROMISED.get_or_init(Mutex::default)
+}
 
 /// A directory of sessions.
 #[derive(Debug, Clone)]
@@ -63,31 +73,61 @@ impl SessionStore {
         &self.root
     }
 
-    /// Starts a session and claims its id.
+    /// Starts a session under a fresh id.
+    ///
+    /// Nothing is written until the first message is appended or the session is saved, so a
+    /// session left before anything was said leaves no file behind.
     pub async fn create(
         &self,
         workspace: impl AsRef<Path>,
         model_id: impl Into<String>,
     ) -> Result<Session> {
-        create_private_dir(&self.root).await?;
+        let id = self.claim_id().await?;
+        Ok(self
+            .unwritten(id, workspace.as_ref(), model_id.into())
+            .await)
+    }
 
-        let (id, log) = self.claim_id().await?;
-        let meta = SessionMeta::new(
-            id.clone(),
-            canonical(workspace.as_ref()).await,
-            model_id.into(),
-        );
-        let session = Session {
-            log,
+    /// Starts a session under an id the caller chose, refusing one already taken.
+    pub async fn create_with_id(
+        &self,
+        id: &str,
+        workspace: impl AsRef<Path>,
+        model_id: impl Into<String>,
+    ) -> Result<Session> {
+        validate_id(id)?;
+        if !self.promise(id).await? {
+            return Err(SessionError::io(
+                self.log_path(id),
+                std::io::Error::new(
+                    ErrorKind::AlreadyExists,
+                    format!("a session with id {id} already exists"),
+                ),
+            ));
+        }
+        Ok(self
+            .unwritten(id.to_string(), workspace.as_ref(), model_id.into())
+            .await)
+    }
+
+    /// Whether a session with this id has been written to the store.
+    pub async fn exists(&self, id: &str) -> Result<bool> {
+        validate_id(id)?;
+        path_exists(&self.log_path(id)).await
+    }
+
+    async fn unwritten(&self, id: String, workspace: &Path, model_id: String) -> Session {
+        let meta = SessionMeta::new(id.clone(), canonical(workspace).await, model_id);
+        Session {
+            log: None,
+            unwritten_lines: Vec::new(),
             log_path: self.log_path(&id),
             meta_path: self.meta_path(&id),
             blobs_path: self.blobs_path(&id),
             meta,
             tree: Tree::new(),
             next_seq: 1,
-        };
-        session.write_meta().await?;
-        Ok(session)
+        }
     }
 
     /// Reopens a session: its history, a handle ready for more appends, and a count of unreadable
@@ -103,7 +143,8 @@ impl SessionStore {
         let meta = self.meta_for(id).await?;
         let log = self.open_log(id).await?;
         let mut session = Session {
-            log,
+            log: Some(log),
+            unwritten_lines: Vec::new(),
             log_path: self.log_path(id),
             meta_path: self.meta_path(id),
             blobs_path: self.blobs_path(id),
@@ -502,7 +543,7 @@ impl SessionStore {
     }
 
     /// Takes the first free id at the current millisecond.
-    async fn claim_id(&self) -> Result<(String, File)> {
+    async fn claim_id(&self) -> Result<String> {
         let stamp = micro_types::now_ms();
         for attempt in 0..MAX_ID_ATTEMPTS {
             let id = match attempt {
@@ -510,19 +551,8 @@ impl SessionStore {
 
                 _ => format!("{stamp}-{attempt:03}"),
             };
-            let path = self.log_path(&id);
-            match open_private_file(&path, |options| {
-                options.create_new(true).append(true);
-            })
-            .await
-            {
-                Ok(log) => return Ok((id, log)),
-                Err(SessionError::Io { source, .. })
-                    if source.kind() == ErrorKind::AlreadyExists =>
-                {
-                    continue
-                }
-                Err(error) => return Err(error),
+            if self.promise(&id).await? {
+                return Ok(id);
             }
         }
         Err(SessionError::io(
@@ -532,6 +562,19 @@ impl SessionStore {
                 format!("no free session id at {stamp}"),
             ),
         ))
+    }
+
+    /// Reserve an id for a session not yet written, when neither the store nor this process has
+    /// given it out.
+    async fn promise(&self, id: &str) -> Result<bool> {
+        let log_path = self.log_path(id);
+        if path_exists(&log_path).await? || path_exists(&self.meta_path(id)).await? {
+            return Ok(false);
+        }
+        let mut promised = promised_logs()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        Ok(promised.insert(log_path))
     }
 
     fn log_path(&self, id: &str) -> PathBuf {
@@ -576,7 +619,10 @@ pub struct ReconstructedTurn {
 /// An open session.
 #[derive(Debug)]
 pub struct Session {
-    log: File,
+    /// The open log, once the session has been written to the store.
+    log: Option<File>,
+    /// Lines recorded before the log was written, kept until the first message writes them.
+    unwritten_lines: Vec<u8>,
     log_path: PathBuf,
     meta_path: PathBuf,
     /// Where content a ledger event names by hash is kept.
@@ -738,14 +784,51 @@ impl Session {
         let mut line = serde_json::to_vec(value)
             .map_err(|source| SessionError::json(&self.log_path, source))?;
         line.push(b'\n');
-        self.log
-            .write_all(&line)
+        self.write_bytes(&line).await
+    }
+
+    /// Append bytes to the log, or hold them until the log is written.
+    async fn write_bytes(&mut self, bytes: &[u8]) -> Result<()> {
+        let Some(log) = self.log.as_mut() else {
+            self.unwritten_lines.extend_from_slice(bytes);
+            return Ok(());
+        };
+        log.write_all(bytes)
             .await
             .map_err(|source| SessionError::io(&self.log_path, source))?;
-        self.log
-            .flush()
+        log.flush()
             .await
             .map_err(|source| SessionError::io(&self.log_path, source))
+    }
+
+    /// Whether the session's log has been written to the store.
+    pub fn is_saved(&self) -> bool {
+        self.log.is_some()
+    }
+
+    /// Write the session to the store now, with whatever it has recorded so far.
+    pub async fn save(&mut self) -> Result<()> {
+        if self.log.is_some() {
+            return Ok(());
+        }
+        if let Some(root) = self.log_path.parent() {
+            create_private_dir(root).await?;
+        }
+        let log = open_private_file(&self.log_path, |options| {
+            options.create_new(true).append(true);
+        })
+        .await?;
+        self.log = Some(log);
+        promised_logs()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .remove(&self.log_path);
+
+        let held = std::mem::take(&mut self.unwritten_lines);
+        if !held.is_empty() {
+            self.write_bytes(&held).await?;
+        }
+        self.write_meta().await
     }
 
     /// The JSONL log backing this session.
@@ -763,6 +846,7 @@ impl Session {
             return Ok(());
         }
 
+        self.save().await?;
         let mut lines = Vec::new();
         for message in messages {
             let entry = self.tree.push(message.clone());
@@ -770,14 +854,7 @@ impl Session {
                 .map_err(|source| SessionError::json(&self.log_path, source))?;
             lines.push(b'\n');
         }
-        self.log
-            .write_all(&lines)
-            .await
-            .map_err(|source| SessionError::io(&self.log_path, source))?;
-        self.log
-            .flush()
-            .await
-            .map_err(|source| SessionError::io(&self.log_path, source))?;
+        self.write_bytes(&lines).await?;
 
         for message in messages {
             self.meta.record(message);
@@ -785,19 +862,17 @@ impl Session {
         self.write_meta().await
     }
 
+    /// Publish the metadata once the session is in the store; until then it is kept in memory and
+    /// written with the log.
     async fn write_meta(&self) -> Result<()> {
+        if self.log.is_none() {
+            return Ok(());
+        }
         write_meta(&self.meta_path, &self.meta).await
     }
 
     async fn seal_partial_line(&mut self) -> Result<()> {
-        self.log
-            .write_all(b"\n")
-            .await
-            .map_err(|source| SessionError::io(&self.log_path, source))?;
-        self.log
-            .flush()
-            .await
-            .map_err(|source| SessionError::io(&self.log_path, source))
+        self.write_bytes(b"\n").await
     }
 }
 
@@ -1222,9 +1297,12 @@ mod tests {
     #[tokio::test]
     async fn listing_returns_the_newest_session_first() {
         let store = SessionStore::new(scratch("list-order"));
-        let first = store.create("/work", "opus").await.unwrap();
-        let second = store.create("/work", "opus").await.unwrap();
-        let third = store.create("/work", "opus").await.unwrap();
+        let mut first = store.create("/work", "opus").await.unwrap();
+        first.save().await.unwrap();
+        let mut second = store.create("/work", "opus").await.unwrap();
+        second.save().await.unwrap();
+        let mut third = store.create("/work", "opus").await.unwrap();
+        third.save().await.unwrap();
 
         let listed: Vec<String> = store
             .list()
@@ -1252,8 +1330,10 @@ mod tests {
         std::fs::create_dir_all(&beta).unwrap();
 
         let store = SessionStore::new(root.join("sessions"));
-        let in_alpha = store.create(&alpha, "opus").await.unwrap();
-        let _in_beta = store.create(&beta, "opus").await.unwrap();
+        let mut in_alpha = store.create(&alpha, "opus").await.unwrap();
+        in_alpha.save().await.unwrap();
+        let mut in_beta = store.create(&beta, "opus").await.unwrap();
+        in_beta.save().await.unwrap();
 
         let scoped = store.list_in(&alpha).await.unwrap();
         assert_eq!(scoped.len(), 1);
@@ -1359,7 +1439,8 @@ mod tests {
     #[tokio::test]
     async fn deleting_removes_the_log_and_its_metadata() {
         let store = SessionStore::new(scratch("delete"));
-        let session = store.create("/work", "opus").await.unwrap();
+        let mut session = store.create("/work", "opus").await.unwrap();
+        session.save().await.unwrap();
         let id = session.id().to_string();
         let log_path = session.path().to_path_buf();
 
@@ -1376,7 +1457,8 @@ mod tests {
     #[tokio::test]
     async fn deleting_keeps_the_session_retryable_when_blob_cleanup_fails() {
         let store = SessionStore::new(scratch("delete-blob-error"));
-        let session = store.create("/work", "opus").await.unwrap();
+        let mut session = store.create("/work", "opus").await.unwrap();
+        session.save().await.unwrap();
         let id = session.id().to_string();
         let log_path = session.path().to_path_buf();
         let meta_path = store.meta_path(&id);
@@ -1398,7 +1480,8 @@ mod tests {
     async fn session_files_are_private() {
         let root = scratch("private-permissions").join("sessions");
         let store = SessionStore::new(&root);
-        let session = store.create("/work", "opus").await.unwrap();
+        let mut session = store.create("/work", "opus").await.unwrap();
+        session.save().await.unwrap();
         session.store_blob(b"secret").await.unwrap();
 
         let mode = |path: &Path| std::fs::metadata(path).unwrap().permissions().mode() & 0o777;
@@ -1436,7 +1519,66 @@ mod tests {
         let mut session = store.create("/work", "opus").await.unwrap();
         session.append_all(&[]).await.unwrap();
         assert_eq!(session.meta().message_count, 0);
-        assert_eq!(std::fs::read(session.path()).unwrap().len(), 0);
+        assert!(!session.path().exists());
+    }
+
+    #[tokio::test]
+    async fn a_session_reaches_the_store_with_its_first_message() {
+        let store = SessionStore::new(scratch("first-message"));
+        let mut session = store.create("/work", "opus").await.unwrap();
+        let id = session.id().to_string();
+        session.rename("named early").await.unwrap();
+        session
+            .append_event(LedgerEvent::Marker {
+                data: serde_json::json!({ "before": "anything was said" }),
+            })
+            .await
+            .unwrap();
+
+        assert!(!session.is_saved());
+        assert!(!session.path().exists());
+        assert!(!store.meta_path(&id).exists());
+        assert!(store.list().await.unwrap().is_empty());
+
+        session.append(&Message::user("hello")).await.unwrap();
+        assert!(session.is_saved());
+
+        let loaded = store.load(&id).await.unwrap();
+        assert_eq!(loaded.messages.len(), 1);
+        assert_eq!(loaded.session.events().len(), 1);
+        assert_eq!(loaded.session.meta().title, "named early");
+    }
+
+    #[tokio::test]
+    async fn unwritten_sessions_started_together_get_distinct_ids() {
+        let store = SessionStore::new(scratch("distinct-unwritten"));
+        let mut ids = HashSet::new();
+        for _ in 0..20 {
+            let session = store.create("/work", "opus").await.unwrap();
+            assert!(ids.insert(session.id().to_string()));
+        }
+    }
+
+    #[tokio::test]
+    async fn a_chosen_id_is_used_once() {
+        let store = SessionStore::new(scratch("chosen-id"));
+        let mut session = store
+            .create_with_id("nightly-build", "/work", "opus")
+            .await
+            .unwrap();
+        assert_eq!(session.id(), "nightly-build");
+        assert!(!store.exists("nightly-build").await.unwrap());
+        session.append(&Message::user("go")).await.unwrap();
+        assert!(store.exists("nightly-build").await.unwrap());
+
+        assert!(store
+            .create_with_id("nightly-build", "/work", "opus")
+            .await
+            .is_err());
+        assert!(matches!(
+            store.create_with_id("../out", "/work", "opus").await,
+            Err(SessionError::InvalidId(_))
+        ));
     }
 
     /// A ledger line is written between the messages and read back as what it was, and the
@@ -1474,6 +1616,7 @@ mod tests {
     async fn sequence_numbers_carry_on_after_a_reload() {
         let store = SessionStore::new(scratch("ledger-seq"));
         let mut session = store.create("/work", "opus").await.unwrap();
+        session.save().await.unwrap();
         let id = session.id().to_string();
 
         for _ in 0..3 {

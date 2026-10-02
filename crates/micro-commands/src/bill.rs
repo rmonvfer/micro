@@ -185,6 +185,13 @@ pub async fn bill(
                 reached = reached.max(*turn);
                 usages.push((*turn, *usage, provider.clone(), model.clone()));
             }
+            // Keeping a turn's cache warm is billed at that turn's rates, beside it.
+            LedgerEvent::CacheWarm {
+                turn,
+                usage,
+                provider,
+                model,
+            } => usages.push((*turn, *usage, provider.clone(), model.clone())),
             LedgerEvent::Compaction {
                 cost,
                 message_entry_ids,
@@ -1144,6 +1151,33 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn keeping_a_cache_warm_is_part_of_the_bill() {
+        let harness = Harness::new("bill-cache-warm");
+        let mut session = harness
+            .sessions
+            .create(&harness.workspace, "openai/test-model")
+            .await
+            .unwrap();
+        let turn = usage(1_000, 200, 0);
+        let warm = usage(0, 1, 1_000);
+        record_turn(&mut session, 1, turn).await;
+        session
+            .append_event(LedgerEvent::CacheWarm {
+                turn: 1,
+                usage: warm,
+                provider: "openai".into(),
+                model: "test-model".into(),
+            })
+            .await
+            .unwrap();
+        let id = session.id().to_string();
+        drop(session);
+
+        let billed = bill(&harness.sessions, &catalog(), &id).await.unwrap();
+        assert!((billed.total - (spent(turn) + spent(warm))).abs() < 1e-12);
+    }
+
+    #[tokio::test]
     async fn recorded_prices_survive_catalog_changes() {
         let harness = Harness::new("bill-recorded-prices");
         let mut session = harness
@@ -1202,6 +1236,7 @@ mod tests {
             .unwrap();
         let tools_blob = session.store_blob(b"[]").await.unwrap();
         let reported = usage(1_000, 200, 0);
+        session.append(&Message::user("route this")).await.unwrap();
         session
             .append_event(LedgerEvent::TurnRequest {
                 turn: 1,

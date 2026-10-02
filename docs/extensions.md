@@ -123,6 +123,16 @@ Common lifecycle events include:
 
 An exception in one handler is reported without preventing other handlers from running.
 
+A `tool_call` handler runs before a tool does. Returning `{ block: true, reason }` stops the call, and the model reads the reason in place of the tool's output. Adding `terminate: true` also ends the run when every call in that batch was blocked this way, so micro does not ask the model again; a batch where any call ran or was blocked without it continues as usual.
+
+```ts
+micro.on("tool_call", (event) => {
+  if (event.toolName === "bash") {
+    return { block: true, reason: "Shell access is off for this task", terminate: true };
+  }
+});
+```
+
 `provider_stream_event` fires for each provider stream event as micro parsed it, before micro reads it into its own events: an SSE frame's JSON, or a Bedrock event keyed by its type. The event names the `provider`, `api` and `model`, and `event.data` holds the parsed value, which can carry fields micro does not read, such as a gateway's per-request cost. It is not the original bytes. The event is notification-only, arrives in stream order, and is not persisted; micro forwards them only when an extension listens.
 
 ## Models

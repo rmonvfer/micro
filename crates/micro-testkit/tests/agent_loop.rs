@@ -919,6 +919,82 @@ async fn a_hook_can_refuse_a_call() {
     );
 }
 
+/// When every call in a batch is stopped with terminate semantics, the run ends without asking
+/// the model again.
+#[tokio::test]
+async fn a_batch_every_hook_terminates_ends_the_run() {
+    let provider = FakeProvider::builder()
+        .turn(
+            Turn::new()
+                .with_tool_call("c1", "read", json!({ "path": "a.txt" }))
+                .with_tool_call("c2", "read", json!({ "path": "b.txt" })),
+        )
+        .turn(Turn::text("never asked"))
+        .build();
+    let read = FakeTool::new("read").returning("contents");
+
+    let mut agent = agent(&provider, vec![Arc::new(read.clone())]).with_hooks(Arc::new(Deciding(
+        micro_agent::ToolDecision::Terminate("stop here".to_string()),
+    )));
+
+    let (messages, _) = run_agent(&mut agent, Message::user("read both")).await;
+
+    assert_eq!(read.call_count(), 0, "neither call ran");
+    assert_eq!(provider.call_count(), 1, "the model was not asked again");
+    let refusals = messages
+        .iter()
+        .filter(|message| tool_result_text(message).contains("stop here"))
+        .count();
+    assert_eq!(refusals, 2, "both calls still answered with the reason");
+}
+
+/// One call that is merely refused keeps the batch going, so the model hears about it.
+#[tokio::test]
+async fn a_batch_with_a_plain_refusal_asks_the_model_again() {
+    let provider = FakeProvider::builder()
+        .turn(
+            Turn::new()
+                .with_tool_call("c1", "read", json!({ "path": "a.txt" }))
+                .with_tool_call("c2", "write", json!({ "path": "b.txt" })),
+        )
+        .turn(Turn::text("understood"))
+        .build();
+    let read = FakeTool::new("read").returning("contents");
+    let write = FakeTool::new("write").returning("written");
+
+    let mut agent = agent(
+        &provider,
+        vec![Arc::new(read.clone()), Arc::new(write.clone())],
+    )
+    .with_hooks(Arc::new(ByTool));
+
+    run_agent(&mut agent, Message::user("read and write")).await;
+
+    assert_eq!(
+        provider.call_count(),
+        2,
+        "the model heard about the refusal"
+    );
+}
+
+/// Terminates reads and plainly refuses everything else.
+struct ByTool;
+
+#[async_trait::async_trait]
+impl micro_agent::Hooks for ByTool {
+    async fn before_tool(
+        &self,
+        _id: &str,
+        name: &str,
+        _arguments: &serde_json::Value,
+    ) -> micro_agent::ToolDecision {
+        match name {
+            "read" => micro_agent::ToolDecision::Terminate("no reading".to_string()),
+            _ => micro_agent::ToolDecision::Refuse("no writing".to_string()),
+        }
+    }
+}
+
 /// Doing nothing is the default, and leaves the call exactly as the model wrote it.
 #[tokio::test]
 async fn a_hook_that_proceeds_changes_nothing() {

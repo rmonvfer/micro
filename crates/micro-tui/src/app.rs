@@ -323,6 +323,8 @@ pub struct App {
     viewport: usize,
     /// The columns content wraps to, and the rows the whole frame has.
     width: usize,
+    /// The columns the transcript's text wraps to.
+    transcript_width: usize,
     rows: u16,
     cache: Cache,
     /// Set by jump-to-char: the next printable key moves the cursor to it.
@@ -330,6 +332,8 @@ pub struct App {
     /// Answers taken in so far, so a cache notice knows there was a cache to read.
     answers: usize,
     hyperlinks: bool,
+    /// Whether the terminal shows 24-bit color, or needs every theme brought down to its palette.
+    true_color: bool,
     images: Option<ImageProtocol>,
     /// Where the images go on the frame just laid out, for the terminal to draw once the rows they
     /// sit on have landed.
@@ -396,6 +400,15 @@ pub struct App {
     pending_completion_request: Option<CompletionRequest>,
     /// Mouse text selection in screen coordinates.
     selection: Option<crate::render::selection::Selection>,
+    /// The last press of the mouse button: when, where, and how many presses in a row landed there.
+    last_click: Option<(std::time::Instant, (u16, u16), u8)>,
+    /// Where the jump-to-latest label sits on screen while the conversation is scrolled up.
+    jump_label: Option<ratatui::layout::Rect>,
+    /// The open transcript search, holding the keyboard for its query.
+    search: Option<crate::search::Search>,
+    /// Counts every time the transcript's rows are laid out again, so a search knows its matches
+    /// are stale.
+    lines_version: u64,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -567,7 +580,7 @@ fn git_branch(workspace: &std::path::Path) -> Option<String> {
 
 impl App {
     pub fn new(history: &[Message], options: TuiOptions) -> Self {
-        let capabilities = crate::capabilities::detect();
+        let capabilities = crate::capabilities::detect(&options.settings.terminal);
         let workspace = options.cwd;
         let branch = git_branch(&workspace);
         let notice = options.notice;
@@ -579,7 +592,10 @@ impl App {
             transcript,
             extension_commands,
             editor: Editor::new(),
-            theme: options.theme.unwrap_or_else(Theme::dark),
+            theme: options
+                .theme
+                .unwrap_or_else(Theme::dark)
+                .for_color_depth(capabilities.true_color),
             show_thinking: !options.settings.hide_thinking,
             thinking: options.thinking,
             context_window: options.context_window,
@@ -614,11 +630,13 @@ impl App {
             scroll: 0,
             viewport: 0,
             width: 80,
+            transcript_width: 80,
             rows: 24,
             cache: Cache::default(),
             jump: None,
             answers: 0,
             hyperlinks: capabilities.hyperlinks,
+            true_color: capabilities.true_color,
 
             images: match options.settings.show_images {
                 true => capabilities.images,
@@ -651,6 +669,10 @@ impl App {
             pending_suggestion_request: None,
             pending_completion_request: None,
             selection: None,
+            last_click: None,
+            jump_label: None,
+            search: None,
+            lines_version: 0,
         };
 
         if let Some(notice) = notice {
@@ -710,8 +732,20 @@ impl App {
         self.tui_mode = mode;
     }
 
+    /// Remember which theme was asked for, so it is rebuilt the same way when the terminal changes.
+    pub fn set_theme_setting(&mut self, setting: impl Into<String>) {
+        self.settings.theme = setting.into();
+    }
+
+    /// Take a theme rebuilt from the terminal's colors, repainting only when it changed.
+    pub fn refresh_theme(&mut self, theme: Theme) {
+        if theme.for_color_depth(self.true_color) != self.theme {
+            self.set_theme(theme);
+        }
+    }
+
     pub fn set_theme(&mut self, theme: Theme) {
-        self.theme = theme;
+        self.theme = theme.for_color_depth(self.true_color);
         self.cache.shape = None;
         self.refresh_inspection_body();
     }
@@ -738,11 +772,18 @@ impl App {
         self.attachments.len()
     }
 
-    /// The frame the next repaint will be laid out in.
+    /// The frame the next repaint will be laid out in. The transcript wraps to the same width
+    /// until [`App::set_transcript_width`] says otherwise.
     pub fn set_frame(&mut self, width: usize, rows: u16) {
         self.width = width.max(1);
+        self.transcript_width = self.width;
         self.rows = rows;
         self.refresh_inspection_body();
+    }
+
+    /// The columns the transcript's text wraps to, inside its padding.
+    pub fn set_transcript_width(&mut self, width: usize) {
+        self.transcript_width = width.max(1);
     }
 
     /// How many rows the transcript has to draw in.
@@ -825,10 +866,40 @@ impl App {
         self.selection.as_ref()
     }
 
-    pub fn clear_copy_pending(&mut self) {
-        if let Some(selection) = self.selection.as_mut() {
-            selection.copy_pending = false;
+    /// Put the selected text on the clipboard, once the frame it was read from has been laid out.
+    pub fn copy_selection(&mut self, text: &str) {
+        let Some(request) = self
+            .selection
+            .as_mut()
+            .and_then(|selection| selection.copy_pending.take())
+        else {
+            return;
+        };
+        if text.is_empty() {
+            return;
         }
+        let copied = clipboard::write_text(text);
+        if request == crate::render::selection::CopyRequest::Asked {
+            match copied {
+                true => self.notice("Copied selection to clipboard", MessageKind::Info),
+                false => self.notice("No clipboard on this system.", MessageKind::Error),
+            }
+        }
+    }
+
+    /// How many presses in a row have landed at this point, counting this one.
+    fn count_click(&mut self, at: (u16, u16)) -> u8 {
+        let now = std::time::Instant::now();
+        let count = match self.last_click {
+            Some((then, place, count))
+                if place == at && now.duration_since(then) <= MULTI_CLICK_INTERVAL =>
+            {
+                count % 3 + 1
+            }
+            _ => 1,
+        };
+        self.last_click = Some((now, at, count));
+        count
     }
 
     /// Whether something is holding the keyboard.
@@ -1609,6 +1680,11 @@ impl App {
         });
     }
 
+    /// Close the prompt without taking what was typed.
+    pub fn dismiss_key_prompt(&mut self) {
+        self.key_prompt = None;
+    }
+
     /// The credential, once the user has finished typing it.
     pub fn take_key_prompt(&mut self) -> Option<(String, String)> {
         let finished = self
@@ -1808,7 +1884,7 @@ impl App {
     /// nothing that affects them has changed.
     pub fn refresh_lines(&mut self) {
         let shape = Shape {
-            width: self.width,
+            width: self.transcript_width,
             show_thinking: self.show_thinking,
             focus: self.focus,
         };
@@ -1854,7 +1930,7 @@ impl App {
                         self.settings.image_width_cells as usize,
                         self.settings.auto_resize_images,
                     )
-                    .indented(crate::render::transcript::PADDING),
+                    .indented(self.settings.output_pad as usize),
             },
             _ => {
                 let mut kept = std::mem::take(&mut self.cache.rendered);
@@ -1872,7 +1948,7 @@ impl App {
             &self.transcript,
             &self.theme,
             &Display {
-                width: self.width,
+                width: self.transcript_width,
                 show_thinking: self.show_thinking,
                 focus: self.focus,
                 from,
@@ -1884,6 +1960,8 @@ impl App {
                 hidden_thinking_label: std::borrow::Cow::Owned(
                     self.hidden_thinking_label().to_string(),
                 ),
+                workspace: self.workspace.clone(),
+                pad: self.settings.output_pad as usize,
             },
             &mut rendered,
             &mut self.cache.starts,
@@ -1895,6 +1973,7 @@ impl App {
         }
 
         let grew = rendered.lines.len().saturating_sub(was);
+        self.lines_version += 1;
         self.cache.shape = Some(shape);
         self.cache.rendered = rendered;
         if self.scroll > 0 {
@@ -1929,6 +2008,13 @@ impl App {
         if self.extension_editor.is_some() {
             return self.handle_extension_editor(action);
         }
+        let action = match self.search.is_some() {
+            true => match self.handle_search(action) {
+                Ok(outcome) => return outcome,
+                Err(action) => action,
+            },
+            false => action,
+        };
 
         if let Some(forward) = self.jump {
             if let Action::Insert(text) = &action {
@@ -2027,6 +2113,21 @@ impl App {
                 self.scroll_by(-3);
                 Outcome::Handled
             }
+            Action::Find => match self.tui_mode {
+                crate::TuiMode::Fullscreen => {
+                    self.search = Some(crate::search::Search::new(self.first_visible_row()));
+                    Outcome::Handled
+                }
+                crate::TuiMode::Inline => self.edit(|editor| editor.move_right()),
+            },
+            Action::FindPrevious => Outcome::ExternalEditor,
+            Action::JumpToLatest => match self.is_scrolled_up() {
+                true => {
+                    self.jump_to_latest();
+                    Outcome::Handled
+                }
+                false => self.edit(|editor| editor.move_line_end()),
+            },
 
             Action::FocusPrevious => self.move_focus(false),
             Action::FocusNext => self.move_focus(true),
@@ -2048,13 +2149,32 @@ impl App {
                 Outcome::Handled
             }
             Action::CopyMessage => {
-                self.copy_last_answer();
+                match self.selection.as_mut() {
+                    Some(selection) if !selection.is_empty() => {
+                        selection.copy_pending = Some(crate::render::selection::CopyRequest::Asked);
+                    }
+                    _ => self.copy_last_answer(),
+                }
                 Outcome::Handled
             }
             Action::PasteImage => self.paste_image(),
+            Action::SaveDefault => Outcome::Handled,
 
+            Action::SelectStart { col, row }
+                if self.jump_label.is_some_and(|label| {
+                    label.contains(ratatui::layout::Position { x: col, y: row })
+                }) =>
+            {
+                self.jump_to_latest();
+                Outcome::Handled
+            }
             Action::SelectStart { col, row } => {
-                self.selection = Some(crate::render::selection::Selection::new(col, row));
+                let clicks = self.count_click((col, row));
+                self.selection = Some(crate::render::selection::Selection::at(
+                    col,
+                    row,
+                    crate::render::selection::Granularity::for_clicks(clicks),
+                ));
                 Outcome::Handled
             }
             Action::SelectDrag { col, row } => {
@@ -2070,8 +2190,9 @@ impl App {
                     selection.dragging = false;
                     if selection.is_empty() {
                         self.selection = None;
-                    } else {
-                        selection.copy_pending = true;
+                    } else if self.settings.copy_on_select {
+                        selection.copy_pending =
+                            Some(crate::render::selection::CopyRequest::Released);
                     }
                 }
                 Outcome::Handled
@@ -2435,6 +2556,12 @@ impl App {
             Action::MoveDown => picker.select_next(),
 
             Action::Tab => picker.toggle_scope(),
+            Action::SaveDefault if self.question.is_none() => {
+                if let Some(line) = picker.selected_item().and_then(|item| item.save.clone()) {
+                    self.picker = None;
+                    self.queue_line(line);
+                }
+            }
             Action::Insert(text) => picker.push(&text),
             Action::Backspace => picker.backspace(),
             Action::Submit => {
@@ -2534,7 +2661,9 @@ impl App {
                     overlay.selected = (overlay.selected + page).min(overlay.items.len() - 1)
                 }
                 Action::MoveLineStart => overlay.selected = 0,
-                Action::MoveLineEnd => overlay.selected = overlay.items.len() - 1,
+                Action::MoveLineEnd | Action::JumpToLatest => {
+                    overlay.selected = overlay.items.len() - 1
+                }
                 Action::Submit => {
                     overlay.detail_open = true;
                     overlay.scroll = 0;
@@ -2582,11 +2711,11 @@ impl App {
             Action::DeleteToLineStart => overlay.editor.delete_to_line_start(),
             Action::DeleteToLineEnd => overlay.editor.delete_to_line_end(),
             Action::MoveLeft => overlay.editor.move_left(),
-            Action::MoveRight => overlay.editor.move_right(),
+            Action::MoveRight | Action::Find => overlay.editor.move_right(),
             Action::MoveWordLeft => overlay.editor.move_word_left(),
             Action::MoveWordRight => overlay.editor.move_word_right(),
             Action::MoveLineStart => overlay.editor.move_line_start(),
-            Action::MoveLineEnd => overlay.editor.move_line_end(),
+            Action::MoveLineEnd | Action::JumpToLatest => overlay.editor.move_line_end(),
             Action::MoveUp => {
                 overlay.editor.move_up(self.width);
             }
@@ -2706,9 +2835,95 @@ impl App {
         Outcome::Handled
     }
 
-    /// Rows a page moves: what is on screen, less enough to read across the seam.
+    /// Rows a page moves: what is on screen, less enough to read across the seam, or half of it when
+    /// the reader asked for half pages.
     fn page(&self) -> usize {
-        self.viewport.saturating_sub(PAGE_OVERLAP).max(1)
+        match self.settings.half_page_scroll {
+            true => (self.viewport / 2).max(1),
+            false => self.viewport.saturating_sub(PAGE_OVERLAP).max(1),
+        }
+    }
+
+    /// Whether the full-screen conversation is showing something older than its latest rows, which
+    /// is when it offers to jump back to them.
+    pub fn is_scrolled_up(&self) -> bool {
+        self.tui_mode == crate::TuiMode::Fullscreen && self.scroll > 0
+    }
+
+    /// Back to the latest message, following new output again.
+    fn jump_to_latest(&mut self) {
+        self.scroll = 0;
+        self.jump_label = None;
+    }
+
+    /// The open transcript search, if there is one.
+    pub fn search(&self) -> Option<&crate::search::Search> {
+        self.search.as_ref()
+    }
+
+    /// The first transcript row in view.
+    fn first_visible_row(&self) -> usize {
+        self.cache
+            .rendered
+            .lines
+            .len()
+            .saturating_sub(self.viewport)
+            .saturating_sub(self.scroll)
+    }
+
+    /// Answer a key while the search holds the keyboard, handing back what it leaves to the rest
+    /// of the interface: scrolling, the mouse, and interrupting.
+    fn handle_search(&mut self, action: Action) -> Result<Outcome, Action> {
+        let Some(search) = self.search.as_mut() else {
+            return Err(action);
+        };
+        match action {
+            Action::Insert(text) | Action::Paste(text) => search.push(&text),
+            Action::Backspace => search.pop(),
+            Action::DeleteToLineStart | Action::DeleteWordBefore => search.clear(),
+            Action::Submit | Action::ExternalEditor | Action::MoveDown => search.next(),
+            Action::Newline | Action::FindPrevious | Action::MoveUp => search.previous(),
+            Action::Cancel | Action::Find => self.search = None,
+            Action::PageUp
+            | Action::PageDown
+            | Action::ScrollUp
+            | Action::ScrollDown
+            | Action::JumpToLatest
+            | Action::SelectStart { .. }
+            | Action::SelectDrag { .. }
+            | Action::SelectEnd { .. }
+            | Action::Interrupt
+            | Action::Resize
+            | Action::Suspend => return Err(action),
+            _ => {}
+        }
+        Ok(Outcome::Handled)
+    }
+
+    /// Bring the open search up to date with the rows just laid out, scrolling its selected match
+    /// into view when it has moved.
+    pub fn refresh_search(&mut self) {
+        let Some(search) = self.search.as_mut() else {
+            return;
+        };
+        let Some((first, last)) = search.refresh(&self.cache.rendered.lines, self.lines_version)
+        else {
+            return;
+        };
+        let total = self.cache.rendered.lines.len();
+        let viewport = self.viewport.max(1);
+        let top = self.first_visible_row();
+        if first >= top && last < top + viewport {
+            return;
+        }
+        let wanted_top = first.saturating_sub(viewport / 3);
+        self.scroll = total.saturating_sub(viewport).saturating_sub(wanted_top);
+        self.clamp_scroll();
+    }
+
+    /// Where the jump-to-latest label was drawn on the last frame, for a click to land on.
+    pub fn set_jump_label(&mut self, area: Option<ratatui::layout::Rect>) {
+        self.jump_label = area;
     }
 
     /// Move the window back through the conversation.
@@ -2732,6 +2947,10 @@ impl App {
         self.scroll = self.scroll.min(furthest);
     }
 }
+
+/// How soon a press must follow the last at the same place to count toward a double or triple
+/// click.
+const MULTI_CLICK_INTERVAL: std::time::Duration = std::time::Duration::from_millis(500);
 
 /// The next reasoning level, wrapping at the top.
 fn next_level(level: ThinkingLevel) -> ThinkingLevel {
@@ -2864,6 +3083,18 @@ mod tests {
 
     fn type_text(app: &mut App, text: &str) {
         app.handle(Action::Insert(text.to_string()));
+    }
+
+    /// The text of every notice in the transcript, oldest first.
+    fn rendered_notices(app: &App) -> Vec<String> {
+        app.transcript
+            .entries()
+            .iter()
+            .filter_map(|entry| match entry {
+                crate::transcript::Entry::Notice { text, .. } => Some(text.clone()),
+                _ => None,
+            })
+            .collect()
     }
 
     #[test]
@@ -3198,6 +3429,16 @@ mod tests {
         type_text(&mut app, "/mo");
         app.handle(Action::Tab);
         assert_eq!(app.editor.text(), "/model ");
+    }
+
+    /// Whitespace before the slash neither hides the command menu nor is lost on committing.
+    #[test]
+    fn a_command_after_leading_whitespace_still_completes() {
+        let mut app = app();
+        type_text(&mut app, "  /mo");
+        assert!(app.menu().is_some());
+        app.handle(Action::Tab);
+        assert_eq!(app.editor.text(), "  /model ");
     }
 
     #[test]
@@ -4790,7 +5031,9 @@ mod tests {
     /// The shape `getTheme` hands an extension back.
     #[test]
     fn a_theme_snapshot_can_be_set_back() {
-        let mut app = app();
+        let mut options = TuiOptions::default();
+        options.settings.terminal.true_color = micro_config::Capability::On;
+        let mut app = App::new(&[], options);
         let mut colors = serde_json::Map::new();
         for token in Theme::TOKEN_NAMES {
             colors.insert((*token).to_string(), serde_json::json!("#123456"));
@@ -4807,6 +5050,17 @@ mod tests {
             app.theme.accent,
             ratatui::style::Color::Rgb(0x12, 0x34, 0x56)
         );
+    }
+
+    #[test]
+    fn a_terminal_forced_to_its_palette_gets_every_theme_reduced() {
+        let mut options = TuiOptions::default();
+        options.settings.terminal.true_color = micro_config::Capability::Off;
+        let mut app = App::new(&[], options);
+        assert!(!matches!(app.theme.accent, Color::Rgb(..)));
+
+        app.set_theme(Theme::light());
+        assert!(!matches!(app.theme.accent, Color::Rgb(..)));
     }
 
     #[test]
@@ -5023,11 +5277,211 @@ mod tests {
         let sel = app.selection().unwrap();
         assert_eq!(sel.current, (12, 1));
         assert!(!sel.dragging);
-        assert!(sel.copy_pending);
+        assert_eq!(
+            sel.copy_pending,
+            Some(crate::render::selection::CopyRequest::Released)
+        );
 
         // Escape clears selection
         app.handle(Action::Cancel);
         assert!(app.selection().is_none());
+    }
+
+    #[test]
+    fn a_selection_waits_for_the_copy_key_when_it_does_not_copy_itself() {
+        let mut options = TuiOptions::default();
+        options.settings.copy_on_select = false;
+        let mut app = App::new(&[], options);
+        app.handle(Action::SelectStart { col: 2, row: 1 });
+        app.handle(Action::SelectDrag { col: 9, row: 1 });
+        app.handle(Action::SelectEnd { col: 9, row: 1 });
+        assert_eq!(app.selection().unwrap().copy_pending, None);
+
+        app.handle(Action::CopyMessage);
+        assert_eq!(
+            app.selection().unwrap().copy_pending,
+            Some(crate::render::selection::CopyRequest::Asked)
+        );
+    }
+
+    #[test]
+    fn the_copy_key_without_a_selection_copies_the_last_answer() {
+        let mut app = app();
+        app.handle(Action::CopyMessage);
+        assert!(app.selection().is_none());
+        assert!(rendered_notices(&app)
+            .iter()
+            .any(|notice| notice.contains("No agent messages to copy")));
+    }
+
+    #[test]
+    fn a_second_and_third_click_select_a_word_then_a_paragraph() {
+        use crate::render::selection::Granularity;
+
+        let mut app = app();
+        let click = |app: &mut App| {
+            app.handle(Action::SelectStart { col: 4, row: 2 });
+            app.handle(Action::SelectEnd { col: 4, row: 2 });
+            app.selection().map(|selection| selection.granularity)
+        };
+        assert_eq!(click(&mut app), None, "one click selects nothing");
+        assert_eq!(click(&mut app), Some(Granularity::Word));
+        assert_eq!(click(&mut app), Some(Granularity::Paragraph));
+
+        app.handle(Action::SelectStart { col: 9, row: 2 });
+        assert_eq!(
+            app.selection().map(|selection| selection.granularity),
+            Some(Granularity::Character),
+            "a click somewhere else starts over"
+        );
+    }
+
+    fn scrolled_fullscreen_app(half_pages: bool) -> App {
+        let mut options = TuiOptions::default();
+        options.settings.half_page_scroll = half_pages;
+        let mut app = App::new(&[], options);
+        app.set_tui_mode(crate::TuiMode::Fullscreen);
+        for index in 0..40 {
+            app.transcript.push_user(format!("prompt {index}"));
+        }
+        app.set_frame(60, 24);
+        app.refresh_lines();
+        app.set_viewport(20);
+        app
+    }
+
+    #[test]
+    fn end_jumps_back_to_the_latest_message_only_when_scrolled_up() {
+        let mut app = scrolled_fullscreen_app(false);
+        type_text(&mut app, "draft");
+        app.handle(Action::MoveLineStart);
+
+        app.handle(Action::JumpToLatest);
+        assert_eq!(
+            app.editor.cursor(),
+            (0, 5),
+            "at the bottom it is the line end"
+        );
+
+        app.handle(Action::MoveLineStart);
+        app.handle(Action::PageUp);
+        assert!(app.is_scrolled_up());
+        app.handle(Action::JumpToLatest);
+        assert_eq!(app.scroll(), 0);
+        assert!(!app.is_scrolled_up());
+        assert_eq!(app.editor.cursor(), (0, 0), "the cursor stays put");
+    }
+
+    #[test]
+    fn a_click_on_the_jump_label_returns_to_the_latest_message() {
+        let mut app = scrolled_fullscreen_app(false);
+        app.handle(Action::PageUp);
+        app.set_jump_label(Some(ratatui::layout::Rect::new(10, 19, 30, 1)));
+
+        app.handle(Action::SelectStart { col: 12, row: 19 });
+        assert_eq!(app.scroll(), 0);
+        assert!(app.selection().is_none());
+    }
+
+    #[test]
+    fn half_page_scrolling_moves_half_the_viewport() {
+        let mut full = scrolled_fullscreen_app(false);
+        full.handle(Action::PageUp);
+        assert_eq!(full.scroll(), 20 - PAGE_OVERLAP);
+
+        let mut half = scrolled_fullscreen_app(true);
+        half.handle(Action::PageUp);
+        assert_eq!(half.scroll(), 10);
+    }
+
+    #[test]
+    fn control_f_opens_the_search_only_in_full_screen() {
+        let mut inline = app();
+        inline.set_tui_mode(crate::TuiMode::Inline);
+        type_text(&mut inline, "ab");
+        inline.handle(Action::MoveLineStart);
+        inline.handle(Action::Find);
+        assert!(inline.search().is_none());
+        assert_eq!(
+            inline.editor.cursor(),
+            (0, 1),
+            "it moves the cursor instead"
+        );
+
+        let mut full = scrolled_fullscreen_app(false);
+        full.handle(Action::Find);
+        assert!(full.search().is_some());
+        full.handle(Action::Find);
+        assert!(full.search().is_none(), "the same key closes it");
+    }
+
+    #[test]
+    fn typing_into_the_search_finds_and_reveals_a_match() {
+        let mut app = scrolled_fullscreen_app(false);
+        type_text(&mut app, "draft");
+        app.handle(Action::Find);
+        type_text(&mut app, "prompt 3");
+        app.handle(Action::Backspace);
+        type_text(&mut app, "3");
+        app.refresh_search();
+
+        assert_eq!(app.editor.text(), "draft", "the prompt keeps what it had");
+        let search = app.search().expect("open");
+        assert_eq!(search.query(), "prompt 3");
+        assert!(
+            search.matches().len() >= 2,
+            "prompt 3 and prompt 30 onwards"
+        );
+
+        app.handle(Action::Submit);
+        app.refresh_search();
+        let shown = app.search().unwrap().selected().unwrap();
+        let row = app.search().unwrap().matches()[shown].first_row();
+        let top = app.first_visible_row();
+        assert!(
+            row >= top && row < top + 20,
+            "row {row} is in view from {top}"
+        );
+
+        app.handle(Action::Cancel);
+        assert!(app.search().is_none());
+        assert_eq!(app.editor.text(), "draft");
+    }
+
+    #[test]
+    fn the_page_keys_still_scroll_while_searching() {
+        let mut app = scrolled_fullscreen_app(false);
+        app.handle(Action::Find);
+        app.handle(Action::PageUp);
+        assert!(app.scroll() > 0);
+        assert!(app.search().is_some());
+    }
+
+    #[test]
+    fn control_s_in_a_picker_dispatches_the_save_line_of_the_highlighted_item() {
+        let mut app = app();
+        app.open_picker(micro_commands::Picker::new(
+            "Reasoning effort",
+            vec![micro_commands::PickerItem::new("off", "", "/thinking off")
+                .saving("/thinking --default off")],
+        ));
+        app.handle(Action::SaveDefault);
+        assert!(app.picker().is_none());
+        assert_eq!(
+            app.take_submission().as_deref(),
+            Some("/thinking --default off")
+        );
+    }
+
+    #[test]
+    fn control_s_does_nothing_in_a_picker_without_defaults() {
+        let mut app = app();
+        app.open_picker(micro_commands::Picker::new(
+            "Sessions",
+            vec![micro_commands::PickerItem::new("one", "", "/resume one")],
+        ));
+        app.handle(Action::SaveDefault);
+        assert!(app.picker().is_some());
     }
 
     #[test]

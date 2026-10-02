@@ -42,7 +42,7 @@ fn an_ask_outside_the_manifest_is_refused_by_name_and_the_session_continues() {
     if which_bun().is_none() {
         return;
     }
-    let api = FakeApi::start([]);
+    let api = FakeApi::start([Reply::text("ready")]);
     let fixture = Fixture::new(&api);
     fixture.write(
         ".micro/extensions/narrow.ts",
@@ -60,7 +60,10 @@ export default (micro) => {
 "#,
     );
 
-    let output = fixture.print(&["-m", "test", "/probe"]);
+    fixture
+        .print(&["-m", "test", "start a session"])
+        .expect_success("micro --print");
+    let output = fixture.print(&["-m", "test", "--continue", "/probe"]);
     output.expect_success("micro --print /probe");
     assert!(
         output
@@ -88,7 +91,7 @@ fn an_ask_inside_the_manifest_is_answered_and_recorded() {
     if which_bun().is_none() {
         return;
     }
-    let api = FakeApi::start([]);
+    let api = FakeApi::start([Reply::text("ready")]);
     let fixture = Fixture::new(&api);
     fixture.write(
         ".micro/extensions/allowed.ts",
@@ -106,7 +109,10 @@ export default (micro) => {
 "#,
     );
 
-    let output = fixture.print(&["-m", "test", "/probe"]);
+    fixture
+        .print(&["-m", "test", "start a session"])
+        .expect_success("micro --print");
+    let output = fixture.print(&["-m", "test", "--continue", "/probe"]);
     output.expect_success("micro --print /probe");
     assert!(
         output.stdout.contains("said: from an extension"),

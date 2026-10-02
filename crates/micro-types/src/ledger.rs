@@ -61,6 +61,15 @@ pub enum LedgerEvent {
         provider: String,
         model: String,
     },
+    /// A one-token replay of a turn's request, sent to keep its prompt cache from expiring, and
+    /// what the provider billed for it.
+    CacheWarm {
+        /// The turn whose request was replayed.
+        turn: u64,
+        usage: Usage,
+        provider: String,
+        model: String,
+    },
     /// A provider attempt ended without usage.
     RequestAttemptFailed {
         turn: u64,

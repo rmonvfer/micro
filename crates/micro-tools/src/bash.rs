@@ -11,7 +11,10 @@ use serde_json::Value;
 use std::path::Path;
 use std::path::PathBuf;
 use std::process::Stdio;
+use std::sync::atomic::AtomicU64;
+use std::sync::atomic::Ordering;
 use std::time::Duration;
+use tokio::io::AsyncWriteExt as _;
 
 /// The longest a command may be given, which is as long as a millisecond count fits in a signed
 /// 32-bit integer.
@@ -58,6 +61,42 @@ fn timeout_for(arguments: &Value) -> Result<Option<u64>, String> {
         ));
     }
     Ok(Some(milliseconds))
+}
+
+/// What the model is shown of a command's output: all of it when it fits, otherwise its head and
+/// tail with the whole of it kept in a file the model can read.
+async fn shown(output: &str) -> String {
+    if output.chars().count() <= crate::MAX_OUTPUT_CHARS {
+        return output.to_string();
+    }
+    let truncated = truncate(output);
+    match save_full_output(output).await {
+        Ok(path) => format!(
+            "{truncated}\n\n[Output truncated. Full output: {}]",
+            path.display()
+        ),
+        Err(error) => format!("{truncated}\n\n[Output truncated. Full output not saved: {error}]"),
+    }
+}
+
+/// Keep a command's whole output in a private file under the temporary directory.
+async fn save_full_output(output: &str) -> std::io::Result<PathBuf> {
+    static SAVED: AtomicU64 = AtomicU64::new(0);
+    let name = format!(
+        "micro-bash-{}-{}-{}.log",
+        std::process::id(),
+        micro_types::now_ms(),
+        SAVED.fetch_add(1, Ordering::Relaxed)
+    );
+    let path = std::env::temp_dir().join(name);
+    let mut options = tokio::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    options.mode(0o600);
+    let mut file = options.open(&path).await?;
+    file.write_all(output.as_bytes()).await?;
+    file.flush().await?;
+    Ok(path)
 }
 
 pub struct Bash {
@@ -192,7 +231,7 @@ impl Tool for Bash {
         let body = if combined.trim().is_empty() {
             "(no output)".to_string()
         } else {
-            truncate(combined.trim_end())
+            shown(combined.trim_end()).await
         };
 
         let failure = match code {
@@ -233,6 +272,38 @@ mod tests {
     fn unconfined(root: PathBuf) -> Bash {
         let guard = Guard::new(Sandbox::new(SandboxPolicy::Full, root.clone()));
         Bash::new(root, guard)
+    }
+
+    #[tokio::test]
+    async fn long_output_keeps_its_ends_and_saves_the_whole_of_it() {
+        let output = unconfined(scratch("long"))
+            .execute(&json!({ "command": "echo first; seq 1 20000; echo last" }))
+            .await
+            .unwrap();
+        assert!(output.starts_with("first\n"), "{}", &output[..40]);
+        assert!(output.contains("characters omitted"));
+        let marker = "[Output truncated. Full output: ";
+        let start = output.find(marker).expect("the full output is named") + marker.len();
+        let path = output[start..].trim_end_matches(']');
+        let saved = std::fs::read_to_string(path).unwrap();
+        assert!(saved.starts_with("first\n1\n2\n"));
+        assert!(saved.ends_with("20000\nlast"));
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            let mode = std::fs::metadata(path).unwrap().permissions().mode();
+            assert_eq!(mode & 0o777, 0o600);
+        }
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[tokio::test]
+    async fn short_output_names_no_file() {
+        let output = unconfined(scratch("short"))
+            .execute(&json!({ "command": "echo brief" }))
+            .await
+            .unwrap();
+        assert!(!output.contains("Full output"));
     }
 
     #[tokio::test]

@@ -38,6 +38,8 @@ const CLAUDE_CODE_BETA: &str = "claude-code-20250219";
 const OAUTH_BETA: &str = "oauth-2025-04-20";
 /// The client a subscription credential is issued to.
 const CLAUDE_CODE_VERSION: &str = "2.1.75";
+/// What a subscription request must open its system prompt with.
+const CLAUDE_CODE_IDENTITY: &str = "You are Claude Code, Anthropic's official CLI for Claude.";
 /// Anthropic allows at most four cache breakpoints per request.
 const MAX_CACHE_BREAKPOINTS: usize = 4;
 
@@ -171,7 +173,9 @@ async fn run(
             .header("authorization", format!("Bearer {api_key}"))
             .header("user-agent", format!("claude-cli/{CLAUDE_CODE_VERSION}"))
             .header("x-app", "cli"),
-        AuthScheme::Bearer => request.header("authorization", format!("Bearer {api_key}")),
+        AuthScheme::Bearer | AuthScheme::Federated => {
+            request.header("authorization", format!("Bearer {api_key}"))
+        }
         AuthScheme::ApiKey => request.header("x-api-key", api_key),
     };
     let response = crate::with_carried_headers(request, &context, &model.base_url)
@@ -180,14 +184,8 @@ async fn run(
         .await
         .map_err(|error| format!("Anthropic request failed: {error}"))?;
 
-    let status = response.status();
-    if !status.is_success() {
-        let body = response.text().await.unwrap_or_default();
-        return Err(format!(
-            "Anthropic returned {}: {}",
-            status.as_u16(),
-            body.trim()
-        ));
+    if !response.status().is_success() {
+        return Err(crate::retry::refusal("Anthropic", response).await);
     }
 
     let mut state = Accumulator::new(&model, &context.tools, subscription);
@@ -484,8 +482,9 @@ fn normalize_tool_id(id: &str) -> String {
     sanitized.chars().take(40).collect()
 }
 
+/// Whether a credential is a subscription token, which is sent as Claude Code sends it.
 fn is_oauth(api_key: &str) -> bool {
-    api_key.starts_with(OAUTH_PREFIX)
+    api_key.starts_with(OAUTH_PREFIX) && !micro_auth::anthropic::is_federated_token(api_key)
 }
 
 /// How a credential is presented to the service.
@@ -495,13 +494,17 @@ enum AuthScheme {
     Subscription,
 
     Bearer,
+    /// An access token workload identity federation exchanged, sent as an OAuth bearer.
+    Federated,
     /// A platform API key.
     ApiKey,
 }
 
 /// Which scheme a credential is for, read from the credential itself.
 fn scheme_for(api_key: &str) -> AuthScheme {
-    if is_oauth(api_key) {
+    if micro_auth::anthropic::is_federated_token(api_key) {
+        AuthScheme::Federated
+    } else if is_oauth(api_key) {
         AuthScheme::Subscription
     } else if api_key.starts_with(ANTHROPIC_KEY_PREFIX) {
         AuthScheme::ApiKey
@@ -515,6 +518,8 @@ fn betas(api_key: &str, model: &Model, context: &Context) -> Vec<&'static str> {
     let mut betas = Vec::new();
     if is_oauth(api_key) {
         betas.push(CLAUDE_CODE_BETA);
+        betas.push(OAUTH_BETA);
+    } else if micro_auth::anthropic::is_federated_token(api_key) {
         betas.push(OAUTH_BETA);
     }
     if !context.tools.is_empty() {
@@ -582,8 +587,18 @@ pub(crate) fn build_payload(
         }
     }
 
-    if let Some(system) = &context.system_prompt {
-        payload.insert("system".into(), json!(system));
+    match (&context.system_prompt, subscription) {
+        (system, true) => {
+            let mut blocks = vec![json!({ "type": "text", "text": CLAUDE_CODE_IDENTITY })];
+            if let Some(system) = system.as_ref().filter(|system| !system.is_empty()) {
+                blocks.push(json!({ "type": "text", "text": system }));
+            }
+            payload.insert("system".into(), Value::Array(blocks));
+        }
+        (Some(system), false) => {
+            payload.insert("system".into(), json!(system));
+        }
+        (None, false) => {}
     }
 
     payload.insert(
@@ -743,6 +758,13 @@ pub(crate) fn apply_cache_breakpoints(payload: &mut Value, on_tools: bool) {
                     "text": text,
                     "cache_control": cache_control.clone(),
                 }]);
+                remaining -= 1;
+            } else if let Some(last) = system
+                .as_array_mut()
+                .and_then(|blocks| blocks.last_mut())
+                .and_then(Value::as_object_mut)
+            {
+                last.insert("cache_control".into(), cache_control.clone());
                 remaining -= 1;
             }
         }
@@ -1171,5 +1193,29 @@ mod auth_scheme {
         assert!(betas("sk-ant-oat01-abc", &model, &context).contains(&CLAUDE_CODE_BETA));
         assert!(!betas("glsa_abc123", &model, &context).contains(&CLAUDE_CODE_BETA));
         assert!(!betas("sk-ant-api03-abc", &model, &context).contains(&CLAUDE_CODE_BETA));
+    }
+
+    /// A subscription request opens its system prompt with Claude Code's identity, then the
+    /// prompt micro was given, cached at the end.
+    #[test]
+    fn a_subscription_request_speaks_as_claude_code() {
+        let model = Model::anthropic("claude-opus-5");
+        let context = micro_types::Context {
+            system_prompt: Some("Be brief.".into()),
+            messages: vec![Message::user("hi")],
+            ..Default::default()
+        };
+
+        let payload = build_payload(&model, &context, true).unwrap();
+        let system = payload["system"].as_array().unwrap();
+        assert_eq!(system.len(), 2);
+        assert_eq!(system[0]["text"], CLAUDE_CODE_IDENTITY);
+        assert!(system[0].get("cache_control").is_none());
+        assert_eq!(system[1]["text"], "Be brief.");
+        assert_eq!(system[1]["cache_control"]["type"], "ephemeral");
+
+        let keyed = build_payload(&model, &context, false).unwrap();
+        assert_eq!(keyed["system"][0]["text"], "Be brief.");
+        assert_eq!(keyed["system"].as_array().unwrap().len(), 1);
     }
 }

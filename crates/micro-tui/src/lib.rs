@@ -16,6 +16,7 @@ pub use menu::MenuItem;
 mod picker;
 pub mod remote;
 mod render;
+mod search;
 mod tools;
 mod typeset;
 pub mod ui;
@@ -53,8 +54,10 @@ use crate::app::Outcome;
 use crate::render::pictures::Placement;
 use anyhow::Result;
 use crossterm::event::DisableBracketedPaste;
+use crossterm::event::DisableFocusChange;
 use crossterm::event::DisableMouseCapture;
 use crossterm::event::EnableBracketedPaste;
+use crossterm::event::EnableFocusChange;
 use crossterm::event::EnableMouseCapture;
 use crossterm::event::Event;
 use crossterm::event::EventStream;
@@ -89,6 +92,10 @@ const FRAME: Duration = Duration::from_millis(33);
 /// How often the spinner advances and a running turn is repainted.
 const TICK: Duration = Duration::from_millis(80);
 
+/// How long a replaced input stream is given to stop reading before the terminal is asked about
+/// its colors.
+const INPUT_SETTLE: Duration = Duration::from_millis(20);
+
 /// Ensures remote observers see an interrupted turn as settled even if rendering returns an error.
 struct RemoteTurnGuard(Option<tokio::sync::mpsc::UnboundedSender<crate::remote::ToPhone>>);
 
@@ -115,8 +122,13 @@ pub async fn run_with(
     let mut screen = Screen::enter(options.tui_mode)?;
     set_terminal_title(&workspace_title(&options.cwd));
 
+    let _ = IMAGES_IN_USE.set(capabilities::detect(&options.settings.terminal).images);
     background::prime();
-    options.theme = Some(options.theme.unwrap_or_else(background::detect_theme));
+    options.theme = Some(
+        options
+            .theme
+            .unwrap_or_else(|| background::detect_theme(Some(&options.settings.theme))),
+    );
     let mode = options.tui_mode;
     let exit_output = options.settings.exit_output;
     let mut said = Vec::new();
@@ -229,6 +241,19 @@ async fn run_loop(interface: &mut Interface<'_>) -> Result<()> {
                 Next::Remote(action) => {
                     let _ = handle_remote(interface.app, action);
                 }
+                Next::Event(Event::FocusGained) => {
+                    let setting = interface.app.settings().theme.clone();
+                    if background::needs_terminal(Some(&setting)) {
+                        // The terminal may have switched between light and dark while it was
+                        // away. Its input is read here and nowhere else until the stream is
+                        // replaced, so the replies cannot reach the editor.
+                        drop(std::mem::replace(&mut input, EventStream::new()));
+                        std::thread::sleep(INPUT_SETTLE);
+                        interface
+                            .app
+                            .refresh_theme(background::refresh_theme(Some(&setting)));
+                    }
+                }
                 Next::Event(event) => {
                     if offer_component_input(interface.host_asker, interface.app, &event).await {
                         continue;
@@ -252,7 +277,7 @@ async fn run_loop(interface: &mut Interface<'_>) -> Result<()> {
                         Outcome::ThinkingChanged(level) => {
                             interface.agent.set_thinking(level);
                             if let Some(commands) = interface.commands.as_mut() {
-                                commands.thinking_changed(level).await;
+                                commands.thinking_changed(level, false).await;
                             }
                         }
 
@@ -542,11 +567,42 @@ fn arrived(event: Option<std::result::Result<Event, std::io::Error>>) -> Next {
     }
 }
 
-/// Hand the prompt to `$EDITOR`, and take back whatever it was left as.
+/// The editor command ctrl+g opens: the `external_editor` setting, then `$VISUAL`, then `$EDITOR`,
+/// then `vi`.
+fn editor_command(configured: Option<&str>, variable: impl Fn(&str) -> Option<String>) -> String {
+    let named = |value: Option<String>| value.filter(|value| !value.trim().is_empty());
+    named(configured.map(str::to_string))
+        .or_else(|| named(variable("VISUAL")))
+        .or_else(|| named(variable("EDITOR")))
+        .unwrap_or_else(|| "vi".to_string())
+}
+
+/// The process that opens `path` in `editor`, which is read the way a shell reads it so a command
+/// with arguments, such as `code --wait`, works as written.
+fn editor_process(editor: &str, path: &std::path::Path) -> std::process::Command {
+    #[cfg(unix)]
+    {
+        let mut command = std::process::Command::new("sh");
+        command
+            .arg("-c")
+            .arg(format!("{editor} \"$1\""))
+            .arg("micro-editor")
+            .arg(path);
+        command
+    }
+    #[cfg(not(unix))]
+    {
+        let mut command = std::process::Command::new(editor);
+        command.arg(path);
+        command
+    }
+}
+
+/// Hand the prompt to the external editor, and take back whatever it was left as.
 fn external_editor(screen: &mut Screen, app: &mut App) -> Result<()> {
-    let editor = std::env::var("VISUAL")
-        .or_else(|_| std::env::var("EDITOR"))
-        .unwrap_or_else(|_| "vi".to_string());
+    let editor = editor_command(app.settings().external_editor.as_deref(), |name| {
+        std::env::var(name).ok()
+    });
 
     let directory = secure_temp_directory()?;
     let path = directory.join("prompt.md");
@@ -557,7 +613,7 @@ fn external_editor(screen: &mut Screen, app: &mut App) -> Result<()> {
     }
 
     leave();
-    let status = std::process::Command::new(&editor).arg(&path).status();
+    let status = editor_process(&editor, &path).status();
     screen.reopen()?;
 
     match status {
@@ -836,10 +892,54 @@ async fn apply_outcome(
             }
         }
 
-        CommandOutcome::SetThinking { level } => {
+        CommandOutcome::BrowserLogin { pending } => {
+            if let Some(note) = pending.note() {
+                app.notice(note.to_string(), MessageKind::Info);
+            }
+            let opened = micro_auth::oauth::open_browser(pending.url());
+            app.notice(
+                format!(
+                    "{} {}\n{}",
+                    match opened {
+                        true => "Opened your browser at",
+                        false => "Open this page to sign in:",
+                    },
+                    pending.url(),
+                    pending.instructions()
+                ),
+                MessageKind::Info,
+            );
+            app.open_input(
+                pending.prompt().to_string(),
+                Some(pending.placeholder().to_string()),
+            );
+            app.busy("waiting for sign-in");
+            screen.render(app)?;
+
+            let (pasted, receiver) = tokio::sync::oneshot::channel();
+            let work = commands.finish_browser_login(pending, receiver);
+            let applied = await_browser_login(screen, app, input, work, pasted).await?;
+            app.dismiss_key_prompt();
+            app.idle();
+            match applied {
+                Some(applied) => apply_applied(app, agent, applied),
+                None => app.notice("Sign-in cancelled", MessageKind::Error),
+            }
+        }
+
+        CommandOutcome::SetThinking { level, save } => {
             agent.set_thinking(level);
             app.set_thinking(level);
-            commands.thinking_changed(level).await;
+            commands.thinking_changed(level, save).await;
+            if save {
+                app.notice(
+                    format!(
+                        "Thinking level {} saved as the default",
+                        app::thinking_name(level)
+                    ),
+                    MessageKind::Info,
+                );
+            }
         }
 
         CommandOutcome::CopyLastAnswer => app.copy_last_answer(),
@@ -865,11 +965,16 @@ async fn apply_outcome(
             }
         }
 
-        CommandOutcome::SetTheme { theme } => app.set_theme(match theme {
-            micro_commands::ThemeChoice::Dark => Theme::dark(),
-            micro_commands::ThemeChoice::Light => Theme::light(),
-            micro_commands::ThemeChoice::Auto => background::detect_theme(),
-        }),
+        CommandOutcome::SetTheme { theme } => {
+            let setting = match theme {
+                micro_commands::ThemeChoice::Dark => "dark",
+                micro_commands::ThemeChoice::Light => "light",
+                micro_commands::ThemeChoice::Auto => "light/dark",
+                micro_commands::ThemeChoice::System => theme::SYSTEM,
+            };
+            app.set_theme_setting(setting);
+            app.set_theme(background::detect_theme(Some(setting)));
+        }
 
         CommandOutcome::SetTuiMode { mode } => {
             let mode = match mode {
@@ -946,7 +1051,9 @@ fn summary_text(message: &Message) -> String {
 fn label_for(outcome: &CommandOutcome) -> &'static str {
     match outcome {
         CommandOutcome::Resume { .. } | CommandOutcome::Fork { .. } => "loading",
-        CommandOutcome::DeviceLogin { .. } => "waiting for sign-in",
+        CommandOutcome::DeviceLogin { .. } | CommandOutcome::BrowserLogin { .. } => {
+            "waiting for sign-in"
+        }
         _ => "working",
     }
 }
@@ -962,6 +1069,60 @@ where
     F: Future<Output = Applied>,
 {
     await_work(screen, app, input, work).await
+}
+
+/// Await a browser sign-in while the prompt for a pasted code stays live: what the user submits is
+/// handed to the sign-in, and dismissing the prompt leaves the browser to finish it.
+async fn await_browser_login<F>(
+    screen: &mut Screen,
+    app: &mut App,
+    input: &mut EventStream,
+    work: F,
+    pasted: tokio::sync::oneshot::Sender<String>,
+) -> Result<Option<Applied>>
+where
+    F: Future<Output = Applied>,
+{
+    let mut work = Box::pin(work);
+    let mut pasted = Some(pasted);
+    let mut ticker = tokio::time::interval(TICK);
+    ticker.set_missed_tick_behavior(MissedTickBehavior::Delay);
+    let mut painted = Instant::now() - FRAME;
+
+    loop {
+        if painted.elapsed() >= FRAME {
+            screen.render(app)?;
+            painted = Instant::now();
+        }
+
+        tokio::select! {
+            biased;
+            event = input.next() => match event {
+                Some(Ok(event)) => match handle(app, event) {
+                    Outcome::Quit => {
+                        app.should_quit = true;
+                        return Ok(None);
+                    }
+                    Outcome::Interrupt => return Ok(None),
+                    _ => {
+                        if let Some((_, text)) = app.take_key_prompt() {
+                            if let Some(sender) = pasted.take() {
+                                let _ = sender.send(text);
+                            }
+                        } else if app.key_prompt().is_none() {
+                            pasted = None;
+                        }
+                    }
+                },
+                Some(Err(_)) | None => {
+                    app.should_quit = true;
+                    return Ok(None);
+                }
+            },
+            done = &mut work => return Ok(Some(done)),
+            _ = ticker.tick() => app.tick = app.tick.wrapping_add(1),
+        }
+    }
 }
 
 async fn await_command<F>(
@@ -1480,7 +1641,8 @@ impl Screen {
                         std::io::stdout(),
                         EnterAlternateScreen,
                         EnableBracketedPaste,
-                        EnableMouseCapture
+                        EnableMouseCapture,
+                        EnableFocusChange
                     )?;
                     let mut terminal = Terminal::new(Anchored::new(anchor))?;
                     terminal.clear()?;
@@ -1498,7 +1660,12 @@ impl Screen {
                     Ok(screen)
                 }
                 TuiMode::Inline => {
-                    execute!(std::io::stdout(), EnableBracketedPaste, EnableMouseCapture)?;
+                    execute!(
+                        std::io::stdout(),
+                        EnableBracketedPaste,
+                        EnableMouseCapture,
+                        EnableFocusChange
+                    )?;
 
                     let terminal = inline_region(Anchored::new(anchor), INLINE_ROWS)?;
                     let size = terminal.size()?;
@@ -1536,7 +1703,8 @@ impl Screen {
                     std::io::stdout(),
                     EnterAlternateScreen,
                     EnableBracketedPaste,
-                    EnableMouseCapture
+                    EnableMouseCapture,
+                    EnableFocusChange
                 )?;
                 let mut terminal = Terminal::new(Anchored::new(self.anchor))?;
                 terminal.clear()?;
@@ -1549,7 +1717,8 @@ impl Screen {
                     std::io::stdout(),
                     LeaveAlternateScreen,
                     EnableBracketedPaste,
-                    EnableMouseCapture
+                    EnableMouseCapture,
+                    EnableFocusChange
                 )?;
 
                 self.size = self.terminal.size()?;
@@ -1569,12 +1738,18 @@ impl Screen {
                     std::io::stdout(),
                     EnterAlternateScreen,
                     EnableBracketedPaste,
-                    EnableMouseCapture
+                    EnableMouseCapture,
+                    EnableFocusChange
                 )?;
                 self.terminal.clear()?;
             }
             TuiMode::Inline => {
-                execute!(std::io::stdout(), EnableBracketedPaste, EnableMouseCapture)?;
+                execute!(
+                    std::io::stdout(),
+                    EnableBracketedPaste,
+                    EnableMouseCapture,
+                    EnableFocusChange
+                )?;
 
                 if let Ok((_, row)) = crossterm::cursor::position() {
                     self.anchor = Some(row);
@@ -1869,8 +2044,17 @@ fn vacated_blanks(shown: &[Placement], drawn: &ratatui::buffer::Buffer) -> Strin
     out
 }
 
+/// The image protocol the running interface draws with, for whatever tears the terminal down to
+/// erase what it drew.
+static IMAGES_IN_USE: std::sync::OnceLock<Option<capabilities::ImageProtocol>> =
+    std::sync::OnceLock::new();
+
 fn leave() {
-    if let Some(protocol) = capabilities::detect().images {
+    let images = IMAGES_IN_USE
+        .get()
+        .copied()
+        .unwrap_or_else(|| capabilities::detect(&capabilities::Overrides::default()).images);
+    if let Some(protocol) = images {
         if let Some(escape) = images::forget_all(protocol) {
             use std::io::Write as _;
             let mut out = std::io::stdout();
@@ -1881,6 +2065,7 @@ fn leave() {
         std::io::stdout(),
         DisableBracketedPaste,
         DisableMouseCapture,
+        DisableFocusChange,
         LeaveAlternateScreen
     );
     let _ = disable_raw_mode();
@@ -1909,6 +2094,41 @@ mod tests {
     fn the_terminal_title_names_the_workspace() {
         assert_eq!(workspace_title(Path::new("/work/micro")), "micro — micro");
         assert_eq!(workspace_title(Path::new("/")), "micro — workspace");
+    }
+
+    #[test]
+    fn the_configured_editor_comes_before_the_environment() {
+        let environment = |name: &str| match name {
+            "VISUAL" => Some("hx".to_string()),
+            "EDITOR" => Some("nano".to_string()),
+            _ => None,
+        };
+        assert_eq!(
+            editor_command(Some("code --wait"), environment),
+            "code --wait"
+        );
+        assert_eq!(editor_command(Some("  "), environment), "hx");
+        assert_eq!(editor_command(None, environment), "hx");
+        assert_eq!(
+            editor_command(None, |name| (name == "EDITOR").then(|| "nano".to_string())),
+            "nano"
+        );
+        assert_eq!(editor_command(None, |_| None), "vi");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_editor_command_with_arguments_runs_as_a_shell_would_read_it() {
+        let directory = secure_temp_directory().expect("temporary directory");
+        let path = directory.join("prompt with space.md");
+        std::fs::write(&path, "draft").unwrap();
+
+        let status = editor_process("printf edited >", &path)
+            .status()
+            .expect("runs");
+        assert!(status.success());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "edited");
+        let _ = std::fs::remove_dir_all(directory);
     }
 
     #[test]

@@ -28,6 +28,9 @@ With no subcommand, micro opens the terminal interface. A prompt on the command 
 | `--thinking <LEVEL>`    | Set reasoning effort. Supported levels are model-dependent.                  |
 | `--resume <ID>`         | Resume a saved session.                                                      |
 | `--continue`            | Resume the latest session for the workspace.                                 |
+| `--session-id <ID>`     | Resume this workspace's session with this exact ID, or start one under it.   |
+| `-n`, `--name <NAME>`   | Set the session display name at startup.                                     |
+
 | `--budget <USD>`        | Stop at the first turn boundary after the session total reaches this amount. |
 
 ## Tools and project resources
@@ -59,10 +62,15 @@ With no subcommand, micro opens the terminal interface. A prompt on the command 
 ### Authentication
 
 ```bash
-micro auth login <PROVIDER>
+micro auth login <PROVIDER> [--method <METHOD>]
 micro auth logout <PROVIDER>
 micro auth status
+micro auth check [PROVIDER|MODEL] [--provider <P>] [--model <M>] [--json] [--credentials] [--no-refresh]
+micro auth print-api-key [PROVIDER|MODEL] [--provider <P>] [--model <M>]
+micro auth print-bearer-token [PROVIDER|MODEL] [--provider <P>] [--model <M>] [--min-expiry <DURATION>]
 ```
+
+See [Providers](providers.md#authenticate) for the sign-in methods and what each command prints.
 
 ### Models
 
@@ -126,13 +134,13 @@ Type `/help` in the interface for the list from the installed version.
 | Command                         | Purpose                                                                         |
 | ------------------------------- | ------------------------------------------------------------------------------- |
 | `/help`                         | List every command.                                                             |
-| `/model [query]`                | Choose or switch models.                                                        |
+| `/model [--default] [query]`    | Switch models for the session; `--default` or `ctrl+s` also saves it.           |
 | `/provider [name]`              | Choose or switch providers.                                                     |
 | `/login [provider]`             | Sign in to a provider.                                                          |
 | `/logout [provider]`            | Remove a stored provider credential.                                            |
 | `/auth`                         | Show which providers are signed in.                                             |
-| `/thinking [level]`             | Change reasoning effort.                                                        |
-| `/theme [dark/light]`           | Change the terminal theme.                                                      |
+| `/thinking [--default] [level]` | Change reasoning effort; `--default` or `ctrl+s` also saves it.                 |
+| `/theme [system/dark/light/auto]` | Change the terminal theme.                                                    |
 | `/sessions`                     | List sessions for the workspace.                                                |
 | `/session`                      | Show the current session information and usage.                                 |
 | `/resume [id]`                  | Resume another session.                                                         |
@@ -153,6 +161,7 @@ Type `/help` in the interface for the list from the installed version.
 | `/set <setting> [value]`        | Read or change a setting.                                                       |
 | `/remote [pair]`                | Pair a phone or publish the current session.                                    |
 | `/share`                        | Export the session to a secret GitHub gist. Requires a token with `gist` scope. |
+| `/bug [description]`            | Write a redacted bug report ZIP to the workspace, optionally with the transcript. Uploads nothing. |
 | `/export [path]`                | Write the conversation to a file.                                               |
 | `/import <path>`                | Import and resume a JSONL session.                                              |
 | `/copy`                         | Copy the last answer.                                                           |

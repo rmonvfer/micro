@@ -2,14 +2,20 @@
 
 mod custom;
 mod detect;
+mod oklab;
 mod palette;
+mod system;
 
 pub use custom::themes_dir;
+pub use custom::SYSTEM;
 pub use detect::ansi256_to_rgb;
+pub use detect::from_env as detected_from_env;
 pub use detect::theme_for_rgb;
 pub use detect::Confidence;
 pub use detect::Detection;
 pub use detect::TerminalTheme;
+pub use system::appearance;
+pub use system::TerminalColors;
 
 use ratatui::style::Color;
 use ratatui::style::Modifier;
@@ -23,6 +29,8 @@ macro_rules! tokens {
         pub struct Theme {
             /// The theme's own name, as its file gives it.
             pub name: &'static str,
+            /// The background the theme was made for.
+            pub appearance: TerminalTheme,
             $($(#[$note])* pub $field: Color,)*
 
             /// Fill behind the input editor.
@@ -47,13 +55,28 @@ macro_rules! tokens {
                 }
             }
 
+            /// Every color the theme holds, passed through `change`.
+            fn map_colors(self, change: impl Fn(Color) -> Color) -> Self {
+                Theme {
+                    name: self.name,
+                    appearance: self.appearance,
+                    $($field: change(self.$field),)*
+                    surface: change(self.surface),
+                    status: change(self.status),
+                    user: change(self.user),
+                    info_bg: change(self.info_bg),
+                }
+            }
+
             fn build(
                 name: &'static str,
+                appearance: TerminalTheme,
                 lookup: impl Fn(&str) -> Color,
                 export: impl Fn(&str) -> Color,
             ) -> Self {
                 Theme {
                     name,
+                    appearance,
                     $($field: lookup($name),)*
                     surface: export("cardBg"),
                     status: export("pageBg"),
@@ -132,6 +155,7 @@ impl Theme {
     pub fn dark() -> Self {
         Theme::build(
             "dark",
+            TerminalTheme::Dark,
             |token| resolve(token, palette::DARK_COLORS, palette::DARK_VARS),
             |token| literal(token, palette::DARK_EXPORT),
         )
@@ -140,6 +164,7 @@ impl Theme {
     pub fn light() -> Self {
         Theme::build(
             "light",
+            TerminalTheme::Light,
             |token| resolve(token, palette::LIGHT_COLORS, palette::LIGHT_VARS),
             |token| literal(token, palette::LIGHT_EXPORT),
         )
@@ -161,9 +186,52 @@ impl Theme {
         )
     }
 
+    /// The theme built from the colors the terminal reported, or nothing when it did not report its
+    /// background.
+    pub fn system(colors: &TerminalColors) -> Option<Self> {
+        let generated = system::generate(colors)?;
+        let rgb = |(r, g, b): oklab::Rgb| Color::Rgb(r, g, b);
+        let lookup = |token: &str| {
+            generated
+                .tokens
+                .get(token)
+                .copied()
+                .flatten()
+                .map_or(Color::Reset, rgb)
+        };
+        Some(Theme {
+            surface: rgb(generated.surface),
+            status: rgb(generated.status),
+            info_bg: rgb(generated.info),
+            ..Theme::build(SYSTEM, generated.appearance, lookup, |_| Color::Reset)
+        })
+    }
+
+    /// The theme a setting asks for, given what the terminal reported: `system`, the default, is
+    /// built from the terminal's colors, and falls back to the built-in theme for its background when
+    /// the terminal reported none.
+    pub fn for_terminal(
+        setting: Option<&str>,
+        colors: &TerminalColors,
+        detected: Detection,
+    ) -> Self {
+        let wanted = setting
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .unwrap_or(SYSTEM);
+        match wanted == SYSTEM {
+            true => Theme::system(colors).unwrap_or_else(|| Theme::resolve_setting(None, detected)),
+            false => Theme::resolve_setting(Some(wanted), detected),
+        }
+    }
+
     /// The palette a setting asks for, given what is known about the terminal.
     pub fn resolve_setting(setting: Option<&str>, detected: Detection) -> Self {
         let wanted = match setting.map(str::trim).filter(|value| !value.is_empty()) {
+            Some(SYSTEM) => match detected.theme {
+                TerminalTheme::Light => "light".to_string(),
+                TerminalTheme::Dark => "dark".to_string(),
+            },
             Some(setting) => match auto_pair(setting) {
                 Some((light, dark)) => match detected.theme {
                     TerminalTheme::Light => light.to_string(),
@@ -190,29 +258,53 @@ impl Theme {
         Theme::from_json(&contents)
     }
 
-    /// A theme parsed from the schema's JSON shape.
+    /// A theme parsed from the schema's JSON shape. Its appearance is what the file says, or else
+    /// what its body text implies: light text is made for a dark background.
     pub fn from_json(contents: &str) -> Result<Self, String> {
-        let (_, resolved) = custom::parse(contents, Theme::TOKEN_NAMES)?;
+        let parsed = custom::parse(contents, Theme::TOKEN_NAMES)?;
         let lookup = |token: &str| {
-            resolved
+            parsed
+                .colors
                 .iter()
                 .find(|(name, _)| name == token)
                 .map(|(_, color)| *color)
                 .unwrap_or(Color::Reset)
         };
+        let appearance = parsed.appearance.unwrap_or(match lookup("text") {
+            Color::Rgb(r, g, b) => match theme_for_rgb((r, g, b)) {
+                TerminalTheme::Light => TerminalTheme::Dark,
+                TerminalTheme::Dark => TerminalTheme::Light,
+            },
+            _ => TerminalTheme::Dark,
+        });
 
-        let fallback = Theme::dark();
+        let fallback = match appearance {
+            TerminalTheme::Dark => Theme::dark(),
+            TerminalTheme::Light => Theme::light(),
+        };
         Ok(Theme {
             surface: fallback.surface,
             status: fallback.status,
             info_bg: fallback.info_bg,
-            ..Theme::build("custom", lookup, |_| Color::Reset)
+            ..Theme::build("custom", appearance, lookup, |_| Color::Reset)
         })
     }
 
     /// The name of the theme a file declares, without loading it as a palette.
     pub fn user_theme_name(contents: &str) -> Result<String, String> {
-        custom::parse(contents, Theme::TOKEN_NAMES).map(|(name, _)| name)
+        custom::parse(contents, Theme::TOKEN_NAMES).map(|parsed| parsed.name)
+    }
+
+    /// The theme as a terminal without 24-bit color can show it: every RGB color moved to the
+    /// nearest entry in the 256-color palette.
+    pub fn for_color_depth(self, true_color: bool) -> Self {
+        if true_color {
+            return self;
+        }
+        self.map_colors(|color| match color {
+            Color::Rgb(r, g, b) => Color::Indexed(detect::rgb_to_ansi256((r, g, b))),
+            other => other,
+        })
     }
 
     pub fn body(&self) -> Style {
@@ -509,6 +601,89 @@ mod tests {
     }
 
     #[test]
+    fn a_terminal_without_true_color_gets_the_nearest_palette_entries() {
+        let full = Theme::dark();
+        assert_eq!(full.for_color_depth(true), full);
+
+        let reduced = full.for_color_depth(false);
+        for name in Theme::TOKEN_NAMES {
+            assert!(
+                !matches!(reduced.token(name), Some(Color::Rgb(..))),
+                "{name} is still 24-bit"
+            );
+        }
+        assert!(!matches!(reduced.surface, Color::Rgb(..)));
+    }
+
+    #[test]
+    fn the_nearest_palette_entry_is_exact_where_one_exists() {
+        assert_eq!(detect::rgb_to_ansi256((0xff, 0x00, 0x00)), 196);
+        assert_eq!(detect::rgb_to_ansi256((0x00, 0x00, 0x00)), 16);
+        assert_eq!(detect::rgb_to_ansi256((0x80, 0x80, 0x80)), 244);
+        assert_eq!(detect::rgb_to_ansi256((0x5f, 0x87, 0xaf)), 67);
+    }
+
+    fn frappe() -> TerminalColors {
+        TerminalColors {
+            foreground: Some((0xc6, 0xd0, 0xf5)),
+            background: Some((0x30, 0x34, 0x46)),
+            palette: None,
+        }
+    }
+
+    #[test]
+    fn the_system_theme_is_built_from_the_terminal_colors() {
+        let theme = Theme::system(&frappe()).expect("a background was reported");
+        assert_eq!(theme.name, SYSTEM);
+        assert_eq!(theme.appearance, TerminalTheme::Dark);
+        assert_eq!(theme.status, Color::Rgb(0x30, 0x34, 0x46));
+        assert_eq!(theme.text, Color::Reset, "the terminal's own foreground");
+        assert!(matches!(theme.accent, Color::Rgb(..)));
+    }
+
+    #[test]
+    fn system_is_the_default_and_falls_back_to_the_built_in_theme_for_the_background() {
+        let light = Detection {
+            theme: TerminalTheme::Light,
+            confidence: Confidence::High,
+        };
+        assert_eq!(Theme::for_terminal(None, &frappe(), light).name, SYSTEM);
+        assert_eq!(
+            Theme::for_terminal(Some("system"), &TerminalColors::default(), light),
+            Theme::light()
+        );
+        assert_eq!(
+            Theme::for_terminal(Some("dark"), &frappe(), light),
+            Theme::dark()
+        );
+        assert_eq!(
+            Theme::resolve_setting(Some("system"), light),
+            Theme::light()
+        );
+    }
+
+    #[test]
+    fn a_user_theme_takes_the_surfaces_of_its_own_appearance() {
+        let mut colors = serde_json::Map::new();
+        for token in Theme::TOKEN_NAMES {
+            colors.insert((*token).to_string(), serde_json::json!("#202020"));
+        }
+        let document =
+            serde_json::json!({ "name": "mine", "appearance": "light", "colors": colors });
+        let theme = Theme::from_json(&document.to_string()).unwrap();
+        assert_eq!(theme.appearance, TerminalTheme::Light);
+        assert_eq!(theme.surface, Theme::light().surface);
+
+        let inferred = serde_json::json!({ "name": "mine", "colors": colors });
+        let theme = Theme::from_json(&inferred.to_string()).unwrap();
+        assert_eq!(
+            theme.appearance,
+            TerminalTheme::Light,
+            "dark text is for a light background"
+        );
+    }
+
+    #[test]
     fn a_name_selects_a_built_in_theme() {
         assert_eq!(Theme::named("dark").unwrap().name, "dark");
         assert_eq!(Theme::named("light").unwrap().name, "light");
@@ -594,7 +769,11 @@ mod tests {
         }
         assert_eq!(Theme::user_theme_name(&json).unwrap(), "mine");
 
-        assert_eq!(theme.surface, Theme::dark().surface);
+        assert_eq!(
+            theme.surface,
+            Theme::light().surface,
+            "dark body text is made for a light background"
+        );
     }
 
     #[test]

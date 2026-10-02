@@ -64,6 +64,7 @@ fn neighbour(context: &CommandContext<'_>, forward: bool) -> Option<ModelDef> {
 }
 
 pub(crate) fn model(argument: Option<&str>, context: &CommandContext<'_>) -> CommandOutcome {
+    let (save, argument) = crate::as_default(argument);
     let Some(query) = argument else {
         let offered = offered(context);
         if offered.is_empty() {
@@ -98,6 +99,7 @@ pub(crate) fn model(argument: Option<&str>, context: &CommandContext<'_>) -> Com
         return match neighbour(context, forward) {
             Some(model) => CommandOutcome::SetModel {
                 model: Box::new(model),
+                save,
             },
             None => CommandOutcome::error("the catalog holds no other model"),
         };
@@ -106,6 +108,7 @@ pub(crate) fn model(argument: Option<&str>, context: &CommandContext<'_>) -> Com
     match context.catalog.resolve(query) {
         Resolution::Match(model) => CommandOutcome::SetModel {
             model: Box::new(model.clone()),
+            save,
         },
 
         Resolution::Ambiguous(candidates) => CommandOutcome::Choose(
@@ -167,6 +170,7 @@ fn item(model: &ModelDef, current: Option<&ModelDef>) -> PickerItem {
         format!("[{}]", model.provider),
         format!("/model {qualified}"),
     )
+    .saving(format!("/model --default {qualified}"))
     .current(is_current)
     .found_by(search_text(model));
 
@@ -227,6 +231,7 @@ fn credential_note(provider: &str, context: &CommandContext<'_>) -> String {
     match status.source {
         micro_auth::CredentialSource::Stored => "signed in".to_string(),
         micro_auth::CredentialSource::Environment { variable } => format!("via {variable}"),
+        micro_auth::CredentialSource::Federation => "via workload identity federation".to_string(),
         micro_auth::CredentialSource::Missing => "not signed in".to_string(),
     }
 }
@@ -284,10 +289,22 @@ mod tests {
         let line = picker(&outcome).command_at(0).unwrap().to_string();
 
         let outcome = dispatch(&line, &harness.context()).await.unwrap();
-        let CommandOutcome::SetModel { model } = outcome else {
+        let CommandOutcome::SetModel { model, save } = outcome else {
             panic!("expected a model to be set, got {outcome:?}");
         };
         assert_eq!(format!("/model {}", model.qualified_id()), line);
+        assert!(!save, "picking a model is for this session");
+
+        let saving = picker(&dispatch("/model", &harness.context()).await.unwrap()).items[0]
+            .save
+            .clone()
+            .expect("ctrl+s has a command to run");
+        let outcome = dispatch(&saving, &harness.context()).await.unwrap();
+        let CommandOutcome::SetModel { model: saved, save } = outcome else {
+            panic!("expected a model to be set, got {outcome:?}");
+        };
+        assert_eq!(saved.qualified_id(), model.qualified_id());
+        assert!(save, "ctrl+s makes it the default");
     }
 
     #[tokio::test]
@@ -297,7 +314,7 @@ mod tests {
             .await
             .unwrap();
 
-        let CommandOutcome::SetModel { model } = outcome else {
+        let CommandOutcome::SetModel { model, .. } = outcome else {
             panic!("expected a model to be set");
         };
         assert_eq!(model.provider, "anthropic");
