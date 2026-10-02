@@ -542,8 +542,13 @@ fn name_for(name: &str, subscription: bool) -> String {
     }
 }
 
-fn effort_for(level: micro_types::ThinkingLevel) -> &'static str {
-    match level {
+/// The effort a model deciding its own thinking is asked for: what its thinking map names the level,
+/// else the nearest of the efforts every such model takes.
+fn effort_for(model: &Model) -> String {
+    if let Some(Some(named)) = model.compat.thinking.get(model.thinking.as_str()) {
+        return named.clone();
+    }
+    match model.thinking {
         micro_types::ThinkingLevel::Off => "low",
         micro_types::ThinkingLevel::Minimal => "low",
         micro_types::ThinkingLevel::Low => "low",
@@ -552,6 +557,7 @@ fn effort_for(level: micro_types::ThinkingLevel) -> &'static str {
         micro_types::ThinkingLevel::XHigh => "high",
         micro_types::ThinkingLevel::Max => "high",
     }
+    .to_string()
 }
 
 pub(crate) fn build_payload(
@@ -572,7 +578,7 @@ pub(crate) fn build_payload(
             );
             payload.insert(
                 "output_config".into(),
-                json!({ "effort": effort_for(model.thinking) }),
+                json!({ "effort": effort_for(model) }),
             );
         }
         Some(budget) => {
@@ -1152,6 +1158,26 @@ mod tests {
             payload["thinking"].get("budget_tokens").is_none(),
             "a budget is not what this model takes",
         );
+    }
+
+    /// The levels above high are asked for by name on the models whose thinking map offers them.
+    #[test]
+    fn a_model_offering_xhigh_and_max_is_asked_for_them_by_name() {
+        for (level, effort) in [
+            (micro_types::ThinkingLevel::XHigh, "xhigh"),
+            (micro_types::ThinkingLevel::Max, "max"),
+        ] {
+            let mut model = Model::anthropic("claude-opus-4-7").with_thinking(level);
+            model.compat.force_adaptive_thinking = true;
+            model.compat.thinking = [("xhigh", "xhigh"), ("max", "max")]
+                .into_iter()
+                .map(|(level, name)| (level.to_string(), Some(name.to_string())))
+                .collect();
+
+            let payload =
+                build_payload(&model, &context_with(vec![Message::user("hi")]), false).unwrap();
+            assert_eq!(payload["output_config"]["effort"], effort);
+        }
     }
 
     /// Turning thinking off is the same for both shapes: said outright, with no effort alongside it
