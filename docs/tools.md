@@ -24,7 +24,7 @@ Reading a PNG, JPEG, GIF, WebP, or BMP hands the picture to the model rather tha
 
 Interactive sessions may also expose `request_sandbox_access`. After a denial, the model can ask for network access or temporary-directory writes for one exact command or the rest of the session. Noninteractive modes do not provide this tool because they cannot show its approval dialog.
 
-Tool output longer than 30,000 characters is truncated in the middle before it is returned to the model.
+Tool output longer than 30,000 characters is truncated in the middle before it is returned to the model. When `bash` output is truncated, its full output is saved to a private `micro-bash-*.log` file in the temporary directory and the result ends with `[Output truncated. Full output: <path>]`, so the model can read or search the omitted part.
 
 ## Select tools
 
