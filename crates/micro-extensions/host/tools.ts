@@ -1,7 +1,7 @@
 
 
 import { type Component, dispose as disposeComponent, registerComponent } from "./host-components.ts";
-import { type Json, send } from "./host-wire.ts";
+import { ask, type Json, send } from "./host-wire.ts";
 
 /** One piece of what a tool answers with. */
 export interface TextContent {
@@ -20,6 +20,10 @@ export interface ImageContent {
 export interface ToolResult<TDetails = unknown> {
 	content: (TextContent | ImageContent)[];
 	details?: TDetails;
+	/** The answer as data matching the tool's `outputSchema`, for scripts and other tools. */
+	structuredContent?: unknown;
+	/** The call failed, though it answered: the model reads the content as an error. */
+	isError?: boolean;
 	
 	usage?: Json;
 	/** Same story as usage. */
@@ -47,6 +51,18 @@ export interface ToolDefinition<TDetails = unknown> {
 	/** Reshape raw arguments before execute() sees them. */
 	prepareArguments?: (args: unknown) => unknown;
 	executionMode?: "sequential" | "parallel";
+	/**
+	 * How the model reaches the tool: declared to it (`direct`, the default), declared but never
+	 * callable from other tools (`model-only`), callable from other tools and listed by `codemode`
+	 * (`codemode`), callable and found by searching (`deferred`), or not at all (`hidden`).
+	 */
+	exposure?: "direct" | "model-only" | "codemode" | "deferred" | "hidden";
+	/** The group the tool belongs to; `instructions` are read on request, not listed. */
+	namespace?: { name: string; description?: string; instructions?: string };
+	/** Hints about what the tool does, with the meaning of MCP tool annotations. */
+	annotations?: { readOnlyHint?: boolean; destructiveHint?: boolean; idempotentHint?: boolean; openWorldHint?: boolean };
+	/** The JSON Schema of `structuredContent`. */
+	outputSchema?: Json;
 	execute: (
 		toolCallId: string,
 		params: unknown,
@@ -87,8 +103,41 @@ export interface ToolRenderContext {
 
 const running = new Map<string, AbortController>();
 
+/** What a tool called through `ctx.executeTool()` came to. */
+export interface ToolCallOutcome {
+	toolCall: { id: string; name: string; arguments: unknown };
+	result: ToolResult;
+	isError: boolean;
+}
 
-export async function runTool(id: string, tool: ToolDefinition, rawArguments: Json, ctx: unknown): Promise<void> {
+/**
+ * Give a tool's context the run's other tools: `ctx.tools` lists the tools it may call, and
+ * `ctx.executeTool()` calls one through the same checks as a call the model made.
+ */
+function withTools(id: string, ctx: unknown, callable: Json[]): unknown {
+	if (!ctx || typeof ctx !== "object") {
+		return ctx;
+	}
+	const context = ctx as Json;
+	context.tools = callable;
+	context.executeTool = async (name: string, args?: unknown): Promise<ToolCallOutcome> => {
+		const answer = await ask({ type: "request", request: "execute_tool", toolCallId: id, name, arguments: args ?? {} });
+		if (typeof answer.error === "string") {
+			throw new Error(answer.error);
+		}
+		return answer.outcome as ToolCallOutcome;
+	};
+	return context;
+}
+
+export async function runTool(
+	id: string,
+	tool: ToolDefinition,
+	rawArguments: Json,
+	ctx: unknown,
+	callable: Json[] = [],
+): Promise<void> {
+	ctx = withTools(id, ctx, callable);
 	let args: unknown = rawArguments;
 	if (tool.prepareArguments) {
 		try {
@@ -317,7 +366,7 @@ export function toolAnswer(value: unknown): Json {
 		const shape = value as Json;
 		const answer: Json = { content: normalizeContent(shape.content) };
 		
-		for (const carried of ["details", "usage", "addedToolNames", "terminate"] as const) {
+		for (const carried of ["details", "usage", "addedToolNames", "terminate", "structuredContent", "isError"] as const) {
 			if (carried in shape) {
 				answer[carried] = shape[carried];
 			}

@@ -152,6 +152,22 @@ impl Tree {
         &self.customs
     }
 
+    /// What was recorded beside the conversation along the current branch, oldest first: entries
+    /// recorded before the conversation began, and those hanging off an entry on the path, also
+    /// one a compaction has since summarized.
+    pub fn customs_on_path(&self) -> Vec<&CustomEntry> {
+        let path: std::collections::HashSet<String> = self.path_ids().into_iter().collect();
+        self.customs
+            .iter()
+            .filter(|custom| {
+                custom
+                    .parent_id
+                    .as_ref()
+                    .is_none_or(|parent| path.contains(parent))
+            })
+            .collect()
+    }
+
     /// Every compaction recorded, oldest first.
     pub fn compactions(&self) -> &[Compaction] {
         &self.compactions
@@ -520,6 +536,34 @@ mod tests {
         assert_eq!(tree.customs().len(), 1);
         assert_eq!(tree.customs()[0].custom_type, "note");
         assert_eq!(kept.parent_id.as_deref(), Some("1"));
+    }
+
+    /// Each branch sees what was kept along its own path, and nothing kept on another.
+    #[test]
+    fn what_was_kept_beside_a_branch_is_seen_from_that_branch_only() {
+        let mut tree = Tree::new();
+        tree.push_custom("note", serde_json::json!("before anything"));
+        tree.push(user("root"));
+        tree.push(user("left"));
+        tree.push_custom("note", serde_json::json!("on the left"));
+        tree.branch_from("1");
+        tree.push(user("right"));
+        tree.push_custom("note", serde_json::json!("on the right"));
+
+        let seen: Vec<&serde_json::Value> = tree
+            .customs_on_path()
+            .iter()
+            .map(|custom| &custom.data)
+            .collect();
+        assert_eq!(seen, vec!["before anything", "on the right"]);
+
+        tree.branch_from("2");
+        let seen: Vec<&serde_json::Value> = tree
+            .customs_on_path()
+            .iter()
+            .map(|custom| &custom.data)
+            .collect();
+        assert_eq!(seen, vec!["before anything", "on the left"]);
     }
 
     #[test]

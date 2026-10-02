@@ -81,12 +81,16 @@ pub async fn fit_message(message: Message, limits: ImageLimits) -> Message {
             content,
             is_error,
             timestamp,
+            nested_calls,
+            usage,
         } if has_images(&content) => Message::ToolResult {
             tool_call_id,
             tool_name,
             content: fit_off_thread(content, limits).await,
             is_error,
             timestamp,
+            nested_calls,
+            usage,
         },
         other => other,
     }

@@ -237,7 +237,10 @@ impl Servers {
 
         let connected = self.open(&entry).await;
         let tools = match connected {
-            Ok(client) => match client.tools().await {
+            Ok(client) => match client
+                .tools(entry.config.exposure(), entry.config.description.clone())
+                .await
+            {
                 Ok(tools) => Ok((client, tools)),
                 Err(error) => Err(error),
             },
@@ -507,8 +510,10 @@ impl Servers {
     }
 
     /// The `mcp_servers` system prompt section: the named servers, whose tools are not declared
-    /// to the model, each with a line on what it offers. `None` when there are none.
-    pub fn prompt_section(&self, undeclared: &[String]) -> Option<String> {
+    /// to the model, each with a line on what it offers, and how their tools are reached: from
+    /// `codemode` scripts when `codemode` is offered, and through `tool_search`. `None` when there
+    /// are none.
+    pub fn prompt_section(&self, undeclared: &[String], codemode: bool) -> Option<String> {
         let states = self.lock();
         let mut listed: Vec<(String, String)> = undeclared
             .iter()
@@ -521,8 +526,17 @@ impl Servers {
         }
         listed.sort();
 
-        let intro =
-            "MCP servers whose tools are not declared to you. Load their tools with `tool_search`.";
+        let intro = match codemode {
+            true => {
+                "MCP servers whose tools are not declared to you. Call their tools from `codemode` \
+                 scripts, finding them with `searchTools()` or `describeNamespace(\"<server>\")`, \
+                 or load them with `tool_search`."
+            }
+            false => {
+                "MCP servers whose tools are not declared to you. Load their tools with \
+                 `tool_search`."
+            }
+        };
         let omitted = |count: usize| match count {
             0 => Vec::new(),
             1 => vec!["- … 1 more server".to_string()],

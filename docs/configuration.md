@@ -125,6 +125,8 @@ Command-line options take precedence over environment variables, which take prec
 | `sandbox` | unset | Command policy; runtime default is `workspace-write`. |
 | `budget` | `0` | Session cost limit in USD. Zero disables it. |
 | `extensions` | `[]` | Additional extension paths or package sources. |
+| `codemode.mode` | `on` | `on` keeps declared tools declared while `codemode` is offered; `only` lists them in the `codemode` description instead. |
+| `codemode.inline_budget` | `3000` | Estimated tokens the tool declarations in the `codemode` description may use. |
 | `copy_on_select` | `true` | Copy text to the clipboard as soon as the mouse selects it. When off, `ctrl+x` copies the selection. |
 | `half_page_scroll` | `false` | Move the transcript half a page at a time with Page Up and Page Down. |
 | `external_editor` | unset | Command `ctrl+g` opens the prompt in, ahead of `$VISUAL` and `$EDITOR`, read the way a shell reads it, such as `"code --wait"`. |
@@ -200,6 +202,14 @@ Sets a per-session cost ceiling in US dollars. `0` disables the ceiling. The tot
 ### tool_search_threshold
 
 When extensions and MCP servers add more tools than this threshold, micro exposes them through `tool_search` instead of sending every tool definition on every request. The default is `15`. Set it to `0` to describe every tool directly.
+
+### codemode
+
+`codemode.mode` and `codemode.inline_budget` shape the [`codemode`](codemode.md) tool's description. With `only`, the tools micro would declare are left out of requests and listed for scripts instead.
+
+```json
+{ "codemode": { "mode": "only", "inline_budget": 3000 } }
+```
 
 ### Themes
 

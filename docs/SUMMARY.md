@@ -12,6 +12,7 @@
 - [Sessions](sessions.md)
 - [Tools and integrations](tools.md)
 - [MCP servers](mcp.md)
+- [Codemode](codemode.md)
 - [Project context](project-context.md)
 - [Providers and models](providers.md)
 - [Image and classifier models](models.md)

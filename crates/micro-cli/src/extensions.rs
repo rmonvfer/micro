@@ -532,16 +532,17 @@ fn resolve_scoped_models(patterns: &[String]) -> Value {
     Value::Array(matched)
 }
 
-/// The tool snippets and guidelines that went into the system prompt's tools section.
+/// The tool snippets and guidelines that went into the system prompt's tools section, with how
+/// each tool is reached.
 pub fn all_tools(
     registered: &[micro_extensions::Registered],
-    builtin: &[micro_types::ToolDefinition],
+    builtin: &[micro_tools::CallableTool],
     names: &[String],
 ) -> Value {
     let described: Vec<Value> = names
         .iter()
         .map(|name| {
-            let own = builtin.iter().find(|tool| &tool.name == name);
+            let own = builtin.iter().find(|tool| &tool.definition.name == name);
 
             let owner = registered
                 .iter()
@@ -555,12 +556,18 @@ pub fn all_tools(
                 "name": name,
                 "description": found
                     .map(|tool| tool.description.clone())
-                    .or_else(|| own.map(|tool| tool.description.clone()))
+                    .or_else(|| own.map(|tool| tool.definition.description.clone()))
                     .unwrap_or_default(),
                 "parameters": found
                     .map(|tool| tool.parameters.clone())
-                    .or_else(|| own.map(|tool| tool.parameters.clone()))
+                    .or_else(|| own.map(|tool| tool.definition.parameters.clone()))
                     .unwrap_or_else(|| json!({ "type": "object", "properties": {} })),
+                "exposure": own
+                    .map(|tool| tool.exposure)
+                    .unwrap_or_default()
+                    .name(),
+                "namespace": own.and_then(|tool| tool.namespace.clone()),
+                "annotations": own.and_then(|tool| tool.annotations),
                 "promptGuidelines": found
                     .map(|tool| tool.prompt_guidelines.clone())
                     .unwrap_or_default(),
@@ -2374,6 +2381,7 @@ mod tests {
             constrained_sampling: None,
             render_shell: None,
             execution_mode: None,
+            ..Default::default()
         };
         let also_offered = micro_extensions::RegisteredTool {
             name: "write".into(),
@@ -2385,6 +2393,7 @@ mod tests {
             constrained_sampling: None,
             render_shell: None,
             execution_mode: None,
+            ..Default::default()
         };
         let left_out = micro_extensions::RegisteredTool {
             name: "search".into(),
@@ -2396,6 +2405,7 @@ mod tests {
             constrained_sampling: None,
             render_shell: None,
             execution_mode: None,
+            ..Default::default()
         };
 
         let (snippets, guidelines) = tool_prompt_options(

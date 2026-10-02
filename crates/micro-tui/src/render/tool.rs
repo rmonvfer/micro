@@ -42,6 +42,9 @@ pub fn lines(
     if tool.has_custom_render() {
         return custom_lines(tool, focused, theme, width, surroundings.pad);
     }
+    if tool.name == "codemode" {
+        return super::codemode::lines(tool, focused, theme, width, surroundings.pad);
+    }
 
     let view = tools::view(
         &tool.name,
@@ -101,7 +104,7 @@ fn custom_lines(
     band(rows, width, pad, ground(tool, focused, theme))
 }
 
-fn ground(tool: &ToolEntry, focused: bool, theme: &Theme) -> Color {
+pub(super) fn ground(tool: &ToolEntry, focused: bool, theme: &Theme) -> Color {
     if focused {
         return theme.selected_bg;
     }
@@ -237,7 +240,12 @@ fn row_lines(row: &Row, theme: &Theme, width: usize, indent: usize) -> Vec<Line<
 }
 
 /// The affordance under a collapsed result: how much is hidden, and how to see it.
-fn hidden_line(hidden: usize, expanded: bool, focused: bool, theme: &Theme) -> Line<'static> {
+pub(super) fn hidden_line(
+    hidden: usize,
+    expanded: bool,
+    focused: bool,
+    theme: &Theme,
+) -> Line<'static> {
     let noun = if hidden == 1 { "line" } else { "lines" };
     let mut spans = vec![Span::styled(
         format!("… +{hidden} {noun}"),
