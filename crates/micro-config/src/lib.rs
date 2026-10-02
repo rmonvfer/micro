@@ -276,6 +276,10 @@ pub struct Config {
     /// How long a request may go without producing anything, in seconds.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub http_idle_timeout: Option<u64>,
+    /// The proxy every HTTP client micro builds goes through, as `HTTP_PROXY` and `HTTPS_PROXY`
+    /// would name it. Only the user's own settings file can set it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub http_proxy: Option<String>,
     /// Models this workspace may use, when it should not have the whole catalog.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub scoped_models: Option<Vec<String>>,
@@ -663,6 +667,7 @@ impl Config {
             follow_up_mode: take(&mut fields, "follow_up_mode", path)?,
             default_project_trust: take(&mut fields, "default_project_trust", path)?,
             http_idle_timeout: take(&mut fields, "http_idle_timeout", path)?,
+            http_proxy: take(&mut fields, "http_proxy", path)?,
             scoped_models: take(&mut fields, "scoped_models", path)?,
             mcp_servers: take(&mut fields, "mcp_servers", path)?,
             tool_search_threshold: take(&mut fields, "tool_search_threshold", path)?,
@@ -674,6 +679,37 @@ impl Config {
             extra: fields,
         };
         Ok(config)
+    }
+}
+
+/// The proxy variables a configured `http_proxy` supplies: `HTTP_PROXY` and `HTTPS_PROXY`, each
+/// only where the environment does not already name a proxy for that scheme in either case.
+pub fn proxy_variables(
+    configured: Option<&str>,
+    environment: impl Fn(&str) -> Option<String>,
+) -> Vec<(&'static str, String)> {
+    let Some(proxy) = configured.map(str::trim).filter(|proxy| !proxy.is_empty()) else {
+        return Vec::new();
+    };
+    let named = |variable: &str| {
+        [variable.to_string(), variable.to_lowercase()]
+            .iter()
+            .any(|name| environment(name).is_some_and(|value| !value.trim().is_empty()))
+    };
+    ["HTTP_PROXY", "HTTPS_PROXY"]
+        .into_iter()
+        .filter(|variable| !named(variable))
+        .map(|variable| (variable, proxy.to_string()))
+        .collect()
+}
+
+/// Route every HTTP client built after this through the configured `http_proxy`, leaving a proxy
+/// the environment already names alone.
+///
+/// Call it at startup, before any other thread reads the environment.
+pub fn apply_http_proxy(configured: Option<&str>) {
+    for (variable, proxy) in proxy_variables(configured, |name| std::env::var(name).ok()) {
+        std::env::set_var(variable, proxy);
     }
 }
 
@@ -798,6 +834,35 @@ mod tests {
     use std::collections::HashMap;
     use std::sync::atomic::AtomicU32;
     use std::sync::atomic::Ordering;
+
+    #[test]
+    fn a_configured_proxy_fills_both_schemes() {
+        let variables = proxy_variables(Some(" http://proxy:8080 "), |_| None);
+        assert_eq!(
+            variables,
+            vec![
+                ("HTTP_PROXY", "http://proxy:8080".to_string()),
+                ("HTTPS_PROXY", "http://proxy:8080".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_proxy_the_environment_names_is_left_alone() {
+        let variables = proxy_variables(Some("http://proxy:8080"), |name| {
+            (name == "https_proxy").then(|| "http://elsewhere:3128".to_string())
+        });
+        assert_eq!(
+            variables,
+            vec![("HTTP_PROXY", "http://proxy:8080".to_string())]
+        );
+    }
+
+    #[test]
+    fn no_configured_proxy_sets_nothing() {
+        assert!(proxy_variables(None, |_| None).is_empty());
+        assert!(proxy_variables(Some("  "), |_| None).is_empty());
+    }
 
     /// A directory of this process's own, so no test reads or writes a real config.
     fn scratch(label: &str) -> PathBuf {

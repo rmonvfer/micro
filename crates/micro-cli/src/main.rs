@@ -427,6 +427,12 @@ async fn main() -> Result<()> {
         &valued.iter().map(String::as_str).collect::<Vec<_>>(),
     );
     let cli = Cli::parse_from(mine);
+    micro_config::apply_http_proxy(
+        micro_config::Config::load()
+            .ok()
+            .and_then(|config| config.http_proxy)
+            .as_deref(),
+    );
 
     match &cli.command {
         Some(Command::Auth { action }) => {

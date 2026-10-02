@@ -111,6 +111,7 @@ Command-line options take precedence over environment variables, which take prec
 | `follow_up_mode` | `queue` | `queue` or `interrupt` for input submitted during a turn. |
 | `default_project_trust` | `ask` | `ask`, `always`, or `never`. |
 | `http_idle_timeout` | `120` | Seconds without provider output before a request fails. |
+| `http_proxy` | unset | Proxy URL applied as `HTTP_PROXY` and `HTTPS_PROXY` to micro's HTTP clients. |
 | `scoped_models` | `[]` | Model queries allowed in the workspace. Empty permits the full catalog. |
 | `mcp_servers` | `{}` | Named MCP server definitions. |
 | `tool_search_threshold` | `15` | Number of non-built-in tools included directly before `tool_search` is used. |
@@ -192,6 +193,14 @@ When extensions and MCP servers add more tools than this threshold, micro expose
 ### cache_miss_notices
 
 When enabled, micro reports turns that write a prompt cache without reading from it. Use `micro why-miss` for a local prefix and conversation diagnostic after the run.
+
+### http_proxy
+
+Routes micro's own HTTP traffic (provider requests, sign-in, model listings, sharing, and updates) through one proxy. At startup micro sets `HTTP_PROXY` and `HTTPS_PROXY` to this URL, except for a scheme whose variable the environment already sets in either case, so a proxy exported in the shell still wins. Commands the model runs inherit the same variables. The setting is read only from `config.json`, never from a project.
+
+```json
+{ "http_proxy": "http://proxy.internal:3128" }
+```
 
 ## auth.json
 
