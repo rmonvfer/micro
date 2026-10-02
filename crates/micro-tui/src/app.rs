@@ -399,6 +399,8 @@ pub struct App {
     selection: Option<crate::render::selection::Selection>,
     /// The last press of the mouse button: when, where, and how many presses in a row landed there.
     last_click: Option<(std::time::Instant, (u16, u16), u8)>,
+    /// Where the jump-to-latest label sits on screen while the conversation is scrolled up.
+    jump_label: Option<ratatui::layout::Rect>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -659,6 +661,7 @@ impl App {
             pending_completion_request: None,
             selection: None,
             last_click: None,
+            jump_label: None,
         };
 
         if let Some(notice) = notice {
@@ -2052,6 +2055,13 @@ impl App {
                 self.scroll_by(-3);
                 Outcome::Handled
             }
+            Action::JumpToLatest => match self.is_scrolled_up() {
+                true => {
+                    self.jump_to_latest();
+                    Outcome::Handled
+                }
+                false => self.edit(|editor| editor.move_line_end()),
+            },
 
             Action::FocusPrevious => self.move_focus(false),
             Action::FocusNext => self.move_focus(true),
@@ -2083,6 +2093,14 @@ impl App {
             }
             Action::PasteImage => self.paste_image(),
 
+            Action::SelectStart { col, row }
+                if self.jump_label.is_some_and(|label| {
+                    label.contains(ratatui::layout::Position { x: col, y: row })
+                }) =>
+            {
+                self.jump_to_latest();
+                Outcome::Handled
+            }
             Action::SelectStart { col, row } => {
                 let clicks = self.count_click((col, row));
                 self.selection = Some(crate::render::selection::Selection::at(
@@ -2570,7 +2588,9 @@ impl App {
                     overlay.selected = (overlay.selected + page).min(overlay.items.len() - 1)
                 }
                 Action::MoveLineStart => overlay.selected = 0,
-                Action::MoveLineEnd => overlay.selected = overlay.items.len() - 1,
+                Action::MoveLineEnd | Action::JumpToLatest => {
+                    overlay.selected = overlay.items.len() - 1
+                }
                 Action::Submit => {
                     overlay.detail_open = true;
                     overlay.scroll = 0;
@@ -2622,7 +2642,7 @@ impl App {
             Action::MoveWordLeft => overlay.editor.move_word_left(),
             Action::MoveWordRight => overlay.editor.move_word_right(),
             Action::MoveLineStart => overlay.editor.move_line_start(),
-            Action::MoveLineEnd => overlay.editor.move_line_end(),
+            Action::MoveLineEnd | Action::JumpToLatest => overlay.editor.move_line_end(),
             Action::MoveUp => {
                 overlay.editor.move_up(self.width);
             }
@@ -2742,9 +2762,30 @@ impl App {
         Outcome::Handled
     }
 
-    /// Rows a page moves: what is on screen, less enough to read across the seam.
+    /// Rows a page moves: what is on screen, less enough to read across the seam, or half of it when
+    /// the reader asked for half pages.
     fn page(&self) -> usize {
-        self.viewport.saturating_sub(PAGE_OVERLAP).max(1)
+        match self.settings.half_page_scroll {
+            true => (self.viewport / 2).max(1),
+            false => self.viewport.saturating_sub(PAGE_OVERLAP).max(1),
+        }
+    }
+
+    /// Whether the full-screen conversation is showing something older than its latest rows, which
+    /// is when it offers to jump back to them.
+    pub fn is_scrolled_up(&self) -> bool {
+        self.tui_mode == crate::TuiMode::Fullscreen && self.scroll > 0
+    }
+
+    /// Back to the latest message, following new output again.
+    fn jump_to_latest(&mut self) {
+        self.scroll = 0;
+        self.jump_label = None;
+    }
+
+    /// Where the jump-to-latest label was drawn on the last frame, for a click to land on.
+    pub fn set_jump_label(&mut self, area: Option<ratatui::layout::Rect>) {
+        self.jump_label = area;
     }
 
     /// Move the window back through the conversation.
@@ -5117,6 +5158,64 @@ mod tests {
             Some(Granularity::Character),
             "a click somewhere else starts over"
         );
+    }
+
+    fn scrolled_fullscreen_app(half_pages: bool) -> App {
+        let mut options = TuiOptions::default();
+        options.settings.half_page_scroll = half_pages;
+        let mut app = App::new(&[], options);
+        app.set_tui_mode(crate::TuiMode::Fullscreen);
+        for index in 0..40 {
+            app.transcript.push_user(format!("prompt {index}"));
+        }
+        app.set_frame(60, 24);
+        app.refresh_lines();
+        app.set_viewport(20);
+        app
+    }
+
+    #[test]
+    fn end_jumps_back_to_the_latest_message_only_when_scrolled_up() {
+        let mut app = scrolled_fullscreen_app(false);
+        type_text(&mut app, "draft");
+        app.handle(Action::MoveLineStart);
+
+        app.handle(Action::JumpToLatest);
+        assert_eq!(
+            app.editor.cursor(),
+            (0, 5),
+            "at the bottom it is the line end"
+        );
+
+        app.handle(Action::MoveLineStart);
+        app.handle(Action::PageUp);
+        assert!(app.is_scrolled_up());
+        app.handle(Action::JumpToLatest);
+        assert_eq!(app.scroll(), 0);
+        assert!(!app.is_scrolled_up());
+        assert_eq!(app.editor.cursor(), (0, 0), "the cursor stays put");
+    }
+
+    #[test]
+    fn a_click_on_the_jump_label_returns_to_the_latest_message() {
+        let mut app = scrolled_fullscreen_app(false);
+        app.handle(Action::PageUp);
+        app.set_jump_label(Some(ratatui::layout::Rect::new(10, 19, 30, 1)));
+
+        app.handle(Action::SelectStart { col: 12, row: 19 });
+        assert_eq!(app.scroll(), 0);
+        assert!(app.selection().is_none());
+    }
+
+    #[test]
+    fn half_page_scrolling_moves_half_the_viewport() {
+        let mut full = scrolled_fullscreen_app(false);
+        full.handle(Action::PageUp);
+        assert_eq!(full.scroll(), 20 - PAGE_OVERLAP);
+
+        let mut half = scrolled_fullscreen_app(true);
+        half.handle(Action::PageUp);
+        assert_eq!(half.scroll(), 10);
     }
 
     #[test]

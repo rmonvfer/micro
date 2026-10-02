@@ -50,6 +50,9 @@ pub enum Action {
     /// Move the conversation by a few lines, from the wheel or arrows.
     ScrollUp,
     ScrollDown,
+    /// End: back to the latest message when the conversation is scrolled up, otherwise the end of
+    /// the line.
+    JumpToLatest,
     /// Arm jump-to-char: the next printable key moves the cursor to it.
     ArmJump {
         forward: bool,
@@ -166,7 +169,7 @@ fn key_action(key: &KeyEvent) -> Action {
         KeyCode::PageDown => Action::PageDown,
 
         KeyCode::Home => Action::MoveLineStart,
-        KeyCode::End => Action::MoveLineEnd,
+        KeyCode::End => Action::JumpToLatest,
 
         KeyCode::Esc => Action::Cancel,
 
@@ -400,6 +403,15 @@ mod tests {
         assert_eq!(
             action_for(&key(KeyCode::Home, KeyModifiers::CONTROL)),
             Action::MoveLineStart
+        );
+    }
+
+    #[test]
+    fn end_asks_for_the_latest_message_and_control_e_for_the_line_end() {
+        assert_eq!(action_for(&plain(KeyCode::End)), Action::JumpToLatest);
+        assert_eq!(
+            action_for(&key(KeyCode::Char('e'), KeyModifiers::CONTROL)),
+            Action::MoveLineEnd
         );
     }
 

@@ -95,6 +95,11 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     let widgets_below = chrome.widgets_below;
 
     draw_transcript(frame, transcript_area, app, &opening, &theme);
+    let jump_label = match app.is_scrolled_up() {
+        true => draw_jump_label(frame, transcript_area, &theme),
+        false => None,
+    };
+    app.set_jump_label(jump_label);
     draw_rows(
         frame,
         overlay_area,
@@ -446,6 +451,39 @@ fn draw_transcript(
         theme,
         app.settings().scrollbar,
     );
+}
+
+/// What the label offering to return to the latest message says.
+const JUMP_LABEL: &str = "↓ Jump to latest message";
+
+/// The label on the transcript's bottom row that returns to the latest message, and where it went.
+fn draw_jump_label(frame: &mut Frame, area: Rect, theme: &Theme) -> Option<Rect> {
+    if area.width == 0 || area.height == 0 {
+        return None;
+    }
+    let key = hints::key_text("end");
+    let full = format!(" {JUMP_LABEL}  {key} ");
+    let text = match text_width(&full) <= area.width as usize {
+        true => full,
+        false => crate::wrap::truncate(&format!(" {JUMP_LABEL} "), area.width as usize),
+    };
+    let width = text_width(&text) as u16;
+    let label = Rect {
+        x: area.x + (area.width - width) / 2,
+        y: area.y + area.height - 1,
+        width,
+        height: 1,
+    };
+    frame.buffer_mut().set_string(
+        label.x,
+        label.y,
+        &text,
+        Style::new()
+            .fg(theme.accent)
+            .bg(theme.selected_bg)
+            .add_modifier(Modifier::BOLD),
+    );
+    Some(label)
 }
 
 /// How far through the conversation the window is, drawn down the right edge.
@@ -964,6 +1002,37 @@ mod tests {
                     .to_string()
             })
             .collect()
+    }
+
+    #[test]
+    fn a_scrolled_up_transcript_offers_to_jump_to_the_latest_message() {
+        let mut app = App::new(&[], TuiOptions::default());
+        app.set_tui_mode(crate::TuiMode::Fullscreen);
+        for index in 0..40 {
+            app.transcript.push_user(format!("prompt {index}"));
+        }
+        let mut terminal = Terminal::new(TestBackend::new(60, 20)).expect("backend");
+        terminal.draw(|frame| draw(frame, &mut app)).expect("draws");
+        assert!(!screen(&terminal).join("\n").contains("Jump to latest"));
+
+        app.handle(Action::PageUp);
+        terminal.draw(|frame| draw(frame, &mut app)).expect("draws");
+        let rows = screen(&terminal);
+        let row = rows
+            .iter()
+            .position(|row| row.contains("Jump to latest message"))
+            .expect("the label is drawn");
+        let column = rows[row].find("Jump").unwrap() as u16;
+
+        app.handle(Action::SelectStart {
+            col: column,
+            row: row as u16,
+        });
+        assert_eq!(
+            app.scroll(),
+            0,
+            "a click on it returns to the latest message"
+        );
     }
 
     #[test]

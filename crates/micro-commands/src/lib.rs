@@ -635,6 +635,11 @@ fn settings(context: &CommandContext<'_>) -> CommandOutcome {
             "/set copy_on_select",
         ),
         PickerItem::new(
+            "Half-page scrolling",
+            on_off(now.half_page_scroll),
+            "/set half_page_scroll",
+        ),
+        PickerItem::new(
             "Quiet startup",
             now.quiet_startup.to_string(),
             "/set quiet_startup",
@@ -872,6 +877,7 @@ fn settable(config: &micro_config::Config, name: &str) -> Option<Vec<PickerItem>
         }
         "clear_on_shrink" => switch(now.clear_on_shrink),
         "copy_on_select" => switch(now.copy_on_select),
+        "half_page_scroll" => switch(now.half_page_scroll),
         "steering_mode" => {
             let now = kebab(&format!("{:?}", now.steering_mode));
             vec![
@@ -1051,6 +1057,7 @@ fn describe(config: &micro_config::Config, name: &str) -> Option<String> {
             format!("terminal_progress is {} (on or off)", now.terminal_progress)
         }
         "copy_on_select" => format!("copy_on_select is {} (on or off)", now.copy_on_select),
+        "half_page_scroll" => format!("half_page_scroll is {} (on or off)", now.half_page_scroll),
         "quiet_startup" => format!(
             "quiet_startup is {} (on, off, or header)",
             now.quiet_startup
@@ -1163,6 +1170,7 @@ fn assign(config: &mut micro_config::Config, name: &str, value: &str) -> Result<
         "terminal_progress" => config.terminal_progress = Some(flag()?),
         "quiet_startup" => config.quiet_startup = Some(value.parse()?),
         "copy_on_select" => config.copy_on_select = Some(flag()?),
+        "half_page_scroll" => config.half_page_scroll = Some(flag()?),
         "collapse_changelog" => config.collapse_changelog = Some(flag()?),
         "warnings" => config.warnings = Some(flag()?),
         "cache_miss_notices" => config.cache_miss_notices = Some(flag()?),
@@ -1631,6 +1639,7 @@ mod tests {
             ("terminal_progress", "off"),
             ("quiet_startup", "header"),
             ("copy_on_select", "off"),
+            ("half_page_scroll", "on"),
             ("collapse_changelog", "on"),
             ("warnings", "off"),
             ("cache_miss_notices", "on"),
@@ -1658,6 +1667,7 @@ mod tests {
         assert_eq!(now.content_padding, 2);
         assert_eq!(now.output_pad, 0);
         assert!(!now.copy_on_select);
+        assert!(now.half_page_scroll);
         assert_eq!(now.quiet_startup, micro_config::QuietStartup::Header);
         assert_eq!(now.transport, "auto");
     }

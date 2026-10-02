@@ -121,6 +121,7 @@ Command-line options take precedence over environment variables, which take prec
 | `budget` | `0` | Session cost limit in USD. Zero disables it. |
 | `extensions` | `[]` | Additional extension paths or package sources. |
 | `copy_on_select` | `true` | Copy text to the clipboard as soon as the mouse selects it. When off, `ctrl+x` copies the selection. |
+| `half_page_scroll` | `false` | Move the transcript half a page at a time with Page Up and Page Down. |
 | `external_editor` | unset | Command `ctrl+g` opens the prompt in, ahead of `$VISUAL` and `$EDITOR`, read the way a shell reads it, such as `"code --wait"`. |
 | `terminal_hyperlinks` | `"auto"` | `true`, `false`, or `"auto"` to override OSC 8 hyperlink detection. |
 | `terminal_images` | `"auto"` | `"kitty"`, `"iterm2"`, `false`, or `"auto"` to override inline image protocol detection. |

@@ -480,6 +480,9 @@ pub struct Config {
     /// Put text on the clipboard as soon as the mouse selects it.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub copy_on_select: Option<bool>,
+    /// Move the conversation half a page at a time with the page keys.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub half_page_scroll: Option<bool>,
     /// Whether text can be made clickable, in place of what the terminal is detected to support.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub terminal_hyperlinks: Option<Capability>,
@@ -556,6 +559,7 @@ pub struct Settings {
     pub extensions: Vec<String>,
     pub external_editor: Option<String>,
     pub copy_on_select: bool,
+    pub half_page_scroll: bool,
     pub terminal_hyperlinks: Capability,
     pub terminal_images: ImageProtocolSetting,
     pub terminal_true_color: Capability,
@@ -621,6 +625,7 @@ impl Default for Settings {
             extensions: Vec::new(),
             external_editor: None,
             copy_on_select: true,
+            half_page_scroll: false,
             terminal_hyperlinks: Capability::Auto,
             terminal_images: ImageProtocolSetting::Auto,
             terminal_true_color: Capability::Auto,
@@ -824,6 +829,7 @@ impl Config {
                 .clone()
                 .filter(|command| !command.trim().is_empty()),
             copy_on_select: self.copy_on_select.unwrap_or(defaults.copy_on_select),
+            half_page_scroll: self.half_page_scroll.unwrap_or(defaults.half_page_scroll),
             terminal_hyperlinks: self
                 .terminal_hyperlinks
                 .unwrap_or(defaults.terminal_hyperlinks),
@@ -887,6 +893,7 @@ impl Config {
             extensions: take(&mut fields, "extensions", path)?,
             external_editor: take(&mut fields, "external_editor", path)?,
             copy_on_select: take(&mut fields, "copy_on_select", path)?,
+            half_page_scroll: take(&mut fields, "half_page_scroll", path)?,
             terminal_hyperlinks: take(&mut fields, "terminal_hyperlinks", path)?,
             terminal_images: take(&mut fields, "terminal_images", path)?,
             terminal_true_color: take(&mut fields, "terminal_true_color", path)?,
