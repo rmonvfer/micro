@@ -12,6 +12,7 @@
 - Title MCP tool calls `server/tool`.
 - Expose single MCP tools apart from their server with `toolExposure`, keyed by tool name or `*` pattern.
 - Check the `mcp_servers` system prompt section at the start of each prompt, and add a changed section to the conversation instead of rewriting the system prompt, so the cached prefix survives.
+- Keep deferred MCP tools that `tool_search` found callable after resuming a session: a call waits for its server to reconnect, and `default_tools` no longer hides tools that arrive from servers connecting in the background.
 - Append MCP servers' log messages and stdio servers' standard error to `mcp.log` in the data directory, rotated at 5 MB.
 - Retry connecting to an HTTP MCP server twice after a network failure or a transient status (408, 429, 5xx), and resume an answer stream that breaks off from its last event.
 - Add the `codemode` tool: the model writes JavaScript that runs in an embedded QuickJS sandbox and calls the other tools, side by side with `Promise.all`, and only the script's output reaches the model. Scripts get `text()`, `image()`, `console.*`, `exit()`, `store()`/`load()` kept per branch, `ALL_TOOLS`, `searchTools()`, `describeTool()`, and `describeNamespace()`, an `// @options:` line for `max_output_tokens` and `timeout_ms`, and errors that name close matches. Offer it with `--tools`; configure it with `codemode.mode` and `codemode.inline_budget`.

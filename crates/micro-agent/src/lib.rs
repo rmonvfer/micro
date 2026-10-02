@@ -1139,16 +1139,40 @@ impl Agent {
             .collect()
     }
 
+    /// A tool the model may call by name: one of the agent's own, unless something narrowed the
+    /// run to others, or one that arrived while the session ran and is found by searching.
     fn find_tool(&self, name: &str) -> Option<Arc<dyn Tool>> {
         let offered = self.offered_names();
-        if offered.is_some_and(|names| !names.iter().any(|offered| offered == name)) {
+        let own = self
+            .tools
+            .iter()
+            .find(|tool| tool.definition().name == name);
+        match own {
+            Some(_)
+                if offered.is_some_and(|names| !names.iter().any(|offered| offered == name)) =>
+            {
+                None
+            }
+            Some(tool) => Some(Arc::clone(tool)),
+            None => self.arrivals.as_ref()?.find(name),
+        }
+        .filter(|tool| tool.exposure() != ToolExposure::Hidden)
+    }
+
+    /// [`Self::find_tool`], waiting for a tool whose source is still on its way: a deferred
+    /// tool the conversation found before it was resumed is callable once its server
+    /// reconnects.
+    async fn resolve_tool(&self, name: &str) -> Option<Arc<dyn Tool>> {
+        if let Some(tool) = self.find_tool(name) {
+            return Some(tool);
+        }
+        if self.tools.iter().any(|tool| tool.definition().name == name) {
             return None;
         }
-        self.tools
-            .iter()
-            .find(|tool| tool.definition().name == name)
-            .cloned()
-            .or_else(|| self.arrivals.as_ref()?.find(name))
+        self.arrivals
+            .as_ref()?
+            .arriving(name)
+            .await
             .filter(|tool| tool.exposure() != ToolExposure::Hidden)
     }
 
@@ -1317,7 +1341,7 @@ impl Agent {
                             if let ToolDecision::Rewrite(replacement) = decision {
                                 arguments = replacement;
                             }
-                            match self.find_tool(&name) {
+                            match self.resolve_tool(&name).await {
                                 Some(tool) => runnable = Some(tool),
                                 None => settled = Some((format!("tool not found: {name}"), true)),
                             }
@@ -1840,6 +1864,35 @@ mod tests {
         async fn execute(&self, _arguments: &serde_json::Value) -> Result<String, String> {
             Ok(String::new())
         }
+    }
+
+    /// A tool the conversation found before it was resumed is called once its server is back,
+    /// whatever narrowed the agent's own tools.
+    #[tokio::test]
+    async fn a_call_waits_for_the_server_its_tool_comes_from() {
+        let arrivals = micro_tools::Arrivals::default();
+        let expected = arrivals.expect("mcp__docs");
+        let agent = Agent::new(
+            Arc::new(NoProvider),
+            vec![Arc::new(NamedTool("read"))],
+            Model::anthropic("test-model"),
+            "test-key",
+        )
+        .with_offered_tools(Arc::new(std::sync::RwLock::new(Some(vec![
+            "read".to_string()
+        ]))))
+        .with_arrivals(arrivals.clone());
+
+        let delivering = arrivals.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            delivering.add(vec![Arc::new(NamedTool("mcp__docs__look"))]);
+            drop(expected);
+        });
+
+        assert!(agent.find_tool("mcp__docs__look").is_none());
+        assert!(agent.resolve_tool("mcp__docs__look").await.is_some());
+        assert!(agent.resolve_tool("mcp__other__look").await.is_none());
     }
 
     /// A tool whose provider is gone is gone: the model stops being told about it, and it can no
