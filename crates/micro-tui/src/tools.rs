@@ -358,6 +358,11 @@ fn plain(subject: String, output: &str) -> ToolView {
     }
 }
 
+/// Whether a tool's subject is the path of the file or directory it acted on.
+pub fn names_a_file(name: &str) -> bool {
+    matches!(name, "read" | "write" | "edit" | "multi_edit" | "ls")
+}
+
 /// The one argument that says what a call is about.
 pub fn subject(name: &str, arguments: &Value) -> String {
     subject_text(name, arguments).trim().to_string()

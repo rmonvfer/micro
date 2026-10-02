@@ -47,6 +47,18 @@ macro_rules! tokens {
                 }
             }
 
+            /// Every color the theme holds, passed through `change`.
+            fn map_colors(self, change: impl Fn(Color) -> Color) -> Self {
+                Theme {
+                    name: self.name,
+                    $($field: change(self.$field),)*
+                    surface: change(self.surface),
+                    status: change(self.status),
+                    user: change(self.user),
+                    info_bg: change(self.info_bg),
+                }
+            }
+
             fn build(
                 name: &'static str,
                 lookup: impl Fn(&str) -> Color,
@@ -213,6 +225,18 @@ impl Theme {
     /// The name of the theme a file declares, without loading it as a palette.
     pub fn user_theme_name(contents: &str) -> Result<String, String> {
         custom::parse(contents, Theme::TOKEN_NAMES).map(|(name, _)| name)
+    }
+
+    /// The theme as a terminal without 24-bit color can show it: every RGB color moved to the
+    /// nearest entry in the 256-color palette.
+    pub fn for_color_depth(self, true_color: bool) -> Self {
+        if true_color {
+            return self;
+        }
+        self.map_colors(|color| match color {
+            Color::Rgb(r, g, b) => Color::Indexed(detect::rgb_to_ansi256((r, g, b))),
+            other => other,
+        })
     }
 
     pub fn body(&self) -> Style {
@@ -506,6 +530,29 @@ mod tests {
     fn the_user_label_borrows_the_border_color() {
         assert_eq!(Theme::dark().user, Theme::dark().border);
         assert_eq!(Theme::light().user, Theme::light().border);
+    }
+
+    #[test]
+    fn a_terminal_without_true_color_gets_the_nearest_palette_entries() {
+        let full = Theme::dark();
+        assert_eq!(full.for_color_depth(true), full);
+
+        let reduced = full.for_color_depth(false);
+        for name in Theme::TOKEN_NAMES {
+            assert!(
+                !matches!(reduced.token(name), Some(Color::Rgb(..))),
+                "{name} is still 24-bit"
+            );
+        }
+        assert!(!matches!(reduced.surface, Color::Rgb(..)));
+    }
+
+    #[test]
+    fn the_nearest_palette_entry_is_exact_where_one_exists() {
+        assert_eq!(detect::rgb_to_ansi256((0xff, 0x00, 0x00)), 196);
+        assert_eq!(detect::rgb_to_ansi256((0x00, 0x00, 0x00)), 16);
+        assert_eq!(detect::rgb_to_ansi256((0x80, 0x80, 0x80)), 244);
+        assert_eq!(detect::rgb_to_ansi256((0x5f, 0x87, 0xaf)), 67);
     }
 
     #[test]

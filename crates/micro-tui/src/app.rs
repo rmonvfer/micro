@@ -327,6 +327,8 @@ pub struct App {
     /// Answers taken in so far, so a cache notice knows there was a cache to read.
     answers: usize,
     hyperlinks: bool,
+    /// Whether the terminal shows 24-bit color, or needs every theme brought down to its palette.
+    true_color: bool,
     images: Option<ImageProtocol>,
     /// Where the images go on the frame just laid out, for the terminal to draw once the rows they
     /// sit on have landed.
@@ -564,7 +566,7 @@ fn git_branch(workspace: &std::path::Path) -> Option<String> {
 
 impl App {
     pub fn new(history: &[Message], options: TuiOptions) -> Self {
-        let capabilities = crate::capabilities::detect();
+        let capabilities = crate::capabilities::detect(&options.settings.terminal);
         let workspace = options.cwd;
         let branch = git_branch(&workspace);
         let notice = options.notice;
@@ -576,7 +578,10 @@ impl App {
             transcript,
             extension_commands,
             editor: Editor::new(),
-            theme: options.theme.unwrap_or_else(Theme::dark),
+            theme: options
+                .theme
+                .unwrap_or_else(Theme::dark)
+                .for_color_depth(capabilities.true_color),
             show_thinking: !options.settings.hide_thinking,
             thinking: options.thinking,
             context_window: options.context_window,
@@ -615,6 +620,7 @@ impl App {
             jump: None,
             answers: 0,
             hyperlinks: capabilities.hyperlinks,
+            true_color: capabilities.true_color,
 
             images: match options.settings.show_images {
                 true => capabilities.images,
@@ -688,7 +694,7 @@ impl App {
     }
 
     pub fn set_theme(&mut self, theme: Theme) {
-        self.theme = theme;
+        self.theme = theme.for_color_depth(self.true_color);
         self.cache.shape = None;
         self.refresh_inspection_body();
     }
@@ -1858,6 +1864,7 @@ impl App {
                 hidden_thinking_label: std::borrow::Cow::Owned(
                     self.hidden_thinking_label().to_string(),
                 ),
+                workspace: self.workspace.clone(),
             },
             &mut rendered,
             &mut self.cache.starts,
@@ -4736,7 +4743,9 @@ mod tests {
     /// The shape `getTheme` hands an extension back.
     #[test]
     fn a_theme_snapshot_can_be_set_back() {
-        let mut app = app();
+        let mut options = TuiOptions::default();
+        options.settings.terminal.true_color = micro_config::Capability::On;
+        let mut app = App::new(&[], options);
         let mut colors = serde_json::Map::new();
         for token in Theme::TOKEN_NAMES {
             colors.insert((*token).to_string(), serde_json::json!("#123456"));
@@ -4753,6 +4762,17 @@ mod tests {
             app.theme.accent,
             ratatui::style::Color::Rgb(0x12, 0x34, 0x56)
         );
+    }
+
+    #[test]
+    fn a_terminal_forced_to_its_palette_gets_every_theme_reduced() {
+        let mut options = TuiOptions::default();
+        options.settings.terminal.true_color = micro_config::Capability::Off;
+        let mut app = App::new(&[], options);
+        assert!(!matches!(app.theme.accent, Color::Rgb(..)));
+
+        app.set_theme(Theme::light());
+        assert!(!matches!(app.theme.accent, Color::Rgb(..)));
     }
 
     #[test]

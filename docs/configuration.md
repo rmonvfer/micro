@@ -119,6 +119,9 @@ Command-line options take precedence over environment variables, which take prec
 | `sandbox` | unset | Command policy; runtime default is `workspace-write`. |
 | `budget` | `0` | Session cost limit in USD. Zero disables it. |
 | `extensions` | `[]` | Additional extension paths or package sources. |
+| `terminal_hyperlinks` | `"auto"` | `true`, `false`, or `"auto"` to override OSC 8 hyperlink detection. |
+| `terminal_images` | `"auto"` | `"kitty"`, `"iterm2"`, `false`, or `"auto"` to override inline image protocol detection. |
+| `terminal_true_color` | `"auto"` | `true`, `false`, or `"auto"` to override 24-bit color detection. |
 
 Unknown keys are preserved when micro rewrites the file but have no effect in a version that does not recognize them.
 
@@ -188,6 +191,16 @@ Sets a per-session cost ceiling in US dollars. `0` disables the ceiling. The tot
 ### tool_search_threshold
 
 When extensions and MCP servers add more tools than this threshold, micro exposes them through `tool_search` instead of sending every tool definition on every request. The default is `15`. Set it to `0` to describe every tool directly.
+
+### Terminal capabilities
+
+micro detects whether the terminal takes OSC 8 hyperlinks, which inline image protocol it speaks, and whether it shows 24-bit color. A multiplexer or a remote session can hide what the terminal underneath supports, so `terminal_hyperlinks`, `terminal_images`, and `terminal_true_color` replace detection with a fixed answer. Force a capability only when every hop to the terminal supports it; unsupported escape sequences corrupt the screen. Without 24-bit color, every theme color is drawn with the nearest entry of the 256-color palette.
+
+```json
+{ "terminal_hyperlinks": true, "terminal_images": false }
+```
+
+Where hyperlinks work, the paths in `read`, `write`, `edit`, `multi_edit`, and `ls` titles open the file they name.
 
 ### cache_miss_notices
 

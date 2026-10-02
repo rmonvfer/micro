@@ -115,6 +115,7 @@ pub async fn run_with(
     let mut screen = Screen::enter(options.tui_mode)?;
     set_terminal_title(&workspace_title(&options.cwd));
 
+    let _ = IMAGES_IN_USE.set(capabilities::detect(&options.settings.terminal).images);
     background::prime();
     options.theme = Some(options.theme.unwrap_or_else(background::detect_theme));
     let mode = options.tui_mode;
@@ -1869,8 +1870,17 @@ fn vacated_blanks(shown: &[Placement], drawn: &ratatui::buffer::Buffer) -> Strin
     out
 }
 
+/// The image protocol the running interface draws with, for whatever tears the terminal down to
+/// erase what it drew.
+static IMAGES_IN_USE: std::sync::OnceLock<Option<capabilities::ImageProtocol>> =
+    std::sync::OnceLock::new();
+
 fn leave() {
-    if let Some(protocol) = capabilities::detect().images {
+    let images = IMAGES_IN_USE
+        .get()
+        .copied()
+        .unwrap_or_else(|| capabilities::detect(&capabilities::Overrides::default()).images);
+    if let Some(protocol) = images {
         if let Some(escape) = images::forget_all(protocol) {
             use std::io::Write as _;
             let mut out = std::io::stdout();

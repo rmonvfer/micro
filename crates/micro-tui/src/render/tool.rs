@@ -2,6 +2,8 @@
 
 use crate::diff;
 use crate::diff::DiffLine;
+use crate::render::links::file_url;
+use crate::render::links::Links;
 use crate::render::transcript::band;
 use crate::theme::Theme;
 use crate::tools;
@@ -14,6 +16,7 @@ use ratatui::style::Modifier;
 use ratatui::style::Style;
 use ratatui::text::Line;
 use ratatui::text::Span;
+use std::path::Path;
 
 /// Columns a row is inset by when it is drawn under a heading of its own, as it is inside an
 /// approval prompt.
@@ -21,7 +24,19 @@ const INDENT: usize = 2;
 /// Width of the line-number column beside a search hit.
 const NUMBER_WIDTH: usize = 5;
 
-pub fn lines(tool: &ToolEntry, focused: bool, theme: &Theme, width: usize) -> Vec<Line<'static>> {
+/// Where clickable paths are recorded, and what relative ones are resolved against.
+pub struct Linking<'a> {
+    pub links: &'a mut Links,
+    pub workspace: &'a Path,
+}
+
+pub fn lines(
+    tool: &ToolEntry,
+    focused: bool,
+    theme: &Theme,
+    width: usize,
+    linking: &mut Linking<'_>,
+) -> Vec<Line<'static>> {
     if tool.has_custom_render() {
         return custom_lines(tool, focused, theme, width);
     }
@@ -34,7 +49,7 @@ pub fn lines(tool: &ToolEntry, focused: bool, theme: &Theme, width: usize) -> Ve
     );
 
     let listed = tool.expanded && !view.arguments.is_empty();
-    let mut rows = header(tool, &view, !listed, width, theme);
+    let mut rows = header(tool, &view, !listed, width, theme, linking);
     if listed {
         for argument in &view.arguments {
             rows.extend(wrap_spans_hard(
@@ -102,6 +117,7 @@ fn header(
     with_subject: bool,
     width: usize,
     theme: &Theme,
+    linking: &mut Linking<'_>,
 ) -> Vec<Line<'static>> {
     let mut spans = vec![Span::styled(
         tool.name.clone(),
@@ -111,11 +127,15 @@ fn header(
     )];
 
     if with_subject && !view.subject.is_empty() {
+        let style = Style::new().fg(theme.accent);
+        let style = match tools::names_a_file(&tool.name) {
+            true => linking
+                .links
+                .mark(style, file_url(&view.subject, linking.workspace)),
+            false => style,
+        };
         spans.push(Span::raw(" "));
-        spans.push(Span::styled(
-            view.subject.clone(),
-            Style::new().fg(theme.accent),
-        ));
+        spans.push(Span::styled(view.subject.clone(), style));
     }
     let output = Style::new().fg(theme.tool_output);
     match &view.detail {
@@ -232,6 +252,56 @@ mod tests {
     use super::*;
     use crate::wrap::text_width;
     use serde_json::json;
+
+    /// The call drawn for a terminal that takes no hyperlinks.
+    fn lines(tool: &ToolEntry, focused: bool, theme: &Theme, width: usize) -> Vec<Line<'static>> {
+        super::lines(
+            tool,
+            focused,
+            theme,
+            width,
+            &mut Linking {
+                links: &mut Links::disabled(),
+                workspace: Path::new("/work"),
+            },
+        )
+    }
+
+    #[test]
+    fn a_file_tool_links_its_path_and_other_tools_do_not() {
+        let theme = Theme::dark();
+        let mut links = Links::new();
+        let tool = entry("read", json!({ "path": "src/a.rs" }), Some("one"));
+        let out = super::lines(
+            &tool,
+            false,
+            &theme,
+            60,
+            &mut Linking {
+                links: &mut links,
+                workspace: Path::new("/work"),
+            },
+        );
+        assert_eq!(links.url(0), Some("file:///work/src/a.rs"));
+        assert!(out
+            .iter()
+            .flat_map(|line| &line.spans)
+            .any(|span| span.content == "src/a.rs" && span.style.underline_color.is_some()));
+
+        let mut links = Links::new();
+        let tool = entry("bash", json!({ "command": "ls" }), Some("a"));
+        super::lines(
+            &tool,
+            false,
+            &theme,
+            60,
+            &mut Linking {
+                links: &mut links,
+                workspace: Path::new("/work"),
+            },
+        );
+        assert!(links.is_empty());
+    }
 
     fn entry(name: &str, arguments: serde_json::Value, output: Option<&str>) -> ToolEntry {
         ToolEntry {

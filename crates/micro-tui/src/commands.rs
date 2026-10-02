@@ -280,6 +280,8 @@ pub struct Preferences {
     pub double_escape: DoubleEscape,
     /// Send a prompt written mid-answer straight away, interrupting what is running.
     pub follow_up_interrupts: bool,
+    /// What the user said the terminal supports, in place of what it is detected to.
+    pub terminal: crate::capabilities::Overrides,
 }
 
 impl Default for Preferences {
@@ -305,6 +307,7 @@ impl Default for Preferences {
             cache_miss_notices: false,
             double_escape: DoubleEscape::Tree,
             follow_up_interrupts: false,
+            terminal: crate::capabilities::Overrides::default(),
         }
     }
 }
@@ -350,6 +353,7 @@ impl From<&micro_config::Settings> for Preferences {
                 micro_config::ExitOutput::ResumeHint => ExitOutput::ResumeHint,
             },
             clear_on_shrink: settings.clear_on_shrink,
+            terminal: crate::capabilities::Overrides::from_settings(settings),
         }
     }
 }

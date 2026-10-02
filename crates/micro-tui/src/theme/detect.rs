@@ -100,6 +100,30 @@ pub fn ansi256_to_rgb(index: u8) -> (u8, u8, u8) {
     (gray as u8, gray as u8, gray as u8)
 }
 
+/// The 256-color palette index nearest an RGB color, from the color cube and the gray ramp, whose
+/// values are fixed, rather than the first sixteen, which each terminal sets for itself.
+pub fn rgb_to_ansi256((r, g, b): (u8, u8, u8)) -> u8 {
+    let distance = |index: u8| {
+        let (x, y, z) = ansi256_to_rgb(index);
+        let delta = |a: u8, b: u8| (a as i32 - b as i32).pow(2);
+        delta(r, x) + delta(g, y) + delta(b, z)
+    };
+    let level = |channel: u8| match channel {
+        0..=47 => 0,
+        48..=114 => 1,
+        value => (value as u16 - 35) / 40,
+    } as u8;
+    let cube = 16 + 36 * level(r) + 6 * level(g) + level(b);
+
+    let average = (r as u16 + g as u16 + b as u16) / 3;
+    let gray = 232 + (average.saturating_sub(3) / 10).min(23) as u8;
+
+    match distance(gray) < distance(cube) {
+        true => gray,
+        false => cube,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

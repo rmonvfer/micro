@@ -34,6 +34,8 @@ pub struct Display {
     pub resize_images: bool,
     /// What a folded reasoning block collapses to.
     pub hidden_thinking_label: Cow<'static, str>,
+    /// The directory relative paths in tool calls are resolved against.
+    pub workspace: std::path::PathBuf,
 }
 
 /// The transcript as drawn, with the first line of each entry.
@@ -103,6 +105,10 @@ pub fn append(
                 display.focus == Some(index),
                 theme,
                 display.width,
+                &mut tool::Linking {
+                    links,
+                    workspace: &display.workspace,
+                },
             )),
             Entry::Compaction { summary, expanded } => {
                 push_compaction(out, summary, *expanded, theme, display)
@@ -411,6 +417,7 @@ mod tests {
             image_width: 40,
             resize_images: true,
             hidden_thinking_label: Cow::Borrowed("Thinking..."),
+            workspace: std::path::PathBuf::from("/work"),
         }
     }
 

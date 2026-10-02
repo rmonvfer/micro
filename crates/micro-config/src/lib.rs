@@ -187,6 +187,101 @@ pub enum Mermaid {
     Streaming,
 }
 
+/// Whether a terminal capability is taken from detection or forced, written `true`, `false`, or
+/// `"auto"`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(try_from = "Value", into = "Value")]
+pub enum Capability {
+    /// Whatever the terminal is detected to support.
+    #[default]
+    Auto,
+    /// Supported, whatever detection says.
+    On,
+    /// Unsupported, whatever detection says.
+    Off,
+}
+
+impl Capability {
+    /// The capability in force, given what detection found.
+    pub fn applied_to(self, detected: bool) -> bool {
+        match self {
+            Capability::Auto => detected,
+            Capability::On => true,
+            Capability::Off => false,
+        }
+    }
+}
+
+impl TryFrom<Value> for Capability {
+    type Error = String;
+
+    fn try_from(value: Value) -> std::result::Result<Self, Self::Error> {
+        match value {
+            Value::Bool(true) => Ok(Capability::On),
+            Value::Bool(false) => Ok(Capability::Off),
+            Value::String(word) if word.eq_ignore_ascii_case("auto") => Ok(Capability::Auto),
+            other => Err(format!("expected true, false, or \"auto\", found {other}")),
+        }
+    }
+}
+
+impl From<Capability> for Value {
+    fn from(capability: Capability) -> Self {
+        match capability {
+            Capability::Auto => Value::from("auto"),
+            Capability::On => Value::Bool(true),
+            Capability::Off => Value::Bool(false),
+        }
+    }
+}
+
+/// How the terminal draws images, written `"kitty"`, `"iterm2"`, `false`, or `"auto"`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(try_from = "Value", into = "Value")]
+pub enum ImageProtocolSetting {
+    /// Whatever the terminal is detected to speak.
+    #[default]
+    Auto,
+    /// Kitty's graphics protocol.
+    Kitty,
+    /// iTerm2's inline image escape.
+    ITerm2,
+    /// No images at all.
+    Off,
+}
+
+impl TryFrom<Value> for ImageProtocolSetting {
+    type Error = String;
+
+    fn try_from(value: Value) -> std::result::Result<Self, Self::Error> {
+        let word = match &value {
+            Value::Bool(false) => return Ok(ImageProtocolSetting::Off),
+            Value::String(word) => word.to_ascii_lowercase(),
+            _ => String::new(),
+        };
+        match word.as_str() {
+            "auto" => Ok(ImageProtocolSetting::Auto),
+            "kitty" => Ok(ImageProtocolSetting::Kitty),
+            "iterm2" => Ok(ImageProtocolSetting::ITerm2),
+            "none" | "off" => Ok(ImageProtocolSetting::Off),
+            _ => Err(format!(
+                "expected \"kitty\", \"iterm2\", false, or \"auto\", found {value}"
+            )),
+        }
+    }
+}
+
+impl From<ImageProtocolSetting> for Value {
+    fn from(setting: ImageProtocolSetting) -> Self {
+        match setting {
+            ImageProtocolSetting::Auto => Value::from("auto"),
+            ImageProtocolSetting::Kitty => Value::from("kitty"),
+            ImageProtocolSetting::ITerm2 => Value::from("iterm2"),
+            ImageProtocolSetting::Off => Value::Bool(false),
+        }
+    }
+}
+
 /// The config file, as it is written on disk.
 #[derive(Debug, Clone, Default, PartialEq, Serialize)]
 pub struct Config {
@@ -301,6 +396,15 @@ pub struct Config {
     /// Extensions to load beyond the ones found in the project and the home directory.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub extensions: Option<Vec<String>>,
+    /// Whether text can be made clickable, in place of what the terminal is detected to support.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub terminal_hyperlinks: Option<Capability>,
+    /// How images are drawn, in place of what the terminal is detected to speak.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub terminal_images: Option<ImageProtocolSetting>,
+    /// Whether colors are written as 24-bit, in place of what the terminal is detected to support.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub terminal_true_color: Option<Capability>,
 
     /// Keys written by a version that knew more than this one.
     #[serde(flatten)]
@@ -365,6 +469,9 @@ pub struct Settings {
     /// What one session may spend before it stops, in US dollars.
     pub budget: f64,
     pub extensions: Vec<String>,
+    pub terminal_hyperlinks: Capability,
+    pub terminal_images: ImageProtocolSetting,
+    pub terminal_true_color: Capability,
 }
 
 /// The widest an image is drawn when nothing says otherwise.
@@ -424,6 +531,9 @@ impl Default for Settings {
             sandbox: None,
             budget: 0.0,
             extensions: Vec::new(),
+            terminal_hyperlinks: Capability::Auto,
+            terminal_images: ImageProtocolSetting::Auto,
+            terminal_true_color: Capability::Auto,
         }
     }
 }
@@ -618,6 +728,13 @@ impl Config {
 
             budget: self.budget.unwrap_or(defaults.budget).max(0.0),
             extensions: self.extensions.clone().unwrap_or(defaults.extensions),
+            terminal_hyperlinks: self
+                .terminal_hyperlinks
+                .unwrap_or(defaults.terminal_hyperlinks),
+            terminal_images: self.terminal_images.unwrap_or(defaults.terminal_images),
+            terminal_true_color: self
+                .terminal_true_color
+                .unwrap_or(defaults.terminal_true_color),
         })
     }
 
@@ -671,6 +788,9 @@ impl Config {
             sandbox: take(&mut fields, "sandbox", path)?,
             budget: take(&mut fields, "budget", path)?,
             extensions: take(&mut fields, "extensions", path)?,
+            terminal_hyperlinks: take(&mut fields, "terminal_hyperlinks", path)?,
+            terminal_images: take(&mut fields, "terminal_images", path)?,
+            terminal_true_color: take(&mut fields, "terminal_true_color", path)?,
             extra: fields,
         };
         Ok(config)
@@ -1128,6 +1248,54 @@ mod tests {
             Thinking::Medium.to_string().parse::<Thinking>().unwrap(),
             Thinking::Medium
         );
+    }
+
+    #[test]
+    fn terminal_capabilities_are_detected_or_forced() {
+        let path = scratch("capabilities").join("config.json");
+        fs::write(
+            &path,
+            r#"{"terminal_hyperlinks": false, "terminal_images": "iterm2", "terminal_true_color": "auto"}"#,
+        )
+        .unwrap();
+
+        let settings = Config::load_from(&path)
+            .unwrap()
+            .resolve(&Overrides::default(), no_environment)
+            .unwrap();
+        assert_eq!(settings.terminal_hyperlinks, Capability::Off);
+        assert_eq!(settings.terminal_images, ImageProtocolSetting::ITerm2);
+        assert_eq!(settings.terminal_true_color, Capability::Auto);
+        assert!(!settings.terminal_hyperlinks.applied_to(true));
+        assert!(settings.terminal_true_color.applied_to(true));
+
+        fs::write(&path, r#"{"terminal_images": false}"#).unwrap();
+        assert_eq!(
+            Config::load_from(&path).unwrap().terminal_images,
+            Some(ImageProtocolSetting::Off)
+        );
+
+        fs::write(&path, r#"{"terminal_true_color": "sometimes"}"#).unwrap();
+        let error = Config::load_from(&path).unwrap_err().to_string();
+        assert!(error.contains("field `terminal_true_color`"), "{error}");
+    }
+
+    #[test]
+    fn a_forced_capability_is_written_the_way_it_is_read() {
+        let path = scratch("capabilities-save").join("config.json");
+        let config = Config {
+            terminal_hyperlinks: Some(Capability::On),
+            terminal_images: Some(ImageProtocolSetting::Off),
+            ..Config::default()
+        };
+        config.save_to(&path).unwrap();
+        let written = fs::read_to_string(&path).unwrap();
+        assert!(
+            written.contains(r#""terminal_hyperlinks": true"#),
+            "{written}"
+        );
+        assert!(written.contains(r#""terminal_images": false"#), "{written}");
+        assert_eq!(Config::load_from(&path).unwrap(), config);
     }
 
     #[test]
