@@ -65,6 +65,52 @@ pub fn client_for(api: WireApi, provider: &str) -> Arc<dyn Provider> {
 
         WireApi::OpenaiResponses => Arc::new(Codex::for_provider(canonical_provider(provider))),
         WireApi::OpenaiCompletions => Arc::new(OpenAi::for_provider(canonical_provider(provider))),
+
+        WireApi::OpenrouterImages
+        | WireApi::TypesafeSystemOne
+        | WireApi::CloudflareWorkersAiSystemOne
+        | WireApi::LlamaCppClassify => Arc::new(NotForChat {
+            provider: provider.to_string(),
+            api,
+        }),
+    }
+}
+
+/// What a conversation is handed when the model it named only generates images or classifies:
+/// a client that says so on every request rather than sending one the service would refuse.
+struct NotForChat {
+    provider: String,
+    api: WireApi,
+}
+
+impl Provider for NotForChat {
+    fn name(&self) -> &str {
+        &self.provider
+    }
+
+    fn stream(
+        &self,
+        model: micro_types::Model,
+        _context: micro_types::Context,
+        _api_key: String,
+    ) -> tokio::sync::mpsc::UnboundedReceiver<micro_types::StreamEvent> {
+        crate::error_stream(format!(
+            "{}/{} is {} model, not a chat model",
+            model.provider,
+            model.id,
+            match self.api.model_type() {
+                micro_models::ModelType::Image => "an image",
+                _ => "a classifier",
+            }
+        ))
+    }
+
+    fn payload(
+        &self,
+        _model: &micro_types::Model,
+        _context: &micro_types::Context,
+    ) -> serde_json::Value {
+        serde_json::Value::Null
     }
 }
 
@@ -124,14 +170,7 @@ mod tests {
                 "api": "{}",
                 "models": [{{"id": "a-model"}}]
             }}}}}}"#,
-            match api {
-                WireApi::AnthropicMessages => "anthropic-messages",
-                WireApi::GoogleGenerativeAi => "google-generative-ai",
-                WireApi::OpenaiResponses => "openai-responses",
-                WireApi::OpenaiCompletions => "openai-completions",
-                WireApi::BedrockConverseStream => "bedrock-converse-stream",
-                WireApi::GoogleVertex => "google-vertex",
-            }
+            micro_models::wire_api_name(api)
         ))
         .unwrap();
         catalog.get(provider, "a-model").unwrap().clone()
