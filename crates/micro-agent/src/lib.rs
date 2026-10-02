@@ -180,6 +180,16 @@ impl Steering {
         all
     }
 
+    /// Take everything waiting, steering messages and follow-ups apart, for a caller handing the
+    /// queue back to whoever wrote it.
+    pub fn take_queued(&self) -> (Vec<Message>, Vec<Message>) {
+        let mut held = self.lock();
+        (
+            std::mem::take(&mut held.steering),
+            std::mem::take(&mut held.follow_up),
+        )
+    }
+
     fn take_steering(&self) -> Vec<Message> {
         std::mem::take(&mut self.lock().steering)
     }
