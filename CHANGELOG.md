@@ -2,6 +2,7 @@
 
 ## [Unreleased]
 
+- Search the fullscreen transcript with `ctrl+f`: matches are highlighted, `enter` and `shift+enter` step between them, and `escape` closes the search.
 - Show a clickable jump-to-latest label while the fullscreen transcript is scrolled up, return with `end`, and add `half_page_scroll` for half-page Page Up and Page Down.
 - Select a word with a double click and a paragraph with a triple click, copy the active selection with `ctrl+x`, and add `copy_on_select` to turn off automatic selection copy.
 - Add `external_editor` to choose the `ctrl+g` editor ahead of `$VISUAL` and `$EDITOR`, and run editor commands that carry arguments.

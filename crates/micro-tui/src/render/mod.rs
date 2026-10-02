@@ -6,6 +6,7 @@ pub mod links;
 mod menu;
 mod overlay;
 pub mod pictures;
+mod search;
 pub mod selection;
 pub mod status;
 mod tool;
@@ -67,6 +68,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     app.set_viewport(transcript_rows as usize);
 
     app.refresh_lines();
+    app.refresh_search();
 
     let quiet = app.settings().quiet_startup;
     let opening = match app.lines().is_empty() && quiet.shows_header() {
@@ -95,6 +97,10 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     let widgets_below = chrome.widgets_below;
 
     draw_transcript(frame, transcript_area, app, &opening, &theme);
+    if let Some(found) = app.search() {
+        search::highlight(frame, transcript_area, app, found, &theme);
+        search::draw_box(frame, transcript_area, found, &theme);
+    }
     let jump_label = match app.is_scrolled_up() {
         true => draw_jump_label(frame, transcript_area, &theme),
         false => None,
@@ -583,7 +589,7 @@ const HINTS: [(&str, &str); 5] = [
 ];
 
 /// Every key, for the reader who asked for all of them.
-const ALL_HINTS: [(&str, &str); 19] = [
+const ALL_HINTS: [(&str, &str); 21] = [
     ("escape", "to interrupt"),
     ("ctrl+c", "to clear"),
     ("ctrl+c twice", "to exit"),
@@ -596,6 +602,8 @@ const ALL_HINTS: [(&str, &str); 19] = [
     ("ctrl+o", "to expand tools"),
     ("ctrl+t", "to expand thinking"),
     ("ctrl+g", "for external editor"),
+    ("ctrl+f", "to search the transcript"),
+    ("ctrl+x", "to copy the selection or last answer"),
     ("/", "for commands"),
     ("!", "to run bash"),
     ("!!", "to run bash (no context)"),

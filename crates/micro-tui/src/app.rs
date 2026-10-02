@@ -401,6 +401,11 @@ pub struct App {
     last_click: Option<(std::time::Instant, (u16, u16), u8)>,
     /// Where the jump-to-latest label sits on screen while the conversation is scrolled up.
     jump_label: Option<ratatui::layout::Rect>,
+    /// The open transcript search, holding the keyboard for its query.
+    search: Option<crate::search::Search>,
+    /// Counts every time the transcript's rows are laid out again, so a search knows its matches
+    /// are stale.
+    lines_version: u64,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -662,6 +667,8 @@ impl App {
             selection: None,
             last_click: None,
             jump_label: None,
+            search: None,
+            lines_version: 0,
         };
 
         if let Some(notice) = notice {
@@ -1923,6 +1930,7 @@ impl App {
         }
 
         let grew = rendered.lines.len().saturating_sub(was);
+        self.lines_version += 1;
         self.cache.shape = Some(shape);
         self.cache.rendered = rendered;
         if self.scroll > 0 {
@@ -1957,6 +1965,13 @@ impl App {
         if self.extension_editor.is_some() {
             return self.handle_extension_editor(action);
         }
+        let action = match self.search.is_some() {
+            true => match self.handle_search(action) {
+                Ok(outcome) => return outcome,
+                Err(action) => action,
+            },
+            false => action,
+        };
 
         if let Some(forward) = self.jump {
             if let Action::Insert(text) = &action {
@@ -2055,6 +2070,14 @@ impl App {
                 self.scroll_by(-3);
                 Outcome::Handled
             }
+            Action::Find => match self.tui_mode {
+                crate::TuiMode::Fullscreen => {
+                    self.search = Some(crate::search::Search::new(self.first_visible_row()));
+                    Outcome::Handled
+                }
+                crate::TuiMode::Inline => self.edit(|editor| editor.move_right()),
+            },
+            Action::FindPrevious => Outcome::ExternalEditor,
             Action::JumpToLatest => match self.is_scrolled_up() {
                 true => {
                     self.jump_to_latest();
@@ -2638,7 +2661,7 @@ impl App {
             Action::DeleteToLineStart => overlay.editor.delete_to_line_start(),
             Action::DeleteToLineEnd => overlay.editor.delete_to_line_end(),
             Action::MoveLeft => overlay.editor.move_left(),
-            Action::MoveRight => overlay.editor.move_right(),
+            Action::MoveRight | Action::Find => overlay.editor.move_right(),
             Action::MoveWordLeft => overlay.editor.move_word_left(),
             Action::MoveWordRight => overlay.editor.move_word_right(),
             Action::MoveLineStart => overlay.editor.move_line_start(),
@@ -2781,6 +2804,71 @@ impl App {
     fn jump_to_latest(&mut self) {
         self.scroll = 0;
         self.jump_label = None;
+    }
+
+    /// The open transcript search, if there is one.
+    pub fn search(&self) -> Option<&crate::search::Search> {
+        self.search.as_ref()
+    }
+
+    /// The first transcript row in view.
+    fn first_visible_row(&self) -> usize {
+        self.cache
+            .rendered
+            .lines
+            .len()
+            .saturating_sub(self.viewport)
+            .saturating_sub(self.scroll)
+    }
+
+    /// Answer a key while the search holds the keyboard, handing back what it leaves to the rest
+    /// of the interface: scrolling, the mouse, and interrupting.
+    fn handle_search(&mut self, action: Action) -> Result<Outcome, Action> {
+        let Some(search) = self.search.as_mut() else {
+            return Err(action);
+        };
+        match action {
+            Action::Insert(text) | Action::Paste(text) => search.push(&text),
+            Action::Backspace => search.pop(),
+            Action::DeleteToLineStart | Action::DeleteWordBefore => search.clear(),
+            Action::Submit | Action::ExternalEditor | Action::MoveDown => search.next(),
+            Action::Newline | Action::FindPrevious | Action::MoveUp => search.previous(),
+            Action::Cancel | Action::Find => self.search = None,
+            Action::PageUp
+            | Action::PageDown
+            | Action::ScrollUp
+            | Action::ScrollDown
+            | Action::JumpToLatest
+            | Action::SelectStart { .. }
+            | Action::SelectDrag { .. }
+            | Action::SelectEnd { .. }
+            | Action::Interrupt
+            | Action::Resize
+            | Action::Suspend => return Err(action),
+            _ => {}
+        }
+        Ok(Outcome::Handled)
+    }
+
+    /// Bring the open search up to date with the rows just laid out, scrolling its selected match
+    /// into view when it has moved.
+    pub fn refresh_search(&mut self) {
+        let Some(search) = self.search.as_mut() else {
+            return;
+        };
+        let Some((first, last)) = search.refresh(&self.cache.rendered.lines, self.lines_version)
+        else {
+            return;
+        };
+        let total = self.cache.rendered.lines.len();
+        let viewport = self.viewport.max(1);
+        let top = self.first_visible_row();
+        if first >= top && last < top + viewport {
+            return;
+        }
+        let wanted_top = first.saturating_sub(viewport / 3);
+        self.scroll = total.saturating_sub(viewport).saturating_sub(wanted_top);
+        self.clamp_scroll();
     }
 
     /// Where the jump-to-latest label was drawn on the last frame, for a click to land on.
@@ -5216,6 +5304,69 @@ mod tests {
         let mut half = scrolled_fullscreen_app(true);
         half.handle(Action::PageUp);
         assert_eq!(half.scroll(), 10);
+    }
+
+    #[test]
+    fn control_f_opens_the_search_only_in_full_screen() {
+        let mut inline = app();
+        inline.set_tui_mode(crate::TuiMode::Inline);
+        type_text(&mut inline, "ab");
+        inline.handle(Action::MoveLineStart);
+        inline.handle(Action::Find);
+        assert!(inline.search().is_none());
+        assert_eq!(
+            inline.editor.cursor(),
+            (0, 1),
+            "it moves the cursor instead"
+        );
+
+        let mut full = scrolled_fullscreen_app(false);
+        full.handle(Action::Find);
+        assert!(full.search().is_some());
+        full.handle(Action::Find);
+        assert!(full.search().is_none(), "the same key closes it");
+    }
+
+    #[test]
+    fn typing_into_the_search_finds_and_reveals_a_match() {
+        let mut app = scrolled_fullscreen_app(false);
+        type_text(&mut app, "draft");
+        app.handle(Action::Find);
+        type_text(&mut app, "prompt 3");
+        app.handle(Action::Backspace);
+        type_text(&mut app, "3");
+        app.refresh_search();
+
+        assert_eq!(app.editor.text(), "draft", "the prompt keeps what it had");
+        let search = app.search().expect("open");
+        assert_eq!(search.query(), "prompt 3");
+        assert!(
+            search.matches().len() >= 2,
+            "prompt 3 and prompt 30 onwards"
+        );
+
+        app.handle(Action::Submit);
+        app.refresh_search();
+        let shown = app.search().unwrap().selected().unwrap();
+        let row = app.search().unwrap().matches()[shown].first_row();
+        let top = app.first_visible_row();
+        assert!(
+            row >= top && row < top + 20,
+            "row {row} is in view from {top}"
+        );
+
+        app.handle(Action::Cancel);
+        assert!(app.search().is_none());
+        assert_eq!(app.editor.text(), "draft");
+    }
+
+    #[test]
+    fn the_page_keys_still_scroll_while_searching() {
+        let mut app = scrolled_fullscreen_app(false);
+        app.handle(Action::Find);
+        app.handle(Action::PageUp);
+        assert!(app.scroll() > 0);
+        assert!(app.search().is_some());
     }
 
     #[test]

@@ -16,6 +16,7 @@ pub use menu::MenuItem;
 mod picker;
 pub mod remote;
 mod render;
+mod search;
 mod tools;
 mod typeset;
 pub mod ui;
