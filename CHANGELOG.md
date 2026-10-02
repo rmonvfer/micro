@@ -2,7 +2,7 @@
 
 ## [Unreleased]
 
-- Open the interface on a small half-block "μ" mark in the theme's colours, with the version and key hints beside it; wrapped hints and resource lists stay indented, and `quiet_startup: "header"` keeps the note that micro can explain its own features.
+- Open the interface on a small half-block mark of three squares stepping down in size, in the theme's colours, with the version and key hints beside it; wrapped hints and resource lists stay indented, and `quiet_startup: "header"` keeps the note that micro can explain its own features.
 
 ## [0.2.1] - 2026-10-02
 

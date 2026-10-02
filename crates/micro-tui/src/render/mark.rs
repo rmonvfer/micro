@@ -1,4 +1,5 @@
-//! micro's mark: a small "μ" drawn with half blocks, two square pixels to a cell.
+//! micro's mark: three squares stepping down in size, drawn with half blocks, two square pixels
+//! to a cell.
 
 use crate::theme::Theme;
 use ratatui::style::Color;
@@ -6,14 +7,14 @@ use ratatui::style::Style;
 use ratatui::text::Span;
 
 /// The mark, one character a pixel. `a` is the accent, `b` the border colour, `c` the heading
-/// colour and `.` is left empty. Each pair of rows is drawn as one row of cells: the stem on the
-/// left runs down past the bowl, which closes into the stem on the right.
+/// colour and `.` is left empty. Each pair of rows is drawn as one row of cells: a large square
+/// at the top left, then a smaller one, then the smallest, stepping down to the bottom right.
 #[rustfmt::skip]
 const PIXELS: [&str; 4] = [
-    "a..b",
-    "a..b",
-    "accb",
-    "a...",
+    "aa..",
+    "aa..",
+    "..b.",
+    "...c",
 ];
 
 /// Columns the mark takes.
@@ -67,10 +68,10 @@ mod tests {
     }
 
     #[test]
-    fn the_mark_is_a_mu_four_cells_wide_and_two_rows_tall() {
+    fn the_mark_is_four_cells_wide_and_two_rows_tall() {
         let rows = rows(&Theme::dark());
         let drawn: Vec<String> = rows.iter().map(|row| text(row)).collect();
-        assert_eq!(drawn, ["█  █", "█▀▀▀"]);
+        assert_eq!(drawn, ["██  ", "  ▀▄"]);
         assert_eq!(rows.len(), HEIGHT);
         assert!(drawn.iter().all(|row| text_width(row) == WIDTH));
     }

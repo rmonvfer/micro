@@ -1208,8 +1208,8 @@ mod tests {
             rows,
             [
                 "",
-                "█  █ vX.Y.Z",
-                "█▀▀▀ escape interrupt · ctrl+c/ctrl+d clear/exit · / commands · ! bash · ctrl+o more",
+                "██   vX.Y.Z",
+                "  ▀▄ escape interrupt · ctrl+c/ctrl+d clear/exit · / commands · ! bash · ctrl+o more",
                 "Press ctrl+o to show full startup help and loaded resources.",
                 "",
                 "micro can explain its own features and look up its docs. Ask it how to use or extend micro.",
@@ -1236,8 +1236,8 @@ mod tests {
             rows,
             [
                 "".to_string(),
-                "█  █ vX.Y.Z".into(),
-                "█▀▀▀ escape to interrupt".into(),
+                "██   vX.Y.Z".into(),
+                "  ▀▄ escape to interrupt".into(),
                 "ctrl+c to clear".into(),
                 "ctrl+c twice to exit".into(),
                 "ctrl+d to exit (empty)".into(),
@@ -1286,8 +1286,8 @@ mod tests {
             rows,
             [
                 "",
-                "█  █ vX.Y.Z",
-                "█▀▀▀ escape interrupt · ctrl+c/ctrl+d",
+                "██   vX.Y.Z",
+                "  ▀▄ escape interrupt · ctrl+c/ctrl+d",
                 "     clear/exit · / commands · ! bash ·",
                 "     ctrl+o more",
                 "Press ctrl+o to show full startup help",
@@ -1319,8 +1319,8 @@ mod tests {
             rows,
             [
                 "",
-                "█  █ vX.Y.Z",
-                "█▀▀▀ escape interrupt · ctrl+c/ctrl+d clear/exit · / commands · ! bash · ctrl+o more",
+                "██   vX.Y.Z",
+                "  ▀▄ escape interrupt · ctrl+c/ctrl+d clear/exit · / commands · ! bash · ctrl+o more",
                 "Press ctrl+o to show full startup help.",
                 "",
                 "micro can explain its own features and look up its docs. Ask it how to use or extend micro.",
@@ -1532,7 +1532,7 @@ mod tests {
         assert_eq!(rows.len(), 50, "{rows:#?}");
         let logo = rows
             .iter()
-            .position(|row| row.ends_with(&format!("█ v{}", env!("CARGO_PKG_VERSION"))))
+            .position(|row| row.ends_with(&format!("██   v{}", env!("CARGO_PKG_VERSION"))))
             .expect("the logo is drawn");
 
         assert!(logo > 30, "the opening sits above the input, at row {logo}");
