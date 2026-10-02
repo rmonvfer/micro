@@ -71,7 +71,7 @@ pub struct NestedRow {
     /// The start of the error text, for a call that failed.
     pub error: Option<String>,
     /// When the call started, to say how long it took once it ends.
-    started: Option<std::time::Instant>,
+    pub(crate) started: Option<std::time::Instant>,
 }
 
 /// Characters of a nested call's error kept for display.
