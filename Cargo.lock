@@ -2536,6 +2536,7 @@ name = "micro-testkit"
 version = "0.1.13"
 dependencies = [
  "async-trait",
+ "futures",
  "micro-agent",
  "micro-auth",
  "micro-context",

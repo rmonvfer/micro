@@ -1027,7 +1027,10 @@ async fn a_deferred_tool_is_hidden_from_the_model_but_still_runs() {
     let mut agent = agent(
         &provider,
         vec![
-            Arc::new(micro_tools::Deferred::new(Arc::new(hidden.clone()))),
+            Arc::new(micro_tools::Exposed::new(
+                Arc::new(hidden.clone()),
+                micro_types::ToolExposure::Deferred,
+            )),
             Arc::new(plain.clone()),
         ],
     );
@@ -1116,4 +1119,229 @@ async fn an_interrupted_turn_still_settles() {
         settled,
         "an interrupted turn should still report AgentSettled"
     );
+}
+
+/// A tool that calls other tools while it runs, as a `codemode` script does.
+struct Orchestrator {
+    /// The calls it makes, all at once.
+    calls: Vec<(&'static str, serde_json::Value)>,
+}
+
+#[async_trait::async_trait]
+impl micro_tools::Tool for Orchestrator {
+    fn definition(&self) -> micro_types::ToolDefinition {
+        micro_types::ToolDefinition {
+            name: "orchestrate".into(),
+            description: "Call other tools".into(),
+            parameters: json!({ "type": "object", "properties": {} }),
+            constrained_sampling: None,
+        }
+    }
+
+    fn exposure(&self) -> micro_types::ToolExposure {
+        micro_types::ToolExposure::ModelOnly
+    }
+
+    fn prepare_loadout(&self, loadout: &micro_tools::Loadout) -> micro_tools::LoadoutChanges {
+        let callable: Vec<String> = loadout
+            .callable
+            .iter()
+            .map(|tool| tool.definition.name.clone())
+            .collect();
+        let mut changes = micro_tools::LoadoutChanges::default();
+        changes.descriptions.insert(
+            "orchestrate".into(),
+            format!("Call any of: {}", callable.join(", ")),
+        );
+        changes.hidden.push("plain".into());
+        changes
+    }
+
+    async fn execute(&self, _arguments: &serde_json::Value) -> Result<String, String> {
+        Err("needs a run to call tools through".into())
+    }
+
+    async fn call(
+        &self,
+        _arguments: &serde_json::Value,
+        context: &micro_tools::ToolContext<'_>,
+    ) -> micro_tools::ToolOutput {
+        let Some(tools) = context.tools() else {
+            return micro_tools::ToolOutput::error("no tools to call");
+        };
+        let outcomes = futures::future::join_all(
+            self.calls
+                .iter()
+                .map(|(name, arguments)| tools.call(name, arguments.clone())),
+        )
+        .await;
+        let said: Vec<String> = outcomes
+            .iter()
+            .map(|outcome| {
+                format!(
+                    "{} {} {}",
+                    outcome.id,
+                    outcome.output.is_error,
+                    outcome.output.text_content()
+                )
+            })
+            .collect();
+        micro_tools::ToolOutput::text(said.join("\n"))
+    }
+}
+
+fn orchestrated_agent(
+    provider: &FakeProvider,
+    calls: Vec<(&'static str, serde_json::Value)>,
+) -> (Agent, FakeTool, FakeTool) {
+    let plain = FakeTool::new("plain").returning("plain ran");
+    let searched = FakeTool::new("searched").returning("searched ran");
+    let agent = agent(
+        provider,
+        vec![
+            Arc::new(Orchestrator { calls }),
+            Arc::new(plain.clone()),
+            Arc::new(micro_tools::Exposed::new(
+                Arc::new(searched.clone()),
+                micro_types::ToolExposure::Deferred,
+            )),
+            Arc::new(micro_tools::Exposed::new(
+                Arc::new(FakeTool::new("secret").returning("never")),
+                micro_types::ToolExposure::Hidden,
+            )),
+        ],
+    );
+    (agent, plain, searched)
+}
+
+/// The calls a tool makes are reported under its id, and recorded on its result.
+#[tokio::test]
+async fn a_tool_calls_other_tools_and_the_calls_are_recorded_on_its_result() {
+    let provider = FakeProvider::builder()
+        .turn(Turn::new().with_tool_call("c1", "orchestrate", json!({})))
+        .turn(Turn::text("done"))
+        .build();
+    let (mut agent, plain, searched) = orchestrated_agent(
+        &provider,
+        vec![
+            ("plain", json!({ "n": 1 })),
+            ("searched", json!({})),
+            ("secret", json!({})),
+            ("orchestrate", json!({})),
+        ],
+    );
+
+    let (messages, events) = run_agent(&mut agent, Message::user("go")).await;
+
+    assert_eq!(plain.call(0), json!({ "n": 1 }));
+    assert_eq!(searched.call_count(), 1);
+
+    let Some(Message::ToolResult {
+        content,
+        nested_calls,
+        ..
+    }) = messages.get(2)
+    else {
+        panic!("expected the orchestrator's result, got {messages:?}");
+    };
+    let said: String = content
+        .iter()
+        .map(micro_types::ContentBlock::as_text)
+        .collect();
+    assert!(said.contains("c1/1 false plain ran"), "{said}");
+    assert!(said.contains("c1/2 false searched ran"), "{said}");
+    assert!(said.contains("c1/3 true tool not found: secret"), "{said}");
+    assert!(
+        said.contains("c1/4 true tool not found: orchestrate"),
+        "a model-only tool cannot be called from another: {said}"
+    );
+
+    let record = nested_calls.as_ref().expect("the calls are recorded");
+    assert!(record.complete);
+    let statuses: Vec<_> = record
+        .calls
+        .iter()
+        .map(|call| (call.name.as_str(), call.status))
+        .collect();
+    assert_eq!(
+        statuses,
+        vec![
+            ("plain", micro_types::NestedCallStatus::Ok),
+            ("searched", micro_types::NestedCallStatus::Ok),
+            ("secret", micro_types::NestedCallStatus::Error),
+            ("orchestrate", micro_types::NestedCallStatus::Error),
+        ]
+    );
+
+    let started: Vec<String> = events
+        .events()
+        .iter()
+        .filter_map(|event| match event {
+            micro_types::AgentEvent::NestedToolStart { parent_id, .. } => Some(parent_id.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(started, vec!["c1"; 4]);
+    let top: Vec<String> = events
+        .events()
+        .iter()
+        .filter_map(|event| match event {
+            micro_types::AgentEvent::ToolStart { id, .. } => Some(id.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        top,
+        vec!["c1"],
+        "nested calls are not reported as calls the model made"
+    );
+}
+
+/// A tool that orchestrates others can change how they are declared while it is.
+#[tokio::test]
+async fn an_orchestrating_tool_reshapes_the_declared_tools() {
+    let provider = FakeProvider::once(Turn::text("nothing to do"));
+    let (mut agent, _, _) = orchestrated_agent(&provider, Vec::new());
+
+    run_agent(&mut agent, Message::user("hi")).await;
+
+    let calls = provider.calls();
+    assert_eq!(calls[0].tool_names(), vec!["orchestrate"]);
+    let described = &calls[0].context.tools[0].description;
+    assert!(described.contains("plain"), "{described}");
+    assert!(described.contains("searched"), "{described}");
+    assert!(!described.contains("secret"), "{described}");
+}
+
+/// A nested call goes through the same checks as one the model made.
+#[tokio::test]
+async fn a_nested_call_can_be_refused_like_any_other() {
+    struct RefusePlain;
+
+    #[async_trait::async_trait]
+    impl micro_agent::Hooks for RefusePlain {
+        async fn before_tool(
+            &self,
+            _id: &str,
+            name: &str,
+            _arguments: &serde_json::Value,
+        ) -> micro_agent::ToolDecision {
+            match name {
+                "plain" => micro_agent::ToolDecision::Refuse("not today".into()),
+                _ => micro_agent::ToolDecision::Proceed,
+            }
+        }
+    }
+
+    let provider = FakeProvider::builder()
+        .turn(Turn::new().with_tool_call("c1", "orchestrate", json!({})))
+        .turn(Turn::text("done"))
+        .build();
+    let (agent, plain, _) = orchestrated_agent(&provider, vec![("plain", json!({}))]);
+    let mut agent = agent.with_hooks(Arc::new(RefusePlain));
+
+    let (messages, _) = run_agent(&mut agent, Message::user("go")).await;
+
+    assert_eq!(plain.call_count(), 0);
+    assert!(tool_result_text(&messages[2]).contains("c1/1 true not today"));
 }

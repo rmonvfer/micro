@@ -4,18 +4,26 @@ use crate::required_str;
 use crate::truncate;
 use crate::Guard;
 use crate::Tool;
+use crate::ToolContext;
+use crate::ToolOutput;
 use async_trait::async_trait;
 use micro_types::ToolDefinition;
 use serde_json::json;
 use serde_json::Value;
 use std::path::Path;
 use std::path::PathBuf;
+use std::process::ExitStatus;
 use std::process::Stdio;
 use std::time::Duration;
+use std::time::Instant;
 
 /// The longest a command may be given, which is as long as a millisecond count fits in a signed
 /// 32-bit integer.
 const MAX_TIMEOUT_MS: u64 = 2_147_483_647;
+
+/// The most output the structured answer carries, in bytes. Longer output keeps its first and
+/// last half around an omission marker.
+const STRUCTURED_OUTPUT_BYTES: usize = 1024 * 1024;
 
 /// The shell a command is run in.
 fn shell() -> PathBuf {
@@ -65,45 +73,25 @@ pub struct Bash {
     guard: Guard,
 }
 
+/// A command that ran to its end, whatever it exited with.
+struct Ran {
+    command: String,
+    /// Everything it printed, stdout and stderr interleaved by line.
+    combined: String,
+    status: ExitStatus,
+    /// Whether the sandbox confined it.
+    confined: bool,
+    elapsed: Duration,
+}
+
 impl Bash {
     pub fn new(root: PathBuf, guard: Guard) -> Self {
         Bash { root, guard }
     }
-}
 
-#[async_trait]
-impl Tool for Bash {
-    fn definition(&self) -> ToolDefinition {
-        ToolDefinition {
-            name: "bash".into(),
-            description: "Run a shell command in the workspace root. Returns combined stdout \
-                          and stderr along with the exit code."
-                .into(),
-            parameters: json!({
-                "type": "object",
-                "properties": {
-                    "command": { "type": "string", "description": "Bash command to execute" },
-                    "timeout": {
-                        "type": "number",
-                        "description": "Timeout in seconds (optional, no default timeout)",
-                    },
-                },
-                "required": ["command"],
-            }),
-            constrained_sampling: None,
-        }
-    }
-
-    async fn execute(&self, arguments: &Value) -> Result<String, String> {
-        self.execute_reporting(arguments, &crate::Progress::default())
-            .await
-    }
-
-    async fn execute_reporting(
-        &self,
-        arguments: &Value,
-        progress: &crate::Progress,
-    ) -> Result<String, String> {
+    /// Run the command to its end, or fail to.
+    async fn run(&self, arguments: &Value, progress: &crate::Progress) -> Result<Ran, String> {
+        let started = Instant::now();
         let command = required_str(arguments, "command")?;
         let timeout_ms = timeout_for(arguments)?;
 
@@ -188,31 +176,152 @@ impl Tool for Bash {
         };
 
         let combined = collected.lock().await.clone();
-        let code = status.code();
-        let body = if combined.trim().is_empty() {
+        Ok(Ran {
+            command,
+            combined,
+            status,
+            confined,
+            elapsed: started.elapsed(),
+        })
+    }
+
+    /// What the model reads of a command that ran: its output, and how it failed if it did.
+    fn answer(&self, ran: &Ran) -> Result<String, String> {
+        let body = if ran.combined.trim().is_empty() {
             "(no output)".to_string()
         } else {
-            truncate(combined.trim_end())
+            truncate(ran.combined.trim_end())
         };
 
-        let failure = match code {
+        let failure = match ran.status.code() {
             Some(0) => return Ok(body),
             Some(code) => format!("exit code {code}\n{body}"),
             None => format!("terminated by signal\n{body}"),
         };
 
-        if !micro_sandbox::is_likely_denied(&status, &body) {
+        if !micro_sandbox::is_likely_denied(&ran.status, &body) {
             return Err(failure);
         }
-        if !confined {
-            self.guard.record("exec", command, true);
+        if !ran.confined {
+            self.guard.record("exec", ran.command.clone(), true);
             return Err(failure);
         }
-        self.guard.record("exec", command, false);
+        self.guard.record("exec", ran.command.clone(), false);
         Err(format!(
             "denied by policy {}: {failure}",
             self.guard.policy()
         ))
+    }
+}
+
+/// The output a script reads: up to [`STRUCTURED_OUTPUT_BYTES`], keeping the first and last half
+/// of anything longer around a marker. Says whether anything was left out.
+fn structured_output(combined: &str) -> (String, bool) {
+    if combined.len() <= STRUCTURED_OUTPUT_BYTES {
+        return (combined.to_string(), false);
+    }
+    let half = STRUCTURED_OUTPUT_BYTES / 2;
+    let mut head_end = half;
+    while !combined.is_char_boundary(head_end) {
+        head_end -= 1;
+    }
+    let mut tail_start = combined.len() - half;
+    while !combined.is_char_boundary(tail_start) {
+        tail_start += 1;
+    }
+    let omitted = tail_start - head_end;
+    (
+        format!(
+            "{}\n\n… {omitted} bytes omitted …\n\n{}",
+            &combined[..head_end],
+            &combined[tail_start..]
+        ),
+        true,
+    )
+}
+
+#[async_trait]
+impl Tool for Bash {
+    fn definition(&self) -> ToolDefinition {
+        ToolDefinition {
+            name: "bash".into(),
+            description: "Run a shell command in the workspace root. Returns combined stdout \
+                          and stderr along with the exit code."
+                .into(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "command": { "type": "string", "description": "Bash command to execute" },
+                    "timeout": {
+                        "type": "number",
+                        "description": "Timeout in seconds (optional, no default timeout)",
+                    },
+                },
+                "required": ["command"],
+            }),
+            constrained_sampling: None,
+        }
+    }
+
+    async fn execute(&self, arguments: &Value) -> Result<String, String> {
+        self.execute_reporting(arguments, &crate::Progress::default())
+            .await
+    }
+
+    async fn execute_reporting(
+        &self,
+        arguments: &Value,
+        progress: &crate::Progress,
+    ) -> Result<String, String> {
+        let ran = self.run(arguments, progress).await?;
+        self.answer(&ran)
+    }
+
+    fn output_schema(&self) -> Option<Value> {
+        Some(json!({
+            "type": "object",
+            "properties": {
+                "output": {
+                    "type": "string",
+                    "description": "stdout and stderr, up to 1 MiB; longer output keeps its first and last 512 KiB",
+                },
+                "truncated": { "type": "boolean" },
+                "full_output_path": {
+                    "type": "string",
+                    "description": "A file holding all of the output, when it was truncated",
+                },
+                "exit_code": {
+                    "type": ["number", "null"],
+                    "description": "null when a signal ended the command",
+                },
+                "wall_time_seconds": { "type": "number" },
+            },
+            "required": ["output", "truncated", "exit_code", "wall_time_seconds"],
+        }))
+    }
+
+    async fn call(&self, arguments: &Value, context: &ToolContext<'_>) -> ToolOutput {
+        let ran = match self.run(arguments, &context.progress).await {
+            Ok(ran) => ran,
+            Err(error) => return ToolOutput::error(error),
+        };
+        let (output, truncated) = structured_output(&ran.combined);
+        let mut structured = json!({
+            "output": output,
+            "truncated": truncated,
+            "exit_code": ran.status.code(),
+            "wall_time_seconds": (ran.elapsed.as_secs_f64() * 10.0).round() / 10.0,
+        });
+        if truncated {
+            if let Ok(path) = crate::spill("micro-bash", &ran.combined) {
+                structured["full_output_path"] = json!(path.display().to_string());
+            }
+        }
+        let output = match self.answer(&ran) {
+            Ok(text) => ToolOutput::text(text),
+            Err(failure) => ToolOutput::error(failure),
+        };
+        output.with_structured(structured)
     }
 }
 
@@ -307,6 +416,70 @@ mod tests {
         );
 
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A script reads what a command printed and how it exited as data, also when it failed.
+    #[tokio::test]
+    async fn a_called_command_answers_with_data_as_well_as_text() {
+        let root = scratch("structured");
+        let bash = unconfined(root.clone());
+        let output = bash
+            .call(
+                &json!({ "command": "echo out; echo err >&2; exit 4" }),
+                &ToolContext::new("call_1", crate::Progress::default()),
+            )
+            .await;
+
+        assert!(output.is_error);
+        assert!(output.text_content().contains("exit code 4"));
+        let structured = output.structured.expect("data comes with the text");
+        assert_eq!(structured["exit_code"], 4);
+        assert_eq!(structured["truncated"], false);
+        assert!(structured["output"].as_str().unwrap().contains("out\n"));
+        assert!(structured["output"].as_str().unwrap().contains("err\n"));
+        assert!(structured.get("full_output_path").is_none());
+        assert!(structured["wall_time_seconds"].is_number());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[tokio::test]
+    async fn a_command_that_printed_nothing_answers_with_empty_output() {
+        let root = scratch("structured-empty");
+        let output = unconfined(root.clone())
+            .call(
+                &json!({ "command": "true" }),
+                &ToolContext::new("call_1", crate::Progress::default()),
+            )
+            .await;
+        assert!(!output.is_error);
+        assert_eq!(output.structured.unwrap()["output"], "");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn long_structured_output_keeps_both_ends() {
+        let text = format!(
+            "{}{}{}",
+            "a".repeat(STRUCTURED_OUTPUT_BYTES),
+            "middle",
+            "z".repeat(STRUCTURED_OUTPUT_BYTES)
+        );
+        let (kept, truncated) = structured_output(&text);
+        assert!(truncated);
+        assert!(kept.starts_with('a') && kept.ends_with('z'));
+        assert!(!kept.contains("middle"));
+        assert!(kept.contains("bytes omitted"));
+        assert!(kept.len() < STRUCTURED_OUTPUT_BYTES + 100);
+
+        assert_eq!(structured_output("short"), ("short".to_string(), false));
+    }
+
+    #[test]
+    fn truncating_never_splits_a_character() {
+        let text = "é".repeat(STRUCTURED_OUTPUT_BYTES);
+        let (kept, truncated) = structured_output(&text);
+        assert!(truncated);
+        assert!(kept.starts_with('é') && kept.ends_with('é'));
     }
 
     /// A tool that says nothing until it is done is still run, and reports nothing.

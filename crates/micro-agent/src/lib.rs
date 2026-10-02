@@ -1,6 +1,7 @@
 //! The agent loop: stream a response, run the tools it asks for, repeat until the model stops
 //! asking for tools.
 
+mod nested;
 mod summarizer;
 
 pub use summarizer::ProviderSummarizer;
@@ -13,7 +14,11 @@ use micro_models::ModelCost;
 use micro_models::TokenUsage;
 use micro_provider::ApiKey;
 use micro_provider::Provider;
+use micro_tools::CallableTool;
+use micro_tools::Loadout;
 use micro_tools::Tool;
+use micro_tools::ToolContext;
+use micro_tools::ToolOutput;
 use micro_types::content_hash;
 use micro_types::now_ms;
 use micro_types::AgentEvent;
@@ -32,6 +37,7 @@ use micro_types::StreamEvent;
 use micro_types::ThinkingLevel;
 use micro_types::ToolDefinition;
 use micro_types::ToolExecutionMode;
+use micro_types::ToolExposure;
 use micro_types::Usage;
 use serde_json::Value;
 use std::collections::HashSet;
@@ -310,6 +316,8 @@ pub struct Agent {
     stored_blobs: HashSet<String>,
     /// What this session is allowed to spend, when anything limits it.
     budget: Option<Budget>,
+    /// Where nested calls to tools that must run alone wait their turn.
+    nested_queue: tokio::sync::Mutex<()>,
 }
 
 impl Agent {
@@ -350,6 +358,7 @@ impl Agent {
             repairs: Vec::new(),
             stored_blobs: HashSet::new(),
             budget: None,
+            nested_queue: tokio::sync::Mutex::new(()),
         }
     }
 
@@ -629,15 +638,40 @@ impl Agent {
         runnable: Option<Arc<dyn Tool>>,
         events: &Fan<'_>,
     ) -> Message {
-        let (content, is_error) = match (settled, runnable) {
-            (Some((text, is_error)), _) => (vec![ContentBlock::text(text)], is_error),
-            (None, Some(tool)) => run_tool(tool, &id, &name, &arguments, events).await,
+        let mut nested_calls = None;
+        let ToolOutput {
+            content,
+            is_error,
+            mut usage,
+            ..
+        } = match (settled, runnable) {
+            (Some((text, is_error)), _) => ToolOutput {
+                is_error,
+                ..ToolOutput::text(text)
+            },
+            (None, Some(tool)) => {
+                let recorder = Arc::new(std::sync::Mutex::new(nested::Recorder::new()));
+                let scope = nested::NestedScope::new(self, events, &id, Arc::clone(&recorder));
+                let output = run_tool(tool, &id, &name, &arguments, events, &scope).await;
+                let (recorded, spent) = recorder
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .take();
+                nested_calls = recorded;
+                ToolOutput {
+                    usage: match (output.usage, spent) {
+                        (Some(own), Some(spent)) => Some(own.plus(spent)),
+                        (own, spent) => own.or(spent),
+                    },
+                    ..output
+                }
+            }
 
-            (None, None) => (
-                vec![ContentBlock::text(format!("tool not found: {name}"))],
-                true,
-            ),
+            (None, None) => ToolOutput::error(format!("tool not found: {name}")),
         };
+        if usage.is_some_and(|usage| usage == Usage::default()) {
+            usage = None;
+        }
 
         let said: String = content.iter().map(ContentBlock::as_text).collect();
         let (output, is_error) = self.rewritten(&id, &name, said.clone(), is_error).await;
@@ -653,7 +687,15 @@ impl Agent {
             is_error,
         });
 
-        Message::tool_result_content(id, name, content, is_error)
+        Message::ToolResult {
+            tool_call_id: id,
+            tool_name: name,
+            content,
+            is_error,
+            timestamp: now_ms(),
+            nested_calls,
+            usage,
+        }
     }
 
     /// Both places an event goes, as one thing to send to.
@@ -846,32 +888,110 @@ impl Agent {
         produced.push(message);
     }
 
-    /// The tools the model is told about.
-    fn tool_definitions(&self) -> Vec<ToolDefinition> {
-        let offered = self.offered.as_ref().and_then(|offered| {
+    /// The names of the tools something has narrowed the run to, if anything has.
+    fn offered_names(&self) -> Option<Vec<String>> {
+        self.offered.as_ref().and_then(|offered| {
             offered
                 .read()
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
                 .clone()
-        });
+        })
+    }
+
+    /// The tools declared to the model, before any of them reshapes the loadout.
+    fn declared_tools(&self) -> Vec<Arc<dyn Tool>> {
+        let offered = self.offered_names();
         self.tools
             .iter()
-            .filter(|tool| !tool.deferred())
-            .map(|tool| tool.definition())
-            .filter(|definition| match &offered {
-                Some(names) => names.iter().any(|name| name == &definition.name),
+            .filter(|tool| tool.exposure().is_declared())
+            .filter(|tool| match &offered {
+                Some(names) => names.contains(&tool.definition().name),
                 None => true,
+            })
+            .cloned()
+            .collect()
+    }
+
+    /// The tools another tool may call: those declared to the model that allow it, and every tool
+    /// reached by searching, including those that arrived while the session ran.
+    fn callable_tools(&self) -> Vec<Arc<dyn Tool>> {
+        let offered = self.offered_names();
+        let mut callable: Vec<Arc<dyn Tool>> = self
+            .tools
+            .iter()
+            .filter(|tool| match tool.exposure() {
+                ToolExposure::Direct => match &offered {
+                    Some(names) => names.contains(&tool.definition().name),
+                    None => true,
+                },
+                exposure => exposure.is_searchable(),
+            })
+            .cloned()
+            .collect();
+        if let Some(arrivals) = &self.arrivals {
+            for definition in arrivals.definitions() {
+                if callable
+                    .iter()
+                    .any(|tool| tool.definition().name == definition.name)
+                {
+                    continue;
+                }
+                if let Some(tool) = arrivals
+                    .find(&definition.name)
+                    .filter(|tool| tool.exposure().is_callable_from_tools())
+                {
+                    callable.push(tool);
+                }
+            }
+        }
+        callable
+    }
+
+    /// A tool another tool may call, by name.
+    fn find_callable(&self, name: &str) -> Option<Arc<dyn Tool>> {
+        self.callable_tools()
+            .into_iter()
+            .find(|tool| tool.definition().name == name)
+    }
+
+    /// The tools the model is told about, as the tools among them that orchestrate the others ask
+    /// for them to be presented.
+    fn tool_definitions(&self) -> Vec<ToolDefinition> {
+        let declared = self.declared_tools();
+        let loadout = Loadout {
+            declared: declared
+                .iter()
+                .map(|tool| CallableTool::of(tool.as_ref()))
+                .collect(),
+            callable: self
+                .callable_tools()
+                .iter()
+                .map(|tool| CallableTool::of(tool.as_ref()))
+                .collect(),
+        };
+        let mut descriptions = std::collections::BTreeMap::new();
+        let mut hidden = Vec::new();
+        for tool in &declared {
+            let changes = tool.prepare_loadout(&loadout);
+            descriptions.extend(changes.descriptions);
+            hidden.extend(changes.hidden);
+        }
+        loadout
+            .declared
+            .into_iter()
+            .map(|tool| tool.definition)
+            .filter(|definition| !hidden.contains(&definition.name))
+            .map(|mut definition| {
+                if let Some(description) = descriptions.remove(&definition.name) {
+                    definition.description = description;
+                }
+                definition
             })
             .collect()
     }
 
     fn find_tool(&self, name: &str) -> Option<Arc<dyn Tool>> {
-        let offered = self.offered.as_ref().and_then(|offered| {
-            offered
-                .read()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .clone()
-        });
+        let offered = self.offered_names();
         if offered.is_some_and(|names| !names.iter().any(|offered| offered == name)) {
             return None;
         }
@@ -880,6 +1000,7 @@ impl Agent {
             .find(|tool| tool.definition().name == name)
             .cloned()
             .or_else(|| self.arrivals.as_ref()?.find(name))
+            .filter(|tool| tool.exposure() != ToolExposure::Hidden)
     }
 
     /// Run one exchange to completion.
@@ -1848,14 +1969,16 @@ impl fmt::Display for CompactionRefusal {
     }
 }
 
-/// Run one tool, forwarding what it says while it works.
+/// Run one tool, forwarding what it says while it works, and letting it call other tools through
+/// `nested`.
 async fn run_tool(
     tool: Arc<dyn Tool>,
     id: &str,
     name: &str,
     arguments: &Value,
     events: &Fan<'_>,
-) -> (Vec<ContentBlock>, bool) {
+    nested: &nested::NestedScope<'_>,
+) -> ToolOutput {
     let (reporting, mut reported) = tokio::sync::mpsc::unbounded_channel::<String>();
     let forwarding = {
         let events = events.clone_for_updates();
@@ -1872,16 +1995,12 @@ async fn run_tool(
         })
     };
 
-    let ran = tool
-        .execute_content(arguments, &micro_tools::Progress::new(reporting))
-        .await;
+    let context = ToolContext::new(id, micro_tools::Progress::new(reporting)).with_tools(nested);
+    let output = tool.call(arguments, &context).await;
+    drop(context);
 
     let _ = forwarding.await;
-
-    match ran {
-        Ok(content) => (content, false),
-        Err(error) => (vec![ContentBlock::text(error)], true),
-    }
+    output
 }
 
 /// Where an event goes: to whoever asked for the turn, and to anything watching.

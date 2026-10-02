@@ -1042,7 +1042,10 @@ fn searchable_beyond(
             .into_iter()
             .map(|tool| match kept.contains(&tool.definition().name) {
                 true => tool,
-                false => Arc::new(micro_tools::Deferred::new(tool)) as Arc<dyn micro_tools::Tool>,
+                false => Arc::new(micro_tools::Exposed::new(
+                    tool,
+                    micro_types::ToolExposure::Deferred,
+                )) as Arc<dyn micro_tools::Tool>,
             })
             .collect(),
     };
@@ -1132,9 +1135,9 @@ fn undeclared_servers(
         .filter(|entry| {
             let prefix = format!("{}__", micro_mcp::names::namespace(&entry.name));
             entry.config.exposure == Some(micro_mcp::Exposure::Deferred)
-                || tools
-                    .iter()
-                    .any(|tool| tool.deferred() && tool.definition().name.starts_with(&prefix))
+                || tools.iter().any(|tool| {
+                    tool.exposure().is_searchable() && tool.definition().name.starts_with(&prefix)
+                })
         })
         .map(|entry| entry.name)
         .collect()
