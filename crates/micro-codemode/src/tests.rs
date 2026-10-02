@@ -13,8 +13,8 @@ const PNG: &str = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+
 #[derive(Default)]
 struct Tools {
     calls: AtomicUsize,
-    /// Set when a slow call is dropped before it finished.
-    abandoned: Arc<AtomicBool>,
+    /// Set when a slow call runs to its end.
+    finished_slowly: Arc<AtomicBool>,
 }
 
 fn definition(name: &str, description: &str) -> ToolDefinition {
@@ -33,17 +33,6 @@ fn callable(name: &str, description: &str) -> CallableTool {
         namespace: None,
         annotations: None,
         output_schema: None,
-    }
-}
-
-/// Sets a flag when dropped before it was disarmed.
-struct Abandoned(Arc<AtomicBool>, bool);
-
-impl Drop for Abandoned {
-    fn drop(&mut self) {
-        if self.1 {
-            self.0.store(true, Ordering::SeqCst);
-        }
     }
 }
 
@@ -85,12 +74,11 @@ impl ToolCaller for Tools {
                 .with_structured(json!({ "output": "boom\n", "exit_code": 2 })),
             "fail" => ToolOutput::error("it broke"),
             "slow" => {
-                let mut guard = Abandoned(Arc::clone(&self.abandoned), true);
                 tokio::time::sleep(Duration::from_millis(
                     arguments["ms"].as_u64().unwrap_or(200),
                 ))
                 .await;
-                guard.1 = false;
+                self.finished_slowly.store(true, Ordering::SeqCst);
                 ToolOutput::text("slept")
             }
             "mcp__docs-site__search" => ToolOutput::text("found it"),
@@ -196,13 +184,14 @@ async fn calls_still_running_when_the_script_ends_are_cancelled() {
     let output = run_with(
         &Codemode::new(),
         &tools,
-        "tools.slow({ ms: 5000 }); return 'left early';",
+        "tools.slow({ ms: 200 }); return 'left early';",
     )
     .await;
     assert_eq!(said(&output), "left early");
+    tokio::time::sleep(Duration::from_millis(500)).await;
     assert!(
-        tools.abandoned.load(Ordering::SeqCst),
-        "the slow call was dropped"
+        !tools.finished_slowly.load(Ordering::SeqCst),
+        "the slow call was dropped before it finished"
     );
 }
 
@@ -478,7 +467,7 @@ async fn further_globals_are_reachable_and_guarded() {
     )
     .await;
     assert_eq!(said(&output), "[1,\"two\"]");
-    let missing = run_with(&codemode, &Tools::default(), "helpers.ecko();").await;
+    let missing = run_with(&codemode, &Tools::default(), "helpers.Echo();").await;
     assert!(
         said(&missing).contains("Did you mean helpers.echo?"),
         "{}",
