@@ -21,28 +21,57 @@ const SERVERS_KEY: &str = "mcpServers";
 const LOOPBACK_HOSTS: &[&str] = &["localhost", "127.0.0.1", "[::1]", "::1"];
 
 /// How a server's tools reach the model.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum Exposure {
-    /// Declared to the model like any built-in tool. The first prompt waits for the server.
+    /// Declared to the model like any built-in tool, and callable from `codemode` scripts. The
+    /// first prompt waits for the server.
     Direct,
-    /// Left out until `tool_search` finds them. The server connects in the background.
+    /// Callable from `codemode` scripts, which find them by searching, and found by
+    /// `tool_search`. Never declared up front, so the server connects in the background.
+    #[default]
+    Codemode,
+    /// Found by `tool_search` and then called by name, or from `codemode` scripts. The server
+    /// connects in the background.
     Deferred,
+    /// Not reachable at all. The server is not connected.
+    Hidden,
 }
 
 impl Exposure {
     pub fn name(self) -> &'static str {
         match self {
             Exposure::Direct => "direct",
+            Exposure::Codemode => "codemode",
             Exposure::Deferred => "deferred",
+            Exposure::Hidden => "hidden",
         }
     }
 
-    fn parse(value: &str) -> Option<Exposure> {
+    /// What an exposure name means. `codemode-deferred` is another name for `codemode`.
+    pub fn parse(value: &str) -> Option<Exposure> {
         match value {
             "direct" => Some(Exposure::Direct),
+            "codemode" | "codemode-deferred" => Some(Exposure::Codemode),
             "deferred" => Some(Exposure::Deferred),
+            "hidden" => Some(Exposure::Hidden),
             _ => None,
         }
+    }
+
+    /// How each of the server's tools is exposed. `codemode` tools are not listed in the
+    /// `codemode` description, so it stays the same while servers connect: scripts search for
+    /// them.
+    pub fn tool_exposure(self) -> micro_types::ToolExposure {
+        match self {
+            Exposure::Direct => micro_types::ToolExposure::Direct,
+            Exposure::Codemode | Exposure::Deferred => micro_types::ToolExposure::Deferred,
+            Exposure::Hidden => micro_types::ToolExposure::Hidden,
+        }
+    }
+
+    /// Whether the first prompt waits for the server, because its tools are declared in it.
+    pub fn is_waited_for(self) -> bool {
+        self == Exposure::Direct
     }
 }
 
@@ -101,11 +130,16 @@ pub struct ServerConfig {
     pub enabled: bool,
     /// How long any one request may take.
     pub timeout: Option<Duration>,
-    /// Unset lets the tool search threshold decide.
+    /// Unset is `codemode`.
     pub exposure: Option<Exposure>,
 }
 
 impl ServerConfig {
+    /// How the server's tools reach the model, whether or not the entry says.
+    pub fn exposure(&self) -> Exposure {
+        self.exposure.unwrap_or_default()
+    }
+
     /// A stdio server running `command`.
     pub fn stdio(command: impl Into<String>, args: Vec<String>) -> Self {
         ServerConfig {
@@ -356,7 +390,9 @@ pub fn parse_server(name: &str, value: &Value) -> Result<ServerConfig, String> {
             value
                 .as_str()
                 .and_then(Exposure::parse)
-                .ok_or_else(|| problem("exposure must be \"direct\" or \"deferred\""))?,
+                .ok_or_else(|| {
+                    problem("exposure must be \"direct\", \"codemode\", \"deferred\", or \"hidden\"")
+                })?,
         ),
     };
 
@@ -689,6 +725,30 @@ mod tests {
         assert_eq!(http.url(), Some("https://example.com/mcp"));
         assert_eq!(http.description.as_deref(), Some("Search the docs"));
         assert!(!http.uses_oauth(), "it brings its own Authorization header");
+    }
+
+    #[test]
+    fn exposure_defaults_to_codemode_and_reads_every_name() {
+        let plain = parse_server("s", &json!({ "command": "x" })).unwrap();
+        assert_eq!(plain.exposure, None);
+        assert_eq!(plain.exposure(), Exposure::Codemode);
+        for (name, exposure) in [
+            ("direct", Exposure::Direct),
+            ("codemode", Exposure::Codemode),
+            ("codemode-deferred", Exposure::Codemode),
+            ("deferred", Exposure::Deferred),
+            ("hidden", Exposure::Hidden),
+        ] {
+            let parsed = parse_server("s", &json!({ "command": "x", "exposure": name })).unwrap();
+            assert_eq!(parsed.exposure(), exposure, "{name}");
+        }
+        assert_eq!(
+            Exposure::Codemode.tool_exposure(),
+            micro_types::ToolExposure::Deferred,
+            "codemode tools are found by searching, not listed"
+        );
+        assert!(Exposure::Direct.is_waited_for());
+        assert!(!Exposure::Codemode.is_waited_for());
     }
 
     #[test]
