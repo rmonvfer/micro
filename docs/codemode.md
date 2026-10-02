@@ -62,6 +62,23 @@ The `codemode` description lists callable tools with their TypeScript declaratio
 
 The store is for small state such as IDs, cursors, and summaries. One value may hold 262144 characters of JSON, and all values together 1048576. Show images with `image()` instead of storing them.
 
+## Models
+
+`models` reaches the catalog and runs [image and classifier models](models.md) with the session's credentials. `getModelsOfType(type, provider?)`, `getAvailableOfType(type, provider?)` and `getModelOfType(type, provider, id)` read the catalog, where `type` is `"chat"`, `"image"` or `"classifier"`; a model is available when its provider has a credential. Chat models are listed but cannot be run from scripts.
+
+```js
+const jev = await models.getModelOfType("classifier", "typesafe", "jev-latest");
+const result = await models.classify(jev, {
+  state: { message: "The change works, thanks." },
+  questions: { approved: { type: "bool", instructions: "Does the user approve?", criteria: { true: "Approval", false: "No approval" } } },
+});
+return result.answers.approved.probability;
+```
+
+`classify(model, { state, questions })` and `generateImages(model, { input })` use only the model's `provider` and `id`, so `{ provider, id }` works too. They do not throw on provider errors; check `stopReason` and `errorMessage`. A malformed call or an unknown model throws with the shape expected and a pointer to `getAvailableOfType()`. At most four such calls run at once per script; more wait for a free slot, so `Promise.all()` over many items is fine.
+
+Show generated images by passing the image blocks of `result.output` to `image()`; they are not saved anywhere else, and a script that generates images without showing any gets a note saying so. What each call spent is listed under the script's output and added to the `codemode` result, which records it in the ledger so it counts toward the session cost.
+
 ## Limits
 
 A script's VM has 256 MB of memory; running out throws `InternalError: out of memory`, so filter or aggregate data instead of accumulating it. A script waiting on a promise that can never settle, with no tool call pending, fails at once, since there are no timers. Scripts cannot start other `codemode` scripts.

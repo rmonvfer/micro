@@ -1,6 +1,6 @@
 # Image and classifier models
 
-The catalog lists three types of model. Chat models hold conversations and are the only ones `/model` and `--model` offer. Image models generate images from a prompt and optional input images. Classifier models answer typed questions about a JSON state with probabilities. Extensions reach the last two through `ctx.modelRegistry`; their usage is billed to the session like any turn.
+The catalog lists three types of model. Chat models hold conversations and are the only ones `/model` and `--model` offer. Image models generate images from a prompt and optional input images. Classifier models answer typed questions about a JSON state with probabilities. Extensions reach the last two through `ctx.modelRegistry` and `codemode` scripts through [`models`](codemode.md#models); their usage is billed to the session like any turn.
 
 List each type from the command line:
 

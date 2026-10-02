@@ -5,6 +5,7 @@ mod archive;
 mod bug_report;
 mod capabilities;
 mod codemode;
+mod codemode_models;
 mod commands;
 mod default_tools;
 mod extension_broker;

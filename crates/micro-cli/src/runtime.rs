@@ -420,7 +420,11 @@ pub async fn build(
 
     let codemode = crate::codemode::wanted(&selection.tools, &selection.exclude_tools, &mcp);
     if codemode {
-        tools.push(crate::codemode::tool(settings, Arc::clone(&session)));
+        tools.push(crate::codemode::tool(
+            settings,
+            Arc::clone(&session),
+            models.clone(),
+        ));
         kept.push(micro_codemode::CODEMODE_TOOL_NAME.to_string());
     }
 
