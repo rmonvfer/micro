@@ -678,10 +678,31 @@ impl App {
             lines_version: 0,
         };
 
+        app.sync_header();
         if let Some(notice) = notice {
             app.notice(notice, MessageKind::Info);
         }
         app
+    }
+
+    /// The block the scrollback opens with, as the settings, an extension and the reader have it.
+    fn header(&self) -> crate::transcript::Header {
+        use crate::transcript::Header;
+        let quiet = self.settings.quiet_startup;
+        match &self.header_override {
+            Some(lines) => Header::Custom(lines.clone()),
+            None if !quiet.shows_header() => Header::Quiet,
+            None => Header::Startup {
+                expanded: self.startup_expanded,
+                resources: quiet.lists_resources().then(|| self.resources.clone()),
+            },
+        }
+    }
+
+    /// Bring the block the scrollback opens with in line with what it should show.
+    fn sync_header(&mut self) {
+        let header = self.header();
+        self.transcript.set_header(header);
     }
 
     /// What the user settled in `/settings`, for the parts of the frame drawn elsewhere.
@@ -1016,6 +1037,7 @@ impl App {
         self.title_change.take()
     }
 
+    #[cfg(test)]
     pub fn header_override(&self) -> Option<&[String]> {
         self.header_override.as_deref()
     }
@@ -1186,7 +1208,7 @@ impl App {
     /// State a command needs to know about the conversation it runs against.
     pub fn conversation_state(&self) -> ConversationState {
         ConversationState {
-            message_count: self.transcript.entries().len(),
+            message_count: self.transcript.conversation_len(),
             usage: self.transcript.total_usage(),
         }
     }
@@ -1840,6 +1862,7 @@ impl App {
                 self.transcript = Transcript::from_messages(&messages);
                 self.transcript
                     .set_self_framed_tools(self.self_framed_tools.clone());
+                self.sync_header();
                 self.cache.shape = None;
                 self.focus = None;
 
@@ -1893,7 +1916,7 @@ impl App {
                 crate::transcript::Entry::Image { mime_type, .. } => {
                     out.push_str(&format!("_({mime_type} attached)_\n\n"))
                 }
-                crate::transcript::Entry::Notice { .. } => {}
+                crate::transcript::Entry::Header(_) | crate::transcript::Entry::Notice { .. } => {}
                 crate::transcript::Entry::Custom { label, lines } => {
                     out.push_str(&format!("## {label}\n\n{}\n\n", lines.join("\n")))
                 }
@@ -1915,6 +1938,7 @@ impl App {
     /// Wrap the transcript for the frame about to be drawn, reusing the last frame's rows when
     /// nothing that affects them has changed.
     pub fn refresh_lines(&mut self) {
+        self.sync_header();
         let shape = Shape {
             width: self.transcript_width,
             show_thinking: self.show_thinking,
@@ -2845,16 +2869,6 @@ impl App {
                     .to_string()
             })
             .collect()
-    }
-
-    /// What was loaded before the session started, for the first screen.
-    pub fn resources(&self) -> &Resources {
-        &self.resources
-    }
-
-    /// Whether the first screen is showing everything it knows.
-    pub fn startup_expanded(&self) -> bool {
-        self.startup_expanded
     }
 
     fn paste_image(&mut self) -> Outcome {
@@ -4711,6 +4725,31 @@ mod tests {
         assert!(app.header_override().is_none());
     }
 
+    /// An extension's header takes the first screen's place at the top of the scrollback, even
+    /// in a session that opens quietly, and gives it back once withdrawn.
+    #[test]
+    fn a_set_header_opens_the_scrollback_in_the_first_screens_place() {
+        let mut options = TuiOptions::default();
+        options.settings.quiet_startup = micro_config::QuietStartup::On;
+        let mut app = App::new(&[], options);
+        app.transcript.push_user("a prompt");
+        assert!(!app.plain_lines().iter().any(|row| row.contains("█")));
+
+        ask(&mut app, "set_header", "", None, vec!["custom header"]);
+        let rows = app.plain_lines();
+        assert_eq!(rows[0].trim(), "custom header", "{rows:#?}");
+        assert!(rows.iter().any(|row| row.contains("a prompt")));
+
+        ask(&mut app, "set_header", "", None, Vec::new());
+        let rows = app.plain_lines();
+        assert!(!rows.iter().any(|row| row.contains("custom header")));
+        let first = rows.iter().find(|row| !row.is_empty());
+        assert!(
+            first.is_some_and(|row| row.contains("a prompt")),
+            "{rows:#?}"
+        );
+    }
+
     /// A response from a model other than the selected one is what a virtual model routed to,
     /// and is shown until the selection changes.
     #[test]
@@ -4994,7 +5033,7 @@ mod tests {
     }
 
     fn only_tool(app: &App) -> &crate::transcript::ToolEntry {
-        match app.transcript.entries().first() {
+        match app.transcript.entries().get(1) {
             Some(crate::transcript::Entry::Tool(tool)) => tool,
             other => panic!("expected a tool entry, got {other:?}"),
         }
