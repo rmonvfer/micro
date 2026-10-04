@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [0.2.6] - 2026-10-05
+
+### Security
+
+- Drop control characters from link URLs before they reach the terminal, in the transcript and in MCP sign-in links, so a URL from a model or a server cannot end the link early and send the terminal its own escape sequences.
+
 ## [0.2.5] - 2026-10-05
 
 ### Fixed
