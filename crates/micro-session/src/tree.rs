@@ -448,8 +448,12 @@ pub struct Row<'a> {
 mod tests {
     use super::*;
 
+    /// A user message with a fixed timestamp, so two built from the same text are equal.
     fn user(text: &str) -> Message {
-        Message::user(text)
+        Message::User {
+            content: vec![micro_types::ContentBlock::text(text)],
+            timestamp: 0,
+        }
     }
 
     #[test]
