@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [0.2.8] - 2026-10-05
+
+### Fixed
+
+- Up and Down in an empty input recall the prompts you sent, as in pi, instead of scrolling the transcript first; Page Up, Page Down and the mouse wheel scroll it.
+
 ## [0.2.7] - 2026-10-05
 
 ### Fixed
