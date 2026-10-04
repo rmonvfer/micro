@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.2.3] - 2026-10-04
+
 ### Fixed
 
 - Show the startup screen when the session opens with a note, such as the warning that `--sandbox full` turns the sandbox off: the mark, version, keys and loaded resources are now the first block of the scrollback, above any startup notes and the conversation, and stay there to scroll back to, search and select. `ctrl+o` opens and folds it in place, `/new`, `/resume` and switching sessions keep it, and an extension's `setHeader` replaces it even when `quiet_startup` is on.
