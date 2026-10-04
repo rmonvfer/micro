@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.2.5] - 2026-10-04
+
 ### Changed
 
 - Offer `codemode` in every session whose tool selection neither narrows the tools nor withholds it, instead of only when the selection names it or an MCP server uses `codemode` exposure. `--exclude-tools codemode` still withholds it, and a `--tools` selection that leaves it out still leaves it out.
