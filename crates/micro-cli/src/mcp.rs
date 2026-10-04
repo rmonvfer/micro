@@ -260,8 +260,11 @@ pub async fn list(root: &Path, as_json: bool) -> Result<()> {
     Ok(())
 }
 
-/// A URL a terminal shows as a link, written so it stays one when it wraps.
+/// A URL a terminal shows as a link, written so it stays one when it wraps. The server chooses the
+/// URL, so control characters are dropped: one could end the escape early and send the terminal
+/// commands.
 fn hyperlink(url: &str) -> String {
+    let url: String = url.chars().filter(|c| !c.is_control()).collect();
     format!("\x1b]8;;{url}\x1b\\{url}\x1b]8;;\x1b\\")
 }
 
@@ -531,6 +534,16 @@ impl micro_agent::LiveSection for ServersSection {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A sign-in URL from a server cannot end the link's escape early and send the terminal
+    /// commands.
+    #[test]
+    fn a_sign_in_link_keeps_control_characters_out() {
+        assert_eq!(
+            hyperlink("https://auth.test/\x1b\\\x1b]52;c;aGk=\x07"),
+            "\x1b]8;;https://auth.test/\\]52;c;aGk=\x1b\\https://auth.test/\\]52;c;aGk=\x1b]8;;\x1b\\"
+        );
+    }
 
     #[test]
     fn a_command_after_the_options_is_a_stdio_server() {

@@ -139,11 +139,14 @@ fn marked_index(buffer: &Buffer, x: u16, y: u16) -> Option<usize> {
 /// rewrites the cells that changed, so a link opened in one cell and closed in another could be
 /// left open when only one of them is redrawn, turning everything written after it into the link.
 /// The escapes take no columns on screen, so the cell keeps the width of its text for that diff.
+/// Control characters are dropped from the URL, since one could end the escape early and write
+/// whatever follows to the terminal as commands.
 fn link(buffer: &mut Buffer, x: u16, y: u16, url: &str) {
     let cell = &mut buffer[(x, y)];
     let Some(width) = NonZeroU16::new(cell.symbol().width() as u16) else {
         return;
     };
+    let url: String = url.chars().filter(|c| !c.is_control()).collect();
     let symbol = format!("\x1b]8;;{url}\x07{}\x1b]8;;\x07", cell.symbol());
     cell.set_symbol(&symbol);
     cell.set_diff_option(CellDiffOption::ForcedWidth(width));
@@ -219,6 +222,24 @@ mod tests {
 
         let redrawn: Vec<u16> = before.diff(&after).iter().map(|(x, _, _)| *x).collect();
         assert_eq!(redrawn, vec![3, 4, 5], "only the changed word is redrawn");
+    }
+
+    /// A URL from the model cannot end the link's escape early and send the terminal commands.
+    #[test]
+    fn control_characters_never_leave_the_url() {
+        let mut links = Links::new();
+        let style = links.mark(
+            Style::new(),
+            "https://x.test/\x07\x1b]52;c;aGk=\x07\u{9b}2J",
+        );
+        let (mut buffer, area) = buffer_with("x", style, 4);
+
+        links.apply(&mut buffer, area);
+
+        assert_eq!(
+            buffer[(0, 0)].symbol(),
+            "\x1b]8;;https://x.test/]52;c;aGk=2J\x07x\x1b]8;;\x07"
+        );
     }
 
     #[test]
