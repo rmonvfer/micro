@@ -83,7 +83,7 @@ The default sandbox policy allows writes inside the workspace and blocks network
 
 ### Read the transcript
 
-In fullscreen mode, Page Up and Page Down scroll the transcript, and a "Jump to latest message" label appears while it is scrolled up; click it or press `end` to follow new output again. `ctrl+f` opens a search box at the top right: type to find text in the rendered transcript, press `enter` or `ctrl+g` for the next match and `shift+enter` or `ctrl+shift+g` for the previous one, and `escape` to close it. In regular mode `ctrl+f` keeps moving the cursor right.
+Up and Down in the input walk back through the prompts you sent. In fullscreen mode, Page Up, Page Down and the mouse wheel scroll the transcript, and a "Jump to latest message" label appears while it is scrolled up; click it or press `end` to follow new output again. `ctrl+f` opens a search box at the top right: type to find text in the rendered transcript, press `enter` or `ctrl+g` for the next match and `shift+enter` or `ctrl+shift+g` for the previous one, and `escape` to close it. In regular mode `ctrl+f` keeps moving the cursor right.
 
 Dragging the mouse selects text, a double click selects a word, and a triple click selects a paragraph. Selections are copied as soon as they are made unless `copy_on_select` is off; `ctrl+x` copies the active selection, or the last answer when nothing is selected.
 

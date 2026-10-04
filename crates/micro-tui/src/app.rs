@@ -2398,9 +2398,6 @@ impl App {
             return Outcome::Handled;
         }
 
-        if self.editor.is_empty() && !self.editor.is_browsing_history() && self.scroll_by(1) {
-            return Outcome::Handled;
-        }
         self.editor.history_previous();
         Outcome::Handled
     }
@@ -2411,9 +2408,6 @@ impl App {
             return Outcome::Handled;
         }
         if self.editor.move_down(self.width) {
-            return Outcome::Handled;
-        }
-        if self.editor.is_empty() && !self.editor.is_browsing_history() && self.scroll_by(-1) {
             return Outcome::Handled;
         }
         self.editor.history_next();
@@ -3187,16 +3181,6 @@ mod tests {
         assert!(!detail_open);
     }
 
-    fn press_up_until_history(app: &mut App) {
-        for _ in 0..500 {
-            app.handle(Action::MoveUp);
-            if !app.editor.text().is_empty() {
-                return;
-            }
-        }
-        panic!("up never reached the history");
-    }
-
     fn transcript_text(app: &mut App) -> String {
         app.set_frame(60, 24);
         app.refresh_lines();
@@ -3639,11 +3623,12 @@ mod tests {
         app.refresh_lines();
 
         app.handle(Action::MoveUp);
-        assert!(app.scroll() > 0);
-        assert_eq!(app.editor.text(), "");
-
-        press_up_until_history(&mut app);
         assert_eq!(app.editor.text(), "the first thing asked");
+        assert_eq!(
+            app.scroll(),
+            0,
+            "the arrow went to history, not the transcript"
+        );
     }
 
     #[test]
@@ -3768,7 +3753,8 @@ mod tests {
     }
 
     #[test]
-    fn wheel_and_arrow_keys_scroll_the_conversation() {
+    /// The wheel scrolls the conversation; the arrows belong to the input and its history.
+    fn the_wheel_scrolls_the_conversation_and_the_arrows_leave_it() {
         let mut app = app();
         for index in 0..40 {
             app.transcript.push_user(format!("prompt number {index}"));
@@ -3783,14 +3769,11 @@ mod tests {
         assert_eq!(app.scroll(), 6);
 
         app.handle(Action::MoveUp);
-        assert_eq!(app.scroll(), 7);
-        app.handle(Action::MoveUp);
-        assert_eq!(app.scroll(), 8);
-
         app.handle(Action::MoveDown);
-        assert_eq!(app.scroll(), 7);
+        assert_eq!(app.scroll(), 6);
+
         app.handle(Action::ScrollDown);
-        assert_eq!(app.scroll(), 4);
+        assert_eq!(app.scroll(), 3);
     }
 
     #[test]
@@ -4360,7 +4343,7 @@ mod tests {
         app.set_viewport(10);
         app.refresh_lines();
 
-        press_up_until_history(&mut app);
+        app.handle(Action::MoveUp);
         assert_eq!(app.editor.text(), "second thing");
         app.handle(Action::MoveUp);
         assert_eq!(app.editor.text(), "first thing");
