@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [0.2.7] - 2026-10-05
+
+### Fixed
+
+- `micro update` works from a micro built from source: it installs the latest release where the install script puts it and points the launcher at it, instead of refusing because the running micro is not a managed release. The automatic startup check still leaves such a build alone.
+
 ## [0.2.6] - 2026-10-05
 
 ### Security
