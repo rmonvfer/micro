@@ -172,16 +172,9 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         .len()
         .saturating_sub(transcript_rows as usize)
         .saturating_sub(app.scroll());
-    let shown = app
-        .lines()
-        .len()
-        .saturating_sub(first_visible)
-        .min(transcript_area.height as usize);
-    let top = transcript_area.y + (transcript_area.height as usize - shown) as u16;
-
     let placements = app
         .pictures()
-        .placements(transcript_area, first_visible, top);
+        .placements(transcript_area, first_visible, transcript_area.y);
     app.set_placements(placements);
 }
 
@@ -416,13 +409,13 @@ fn draw_transcript(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
         .len()
         .saturating_sub(height)
         .saturating_sub(app.scroll());
-    let shown = rows.len().saturating_sub(first).min(height);
 
-    let top = area.y + (height - shown) as u16;
+    // The transcript starts at the top of its area and grows down towards the input, so a short
+    // conversation sits under the startup screen rather than at the bottom of the terminal.
     for (offset, line) in rows.iter().skip(first).take(height).enumerate() {
         frame
             .buffer_mut()
-            .set_line(area.x, top + offset as u16, line, area.width);
+            .set_line(area.x, area.y + offset as u16, line, area.width);
     }
 
     draw_scrollbar(
@@ -1624,8 +1617,8 @@ mod tests {
     }
 
     #[test]
-    /// The interface takes the whole screen, opening at the top and keeping the input on the last
-    /// rows however little there is to show.
+    /// The interface takes the whole screen, the opening at the top and the input on the last rows
+    /// however little there is to show.
     fn the_opening_screen_fills_the_terminal() {
         let mut app = App::new(&[], TuiOptions::default());
         let rows = paint(&mut app, 100, 50);
@@ -1636,7 +1629,15 @@ mod tests {
             .position(|row| row.ends_with(&format!("██   v{}", env!("CARGO_PKG_VERSION"))))
             .expect("the logo is drawn");
 
-        assert!(logo > 30, "the opening sits above the input, at row {logo}");
+        assert!(logo < 3, "the opening starts at the top, not at row {logo}");
+        let blank = rows[logo..]
+            .iter()
+            .filter(|row| row.trim().is_empty())
+            .count();
+        assert!(
+            blank > 20,
+            "the space under the opening is left empty: {rows:#?}"
+        );
     }
 
     /// Nothing on the first screen is cut off: a line too long for the terminal takes another row
@@ -1683,19 +1684,33 @@ mod tests {
         );
     }
 
+    /// A short conversation follows the startup screen from the top, leaving the empty rows
+    /// between it and the input.
     #[test]
-
-    fn a_short_conversation_sits_above_the_input() {
+    fn a_short_conversation_follows_the_opening_from_the_top() {
         let mut app = App::new(&[], TuiOptions::default());
         app.transcript.push_user("hello");
         let rows = paint(&mut app, 80, 40);
 
         assert_eq!(rows.len(), 40, "{rows:#?}");
+        let logo = rows
+            .iter()
+            .position(|row| row.contains(&format!("v{}", env!("CARGO_PKG_VERSION"))))
+            .expect("the logo is drawn");
         let prompt = rows
             .iter()
             .position(|row| row.trim_start().starts_with("hello"))
             .expect("the prompt is drawn");
-        assert!(prompt > 25, "prompt should remain near the input");
+        assert!(
+            logo < prompt && prompt < 20,
+            "the prompt sits under the opening: {rows:#?}"
+        );
+        assert!(
+            rows[prompt + 1..rows.len() - 6]
+                .iter()
+                .all(|row| row.trim().is_empty()),
+            "the rows below the conversation are left empty: {rows:#?}"
+        );
     }
 
     #[test]

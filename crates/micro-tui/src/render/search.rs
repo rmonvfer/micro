@@ -29,7 +29,7 @@ pub fn highlight(frame: &mut Frame, area: Rect, app: &App, search: &Search, them
         .saturating_sub(height)
         .saturating_sub(app.scroll());
     let shown = rows.len().saturating_sub(first).min(height);
-    let top = area.y as usize + (height - shown);
+    let top = area.y as usize;
 
     let other = Style::new()
         .bg(theme.selected_bg)
