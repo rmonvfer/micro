@@ -86,12 +86,14 @@ pub fn append(
         let before = out.len();
 
         let thinking_leads_into_tool = assistant_leads_into_tool(entries, index);
-        if (!out.is_empty() || index > 0) && !thinking_leads_into_tool {
+        let follows_something = !out.is_empty() || entries[..index].iter().any(said);
+        if follows_something && !thinking_leads_into_tool {
             out.push(Line::default());
         }
         let start = out.len();
 
         match entry {
+            Entry::Header(header) => out.extend(super::header_lines(header, theme, display.width)),
             Entry::User(text) => push_user(out, text, theme, display),
             Entry::Bash { command, shared } => push_bash(out, command, *shared, theme, display),
             Entry::Assistant(assistant) => {
@@ -137,6 +139,11 @@ pub fn append(
             out.truncate(before);
         }
     }
+}
+
+/// Whether an entry is part of the conversation, rather than the block it opens with.
+fn said(entry: &Entry) -> bool {
+    !matches!(entry, Entry::Header(_))
 }
 
 /// A thinking-only assistant entry keeps the tool's surrounding spacing intact.

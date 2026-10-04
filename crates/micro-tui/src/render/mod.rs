@@ -72,23 +72,6 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     app.refresh_lines();
     app.refresh_search();
 
-    let quiet = app.settings().quiet_startup;
-    let opening = match app.lines().is_empty() && quiet.shows_header() {
-        true => match app.header_override() {
-            Some(lines) => lines
-                .iter()
-                .map(|line| Line::styled(line.clone(), theme.body()))
-                .collect(),
-            None => intro(
-                &theme,
-                content_width as usize,
-                app.startup_expanded(),
-                quiet.lists_resources().then(|| app.resources()),
-            ),
-        },
-        false => Vec::new(),
-    };
-
     let rows = chrome.stack(Some(area.height as usize)).allocation(0);
     let [transcript_area, _, activity_area, overlay_area, widgets_above_area, editor_area, widgets_below_area, menu_area, status_area] =
         Layout::vertical(rows.iter().map(|rows| Constraint::Length(*rows as u16))).areas(area);
@@ -98,7 +81,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     let widgets_above = chrome.widgets_above;
     let widgets_below = chrome.widgets_below;
 
-    draw_transcript(frame, transcript_area, app, &opening, &theme);
+    draw_transcript(frame, transcript_area, app, &theme);
     if let Some(found) = app.search() {
         search::highlight(frame, transcript_area, app, found, &theme);
         search::draw_box(frame, transcript_area, found, &theme);
@@ -422,21 +405,12 @@ fn draw_rows(
     }
 }
 
-fn draw_transcript(
-    frame: &mut Frame,
-    area: Rect,
-    app: &App,
-    opening: &[Line<'static>],
-    theme: &Theme,
-) {
+fn draw_transcript(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
     if area.width == 0 || area.height == 0 {
         return;
     }
     let height = area.height as usize;
-    let rows = match app.lines().is_empty() {
-        true => opening,
-        false => app.lines(),
-    };
+    let rows = app.lines();
 
     let first = rows
         .len()
@@ -614,6 +588,26 @@ const ALL_HINTS: [(&str, &str); 21] = [
     ("ctrl+v", "to paste image (with text fallback)"),
     ("drop files", "to attach"),
 ];
+
+/// The block a session opens with, as rows this wide.
+pub(crate) fn header_lines(
+    header: &crate::transcript::Header,
+    theme: &Theme,
+    width: usize,
+) -> Vec<Line<'static>> {
+    use crate::transcript::Header;
+    match header {
+        Header::Quiet => Vec::new(),
+        Header::Startup {
+            expanded,
+            resources,
+        } => intro(theme, width, *expanded, resources.as_ref()),
+        Header::Custom(lines) => lines
+            .iter()
+            .map(|line| Line::styled(line.clone(), theme.body()))
+            .collect(),
+    }
+}
 
 /// The opening screen: the mark with the version and the keys worth knowing beside it, where to
 /// learn more, and, when they are given, what was loaded.
@@ -1348,8 +1342,70 @@ mod tests {
         assert!(rows[..rule].iter().all(|row| row.is_empty()), "{rows:#?}");
     }
 
+    /// A note pushed while the session starts, such as the warning that the sandbox is off, is
+    /// drawn under the first screen rather than in place of it.
     #[test]
-    fn the_first_screen_gives_way_to_the_conversation() {
+    fn a_notice_at_startup_sits_under_the_first_screen() {
+        let mut app = App::new(
+            &[],
+            TuiOptions {
+                resources: loaded(),
+                ..TuiOptions::default()
+            },
+        );
+        app.set_tui_mode(crate::TuiMode::Fullscreen);
+        app.notice(
+            "the sandbox is off: commands run under `full` can reach anything you can.",
+            micro_commands::MessageKind::Info,
+        );
+        let mut terminal = Terminal::new(TestBackend::new(100, 40)).expect("backend");
+        terminal.draw(|frame| draw(frame, &mut app)).expect("draws");
+        let rows = screen(&terminal);
+        println!("{}", rows.join("\n"));
+        let at = |needle: &str| rows.iter().position(|row| row.contains(needle));
+
+        let mark = at("█").unwrap_or_else(|| panic!("the mark is drawn: {rows:#?}"));
+        let skills = at("[Skills]").expect("what loaded is listed");
+        let notice = at("the sandbox is off").expect("the notice is drawn");
+        assert!(rows[mark].contains(env!("CARGO_PKG_VERSION")), "{rows:#?}");
+        assert!(mark < skills && skills < notice, "{rows:#?}");
+    }
+
+    /// The first screen is the opening of the scrollback: the conversation follows it, and
+    /// scrolling back up reaches it again.
+    #[test]
+    fn the_first_screen_stays_above_the_conversation() {
+        let mut app = App::new(
+            &[],
+            TuiOptions {
+                resources: loaded(),
+                ..TuiOptions::default()
+            },
+        );
+        app.set_tui_mode(crate::TuiMode::Fullscreen);
+        for index in 0..20 {
+            app.transcript.push_user(format!("prompt {index}"));
+        }
+        let mut terminal = Terminal::new(TestBackend::new(100, 30)).expect("backend");
+        terminal.draw(|frame| draw(frame, &mut app)).expect("draws");
+        let latest = screen(&terminal).join("\n");
+        assert!(latest.contains("prompt 19"), "{latest}");
+        assert!(!latest.contains("█"), "{latest}");
+
+        for _ in 0..10 {
+            app.handle(Action::PageUp);
+        }
+        terminal.draw(|frame| draw(frame, &mut app)).expect("draws");
+        let rows = screen(&terminal);
+        let at = |needle: &str| rows.iter().position(|row| row.contains(needle));
+        let mark = at("█").unwrap_or_else(|| panic!("the mark opens the scrollback: {rows:#?}"));
+        let first = at("prompt 0").expect("the conversation follows it");
+        assert!(at("[Skills]").is_some_and(|skills| mark < skills && skills < first));
+    }
+
+    /// Ctrl+O opens the first screen where it stands, conversation and all.
+    #[test]
+    fn ctrl_o_opens_the_first_screen_in_place() {
         let mut app = App::new(
             &[],
             TuiOptions {
@@ -1358,12 +1414,53 @@ mod tests {
             },
         );
         app.transcript.push_user("first prompt");
-        let mut terminal = Terminal::new(TestBackend::new(100, 30)).expect("backend");
-        terminal.draw(|frame| draw(frame, &mut app)).expect("draws");
-        let drawn = screen(&terminal).join("\n");
-        assert!(drawn.contains("first prompt"), "{drawn}");
-        assert!(!drawn.contains("[Skills]"), "{drawn}");
-        assert!(!drawn.contains("█"), "{drawn}");
+        let closed = app.plain_lines();
+        assert!(closed
+            .iter()
+            .any(|row| row.contains("humanizer, release-notes")));
+
+        app.handle(Action::ToggleFocused);
+        let opened = app.plain_lines();
+        assert!(opened
+            .iter()
+            .any(|row| row.contains("to cycle thinking level")));
+        assert!(opened
+            .iter()
+            .any(|row| row.contains("~/.micro/skills/humanizer/SKILL.md")));
+        let header_end = opened
+            .iter()
+            .position(|row| row.contains("index.ts"))
+            .expect("the opened listing says where each came from");
+        let prompt = opened
+            .iter()
+            .position(|row| row.contains("first prompt"))
+            .expect("the conversation is still drawn");
+        assert!(header_end < prompt, "{opened:#?}");
+    }
+
+    /// Starting over or opening another session swaps the conversation and keeps the first
+    /// screen above it.
+    #[test]
+    fn a_swapped_conversation_keeps_the_first_screen() {
+        let mut app = App::new(
+            &[],
+            TuiOptions {
+                resources: loaded(),
+                ..TuiOptions::default()
+            },
+        );
+        app.transcript.push_user("before");
+        app.apply_result(crate::commands::Applied::Conversation {
+            messages: vec![micro_types::Message::user("after")],
+            note: Some("New session started".into()),
+        });
+        let rows = app.plain_lines();
+        let at = |needle: &str| rows.iter().position(|row| row.contains(needle));
+        assert!(at("before").is_none(), "{rows:#?}");
+        let mark = at("█").expect("the mark is still first");
+        let prompt = at("after").expect("the conversation it swapped to");
+        let note = at("New session started").expect("and the note");
+        assert!(mark < prompt && prompt < note, "{rows:#?}");
     }
 
     /// The key press a hint's chord, such as `ctrl+shift+p`, names.
@@ -1499,7 +1596,9 @@ mod tests {
     /// The interface keeps clear of the terminal's edges, on every side.
     #[test]
     fn the_interface_keeps_a_margin_around_itself() {
-        let mut app = App::new(&[], TuiOptions::default());
+        let mut options = TuiOptions::default();
+        options.settings.quiet_startup = micro_config::QuietStartup::On;
+        let mut app = App::new(&[], options);
         app.transcript.push_user("a question");
         let rows = paint(&mut app, 40, 14);
 
@@ -1547,7 +1646,11 @@ mod tests {
         for width in [40u16, 56, 80] {
             let mut app = App::new(&[], unpadded());
             let rows = paint(&mut app, width, 50);
-            let said = rows.join(" ");
+            let said = rows
+                .join(" ")
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ");
 
             assert!(
                 rows.iter().all(|row| text_width(row) <= width as usize),

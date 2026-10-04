@@ -113,8 +113,26 @@ impl ToolEntry {
     }
 }
 
+/// The block a session opens with, above everything said in it.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Header {
+    /// Nothing, for a session that opens quietly.
+    Quiet,
+    /// The mark with the version and the keys worth knowing, and what was loaded when it is
+    /// listed.
+    Startup {
+        /// Whether every key and where each resource came from are shown.
+        expanded: bool,
+        resources: Option<crate::app::Resources>,
+    },
+    /// What an extension drew in its place.
+    Custom(Vec<String>),
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum Entry {
+    /// The opening block, always the first entry when there is one.
+    Header(Header),
     User(String),
 
     Bash {
@@ -210,6 +228,36 @@ impl Transcript {
 
     pub fn entries(&self) -> &[Entry] {
         &self.entries
+    }
+
+    /// Open the scrollback with this block, or redraw the one it opens with when it changed.
+    pub fn set_header(&mut self, header: Header) {
+        match self.entries.first_mut() {
+            Some(Entry::Header(current)) if *current == header => return,
+            Some(Entry::Header(current)) => *current = header,
+            _ => {
+                self.entries.insert(0, Entry::Header(header));
+                self.active = self.active.map(|index| index + 1);
+                for index in self.tools.values_mut() {
+                    *index += 1;
+                }
+            }
+        }
+        self.version += 1;
+        self.touched(0);
+    }
+
+    /// The block the scrollback opens with, when it has one.
+    pub fn header(&self) -> Option<&Header> {
+        match self.entries.first() {
+            Some(Entry::Header(header)) => Some(header),
+            _ => None,
+        }
+    }
+
+    /// How many entries were said in the conversation, leaving out the block it opens with.
+    pub fn conversation_len(&self) -> usize {
+        self.entries.len() - usize::from(self.header().is_some())
     }
 
     pub fn is_empty(&self) -> bool {
