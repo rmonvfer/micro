@@ -73,7 +73,9 @@ struct State {
 struct Installation {
     launcher: PathBuf,
     dist_dir: PathBuf,
-    version_dir: PathBuf,
+    /// The managed release this micro runs from, or nothing when it runs from elsewhere, such as a
+    /// build from source.
+    version_dir: Option<PathBuf>,
 }
 
 struct UpdateLock {
@@ -132,10 +134,17 @@ fn arguments_allow_auto_update(args: &[OsString]) -> bool {
     })
 }
 
+/// A forced update from a micro that is not a managed release, such as a build from source,
+/// installs the latest release where the install script would and points the launcher at it. An
+/// automatic check leaves such a micro alone.
 async fn check_and_install(force: bool, interval_hours: u64) -> Result<Outcome> {
-    let installation = match managed_installation() {
-        Ok(installation) => installation,
-        Err(reason) => return Ok(Outcome::Skipped { reason }),
+    let installation = match (managed_installation(), force) {
+        (Ok(installation), _) => installation,
+        (Err(_), true) => match standard_installation() {
+            Ok(installation) => installation,
+            Err(reason) => return Ok(Outcome::Skipped { reason }),
+        },
+        (Err(reason), false) => return Ok(Outcome::Skipped { reason }),
     };
     let state_path = micro_dirs::data_dir()
         .ok_or_else(|| anyhow::anyhow!("no data directory; set {}", micro_dirs::MICRO_DIR_ENV))?
@@ -180,7 +189,7 @@ async fn check_and_install_managed(installation: &Installation) -> Result<Outcom
     let version = Version::parse(release.tag_name.trim_start_matches('v'))
         .with_context(|| format!("release tag {} is not a semantic version", release.tag_name))?;
     let current = Version::parse(env!("CARGO_PKG_VERSION"))?;
-    if version <= current {
+    if installation.version_dir.is_some() && version <= current {
         return Ok(Outcome::Current {
             version: current.to_string(),
         });
@@ -251,7 +260,7 @@ async fn check_and_install_managed(installation: &Installation) -> Result<Outcom
     }
 
     let destination = installation.dist_dir.join(version.to_string());
-    if destination == installation.version_dir {
+    if installation.version_dir.as_ref() == Some(&destination) {
         anyhow::bail!("release version is already installed");
     }
     if destination.exists() {
@@ -262,10 +271,9 @@ async fn check_and_install_managed(installation: &Installation) -> Result<Outcom
         &installation.launcher,
         &destination.join("bin").join(BINARY),
     )?;
-    prune_versions(
-        &installation.dist_dir,
-        &[installation.version_dir.clone(), destination.clone()],
-    );
+    let mut keep = vec![destination.clone()];
+    keep.extend(installation.version_dir.clone());
+    prune_versions(&installation.dist_dir, &keep);
 
     Ok(Outcome::Installed {
         previous_version: current.to_string(),
@@ -366,7 +374,55 @@ fn managed_installation() -> Result<Installation, String> {
     Ok(Installation {
         launcher,
         dist_dir,
-        version_dir,
+        version_dir: Some(version_dir),
+    })
+}
+
+/// Where the install script puts micro: the launcher in `MICRO_INSTALL_DIR` or `~/.local/bin`,
+/// the releases in `MICRO_DIST_DIR` or `~/.local/share/micro/dist`. A launcher that is a file
+/// rather than a link is not micro's to replace.
+fn standard_installation() -> Result<Installation, String> {
+    let home = std::env::var_os("HOME").map(PathBuf::from);
+    let directory = |variable: &str, under_home: &[&str]| {
+        std::env::var_os(variable)
+            .filter(|value| !value.is_empty())
+            .map(PathBuf::from)
+            .or_else(|| {
+                home.as_ref().map(|home| {
+                    under_home
+                        .iter()
+                        .fold(home.clone(), |path, part| path.join(part))
+                })
+            })
+            .ok_or_else(|| format!("no home directory; set {variable}"))
+    };
+    let launcher = directory("MICRO_INSTALL_DIR", &[".local", "bin"])?.join(BINARY);
+    let dist_dir = directory("MICRO_DIST_DIR", &[".local", "share", "micro", "dist"])?;
+    standard_installation_at(launcher, dist_dir)
+}
+
+fn standard_installation_at(launcher: PathBuf, dist_dir: PathBuf) -> Result<Installation, String> {
+    let replaceable = match std::fs::symlink_metadata(&launcher) {
+        Ok(metadata) => metadata.file_type().is_symlink(),
+        Err(error) => error.kind() == std::io::ErrorKind::NotFound,
+    };
+    if !replaceable {
+        return Err(format!(
+            "{} is a file, not a link to a managed release; move it aside or set MICRO_INSTALL_DIR",
+            launcher.display()
+        ));
+    }
+    for directory in [launcher.parent(), Some(dist_dir.as_path())]
+        .into_iter()
+        .flatten()
+    {
+        std::fs::create_dir_all(directory)
+            .map_err(|error| format!("could not create {}: {error}", directory.display()))?;
+    }
+    Ok(Installation {
+        launcher,
+        dist_dir,
+        version_dir: None,
     })
 }
 
@@ -497,6 +553,32 @@ fn unix_time() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A launcher linked to a build from source is replaced, and a missing one is created; a
+    /// launcher that is an ordinary file is left alone.
+    #[cfg(unix)]
+    #[test]
+    fn an_unmanaged_micro_installs_where_the_install_script_would() {
+        let root = tempfile::tempdir().unwrap();
+        let bin = root.path().join("bin");
+        let dist = root.path().join("share").join("dist");
+        let launcher = bin.join(BINARY);
+
+        let missing = standard_installation_at(launcher.clone(), dist.clone()).unwrap();
+        assert_eq!(missing.launcher, launcher);
+        assert!(missing.version_dir.is_none());
+        assert!(bin.is_dir() && dist.is_dir());
+
+        let source_build = root.path().join("cargo-micro");
+        std::fs::write(&source_build, "").unwrap();
+        std::os::unix::fs::symlink(&source_build, &launcher).unwrap();
+        assert!(standard_installation_at(launcher.clone(), dist.clone()).is_ok());
+
+        std::fs::remove_file(&launcher).unwrap();
+        std::fs::write(&launcher, "").unwrap();
+        let refused = standard_installation_at(launcher, dist).err().unwrap();
+        assert!(refused.contains("is a file"), "{refused}");
+    }
 
     #[test]
     fn authenticated_downloads_use_the_asset_api_and_bearer_token() {

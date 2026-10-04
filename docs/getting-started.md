@@ -18,7 +18,7 @@ gh auth login
 gh api -H "Accept: application/vnd.github.raw+json" repos/rmonvfer/micro/contents/scripts/install.sh | bash
 ```
 
-The installer verifies the release checksum, keeps versioned copies under `~/.local/share/micro/dist`, and links `micro` from `~/.local/bin`. Packaged interactive installations check for updates automatically once every 24 hours. Set `auto_update` to `false`, set `MICRO_NO_AUTO_UPDATE=1`, or run `micro update` when you want explicit control.
+The installer verifies the release checksum, keeps versioned copies under `~/.local/share/micro/dist`, and links `micro` from `~/.local/bin`. Packaged interactive installations check for updates automatically once every 24 hours. Set `auto_update` to `false`, set `MICRO_NO_AUTO_UPDATE=1`, or run `micro update` when you want explicit control. Run from a build from source, `micro update` installs the latest release the same way and points `~/.local/bin/micro` back at it; the automatic check leaves such a build alone.
 
 Public release checks do not require a token. For a private repository or authenticated API access, micro reads `MICRO_GITHUB_TOKEN`, then `GITHUB_TOKEN`, then `GH_TOKEN`, and otherwise reuses the token from `gh auth login`. The token must be able to read the repository's releases.
 

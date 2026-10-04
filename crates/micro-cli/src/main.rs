@@ -748,9 +748,12 @@ async fn main() -> Result<()> {
                 update::Outcome::Installed {
                     previous_version,
                     version,
-                    ..
+                    launcher,
                 } => {
-                    println!("Updated micro {previous_version} to {version}.");
+                    println!(
+                        "Updated micro {previous_version} to {version}, linked at {}.",
+                        launcher.display()
+                    );
                     Ok(())
                 }
                 update::Outcome::Skipped { reason } => {
