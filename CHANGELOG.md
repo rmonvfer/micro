@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [0.2.5] - 2026-10-05
+
+### Fixed
+
+- Keep clickable links to their own text: a link could be left open when only part of the screen was redrawn, so hovering underlined the rest of the transcript and clicking anywhere opened the linked file. Each linked cell now opens and closes its link, and the cells after a link are redrawn when they change.
+
 ## [0.2.5] - 2026-10-04
 
 ### Changed
