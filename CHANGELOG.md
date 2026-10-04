@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [0.2.4] - 2026-10-04
+
+### Changed
+
+- Draw the transcript from the top of the terminal down: the startup screen sits at the top, the conversation follows directly under it, and the empty rows stay between the conversation and the input until it fills the screen.
+
 ## [0.2.3] - 2026-10-04
 
 ### Fixed
