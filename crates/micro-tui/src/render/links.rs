@@ -1,9 +1,12 @@
 //! OSC 8 hyperlinks, applied after the frame is laid out.
 
 use ratatui::buffer::Buffer;
+use ratatui::buffer::CellDiffOption;
 use ratatui::layout::Rect;
 use ratatui::style::Color;
 use ratatui::style::Style;
+use std::num::NonZeroU16;
+use unicode_width::UnicodeWidthStr;
 
 /// URLs for one frame, in the order the renderer met them.
 #[derive(Debug, Clone)]
@@ -83,12 +86,10 @@ impl Links {
                 while end + 1 < area.right() && marked_index(buffer, end + 1, y) == Some(index) {
                     end += 1;
                 }
-                if let Some(url) = self.url(index) {
-                    open(buffer, x, y, url);
-                    close(buffer, end, y);
-                }
-
                 for column in x..=end {
+                    if let Some(url) = self.url(index) {
+                        link(buffer, column, y, url);
+                    }
                     clear(buffer, column, y);
                 }
                 x = end + 1;
@@ -134,16 +135,18 @@ fn marked_index(buffer: &Buffer, x: u16, y: u16) -> Option<usize> {
     }
 }
 
-fn open(buffer: &mut Buffer, x: u16, y: u16, url: &str) {
+/// Make one cell a link on its own, opening and closing the link around its text. A frame only
+/// rewrites the cells that changed, so a link opened in one cell and closed in another could be
+/// left open when only one of them is redrawn, turning everything written after it into the link.
+/// The escapes take no columns on screen, so the cell keeps the width of its text for that diff.
+fn link(buffer: &mut Buffer, x: u16, y: u16, url: &str) {
     let cell = &mut buffer[(x, y)];
-    let symbol = format!("\x1b]8;;{url}\x07{}", cell.symbol());
+    let Some(width) = NonZeroU16::new(cell.symbol().width() as u16) else {
+        return;
+    };
+    let symbol = format!("\x1b]8;;{url}\x07{}\x1b]8;;\x07", cell.symbol());
     cell.set_symbol(&symbol);
-}
-
-fn close(buffer: &mut Buffer, x: u16, y: u16) {
-    let cell = &mut buffer[(x, y)];
-    let symbol = format!("{}\x1b]8;;\x07", cell.symbol());
-    cell.set_symbol(&symbol);
+    cell.set_diff_option(CellDiffOption::ForcedWidth(width));
 }
 
 fn clear(buffer: &mut Buffer, x: u16, y: u16) {
@@ -169,30 +172,53 @@ mod tests {
     }
 
     #[test]
-    fn a_marked_run_is_wrapped_in_its_escapes() {
+    fn every_cell_of_a_marked_run_is_a_link_on_its_own() {
         let mut links = Links::new();
         let style = links.mark(Style::new(), "https://example.com");
         let (mut buffer, area) = buffer_with("link", style, 10);
 
         links.apply(&mut buffer, area);
 
-        assert!(buffer[(0, 0)]
-            .symbol()
-            .starts_with("\x1b]8;;https://example.com\x07"));
-        assert!(buffer[(0, 0)].symbol().ends_with('l'));
-        assert!(buffer[(3, 0)].symbol().ends_with("\x1b]8;;\x07"));
+        for (x, letter) in "link".chars().enumerate() {
+            assert_eq!(
+                buffer[(x as u16, 0)].symbol(),
+                format!("\x1b]8;;https://example.com\x07{letter}\x1b]8;;\x07")
+            );
+        }
+        assert_eq!(buffer[(4, 0)].symbol(), " ", "the link ends with its text");
     }
 
-    /// The cells in between are untouched, so the text still reads as itself.
+    /// The escapes take no columns, so a frame's diff still visits the cells after a link and a
+    /// change beside it reaches the screen.
     #[test]
-    fn the_middle_of_a_link_is_left_alone() {
+    fn the_cells_after_a_link_are_still_redrawn() {
         let mut links = Links::new();
-        let style = links.mark(Style::new(), "https://example.com");
-        let (mut buffer, area) = buffer_with("link", style, 10);
+        let style = links.mark(
+            Style::new(),
+            "file:///Users/someone/a/long/path/to/notes.md",
+        );
+        let area = Rect::new(0, 0, 12, 1);
 
-        links.apply(&mut buffer, area);
-        assert_eq!(buffer[(1, 0)].symbol(), "i");
-        assert_eq!(buffer[(2, 0)].symbol(), "n");
+        let mut before = Buffer::empty(area);
+        before.set_line(
+            0,
+            0,
+            &Line::from(vec![Span::styled("ab", style), Span::raw(" old")]),
+            12,
+        );
+        links.apply(&mut before, area);
+
+        let mut after = Buffer::empty(area);
+        after.set_line(
+            0,
+            0,
+            &Line::from(vec![Span::styled("ab", style), Span::raw(" new")]),
+            12,
+        );
+        links.apply(&mut after, area);
+
+        let redrawn: Vec<u16> = before.diff(&after).iter().map(|(x, _, _)| *x).collect();
+        assert_eq!(redrawn, vec![3, 4, 5], "only the changed word is redrawn");
     }
 
     #[test]
