@@ -522,7 +522,7 @@ fn find(characters: &[char], from: usize, wanted: char) -> Option<usize> {
 fn diagram_blocks(source: &[String], theme: &Theme, width: usize) -> Vec<Block> {
     let text = source.join("\n");
 
-    let art = micro_mermaid::render(&text)
+    let art = micro_mermaid::render_fit(&text, width)
         .filter(|art| art.width <= width)
         .unwrap_or_else(|| micro_mermaid::source_box(&text, width));
 

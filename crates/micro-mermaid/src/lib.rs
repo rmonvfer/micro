@@ -28,6 +28,7 @@ pub use parse::{diagram_kind, DiagramKind};
 pub use source_box::source_box;
 pub use types::{Art, Cls, Span};
 
+use graph::{ClassInfo, Dir, Graph};
 use layout::{layout_class, layout_flowchart, layout_grouped, CanvasResult};
 use layout_seq::layout_sequence;
 use parse::{parse_class, parse_er, parse_graph, parse_sequence, parse_state};
@@ -39,13 +40,40 @@ pub fn render(src: &str) -> Option<Art> {
         return None;
     }
     let drawn = attempt(&src)?;
+    Some(art(drawn))
+}
+
+/// Render as `render` does, but when the written orientation is wider than `max_width`, try the
+/// diagram turned the other way and keep that when it fits. `None` when nothing can be drawn.
+pub fn render_fit(src: &str, max_width: usize) -> Option<Art> {
+    let src = labels::strip_controls(src);
+    if src.trim().is_empty() {
+        return None;
+    }
+    let drawn = attempt(&src)?;
+    if fits(&drawn, max_width) {
+        return Some(art(drawn));
+    }
+    match attempt_turn(&src, turned) {
+        Some(turned_drawn) if fits(&turned_drawn, max_width) => Some(art(turned_drawn)),
+        _ => Some(art(drawn)),
+    }
+}
+
+/// The lines of a drawn canvas as finished art.
+fn art(drawn: Drawn) -> Art {
     let lines = drawn.canvas.to_lines();
-    Some(Art {
+    Art {
         plain: lines.plain,
         styled: lines.styled,
         width: lines.width,
         warnings: drawn.warnings,
-    })
+    }
+}
+
+/// Whether a drawn canvas is no wider than `max_width`.
+fn fits(drawn: &Drawn, max_width: usize) -> bool {
+    drawn.canvas.w <= max_width
 }
 
 struct Drawn {
@@ -53,15 +81,21 @@ struct Drawn {
     warnings: Vec<String>,
 }
 
-/// Draw `src`, retrying once without its last line if the grammar rejects it.
+/// Draw `src` as written, retrying once without its last line if the grammar rejects it.
 fn attempt(src: &str) -> Option<Drawn> {
-    if let Some(drawn) = draw(src) {
+    attempt_turn(src, |dir| dir)
+}
+
+/// Draw `src` with every orientation replaced by `turn`, retrying once without its last line if
+/// the grammar rejects it.
+fn attempt_turn(src: &str, turn: impl Copy + Fn(Dir) -> Dir) -> Option<Drawn> {
+    if let Some(drawn) = draw_turn(src, &turn) {
         return Some(drawn);
     }
 
     let body = src.trim_end();
     let cut = body.rfind('\n')?;
-    let salvaged = draw(&body[..cut])?;
+    let salvaged = draw_turn(&body[..cut], &turn)?;
 
     let dropped = body[cut + 1..].trim();
     let mut warnings = salvaged.warnings;
@@ -72,8 +106,40 @@ fn attempt(src: &str) -> Option<Drawn> {
     })
 }
 
-/// Dispatch on the declared diagram type; `None` means nothing was drawn.
-fn draw(src: &str) -> Option<Drawn> {
+/// Replace an orientation with the one across from it.
+fn turned(dir: Dir) -> Dir {
+    match dir {
+        Dir::Down => Dir::Right,
+        Dir::Up => Dir::Left,
+        Dir::Right => Dir::Down,
+        Dir::Left => Dir::Up,
+    }
+}
+
+/// A flowchart or state diagram: plain boxes, no extra content.
+fn drawn_flowchart(graph: &Graph) -> Option<Drawn> {
+    let canvas = if graph.groups.is_empty() {
+        layout_flowchart(graph)
+    } else {
+        layout_grouped(graph)
+    };
+    canvas.map(|canvas| Drawn {
+        canvas,
+        warnings: graph.warnings.clone(),
+    })
+}
+
+/// A class or ER diagram: boxes divided into title / attribute / method rows.
+fn drawn_class(graph: &Graph, infos: &[ClassInfo]) -> Option<Drawn> {
+    layout_class(graph, infos).map(|canvas| Drawn {
+        canvas,
+        warnings: Vec::new(),
+    })
+}
+
+/// Dispatch on the declared diagram type, applying `turn` to each orientation it names; `None`
+/// means nothing was drawn.
+fn draw_turn(src: &str, turn: &impl Fn(Dir) -> Dir) -> Option<Drawn> {
     fn plain(canvas: CanvasResult) -> Option<Drawn> {
         canvas.map(|canvas| Drawn {
             canvas,
@@ -83,16 +149,9 @@ fn draw(src: &str) -> Option<Drawn> {
 
     match parse::diagram_kind(src)? {
         DiagramKind::Flowchart => {
-            let graph = parse_graph(src)?;
-            let canvas = if graph.groups.is_empty() {
-                layout_flowchart(&graph)
-            } else {
-                layout_grouped(&graph)
-            };
-            canvas.map(|canvas| Drawn {
-                canvas,
-                warnings: graph.warnings,
-            })
+            let mut graph = parse_graph(src)?;
+            graph.dir = turn(graph.dir);
+            drawn_flowchart(&graph)
         }
 
         DiagramKind::Pie => plain(pie::render_pie(src)),
@@ -113,16 +172,19 @@ fn draw(src: &str) -> Option<Drawn> {
         DiagramKind::Quadrant => plain(quadrant::render_quadrant(src)),
         DiagramKind::Requirement => plain(requirement::render_requirement(src)),
         DiagramKind::State => {
-            let state = parse_state(src)?;
-            plain(layout_flowchart(&state))
+            let mut state = parse_state(src)?;
+            state.dir = turn(state.dir);
+            drawn_flowchart(&state)
         }
         DiagramKind::Class => {
-            let (graph, infos) = parse_class(src)?;
-            plain(layout_class(&graph, &infos))
+            let (mut graph, infos) = parse_class(src)?;
+            graph.dir = turn(graph.dir);
+            drawn_class(&graph, &infos)
         }
         DiagramKind::Er => {
-            let (graph, infos) = parse_er(src)?;
-            plain(layout_class(&graph, &infos))
+            let (mut graph, infos) = parse_er(src)?;
+            graph.dir = turn(graph.dir);
+            drawn_class(&graph, &infos)
         }
         DiagramKind::Sequence => {
             let seq = parse_sequence(src)?;

@@ -2,7 +2,7 @@
 
 The `codemode` tool lets the model write a JavaScript script that calls micro's other tools. Only what the script outputs reaches the model, so a script can run calls side by side and filter large results before the model reads them.
 
-micro offers `codemode` when the tool selection names it, as in `micro --tools read,bash,codemode`, and when an MCP server has the default `codemode` exposure (see [MCP servers](mcp.md#control-exposure)). `--exclude-tools codemode` withholds it.
+micro offers `codemode` in every session whose tool selection neither narrows the tools nor withholds it. A selection that names other tools without it leaves it out, as in `micro --tools read,bash`; name it to keep it, as in `micro --tools read,bash,codemode`. `--exclude-tools codemode` withholds it.
 
 ## Scripts
 

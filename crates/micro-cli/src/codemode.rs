@@ -65,68 +65,33 @@ pub fn tool(
     }
 }
 
-/// Whether `codemode` is offered: when the tool selection names it, or when an MCP server's tools
-/// are reached through it and the selection neither narrows the tools nor withholds it.
-pub fn wanted(allowed: &[String], excluded: &[String], mcp: &micro_mcp::Servers) -> bool {
+/// Whether `codemode` is offered: in every session whose tool selection neither narrows the
+/// tools nor withholds it. A selection that names other tools without it leaves it out.
+pub fn wanted(allowed: &[String], excluded: &[String]) -> bool {
     let named = |names: &[String]| names.iter().any(|name| name == CODEMODE_TOOL_NAME);
     if named(excluded) {
         return false;
     }
-    if named(allowed) {
-        return true;
-    }
-    allowed.is_empty()
-        && mcp.entries().iter().any(|entry| {
-            entry.config.enabled && entry.config.exposes(micro_mcp::Exposure::Codemode)
-        })
+    allowed.is_empty() || named(allowed)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn servers(exposure: Option<micro_mcp::Exposure>) -> micro_mcp::Servers {
-        let mut config = micro_mcp::ServerConfig::stdio("true", Vec::new());
-        config.exposure = exposure;
-        micro_mcp::Servers::new(
-            micro_mcp::LoadedConfig {
-                servers: vec![micro_mcp::ServerEntry {
-                    name: "docs".into(),
-                    config,
-                    source: "mcp.json".into(),
-                    scope: micro_mcp::config::Scope::Global,
-                }],
-                errors: Vec::new(),
-            },
-            std::path::Path::new("."),
-        )
-    }
-
-    fn none() -> micro_mcp::Servers {
-        micro_mcp::Servers::new(
-            micro_mcp::LoadedConfig::default(),
-            std::path::Path::new("."),
-        )
-    }
-
     #[test]
-    fn codemode_is_offered_when_asked_for_or_when_mcp_tools_need_it() {
+    fn codemode_is_offered_unless_the_selection_leaves_it_out() {
         let codemode = vec![CODEMODE_TOOL_NAME.to_string()];
-        assert!(wanted(&codemode, &[], &none()));
-        assert!(!wanted(&[], &[], &none()));
+        assert!(wanted(&codemode, &[]));
+        assert!(wanted(&[], &[]), "offered in a default session");
         assert!(
-            wanted(&[], &[], &servers(None)),
-            "codemode is the default exposure"
-        );
-        assert!(!wanted(
-            &[],
-            &[],
-            &servers(Some(micro_mcp::Exposure::Deferred))
-        ));
-        assert!(!wanted(&[], &codemode, &servers(None)), "withheld");
-        assert!(
-            !wanted(&["read".to_string()], &[], &servers(None)),
+            !wanted(&["read".to_string()], &[]),
             "a selection that leaves it out leaves it out"
         );
+        assert!(!wanted(&[], &codemode), "withheld");
+        assert!(!wanted(
+            &["read".to_string(), CODEMODE_TOOL_NAME.to_string()],
+            &codemode
+        ));
     }
 }

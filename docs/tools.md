@@ -15,7 +15,7 @@ micro gives the model a small built-in tool set. Extensions and MCP servers may 
 | `find`                   | Find paths by name or pattern.                        |
 | `micro_docs`             | Read or search documentation embedded in the binary. |
 | `bash`                   | Run a shell command.                                  |
-| `codemode`               | Run JavaScript that calls the other tools. Offered when selected or when an MCP server uses `codemode` exposure; see [Codemode](codemode.md). |
+| `codemode`               | Run JavaScript that calls the other tools. Offered unless the tool selection narrows or withholds it; see [Codemode](codemode.md). |
 
 The file tools resolve paths against the workspace selected by `-C` or the current directory. They reject absolute paths, lexical `..` traversal, and paths whose existing components resolve outside the workspace.
 

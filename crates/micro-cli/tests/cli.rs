@@ -76,7 +76,7 @@ fn the_first_request_carries_the_prompt_the_model_and_the_tools() {
     assert!(transcript(&request).contains("count the files"));
 
     let tools = offered_tools(&request);
-    for expected in ["read", "write", "edit", "ls", "grep", "bash"] {
+    for expected in ["read", "write", "edit", "ls", "grep", "bash", "codemode"] {
         assert!(
             tools.contains(&expected.to_string()),
             "no {expected} in {tools:?}"
@@ -2148,7 +2148,7 @@ fn a_direct_servers_tools_are_described_up_front() {
         "{tools:?}"
     );
     assert!(!tools.contains(&"tool_search".to_string()), "{tools:?}");
-    assert!(!tools.contains(&"codemode".to_string()), "{tools:?}");
+    assert!(tools.contains(&"codemode".to_string()), "{tools:?}");
 }
 
 /// A `codemode` script calls a server's tool, reads its whole result, and only what the script

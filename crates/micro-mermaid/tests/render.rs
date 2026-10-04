@@ -1,6 +1,7 @@
-//! End-to-end tests against the public API: `render`, `diagram_kind` and `source_box`.
+//! End-to-end tests against the public API: `render`, `render_fit`, `diagram_kind` and
+//! `source_box`.
 
-use micro_mermaid::{diagram_kind, render, source_box, Cls, DiagramKind};
+use micro_mermaid::{diagram_kind, render, render_fit, source_box, Cls, DiagramKind};
 
 fn plain(src: &str) -> Vec<String> {
     render(src)
@@ -640,4 +641,34 @@ fn source_box_wraps_long_lines_to_the_column_limit() {
         ]
     );
     assert_eq!(art.width, 20);
+}
+
+#[test]
+fn a_wide_diagram_is_turned_when_the_written_orientation_does_not_fit() {
+    let src = "flowchart LR\n  A[Your prompt] --> B{micro agent}\n  B --> C[Sandboxed tools]\n  B --> D[Codemode script]\n  D --> E[Parallel tool calls]\n  E --> F[Filtered summary only]\n  C --> G[Workspace]\n  B --> H[Session ledger JSONL]\n  F --> H\n  G --> H";
+    let written = render(src).unwrap();
+    assert!(written.width > 60, "the written orientation is wide");
+
+    let turned = render_fit(src, 60).unwrap();
+    assert!(turned.width <= 60, "turned to fit: {}", turned.width);
+    assert!(turned.width < written.width);
+    assert!(turned.plain.iter().any(|row| row.contains("Your prompt")));
+}
+
+#[test]
+fn a_diagram_that_fits_as_written_is_not_turned() {
+    let src = "flowchart LR\n  A[Start] --> B[Done]";
+    assert_eq!(
+        render_fit(src, 60).unwrap().plain,
+        render(src).unwrap().plain
+    );
+}
+
+#[test]
+fn a_turn_that_still_does_not_fit_keeps_the_written_orientation() {
+    let src = "flowchart LR\n  A[Start] --> B[Done]";
+    assert_eq!(
+        render_fit(src, 4).unwrap().plain,
+        render(src).unwrap().plain
+    );
 }

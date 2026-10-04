@@ -424,7 +424,7 @@ pub async fn build(
     let (mut kept, mcp_notices) = connect_mcp(&mcp, &mut tools).await;
     kept.extend(builtin.iter().cloned());
 
-    let codemode = crate::codemode::wanted(&selection.tools, &selection.exclude_tools, &mcp);
+    let codemode = crate::codemode::wanted(&selection.tools, &selection.exclude_tools);
     if codemode {
         tools.push(crate::codemode::tool(
             settings,

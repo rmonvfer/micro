@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Offer `codemode` in every session whose tool selection neither narrows the tools nor withholds it, instead of only when the selection names it or an MCP server uses `codemode` exposure. `--exclude-tools codemode` still withholds it, and a `--tools` selection that leaves it out still leaves it out.
+
+### Fixed
+
+- Draw a mermaid diagram turned the other way when the written orientation is wider than the terminal and the turned one fits, instead of falling back to the framed source.
+
 ## [0.2.4] - 2026-10-04
 
 ### Changed
