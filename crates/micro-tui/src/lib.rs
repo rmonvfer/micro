@@ -7,6 +7,7 @@ mod clipboard;
 mod commands;
 mod diff;
 mod event;
+mod fork_selector;
 mod images;
 mod latex;
 mod layout;
@@ -17,6 +18,7 @@ mod picker;
 pub mod remote;
 mod render;
 mod search;
+mod session_selector;
 mod tools;
 mod typeset;
 pub mod ui;
@@ -859,6 +861,8 @@ async fn apply_outcome(
         CommandOutcome::Message { kind, text } => app.notice(text, kind),
         CommandOutcome::Inspect { title, text, items } => app.open_inspection(title, text, items),
         CommandOutcome::Quit => app.should_quit = true,
+        CommandOutcome::ChooseForkPoint { points } => app.open_fork_selector(points),
+        CommandOutcome::ChooseSession(choices) => app.open_session_selector(choices),
         CommandOutcome::Choose(picker) => {
             let asks = picker.refreshes;
             app.open_picker(picker);
@@ -959,6 +963,8 @@ async fn apply_outcome(
                 Some(Ok(summary)) => {
                     commands.compacted(&summary_text(&summary)).await;
                     app.apply_result(Applied::Conversation {
+                        draft: None,
+                        model: None,
                         messages: agent.messages().to_vec(),
                         note: None,
                     });
@@ -1001,7 +1007,12 @@ async fn apply_outcome(
             let applied = await_host(screen, app, input, work).await?;
             app.idle();
             if let Some(applied) = applied {
+                let switched = matches!(applied, Applied::Conversation { .. });
                 apply_applied(app, agent, applied);
+                if switched {
+                    let observed = commands.session_observability().await;
+                    app.set_session_observability(observed);
+                }
             }
         }
     }
@@ -1011,10 +1022,23 @@ async fn apply_outcome(
 /// Take in what the host did.
 fn apply_applied(app: &mut App, agent: &mut Agent, applied: Applied) {
     match applied {
-        Applied::Conversation { messages, note } => {
+        Applied::Conversation {
+            messages,
+            note,
+            draft,
+            model,
+        } => {
+            if let Some(swap) = model {
+                take_model(app, agent, swap);
+            }
             app.forget_scrolled_out();
             agent.set_messages(messages.clone());
-            app.apply_result(Applied::Conversation { messages, note });
+            app.apply_result(Applied::Conversation {
+                messages,
+                note,
+                draft,
+                model: None,
+            });
         }
 
         Applied::SystemPrompt { note, .. } => {
@@ -1024,18 +1048,23 @@ fn apply_applied(app: &mut App, agent: &mut Agent, applied: Applied) {
             }
         }
         Applied::Model { swap, note } => {
-            app.set_model_label(swap.model.id.clone());
-            app.context_window = swap.context_window as u32;
-            app.set_price(swap.cost.clone());
-            app.set_thinking_levels(swap.model.thinking_levels());
-            app.set_thinking(swap.model.thinking);
-            agent.set_model(*swap);
+            take_model(app, agent, swap);
             if let Some(note) = note {
                 app.notice(note, MessageKind::Info);
             }
         }
         other => app.apply_result(other),
     }
+}
+
+/// Run this model from now on, and show it.
+fn take_model(app: &mut App, agent: &mut Agent, swap: Box<micro_agent::ModelSwap>) {
+    app.set_model_label(swap.model.id.clone());
+    app.context_window = swap.context_window as u32;
+    app.set_price(swap.cost.clone());
+    app.set_thinking_levels(swap.model.thinking_levels());
+    app.set_thinking(swap.model.thinking);
+    agent.set_model(*swap);
 }
 
 /// What a summary says, for whoever is told the conversation was compacted.

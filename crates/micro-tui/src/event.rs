@@ -100,6 +100,10 @@ pub enum Action {
     },
     /// Back out of whatever is asking: an approval, a picker, the command menu.
     Cancel,
+    /// Ctrl+R: rename what a list has chosen.
+    Rename,
+    /// Ctrl+N: show only what has been given a name.
+    ToggleNamed,
     /// Take the highlighted completion, or indent when nothing is offering one.
     Tab,
     /// The terminal changed size; the next frame is measured against the new one.
@@ -218,6 +222,8 @@ fn control_action(character: char) -> Action {
         's' => Action::SaveDefault,
         'v' => Action::PasteImage,
         'z' => Action::Suspend,
+        'r' => Action::Rename,
+        'n' => Action::ToggleNamed,
 
         '-' | '_' => Action::Undo,
         _ => Action::Ignored,

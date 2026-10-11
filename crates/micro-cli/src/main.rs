@@ -46,8 +46,14 @@ struct Cli {
     #[arg(short = 'C', long, default_value = ".")]
     cwd: PathBuf,
 
-    /// Resume a saved session by id.
-    #[arg(long, value_name = "ID")]
+    /// Resume a saved session by id, or choose one when no id is given.
+    #[arg(
+        short = 'r',
+        long,
+        value_name = "ID",
+        num_args = 0..=1,
+        default_missing_value = ""
+    )]
     resume: Option<String>,
 
     /// Resume the most recent session for this workspace.
@@ -808,6 +814,8 @@ async fn main() -> Result<()> {
 
     let opening = runtime::Opening {
         resume: match (&cli.resume, cli.continue_latest) {
+            // A bare `--resume` opens the session selector once the interface is up.
+            (Some(id), _) if id.is_empty() => None,
             (Some(id), _) => Some(id.clone()),
             (None, true) => Some(subcommands::latest_session(&root).await?),
             (None, false) => None,
@@ -1080,6 +1088,11 @@ async fn main() -> Result<()> {
 
             commands: Some(Box::new(built.commands)),
 
+            opening_line: cli
+                .resume
+                .as_deref()
+                .filter(|id| id.is_empty())
+                .map(|_| "/resume".to_string()),
             notice: match (built.notice, built.warnings.join("\n")) {
                 (notice, said) if said.is_empty() => notice,
                 (None, said) => Some(said),

@@ -26,7 +26,7 @@ With no subcommand, micro opens the terminal interface. A prompt on the command 
 | `-m`, `--model <QUERY>` | Select a model by ID, qualified ID, alias, or unique partial match.          |
 | `--provider <ID>`       | Select a provider when the model query does not determine one.               |
 | `--thinking <LEVEL>`    | Set reasoning effort. Supported levels are model-dependent.                  |
-| `--resume <ID>`         | Resume a saved session.                                                      |
+| `-r`, `--resume [ID]`   | Resume a saved session, or choose one from the session selector.             |
 | `--continue`            | Resume the latest session for the workspace.                                 |
 | `--session-id <ID>`     | Resume this workspace's session with this exact ID, or start one under it.   |
 | `-n`, `--name <NAME>`   | Set the session display name at startup.                                     |
@@ -156,11 +156,11 @@ Type `/help` in the interface for the list from the installed version.
 | `/auth`                         | Show which providers are signed in.                                             |
 | `/thinking [--default] [level]` | Change reasoning effort; `--default` or `ctrl+s` also saves it.                 |
 | `/theme [system/dark/light/auto]` | Change the terminal theme.                                                    |
-| `/sessions`                     | List sessions for the workspace.                                                |
+| `/sessions`                     | Open the session selector, the same as `/resume`.                               |
 | `/session`                      | Show the current session information and usage.                                 |
-| `/resume [id]`                  | Resume another session.                                                         |
+| `/resume [id]`                  | Choose a session to continue, or continue the one with this ID.                 |
 | `/clone`                        | Duplicate the current session at the current position.                          |
-| `/fork [index]`                 | Create a branch from an earlier message.                                        |
+| `/fork [entry]`                 | Start a new session from before an earlier prompt, with that prompt to edit.    |
 | `/tree [id]`                    | Show branches or continue from one.                                             |
 | `/name [title]`                 | Name the session.                                                               |
 | `/bill [turn]`                  | Show session or turn cost.                                                      |

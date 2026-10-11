@@ -20,10 +20,11 @@ Resume a session:
 
 ```bash
 micro --resume <SESSION_ID>
+micro -r
 micro --continue
 ```
 
-`--continue` selects the latest session for the current workspace.
+`--continue` selects the latest session for the current workspace, and `-r` without an id opens the session selector.
 
 A session file is written when the first message is sent, so leaving micro before saying anything leaves nothing behind.
 
@@ -33,7 +34,17 @@ Scripts can pin a session to an id of their choosing. `--session-id` resumes thi
 micro -p --session-id nightly-review "Summarize today's changes"
 ```
 
-Inside the interface, use `/sessions`, `/resume`, `/tree`, `/fork`, and `/clone` to navigate or branch a conversation.
+Inside the interface, use `/resume`, `/tree`, `/fork`, and `/clone` to navigate or branch a conversation.
+
+## The session selector
+
+`/resume` lists the sessions started in this folder, most recently active first, with each fork threaded under the session it came from and its message count and age on the right. Typing searches the list: words match loosely, `"a phrase"` must appear as written, and `re:<pattern>` is a regular expression. Tab switches between this folder and every folder, ctrl+s cycles the order between threaded, recent, and best match, ctrl+n shows only named sessions, ctrl+p shows each session's id, ctrl+r renames the highlighted session, and ctrl+d deletes it once confirmed. The open session cannot be deleted.
+
+Resuming a session brings back the model it was held with, when that model can still be used.
+
+## Forking and cloning
+
+`/fork` lists the prompts of the conversation. Choosing one starts a new session holding everything before that prompt and puts the prompt back in the editor, so it can be changed and sent again. The new session keeps the summary of any compacted stretch, and the session selector shows it under the one it came from. `/clone` copies the whole conversation into a new session instead.
 
 ## Naming sessions
 

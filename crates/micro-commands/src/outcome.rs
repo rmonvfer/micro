@@ -44,6 +44,27 @@ pub enum ThemeChoice {
     System,
 }
 
+/// A prompt the conversation can be branched from: forking there starts a session that holds
+/// everything before it, with the prompt back in the editor.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ForkPoint {
+    pub entry_id: String,
+    /// What the prompt said.
+    pub text: String,
+}
+
+/// The recorded sessions there are to continue, every workspace's, for the session selector to
+/// narrow.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SessionChoices {
+    /// Newest first.
+    pub sessions: Vec<micro_session::SessionMeta>,
+    /// The workspace the agent is working in, which the selector shows first.
+    pub workspace: std::path::PathBuf,
+    /// The session being written to, which cannot be deleted.
+    pub current: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InspectionItem {
     pub label: String,
@@ -150,11 +171,21 @@ pub enum CommandOutcome {
     Resume {
         session_id: String,
     },
-    /// Branch the conversation, keeping messages `0..=through_index`.
+    /// Offer the recorded sessions to continue.
+    ChooseSession(SessionChoices),
+    /// Offer the conversation's prompts to branch from, oldest first.
+    ChooseForkPoint {
+        points: Vec<ForkPoint>,
+    },
+    /// Branch the conversation into a session of its own that holds its path down to `leaf`, or
+    /// nothing when there is no leaf, with `draft` in the editor.
     Fork {
         session_id: String,
-        through_index: usize,
-
+        /// The entry chosen: the prompt forked before, or the entry forked at.
+        entry_id: String,
+        leaf: Option<String>,
+        draft: Option<String>,
+        /// Whether the whole conversation is copied, rather than what came before a prompt.
         whole: bool,
     },
     /// Summarize the conversation so far and continue from the summary.
@@ -470,14 +501,27 @@ impl fmt::Debug for CommandOutcome {
                 .debug_struct("Resume")
                 .field("session_id", session_id)
                 .finish(),
+            CommandOutcome::ChooseSession(choices) => formatter
+                .debug_struct("ChooseSession")
+                .field("sessions", &choices.sessions.len())
+                .field("current", &choices.current)
+                .finish(),
+            CommandOutcome::ChooseForkPoint { points } => formatter
+                .debug_struct("ChooseForkPoint")
+                .field("points", points)
+                .finish(),
             CommandOutcome::Fork {
                 session_id,
-                through_index,
+                entry_id,
+                leaf,
+                draft,
                 whole,
             } => formatter
                 .debug_struct("Fork")
                 .field("session_id", session_id)
-                .field("through_index", through_index)
+                .field("entry_id", entry_id)
+                .field("leaf", leaf)
+                .field("draft", draft)
                 .field("whole", whole)
                 .finish(),
             CommandOutcome::Reload => formatter.write_str("Reload"),

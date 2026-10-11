@@ -304,7 +304,7 @@ mod tests {
         let menu = Menu::open_for("/fork", 5, &[]).unwrap();
         assert_eq!(
             menu.items()[0].description,
-            "[index] — branch the conversation at a message"
+            "[entry] — branch into a new session from an earlier prompt"
         );
 
         let menu = Menu::open_for("/clear", 6, &[]).unwrap();

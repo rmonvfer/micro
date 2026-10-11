@@ -8,6 +8,7 @@ use crate::commands::ConversationState;
 use crate::commands::Preferences;
 use crate::editor::Editor;
 use crate::event::Action;
+use crate::fork_selector::ForkSelector;
 use crate::menu::Menu;
 use crate::picker::Picker;
 use crate::render::links::Links;
@@ -16,6 +17,7 @@ use crate::render::pictures::Placement;
 use crate::render::status::shorten_home;
 use crate::render::transcript::Display;
 use crate::render::transcript::Rendered;
+use crate::session_selector::SessionSelector;
 use crate::theme::Theme;
 use crate::transcript::NoticeLevel;
 use crate::transcript::Transcript;
@@ -91,6 +93,9 @@ pub struct TuiOptions {
     /// Something to say before anything else happens, such as that nobody is signed in to the
     /// service serving the chosen model.
     pub notice: Option<String>,
+    /// A command line run as soon as the interface opens, such as `/resume` when the session to
+    /// continue is to be chosen.
+    pub opening_line: Option<String>,
     /// The provider serving the model, named in the footer when the model does not say.
     pub provider: String,
 
@@ -137,6 +142,7 @@ impl Default for TuiOptions {
             extension_commands: Vec::new(),
             remote: None,
             notice: None,
+            opening_line: None,
             provider: String::new(),
             subscription: false,
             auto_compact: true,
@@ -296,6 +302,10 @@ pub struct App {
     injected: VecDeque<String>,
     menu: Option<Menu>,
     picker: Option<Picker>,
+    /// The prompts `/fork` offers to branch from, while they are being chosen from.
+    fork_selector: Option<ForkSelector>,
+    /// The sessions `/resume` offers to continue, while they are being chosen from.
+    session_selector: Option<SessionSelector>,
     key_prompt: Option<KeyPrompt>,
     /// A question an extension asked, waiting for whatever overlay is showing it.
     question: Option<crate::ui::UiRequest>,
@@ -586,6 +596,7 @@ impl App {
         let workspace = options.cwd;
         let branch = git_branch(&workspace);
         let notice = options.notice;
+        let opening_line = options.opening_line;
         let self_framed_tools = options.self_framed_tools;
         let extension_commands = options.extension_commands;
         let mut transcript = Transcript::from_messages(history);
@@ -617,6 +628,8 @@ impl App {
             injected: VecDeque::new(),
             menu: None,
             picker: None,
+            fork_selector: None,
+            session_selector: None,
             key_prompt: None,
             question: None,
             extension_status: Default::default(),
@@ -681,6 +694,9 @@ impl App {
         app.sync_header();
         if let Some(notice) = notice {
             app.notice(notice, MessageKind::Info);
+        }
+        if let Some(line) = opening_line {
+            app.queue_line(line);
         }
         app
     }
@@ -942,6 +958,8 @@ impl App {
     pub fn overlay_is_open(&self) -> bool {
         self.key_prompt.is_some()
             || self.picker.is_some()
+            || self.fork_selector.is_some()
+            || self.session_selector.is_some()
             || self.component_overlay.is_some()
             || self.inspection.is_some()
             || self.extension_editor.is_some()
@@ -1246,6 +1264,32 @@ impl App {
 
     pub fn open_picker(&mut self, choices: micro_commands::Picker) {
         self.picker = Some(Picker::new(choices));
+    }
+
+    /// Offer the conversation's prompts to branch a new session from.
+    pub fn open_fork_selector(&mut self, points: Vec<micro_commands::ForkPoint>) {
+        self.fork_selector = Some(ForkSelector::new(points));
+    }
+
+    pub fn fork_selector(&self) -> Option<&ForkSelector> {
+        self.fork_selector.as_ref()
+    }
+
+    /// Offer the recorded sessions to continue, or bring the open selector up to date with them.
+    pub fn open_session_selector(&mut self, choices: micro_commands::SessionChoices) {
+        match self.session_selector.as_mut() {
+            Some(open) => open.update(choices),
+            None => self.session_selector = Some(SessionSelector::new(choices)),
+        }
+    }
+
+    pub fn session_selector(&self) -> Option<&SessionSelector> {
+        self.session_selector.as_ref()
+    }
+
+    /// Whether the overlay is one of the lists drawn straight onto the screen.
+    pub fn list_is_open(&self) -> bool {
+        self.picker.is_some() || self.fork_selector.is_some() || self.session_selector.is_some()
     }
 
     /// The open list, for whoever is keeping it up to date.
@@ -1858,8 +1902,19 @@ impl App {
 
             Applied::Model { .. } | Applied::SystemPrompt { .. } => {}
             Applied::Note { text, kind } => self.notice(text, kind),
-            Applied::Conversation { messages, note } => {
+            Applied::Conversation {
+                messages,
+                note,
+                draft,
+                ..
+            } => {
                 self.transcript = Transcript::from_messages(&messages);
+                // What the session has cost is read again for the conversation now showing.
+                self.session_cost = None;
+                self.session_usage = None;
+                if let Some(draft) = draft {
+                    self.editor.set_text(&draft);
+                }
                 self.transcript
                     .set_self_framed_tools(self.self_framed_tools.clone());
                 self.sync_header();
@@ -2055,6 +2110,12 @@ impl App {
         if self.picker.is_some() {
             return self.handle_picker(action);
         }
+        if self.fork_selector.is_some() {
+            return self.handle_fork_selector(action);
+        }
+        if self.session_selector.is_some() {
+            return self.handle_session_selector(action);
+        }
         if self.component_overlay.is_some() {
             return self.handle_component_overlay(action);
         }
@@ -2084,7 +2145,7 @@ impl App {
         }
 
         match action {
-            Action::Ignored => Outcome::Handled,
+            Action::Ignored | Action::Rename | Action::ToggleNamed => Outcome::Handled,
             Action::Resize => {
                 self.cache.shape = None;
                 Outcome::Handled
@@ -2654,6 +2715,87 @@ impl App {
 
             Action::QuitOrDelete => return Outcome::Quit,
             _ => {}
+        }
+        Outcome::Handled
+    }
+
+    fn handle_fork_selector(&mut self, action: Action) -> Outcome {
+        let Some(selector) = self.fork_selector.as_mut() else {
+            return Outcome::Handled;
+        };
+        match action {
+            Action::MoveUp => selector.select_previous(),
+            Action::MoveDown => selector.select_next(),
+            Action::Submit => {
+                let chosen = selector.commit();
+                self.fork_selector = None;
+                if let Some(line) = chosen {
+                    self.queue_line(line);
+                }
+            }
+            Action::Cancel | Action::Interrupt => self.fork_selector = None,
+            _ => {}
+        }
+        Outcome::Handled
+    }
+
+    fn handle_session_selector(&mut self, action: Action) -> Outcome {
+        use crate::session_selector::Mode;
+
+        let Some(selector) = self.session_selector.as_mut() else {
+            return Outcome::Handled;
+        };
+        let line = match (selector.mode().clone(), action) {
+            (_, Action::Cancel | Action::Interrupt) => {
+                if !selector.back_out() {
+                    self.session_selector = None;
+                }
+                None
+            }
+            (Mode::ConfirmingDelete { .. }, Action::Submit) => selector.confirm_delete(),
+            (Mode::ConfirmingDelete { .. }, _) => None,
+            (Mode::Renaming { .. }, Action::Submit) => selector.commit_rename(),
+            (Mode::Renaming { .. }, Action::Insert(text) | Action::Paste(text)) => {
+                selector.push(&text);
+                None
+            }
+            (Mode::Renaming { .. }, Action::Backspace) => {
+                selector.backspace();
+                None
+            }
+            (Mode::Renaming { .. }, _) => None,
+            (Mode::Choosing, action) => {
+                match action {
+                    Action::MoveUp => selector.select_previous(),
+                    Action::MoveDown => selector.select_next(),
+                    Action::PageUp => selector.page_up(),
+                    Action::PageDown => selector.page_down(),
+                    Action::Tab => selector.toggle_scope(),
+                    Action::SaveDefault => selector.cycle_sort(),
+                    Action::ToggleNamed => selector.toggle_named(),
+                    Action::CycleModel { forward: true } => selector.toggle_path(),
+                    Action::Rename => selector.begin_rename(),
+                    Action::QuitOrDelete => selector.begin_delete(),
+                    Action::DeleteWordBefore if selector.query().is_empty() => {
+                        selector.begin_delete()
+                    }
+                    Action::Insert(text) | Action::Paste(text) => selector.push(&text),
+                    Action::Backspace => selector.backspace(),
+                    Action::Submit => {
+                        let chosen = selector.commit();
+                        self.session_selector = None;
+                        if let Some(line) = chosen {
+                            self.queue_line(line);
+                        }
+                        return Outcome::Handled;
+                    }
+                    _ => {}
+                }
+                None
+            }
+        };
+        if let Some(line) = line {
+            self.queue_line(line);
         }
         Outcome::Handled
     }
@@ -3567,6 +3709,8 @@ mod tests {
         assert!(transcript_text(&mut app).contains("before"));
 
         app.apply_result(Applied::Conversation {
+            draft: None,
+            model: None,
             messages: Vec::new(),
             note: Some("cleared".into()),
         });
@@ -5604,6 +5748,104 @@ mod tests {
             app.take_submission().as_deref(),
             Some("/thinking --default off")
         );
+    }
+
+    fn session(id: &str, workspace: &str) -> micro_session::SessionMeta {
+        micro_session::SessionMeta {
+            v: 1,
+            id: id.to_string(),
+            created_at: 1,
+            updated_at: 1,
+            workspace: std::path::PathBuf::from(workspace),
+            model_id: "anthropic/claude-opus-5".to_string(),
+            title: format!("about {id}"),
+            named: false,
+            message_count: 2,
+            parent: None,
+            org_id: None,
+            agent_id: None,
+        }
+    }
+
+    fn sessions(current: &str) -> micro_commands::SessionChoices {
+        micro_commands::SessionChoices {
+            sessions: vec![session(current, "/here"), session("older", "/here")],
+            workspace: std::path::PathBuf::from("/here"),
+            current: Some(current.to_string()),
+        }
+    }
+
+    #[test]
+    fn choosing_a_prompt_forks_from_it() {
+        let mut app = app();
+        app.open_fork_selector(vec![
+            micro_commands::ForkPoint {
+                entry_id: "1".into(),
+                text: "first".into(),
+            },
+            micro_commands::ForkPoint {
+                entry_id: "3".into(),
+                text: "second".into(),
+            },
+        ]);
+        app.handle(Action::MoveUp);
+        app.handle(Action::Submit);
+        assert!(app.fork_selector().is_none());
+        assert_eq!(app.take_submission().as_deref(), Some("/fork 1"));
+    }
+
+    #[test]
+    fn choosing_a_session_resumes_it() {
+        let mut app = app();
+        app.open_session_selector(sessions("open"));
+        app.handle(Action::MoveDown);
+        app.handle(Action::Submit);
+        assert!(app.session_selector().is_none());
+        assert_eq!(app.take_submission().as_deref(), Some("/resume older"));
+    }
+
+    /// Deleting asks first, and the selector stays open with the session gone from it.
+    #[test]
+    fn control_d_deletes_a_session_once_confirmed() {
+        let mut app = app();
+        app.open_session_selector(sessions("open"));
+        app.handle(Action::MoveDown);
+        app.handle(Action::QuitOrDelete);
+        assert!(app.take_submission().is_none());
+        app.handle(Action::Submit);
+        assert_eq!(
+            app.take_submission().as_deref(),
+            Some("/resume --delete older")
+        );
+        assert_eq!(app.session_selector().unwrap().rows().len(), 1);
+    }
+
+    #[test]
+    fn escape_backs_out_of_a_rename_before_closing_the_selector() {
+        let mut app = app();
+        app.open_session_selector(sessions("open"));
+        app.handle(Action::Rename);
+        app.handle(Action::Insert("plan".into()));
+        app.handle(Action::Cancel);
+        assert!(app.session_selector().is_some());
+        assert!(app.take_submission().is_none());
+        app.handle(Action::Cancel);
+        assert!(app.session_selector().is_none());
+    }
+
+    /// A fresh list from the store replaces the one showing, leaving the search typed in place.
+    #[test]
+    fn the_open_selector_takes_the_store_as_it_now_is() {
+        let mut app = app();
+        app.open_session_selector(sessions("open"));
+        app.handle(Action::Insert("older".into()));
+        app.open_session_selector(micro_commands::SessionChoices {
+            sessions: vec![session("open", "/here")],
+            ..sessions("open")
+        });
+        let selector = app.session_selector().unwrap();
+        assert_eq!(selector.query(), "older");
+        assert!(selector.rows().is_empty());
     }
 
     #[test]

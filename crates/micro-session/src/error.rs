@@ -16,8 +16,8 @@ pub enum SessionError {
     #[error("{path}: invalid session graph: {reason}")]
     InvalidGraph { path: PathBuf, reason: String },
 
-    #[error("message index {index} is out of range; the session holds {len} messages")]
-    IndexOutOfRange { index: usize, len: usize },
+    #[error("session {id} has no entry {entry}")]
+    NoSuchEntry { id: String, entry: String },
 
     #[error("session {id} recorded no turn {turn}")]
     NoSuchTurn { id: String, turn: u64 },

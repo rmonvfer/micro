@@ -664,6 +664,8 @@ impl CliCommands {
         .await;
 
         Applied::Conversation {
+            draft: None,
+            model: None,
             messages: session.branch(),
             note: Some("Navigated to selected point".to_string()),
         }
@@ -689,6 +691,7 @@ impl CliCommands {
         };
 
         let messages = loaded.messages;
+        let model_id = loaded.session.meta().model_id.clone();
         let previous_session_file = self.session.lock().await.path().display().to_string();
         self.session_id = loaded.session.id().to_string();
         *self.session.lock().await = loaded.session;
@@ -699,9 +702,43 @@ impl CliCommands {
         )
         .await;
 
+        let (model, note) = self.restore_model(&model_id).await;
         Applied::Conversation {
             messages,
-            note: Some("Resumed session".to_string()),
+            note: Some(note),
+            draft: None,
+            model,
+        }
+    }
+
+    /// Go back to the model a resumed session was held with, when it is not the one running and
+    /// it can still be used; otherwise say why the running one stays.
+    async fn restore_model(
+        &mut self,
+        model_id: &str,
+    ) -> (Option<Box<micro_agent::ModelSwap>>, String) {
+        let running = self.model.qualified_id();
+        if model_id.is_empty() || model_id == running {
+            return (None, "Resumed session".to_string());
+        }
+        let found = model_id
+            .split_once('/')
+            .and_then(|(provider, id)| self.catalog.get(provider, id))
+            .cloned();
+        let Some(found) = found else {
+            return (
+                None,
+                format!("Resumed session\nCould not restore model {model_id}. Using {running}."),
+            );
+        };
+        match self.swap_to(&found, false).await {
+            Applied::Model { swap, .. } => {
+                (Some(swap), format!("Resumed session\nModel: {model_id}"))
+            }
+            _ => (
+                None,
+                format!("Resumed session\nCould not restore model {model_id}. Using {running}."),
+            ),
         }
     }
 
@@ -733,6 +770,8 @@ impl CliCommands {
                 )
                 .await;
                 Applied::Conversation {
+                    draft: None,
+                    model: None,
                     messages: Vec::new(),
                     note: Some("New session started".to_string()),
                 }
@@ -770,6 +809,8 @@ impl CliCommands {
         *self.session.lock().await = imported.session;
 
         Applied::Conversation {
+            draft: None,
+            model: None,
             messages,
             note: Some(note),
         }
@@ -1066,29 +1107,31 @@ impl CliCommands {
         }
     }
 
-    /// Copy the conversation up to a point into a session of its own, and carry on in the copy.
-    async fn fork(&mut self, session_id: &str, through_index: usize, whole: bool) -> Applied {
-        let entry_id = {
-            let session = self.session.lock().await;
-            let tree = session.tree();
-            tree.entries()
-                .iter()
-                .find(|entry| tree.position_on_path(&entry.id) == Some(through_index))
-                .map(|entry| entry.id.clone())
-                .unwrap_or_else(|| through_index.to_string())
+    /// Copy the conversation down to `leaf` into a session of its own, and carry on in the copy
+    /// with `draft` in the editor.
+    async fn fork(
+        &mut self,
+        session_id: &str,
+        entry_id: &str,
+        leaf: Option<&str>,
+        draft: Option<String>,
+        whole: bool,
+    ) -> Applied {
+        let position = match draft.is_some() {
+            true => "before",
+            false => "at",
         };
-
         if crate::extensions::cancelled(
             self.extensions.as_ref(),
             "session_before_fork",
-            serde_json::json!({ "entryId": entry_id, "position": "at" }),
+            serde_json::json!({ "entryId": entry_id, "position": position }),
         )
         .await
         {
             return Applied::note("An extension stopped the fork");
         }
 
-        let forked = match self.sessions.fork(session_id, through_index).await {
+        let forked = match self.sessions.fork(session_id, leaf).await {
             Ok(forked) => forked,
             Err(error) => {
                 return Applied::error(format!("Could not branch the conversation: {error}"))
@@ -1116,6 +1159,8 @@ impl CliCommands {
                 }
                 .to_string(),
             ),
+            draft,
+            model: None,
         }
     }
 }
@@ -1371,9 +1416,14 @@ impl Commands for CliCommands {
         match outcome {
             CommandOutcome::Fork {
                 session_id,
-                through_index,
+                entry_id,
+                leaf,
+                draft,
                 whole,
-            } => self.fork(&session_id, through_index, whole).await,
+            } => {
+                self.fork(&session_id, &entry_id, leaf.as_deref(), draft, whole)
+                    .await
+            }
 
             CommandOutcome::Branch { entry_id } => self.branch(&entry_id).await,
 
@@ -1791,7 +1841,7 @@ mod tests {
             .unwrap();
 
         match host.apply(CommandOutcome::Clear).await {
-            Applied::Conversation { messages, note } => {
+            Applied::Conversation { messages, note, .. } => {
                 assert!(messages.is_empty());
                 assert_eq!(note.as_deref(), Some("New session started"));
             }
@@ -1825,7 +1875,7 @@ mod tests {
             })
             .await
         {
-            Applied::Conversation { messages, note } => {
+            Applied::Conversation { messages, note, .. } => {
                 assert_eq!(messages.len(), 1);
                 assert_eq!(note.as_deref(), Some("Resumed session"));
             }
@@ -1862,7 +1912,7 @@ mod tests {
             })
             .await
         {
-            Applied::Conversation { messages, note } => {
+            Applied::Conversation { messages, note, .. } => {
                 assert_eq!(messages.len(), 1, "back to just the question");
                 assert_eq!(note.as_deref(), Some("Navigated to selected point"));
             }
@@ -1925,9 +1975,18 @@ mod tests {
             session.append(&Message::user("second")).await.unwrap();
         }
 
-        let outcome = host.dispatch("/fork 0", state(2)).await.expect("a command");
+        let outcome = host.dispatch("/fork 2", state(2)).await.expect("a command");
         match host.apply(outcome).await {
-            Applied::Conversation { messages, .. } => assert_eq!(messages.len(), 1),
+            Applied::Conversation {
+                messages, draft, ..
+            } => {
+                assert_eq!(messages.len(), 1);
+                assert_eq!(
+                    draft.as_deref(),
+                    Some("second"),
+                    "the prompt goes back in the editor"
+                );
+            }
             other => panic!("expected a conversation, got {other:?}"),
         }
 
@@ -1941,8 +2000,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn forking_uses_the_persisted_branch_length_over_the_transcript_entry_count() {
-        let (mut host, _root) = host("fork-transcript-count").await;
+    async fn a_bare_fork_offers_the_recorded_prompts() {
+        let (mut host, _root) = host("fork-points").await;
         {
             let mut session = host.session.lock().await;
             session.append(&Message::user("first")).await.unwrap();
@@ -1950,10 +2009,10 @@ mod tests {
         }
 
         let outcome = host.dispatch("/fork", state(10)).await.expect("a command");
-        match host.apply(outcome).await {
-            Applied::Conversation { messages, .. } => assert_eq!(messages.len(), 2),
-            other => panic!("expected a conversation, got {other:?}"),
-        }
+        let CommandOutcome::ChooseForkPoint { points } = outcome else {
+            panic!("expected the prompts to choose from, got {outcome:?}");
+        };
+        assert_eq!(points.len(), 2);
     }
 
     /// message.
@@ -2000,7 +2059,7 @@ mod tests {
             .await
             .expect("a command");
         match host.apply(outcome).await {
-            Applied::Conversation { messages, note } => {
+            Applied::Conversation { messages, note, .. } => {
                 assert_eq!(messages.len(), 1);
                 let note = note.expect("a note");
                 assert!(note.contains("1 line(s) could not be read"), "{note}");

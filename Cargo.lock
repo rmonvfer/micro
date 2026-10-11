@@ -2612,6 +2612,7 @@ dependencies = [
  "micro-types",
  "rand 0.8.7",
  "ratatui",
+ "regex",
  "serde_json",
  "tokio",
  "typst",

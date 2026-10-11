@@ -741,18 +741,17 @@ impl Rpc {
 
     /// Copy the conversation up to an entry into a session of its own, and carry on in the copy.
     async fn fork_at(&mut self, entry_id: &str) -> Result<(String, usize), String> {
-        let (id, through_index) = {
+        let id = {
             let session = self.session.lock().await;
-            let position = session
-                .tree()
-                .position_on_path(entry_id)
-                .ok_or_else(|| format!("there is no entry {entry_id} in this conversation"))?;
-            (session.id().to_string(), position)
+            if session.tree().entry(entry_id).is_none() {
+                return Err(format!("there is no entry {entry_id} in this conversation"));
+            }
+            session.id().to_string()
         };
 
         let store = micro_session::SessionStore::from_env().map_err(|error| error.to_string())?;
         let forked = store
-            .fork(&id, through_index)
+            .fork(&id, Some(entry_id))
             .await
             .map_err(|error| error.to_string())?;
 
@@ -765,22 +764,27 @@ impl Rpc {
     }
 
     async fn clone_session(&mut self) -> Result<String, String> {
-        let (id, count) = {
+        let (id, head) = {
             let session = self.session.lock().await;
-            (session.id().to_string(), session.branch().len())
+            (
+                session.id().to_string(),
+                session.tree().head().map(str::to_string),
+            )
         };
-        if count == 0 {
+        let Some(head) = head else {
             return Err("nothing to clone yet".to_string());
-        }
+        };
 
         let store = micro_session::SessionStore::from_env().map_err(|error| error.to_string())?;
         let cloned = store
-            .fork(&id, count - 1)
+            .fork(&id, Some(&head))
             .await
             .map_err(|error| error.to_string())?;
 
         let session_id = cloned.id().to_string();
+        let messages = cloned.branch();
         *self.session.lock().await = cloned;
+        self.agent.set_messages(messages);
         Ok(session_id)
     }
 

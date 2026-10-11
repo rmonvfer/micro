@@ -446,22 +446,17 @@ async fn answer(
             let Some(entry_id) = payload.get("entryId").and_then(Value::as_str) else {
                 return json!({ "cancelled": true, "error": "no entry to fork from" });
             };
-            let Some(position) = session.lock().await.tree().position_on_path(entry_id) else {
+            if session.lock().await.tree().entry(entry_id).is_none() {
                 return json!({
                     "cancelled": true,
-                    "error": format!("{entry_id} is not on the current conversation"),
+                    "error": format!("{entry_id} is not in this session"),
                 });
-            };
+            }
 
-            let before = payload.get("position").and_then(Value::as_str) == Some("before");
-            let Some(through) = (if before {
-                position.checked_sub(1)
-            } else {
-                Some(position)
-            }) else {
-                return json!({ "cancelled": true, "error": "nothing comes before the first entry" });
-            };
-            queued(asker, &format!("/fork {through}")).await
+            match payload.get("position").and_then(Value::as_str) == Some("before") {
+                true => queued(asker, &format!("/fork {entry_id}")).await,
+                false => queued(asker, &format!("/fork {entry_id} --at")).await,
+            }
         }
         other => json!({ "error": format!("micro cannot answer `{other}`") }),
     }
@@ -3117,7 +3112,7 @@ export default (micro) => {
         });
 
         let mut request = requests.recv().await.expect("a fork");
-        assert_eq!(request.title, "/fork 0");
+        assert_eq!(request.title, "/fork 2");
         request.answer(json!({ "queued": true }));
         assert_eq!(forking.await.unwrap()["cancelled"], false);
     }

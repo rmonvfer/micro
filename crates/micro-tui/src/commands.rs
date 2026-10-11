@@ -31,6 +31,10 @@ pub enum Applied {
     Conversation {
         messages: Vec<Message>,
         note: Option<String>,
+        /// What to put in the editor, for the conversation to go on from.
+        draft: Option<String>,
+        /// The model the conversation was held with, to run from now on.
+        model: Option<Box<micro_agent::ModelSwap>>,
     },
     /// Tell the model this instead of what it was told at launch.
     SystemPrompt {

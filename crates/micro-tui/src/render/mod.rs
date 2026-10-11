@@ -97,7 +97,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         overlay_area,
         &overlay,
         &theme,
-        app.picker().is_none(),
+        !app.list_is_open(),
     );
     set_component_overlay_cursor(frame, overlay_area, app);
     draw_activity(frame, inset_by(activity_area, content_padding), app, &theme);
@@ -347,6 +347,18 @@ fn overlay_lines(app: &App, theme: &Theme, width: usize) -> Vec<Line<'static>> {
     }
     if let (Some(title), Some(editor)) = (app.extension_editor_title(), app.extension_editor()) {
         return overlay::extension_editor_lines(title, editor, theme, width, budget);
+    }
+    if let Some(selector) = app.fork_selector() {
+        return overlay::fork_selector_lines(selector, theme, width, budget);
+    }
+    if let Some(selector) = app.session_selector() {
+        return overlay::session_selector_lines(
+            selector,
+            theme,
+            width,
+            budget,
+            micro_types::now_ms(),
+        );
     }
     match app.picker() {
         Some(picker) => overlay::picker_lines(picker, theme, width, budget),
@@ -1444,6 +1456,8 @@ mod tests {
         );
         app.transcript.push_user("before");
         app.apply_result(crate::commands::Applied::Conversation {
+            draft: None,
+            model: None,
             messages: vec![micro_types::Message::user("after")],
             note: Some("New session started".into()),
         });

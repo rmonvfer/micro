@@ -22,12 +22,14 @@ pub use bill::UnknownAttempt;
 pub use bug::ISSUES_URL;
 pub use outcome::BugReportAction;
 pub use outcome::CommandOutcome;
+pub use outcome::ForkPoint;
 pub use outcome::InspectionItem;
 pub use outcome::MessageKind;
 pub use outcome::Picker;
 pub use outcome::PickerItem;
 pub use outcome::PickerLayout;
 pub use outcome::RemoteAction;
+pub use outcome::SessionChoices;
 pub use outcome::ThemeChoice;
 pub use parse::parse;
 pub use parse::suggest;
@@ -95,7 +97,7 @@ static COMMANDS: &[Command] = &[
     Command {
         name: "sessions",
         argument: None,
-        description: "list sessions from this workspace",
+        description: "choose a recorded session to continue",
     },
     Command {
         name: "session",
@@ -114,8 +116,8 @@ static COMMANDS: &[Command] = &[
     },
     Command {
         name: "fork",
-        argument: Some("[index]"),
-        description: "branch the conversation at a message",
+        argument: Some("[entry]"),
+        description: "branch into a new session from an earlier prompt",
     },
     Command {
         name: "thinking",
@@ -356,7 +358,7 @@ pub async fn run(
         "session" => session::info(context).await,
         "clone" => session::clone(context).await,
         "resume" => session::resume(argument, context).await,
-        "fork" => session::fork(argument, context),
+        "fork" => session::fork(argument, context).await,
         "tree" => session::tree(argument, context).await,
         "name" => session::name(argument, context).await,
         "skills" => skills(context).await,
@@ -1673,7 +1675,7 @@ mod tests {
 
     #[test]
     fn usage_shows_the_argument_a_command_takes() {
-        assert_eq!(find("fork").unwrap().usage(), "/fork [index]");
+        assert_eq!(find("fork").unwrap().usage(), "/fork [entry]");
         assert_eq!(find("quit").unwrap().usage(), "/quit");
     }
 

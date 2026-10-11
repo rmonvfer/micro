@@ -1,11 +1,15 @@
 use crate::app::KeyPrompt;
 use crate::editor::Editor;
+use crate::fork_selector::ForkSelector;
 use crate::picker::Picker;
 use crate::picker::MAX_VISIBLE;
 use crate::render::clip;
 use crate::render::editor::first_visible_row;
 use crate::render::hints;
+use crate::render::status::shorten_home;
 use crate::render::tint;
+use crate::session_selector;
+use crate::session_selector::SessionSelector;
 use crate::theme::Theme;
 use crate::wrap::grapheme_width;
 use crate::wrap::text_width;
@@ -267,6 +271,354 @@ pub fn picker_lines(
 }
 
 /// What the list is called, for a list the reader did not open themselves.
+/// The prompts `/fork` offers: each on a line of its own with where it sits beneath it, the newest
+/// chosen first.
+pub fn fork_selector_lines(
+    selector: &ForkSelector,
+    theme: &Theme,
+    width: usize,
+    max_rows: usize,
+) -> Vec<Line<'static>> {
+    let muted = Style::new().fg(theme.muted);
+    let mut lines = vec![
+        rule(theme, width),
+        Line::default(),
+        Line::from(vec![Span::styled(
+            "  Fork from Message".to_string(),
+            Style::new().fg(theme.text).add_modifier(Modifier::BOLD),
+        )]),
+        Line::from(vec![Span::styled(
+            truncate(
+                "  Select a user message to copy the active path up to that point into a new session",
+                width,
+            ),
+            muted,
+        )]),
+        Line::default(),
+    ];
+
+    let points = selector.points();
+    let fits = max_rows.saturating_sub(lines.len() + 3) / 3;
+    let window = selector.window(fits.max(1));
+    for index in window.clone() {
+        let chosen = index == selector.selected();
+        let text = points[index]
+            .text
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ");
+        let text_style = match chosen {
+            true => Style::new().fg(theme.text).add_modifier(Modifier::BOLD),
+            false => Style::new().fg(theme.text),
+        };
+        lines.push(Line::from(vec![
+            Span::styled(
+                match chosen {
+                    true => "› ",
+                    false => "  ",
+                }
+                .to_string(),
+                Style::new().fg(theme.accent),
+            ),
+            Span::styled(
+                truncate(&text, width.saturating_sub(MARKER_WIDTH)),
+                text_style,
+            ),
+        ]));
+        lines.push(Line::from(vec![Span::styled(
+            format!("  Message {} of {}", index + 1, points.len()),
+            muted,
+        )]));
+        lines.push(Line::default());
+    }
+    if window.len() < points.len() {
+        lines.push(Line::from(vec![Span::styled(
+            format!("  ({}/{})", selector.selected() + 1, points.len()),
+            muted,
+        )]));
+        lines.push(Line::default());
+    }
+    lines.push(hint(
+        &format!(
+            "{} navigate · {} fork · {} cancel",
+            hints::key_text("up/down"),
+            hints::key_text("enter"),
+            hints::key_text("escape")
+        ),
+        theme,
+    ));
+    lines.push(rule(theme, width));
+    lines.into_iter().map(|line| clip(line, width)).collect()
+}
+
+/// The sessions `/resume` offers, with the view, the search, and the keys that change them above
+/// the list.
+pub fn session_selector_lines(
+    selector: &SessionSelector,
+    theme: &Theme,
+    width: usize,
+    max_rows: usize,
+    now_ms: i64,
+) -> Vec<Line<'static>> {
+    use session_selector::Mode;
+    use session_selector::Scope;
+
+    let edge = Line::from(vec![Span::styled(
+        "─".repeat(width.max(1)),
+        Style::new().fg(theme.border_accent),
+    )]);
+    let dim = Style::new().fg(theme.dim);
+    let muted = Style::new().fg(theme.muted);
+
+    if let Mode::Renaming { title, .. } = selector.mode() {
+        return vec![
+            edge.clone(),
+            Line::default(),
+            Line::from(vec![Span::styled(
+                "  Rename Session".to_string(),
+                Style::new().fg(theme.text).add_modifier(Modifier::BOLD),
+            )]),
+            Line::default(),
+            input_line(title, theme),
+            Line::default(),
+            keys_line(
+                &[("enter", "to save"), ("escape/ctrl+c", "to cancel")],
+                theme,
+            ),
+            Line::default(),
+            edge,
+        ]
+        .into_iter()
+        .map(|line| clip(line, width))
+        .collect();
+    }
+
+    let heading = match selector.scope() {
+        Scope::CurrentFolder => "  Resume Session (Current Folder)",
+        Scope::All => "  Resume Session (All)",
+    };
+    let pick = |on: bool| match on {
+        true => Style::new().fg(theme.accent),
+        false => muted,
+    };
+    let current_folder = selector.scope() == Scope::CurrentFolder;
+    let toggles = vec![
+        Span::styled(
+            format!("{} Current Folder", if current_folder { "◉" } else { "○" }),
+            pick(current_folder),
+        ),
+        Span::styled(" | ".to_string(), muted),
+        Span::styled(
+            format!("{} All", if current_folder { "○" } else { "◉" }),
+            pick(!current_folder),
+        ),
+        Span::styled("  Name: ".to_string(), muted),
+        Span::styled(
+            match selector.named_only() {
+                true => "Named",
+                false => "All",
+            }
+            .to_string(),
+            pick(selector.named_only()),
+        ),
+        Span::styled("  Sort: ".to_string(), muted),
+        Span::styled(selector.sort().name().to_string(), pick(true)),
+    ];
+    let toggles_width: usize = toggles.iter().map(|span| text_width(&span.content)).sum();
+    let mut header = vec![Span::styled(
+        heading.to_string(),
+        Style::new().fg(theme.text).add_modifier(Modifier::BOLD),
+    )];
+    match text_width(heading) + 2 + toggles_width <= width {
+        true => {
+            header.push(Span::raw(
+                " ".repeat(width - text_width(heading) - toggles_width),
+            ));
+            header.extend(toggles);
+        }
+        false => header[0].content = truncate(heading, width).into(),
+    }
+
+    let mut lines = vec![edge.clone(), Line::default(), Line::from(header)];
+    match (selector.mode(), selector.status()) {
+        (Mode::ConfirmingDelete { .. }, _) => {
+            let alarm = Style::new().fg(theme.error);
+            lines.push(Line::from(vec![Span::styled(
+                format!(
+                    "  Delete session? {} confirm · {} cancel",
+                    hints::key_text("enter"),
+                    hints::key_text("escape/ctrl+c")
+                ),
+                alarm,
+            )]));
+            lines.push(Line::default());
+        }
+        (_, Some(status)) => {
+            lines.push(Line::from(vec![Span::styled(
+                format!("  {status}"),
+                Style::new().fg(theme.warning),
+            )]));
+            lines.push(Line::default());
+        }
+        _ => {
+            lines.push(keys_line(
+                &[
+                    ("tab", "scope"),
+                    ("re:<pattern>", "regex"),
+                    ("\"phrase\"", "exact"),
+                ],
+                theme,
+            ));
+            let path = match selector.show_path() {
+                true => "id (on)",
+                false => "id (off)",
+            };
+            lines.push(keys_line(
+                &[
+                    ("ctrl+s", "sort"),
+                    ("ctrl+n", "named"),
+                    ("ctrl+d", "delete"),
+                    ("ctrl+p", path),
+                    ("ctrl+r", "rename"),
+                ],
+                theme,
+            ));
+        }
+    }
+    lines.push(Line::default());
+    lines.push(input_line(selector.query(), theme));
+    lines.push(Line::default());
+
+    let rows = selector.rows();
+    let fits = max_rows
+        .saturating_sub(lines.len() + 4)
+        .clamp(1, session_selector::MAX_VISIBLE);
+    if rows.is_empty() {
+        let empty = match (selector.scope(), selector.named_only(), selector.query().is_empty()) {
+            (Scope::CurrentFolder, true, true) => {
+                "  No named sessions in current folder. Press ctrl+n to show all, or Tab to view all."
+            }
+            (Scope::CurrentFolder, false, true) if selector.folder_is_empty() => {
+                "  No sessions in current folder. Press Tab to view all."
+            }
+            _ => "  No sessions found",
+        };
+        lines.push(Line::from(vec![Span::styled(
+            truncate(empty, width),
+            muted,
+        )]));
+    } else {
+        let start = selector
+            .selected()
+            .saturating_sub(fits / 2)
+            .min(rows.len().saturating_sub(fits));
+        let deleting = match selector.mode() {
+            Mode::ConfirmingDelete { id } => Some(id.as_str()),
+            _ => None,
+        };
+        for (index, row) in rows.iter().enumerate().skip(start).take(fits) {
+            let meta = row.meta;
+            let chosen = index == selector.selected();
+            let mut right = Vec::new();
+            if selector.show_path() {
+                right.push(format!("[{}]", meta.id));
+            }
+            if selector.scope() == Scope::All {
+                right.push(shorten_home(&meta.workspace.display().to_string()));
+            }
+            right.push(meta.message_count.to_string());
+            right.push(session_selector::age(meta.updated_at, now_ms));
+            let right = right.join(" ");
+
+            let name = match meta.title.trim().is_empty() {
+                true => "(no messages)".to_string(),
+                false => meta.title.split_whitespace().collect::<Vec<_>>().join(" "),
+            };
+            let room = width
+                .saturating_sub(MARKER_WIDTH + text_width(&row.prefix) + text_width(&right) + 1)
+                .max(MIN_DETAIL);
+            let name = truncate(&name, room);
+            let used = MARKER_WIDTH + text_width(&row.prefix) + text_width(&name);
+            let gap = width.saturating_sub(used + text_width(&right)).max(1);
+
+            let mut name_style = match (
+                deleting == Some(meta.id.as_str()),
+                selector.is_current(meta),
+                meta.named,
+            ) {
+                (true, _, _) => Style::new().fg(theme.error),
+                (_, true, _) => Style::new().fg(theme.accent),
+                (_, _, true) => Style::new().fg(theme.warning),
+                _ => Style::new().fg(theme.text),
+            };
+            let mut line_style = Style::new();
+            if chosen {
+                name_style = name_style.add_modifier(Modifier::BOLD);
+                line_style = line_style.bg(theme.selected_bg);
+            }
+            let line = Line::from(vec![
+                Span::styled(
+                    match chosen {
+                        true => "› ",
+                        false => "  ",
+                    }
+                    .to_string(),
+                    Style::new().fg(theme.accent),
+                ),
+                Span::styled(row.prefix.clone(), dim),
+                Span::styled(name, name_style),
+                Span::raw(" ".repeat(gap)),
+                Span::styled(right, dim),
+            ])
+            .style(line_style);
+            lines.push(line);
+        }
+        if fits < rows.len() {
+            lines.push(Line::from(vec![Span::styled(
+                format!("  ({}/{})", selector.selected() + 1, rows.len()),
+                muted,
+            )]));
+        }
+    }
+    lines.push(Line::default());
+    lines.push(edge);
+    lines.into_iter().map(|line| clip(line, width)).collect()
+}
+
+/// A line typed into, with the cursor after what has been typed.
+fn input_line(text: &str, theme: &Theme) -> Line<'static> {
+    Line::from(vec![
+        Span::styled("  > ", Style::new().fg(theme.accent)),
+        Span::styled(text.to_string(), Style::new().fg(theme.text)),
+        Span::styled(
+            " ",
+            Style::new().fg(theme.text).add_modifier(Modifier::REVERSED),
+        ),
+    ])
+}
+
+/// Keys and what they do, each key dim and its meaning muted.
+fn keys_line(keys: &[(&str, &str)], theme: &Theme) -> Line<'static> {
+    let mut spans = vec![Span::raw("  ")];
+    for (index, (key, meaning)) in keys.iter().enumerate() {
+        if index > 0 {
+            spans.push(Span::styled(
+                " · ".to_string(),
+                Style::new().fg(theme.muted),
+            ));
+        }
+        spans.push(Span::styled(
+            hints::key_text(key),
+            Style::new().fg(theme.dim),
+        ));
+        spans.push(Span::styled(
+            format!(" {meaning}"),
+            Style::new().fg(theme.muted),
+        ));
+    }
+    Line::from(spans)
+}
+
 fn title(picker: &Picker, theme: &Theme) -> Line<'static> {
     Line::from(vec![
         Span::raw("  "),
@@ -530,6 +882,80 @@ mod tests {
                     .to_string()
             })
             .collect()
+    }
+
+    #[test]
+    fn the_fork_selector_lists_each_prompt_with_where_it_sits() {
+        let selector = ForkSelector::new(vec![
+            micro_commands::ForkPoint {
+                entry_id: "1".into(),
+                text: "fix the\nlogin bug".into(),
+            },
+            micro_commands::ForkPoint {
+                entry_id: "3".into(),
+                text: "now the tests".into(),
+            },
+        ]);
+        let out = rendered(&fork_selector_lines(&selector, &Theme::dark(), 60, 30));
+        assert!(out.contains(&"  Fork from Message".to_string()), "{out:#?}");
+        assert!(out.contains(&"  fix the login bug".to_string()), "{out:#?}");
+        assert!(out.contains(&"› now the tests".to_string()), "{out:#?}");
+        assert!(out.contains(&"  Message 2 of 2".to_string()), "{out:#?}");
+    }
+
+    #[test]
+    fn the_session_selector_shows_counts_and_ages_against_the_right_edge() {
+        let meta = |id: &str, parent: Option<&str>| micro_session::SessionMeta {
+            v: 1,
+            id: id.to_string(),
+            created_at: 0,
+            updated_at: 0,
+            workspace: std::path::PathBuf::from("/here"),
+            model_id: "anthropic/claude-opus-5".to_string(),
+            title: format!("about {id}"),
+            named: false,
+            message_count: 12,
+            parent: parent.map(str::to_string),
+            org_id: None,
+            agent_id: None,
+        };
+        let selector = SessionSelector::new(micro_commands::SessionChoices {
+            sessions: vec![meta("root", None), meta("fork", Some("root"))],
+            workspace: std::path::PathBuf::from("/here"),
+            current: None,
+        });
+        for width in [24, 50, 90] {
+            let lines = session_selector_lines(&selector, &Theme::dark(), width, 30, 3 * 3_600_000);
+            for line in &lines {
+                let drawn: usize = line
+                    .spans
+                    .iter()
+                    .map(|span| text_width(&span.content))
+                    .sum();
+                assert!(drawn <= width, "{drawn} > {width}");
+            }
+        }
+        let out = rendered(&session_selector_lines(
+            &selector,
+            &Theme::dark(),
+            90,
+            30,
+            3 * 3_600_000,
+        ));
+        assert!(
+            out.iter()
+                .any(|line| line.starts_with("  Resume Session (Current Folder)")),
+            "{out:#?}"
+        );
+        let root = out
+            .iter()
+            .find(|line| line.starts_with("› about root"))
+            .unwrap();
+        assert!(root.ends_with("12 3h"), "{root}");
+        assert!(
+            out.iter().any(|line| line.starts_with("  └─ about fork")),
+            "{out:#?}"
+        );
     }
 
     /// A list that is searched says what it is and gives its query line room; the rule below it is

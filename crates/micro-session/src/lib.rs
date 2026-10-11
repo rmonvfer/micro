@@ -25,6 +25,7 @@ use micro_types::StopReason;
 use micro_types::ToolDefinition;
 use micro_types::Usage;
 use micro_types::SCHEMA_VERSION;
+use std::collections::HashMap;
 use std::collections::HashSet;
 use std::io::ErrorKind;
 #[cfg(unix)]
@@ -311,6 +312,13 @@ impl SessionStore {
         self.collect(Some(workspace)).await
     }
 
+    /// Give a session that is not open a title of its own.
+    pub async fn rename(&self, id: &str, title: &str) -> Result<()> {
+        let mut meta = self.meta(id).await?;
+        meta.name(title);
+        write_meta(&self.meta_path(id), &meta).await
+    }
+
     /// Removes a session's blobs, metadata, and log.
     pub async fn delete(&self, id: &str) -> Result<()> {
         validate_id(id)?;
@@ -343,16 +351,22 @@ impl SessionStore {
         }
     }
 
-    /// Branches a conversation: copies messages `0..=through_index` of `id` into a fresh session
-    /// that records `id` as its parent.
-    pub async fn fork(&self, id: &str, through_index: usize) -> Result<Session> {
+    /// Branches a conversation: copies the path of `id` from its root down to `leaf` into a fresh
+    /// session that records `id` as its parent, or starts that session empty when there is no
+    /// leaf. The copy keeps the summary the path is read through, the names given to its entries,
+    /// and what was recorded beside it, so it reads exactly as the original did at `leaf`.
+    pub async fn fork(&self, id: &str, leaf: Option<&str>) -> Result<Session> {
         let source = self.load(id).await?;
-        if through_index >= source.messages.len() {
-            return Err(SessionError::IndexOutOfRange {
-                index: through_index,
-                len: source.messages.len(),
-            });
-        }
+        let tree = source.session.tree();
+        let path = match leaf {
+            Some(leaf) => tree
+                .path_to(leaf)
+                .ok_or_else(|| SessionError::NoSuchEntry {
+                    id: id.to_string(),
+                    entry: leaf.to_string(),
+                })?,
+            None => Vec::new(),
+        };
 
         let mut forked = self
             .create(
@@ -361,9 +375,58 @@ impl SessionStore {
             )
             .await?;
         forked.meta.parent = Some(id.to_string());
-        forked
-            .append_all(&source.messages[..=through_index])
-            .await?;
+        if path.is_empty() {
+            return Ok(forked);
+        }
+
+        let messages: Vec<Message> = path.iter().map(|entry| entry.message.clone()).collect();
+        forked.append_all(&messages).await?;
+        let copied: HashMap<&str, String> = path
+            .iter()
+            .zip(forked.tree.path_entry_ids())
+            .map(|(entry, copy)| (entry.id.as_str(), copy))
+            .collect();
+
+        let read_through = tree.compactions().iter().rev().find(|compaction| {
+            compaction
+                .first_kept
+                .as_deref()
+                .is_some_and(|kept| copied.contains_key(kept))
+        });
+        if let Some(compaction) = read_through {
+            let leaf_copy = forked.tree.head().unwrap_or_default().to_string();
+            let carried = tree::Compaction {
+                entry_id: copied
+                    .get(compaction.entry_id.as_str())
+                    .cloned()
+                    .unwrap_or(leaf_copy),
+                first_kept: compaction
+                    .first_kept
+                    .as_deref()
+                    .and_then(|kept| copied.get(kept).cloned()),
+                summary: compaction.summary.clone(),
+                timestamp: compaction.timestamp,
+            };
+            forked.tree.apply(tree::Line::Compaction(carried.clone()));
+            forked.write_line(&carried).await?;
+        }
+
+        for (original, copy) in &copied {
+            if let Some(label) = tree.label(original) {
+                forked.set_label(copy, Some(label.to_string())).await?;
+            }
+        }
+        for custom in tree.customs_on_path() {
+            let beside = custom
+                .parent_id
+                .as_deref()
+                .is_none_or(|parent| copied.contains_key(parent));
+            if beside {
+                forked
+                    .append_custom(&custom.custom_type, custom.data.clone())
+                    .await?;
+            }
+        }
         Ok(forked)
     }
 
@@ -674,8 +737,7 @@ impl Session {
 
     /// Give the session a title of its own, in place of the one taken from the first message.
     pub async fn rename(&mut self, title: &str) -> Result<()> {
-        self.meta.title = title.trim().to_string();
-        self.meta.updated_at = micro_types::now_ms();
+        self.meta.name(title);
         self.write_meta().await
     }
 
@@ -1240,7 +1302,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn forking_copies_history_through_the_index() {
+    async fn forking_copies_the_path_down_to_the_leaf() {
         let store = SessionStore::new(scratch("fork"));
         let mut session = store.create("/work", "opus").await.unwrap();
         let id = session.id().to_string();
@@ -1250,11 +1312,9 @@ mod tests {
             assistant("two"),
             Message::user("three"),
         ];
-        for message in &written {
-            session.append(message).await.unwrap();
-        }
+        session.append_all(&written).await.unwrap();
 
-        let forked = store.fork(&id, 1).await.unwrap();
+        let forked = store.fork(&id, Some("2")).await.unwrap();
         let forked_id = forked.id().to_string();
         assert_ne!(forked_id, id);
         assert_eq!(forked.meta().parent.as_deref(), Some(id.as_str()));
@@ -1269,30 +1329,104 @@ mod tests {
         assert!(original.session.meta().parent.is_none());
     }
 
+    /// A branch taken earlier in the session is copied as its own path, without what the
+    /// conversation went on to say elsewhere.
     #[tokio::test]
-    async fn forking_can_keep_the_whole_conversation() {
-        let store = SessionStore::new(scratch("fork-all"));
+    async fn forking_follows_the_leaf_rather_than_the_head() {
+        let store = SessionStore::new(scratch("fork-branch"));
         let mut session = store.create("/work", "opus").await.unwrap();
         let id = session.id().to_string();
-        session.append(&Message::user("one")).await.unwrap();
-        session.append(&assistant("two")).await.unwrap();
+        session
+            .append_all(&[Message::user("one"), assistant("two")])
+            .await
+            .unwrap();
+        session.branch_from("1").await.unwrap();
+        session.append(&assistant("another two")).await.unwrap();
 
-        let forked = store.fork(&id, 1).await.unwrap();
-        assert_eq!(forked.meta().message_count, 2);
+        let forked = store.fork(&id, Some("2")).await.unwrap();
+        let branch = store.load(forked.id()).await.unwrap();
+        assert_eq!(said(&branch.messages), ["one", "two"]);
+    }
+
+    /// The text of each message, for comparing conversations written at different moments.
+    fn said(messages: &[Message]) -> Vec<String> {
+        messages
+            .iter()
+            .map(|message| {
+                message
+                    .content()
+                    .iter()
+                    .map(ContentBlock::as_text)
+                    .collect()
+            })
+            .collect()
     }
 
     #[tokio::test]
-    async fn forking_past_the_end_is_rejected() {
-        let store = SessionStore::new(scratch("fork-range"));
+    async fn forking_without_a_leaf_starts_empty() {
+        let store = SessionStore::new(scratch("fork-empty"));
         let mut session = store.create("/work", "opus").await.unwrap();
         let id = session.id().to_string();
         session.append(&Message::user("one")).await.unwrap();
 
-        let error = store.fork(&id, 5).await.unwrap_err();
-        assert!(matches!(
-            error,
-            SessionError::IndexOutOfRange { index: 5, len: 1 }
-        ));
+        let forked = store.fork(&id, None).await.unwrap();
+        assert!(forked.branch().is_empty());
+        assert_eq!(forked.meta().parent.as_deref(), Some(id.as_str()));
+    }
+
+    /// A compacted conversation forks into one that reads the same: the summary, then what it
+    /// kept.
+    #[tokio::test]
+    async fn forking_keeps_the_summary_the_path_is_read_through() {
+        let store = SessionStore::new(scratch("fork-compacted"));
+        let mut session = store.create("/work", "opus").await.unwrap();
+        let id = session.id().to_string();
+        session
+            .append_all(&[
+                Message::user("one"),
+                assistant("two"),
+                Message::user("three"),
+                assistant("four"),
+            ])
+            .await
+            .unwrap();
+        session
+            .compacted("earlier work", 2, CompactionCost::default())
+            .await
+            .unwrap();
+        session.set_label("4", Some("done".into())).await.unwrap();
+        let expected = said(&session.branch());
+
+        let forked = store.fork(&id, Some("4")).await.unwrap();
+        let branch = store.load(forked.id()).await.unwrap();
+        assert_eq!(said(&branch.messages), expected);
+        assert_eq!(expected.len(), 3);
+        assert_eq!(branch.session.tree().label("4"), Some("done"));
+    }
+
+    #[tokio::test]
+    async fn forking_from_an_unknown_entry_is_rejected() {
+        let store = SessionStore::new(scratch("fork-unknown"));
+        let mut session = store.create("/work", "opus").await.unwrap();
+        let id = session.id().to_string();
+        session.append(&Message::user("one")).await.unwrap();
+
+        let error = store.fork(&id, Some("9")).await.unwrap_err();
+        assert!(matches!(error, SessionError::NoSuchEntry { entry, .. } if entry == "9"));
+    }
+
+    #[tokio::test]
+    async fn a_closed_session_can_be_given_a_name() {
+        let store = SessionStore::new(scratch("rename-closed"));
+        let mut session = store.create("/work", "opus").await.unwrap();
+        let id = session.id().to_string();
+        session.append(&Message::user("one")).await.unwrap();
+        drop(session);
+
+        store.rename(&id, "  the plan  ").await.unwrap();
+        let meta = store.meta(&id).await.unwrap();
+        assert_eq!(meta.title, "the plan");
+        assert!(meta.named);
     }
 
     #[tokio::test]
@@ -1382,6 +1516,7 @@ mod tests {
             workspace: PathBuf::from("/work"),
             model_id: "claude-opus-5".into(),
             title: String::new(),
+            named: false,
             message_count: 0,
             parent: None,
             org_id: None,

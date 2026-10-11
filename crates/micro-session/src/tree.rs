@@ -363,6 +363,31 @@ impl Tree {
         ids.into_iter().skip(from).collect()
     }
 
+    /// The entries from the root down to `leaf`, oldest first, or nothing when there is no such
+    /// entry.
+    pub fn path_to(&self, leaf: &str) -> Option<Vec<&Entry>> {
+        use std::collections::HashSet;
+
+        let mut path = Vec::new();
+        let mut cursor = Some(leaf.to_string());
+        let mut visited = HashSet::new();
+        while let Some(id) = cursor {
+            if !visited.insert(id.clone()) {
+                break;
+            }
+            let entry = self.entries.iter().find(|entry| entry.id == id)?;
+            path.push(entry);
+            cursor = entry.parent_id.clone();
+        }
+        path.reverse();
+        Some(path)
+    }
+
+    /// The entry with this id.
+    pub fn entry(&self, id: &str) -> Option<&Entry> {
+        self.entries.iter().find(|entry| entry.id == id)
+    }
+
     /// Where an entry sits along the path from the root to the head, counting from zero.
     pub fn position_on_path(&self, id: &str) -> Option<usize> {
         self.path_ids().iter().position(|entry_id| entry_id == id)

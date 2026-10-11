@@ -21,8 +21,13 @@ pub struct SessionMeta {
     pub updated_at: i64,
     pub workspace: PathBuf,
     pub model_id: String,
-    /// Derived from the first user message; empty until one is appended.
+    /// Derived from the first user message, empty until one is appended, unless the session was
+    /// given a title of its own.
     pub title: String,
+    /// Whether the title is one the session was given rather than one taken from its first
+    /// message.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub named: bool,
     pub message_count: usize,
     /// The session this one was forked from, when it did not start from scratch.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -45,11 +50,19 @@ impl SessionMeta {
             workspace,
             model_id,
             title: String::new(),
+            named: false,
             message_count: 0,
             parent: None,
             org_id: None,
             agent_id: None,
         }
+    }
+
+    /// Give the session a title of its own; a blank title leaves it unnamed.
+    pub(crate) fn name(&mut self, title: &str) {
+        self.title = title.trim().to_string();
+        self.named = !self.title.is_empty();
+        self.updated_at = now_ms();
     }
 
     /// Folds one appended message into the metadata.
