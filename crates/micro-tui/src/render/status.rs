@@ -27,6 +27,46 @@ const CONTEXT_ERROR: f64 = 90.0;
 /// Shown in place of a model id before one is known.
 const NO_MODEL: &str = "no-model";
 
+/// Sits between the groups of the usage row: the token counts, the cost, the context reading.
+const GROUP_SEPARATOR: &str = " · ";
+
+/// The fewest columns of the working directory worth showing beside its branch: below this the
+/// whole row is cut instead.
+const MIN_CWD: usize = 12;
+
+/// How much the usage row says, from everything down to the bare reading of the window. Each step
+/// leaves out what is least worth its room when the terminal is too narrow for the step before.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum Detail {
+    Full,
+    NoCacheWrite,
+    NoCacheRead,
+    NoTokenCounts,
+    NoAutoNote,
+    NoRoute,
+    ShortModel,
+    NoCacheHits,
+    NoThinking,
+    NoWindow,
+    NoModel,
+}
+
+impl Detail {
+    const ALL: [Detail; 11] = [
+        Detail::Full,
+        Detail::NoCacheWrite,
+        Detail::NoCacheRead,
+        Detail::NoTokenCounts,
+        Detail::NoAutoNote,
+        Detail::NoRoute,
+        Detail::ShortModel,
+        Detail::NoCacheHits,
+        Detail::NoThinking,
+        Detail::NoWindow,
+        Detail::NoModel,
+    ];
+}
+
 pub fn spinner_frame(tick: usize) -> &'static str {
     SPINNER[tick % SPINNER.len()]
 }
@@ -137,91 +177,114 @@ impl<'a> Footer<'a> {
         out
     }
 
+    /// Where the session is, cut from the front of the working directory when the row is too
+    /// narrow, so the end of the path and the branch stay in sight.
     fn place_row(&self, theme: &Theme, width: usize) -> Line<'static> {
-        Line::from(vec![Span::styled(
-            truncate(&self.place(), width),
-            Style::new().fg(theme.dim),
-        )])
+        let place = self.place();
+        let fitted = match text_width(&place) <= width {
+            true => place,
+            false => {
+                let after = text_width(&place) - text_width(self.cwd);
+                match width.checked_sub(after).filter(|room| *room >= MIN_CWD) {
+                    Some(room) => format!(
+                        "{}{}",
+                        truncate_front(self.cwd, room),
+                        &place[self.cwd.len()..]
+                    ),
+                    None => truncate(&place, width),
+                }
+            }
+        };
+        Line::from(vec![Span::styled(fitted, Style::new().fg(theme.dim))])
     }
 
-    /// The counts, then the context reading, then the model against the right edge.
+    /// The counts, the cost and the context reading, then the model against the right edge, at the
+    /// most detail the width has room for.
     fn usage_row(&self, theme: &Theme, width: usize) -> Line<'static> {
-        let dim = Style::new().fg(theme.dim);
-
-        let mut left = self.count_spans(theme);
-        if span_width(&left) > width {
-            left = clip_spans(left, width);
-        }
-        let left_width = span_width(&left);
-
-        let right = self.model_side();
-        let room = width.saturating_sub(left_width + MIN_GAP);
-        let right = match left_width + MIN_GAP + text_width(&right) <= width {
-            true => right,
-            false => clip(&right, room),
-        };
-        let gap = width.saturating_sub(left_width + text_width(&right));
-
-        let mut spans = left;
-        if gap > 0 {
-            spans.push(Span::styled(" ".repeat(gap), dim));
-        }
-        if !right.is_empty() {
-            spans.push(Span::styled(right, dim));
-        }
+        let spans = Detail::ALL
+            .into_iter()
+            .map(|detail| self.usage_spans(theme, detail, width))
+            .find(|spans| span_width(spans) <= width)
+            .unwrap_or_else(|| clip_spans(self.usage_spans(theme, Detail::NoModel, width), width));
         Line::from(spans)
     }
 
-    /// The left half: dim counts, then the context reading in whatever color it has earned.
-    fn count_spans(&self, theme: &Theme) -> Vec<Span<'static>> {
+    fn usage_spans(&self, theme: &Theme, detail: Detail, width: usize) -> Vec<Span<'static>> {
+        let mut spans = self.count_spans(theme, detail);
+        let right = self.model_side(detail);
+        if !right.is_empty() {
+            let gap = width
+                .saturating_sub(span_width(&spans) + text_width(&right))
+                .max(MIN_GAP);
+            let dim = Style::new().fg(theme.dim);
+            spans.push(Span::styled(" ".repeat(gap), dim));
+            spans.push(Span::styled(right, dim));
+        }
+        spans
+    }
+
+    /// The left half: dim counts and cost, then the context reading in whatever color it has
+    /// earned.
+    fn count_spans(&self, theme: &Theme, detail: Detail) -> Vec<Span<'static>> {
         let dim = Style::new().fg(theme.dim);
         let mut spans = Vec::new();
+        let separate = |spans: &mut Vec<Span<'static>>| {
+            if !spans.is_empty() {
+                spans.push(Span::styled(GROUP_SEPARATOR.to_string(), dim));
+            }
+        };
 
-        let counts = self.counts();
+        let counts = self.counts(detail);
         if !counts.is_empty() {
             spans.push(Span::styled(counts, dim));
         }
+        if let Some(cost) = self.cost_label() {
+            separate(&mut spans);
+            spans.push(Span::styled(cost, dim));
+        }
         if self.experimental {
-            if !spans.is_empty() {
-                spans.push(Span::styled(" • ".to_string(), dim));
-            }
+            separate(&mut spans);
             spans.push(Span::styled(
                 "xp".to_string(),
                 Style::new().fg(theme.warning).bold(),
             ));
         }
-        if !spans.is_empty() {
-            spans.push(Span::styled(" ".to_string(), dim));
-        }
+        separate(&mut spans);
         spans.push(Span::styled(
-            self.context(),
+            self.context(detail),
             Style::new().fg(self.context_color(theme)),
         ));
         spans
     }
 
-    fn counts(&self) -> String {
+    fn counts(&self, detail: Detail) -> String {
         let mut parts: Vec<String> = Vec::new();
-        for (marker, count) in [
-            ("↑", self.total.input),
-            ("↓", self.total.output),
-            ("R", self.total.cache_read),
-            ("W", self.total.cache_write),
+        for (marker, count, shown) in [
+            ("↑", self.total.input, detail < Detail::NoTokenCounts),
+            ("↓", self.total.output, detail < Detail::NoTokenCounts),
+            ("R", self.total.cache_read, detail < Detail::NoCacheRead),
+            ("W", self.total.cache_write, detail < Detail::NoCacheWrite),
         ] {
-            if count > 0 {
+            if shown && count > 0 {
                 parts.push(format!("{marker}{}", format_tokens(count)));
             }
         }
-        if let Some(rate) = self.cache_hit_rate() {
+        if let Some(rate) = self
+            .cache_hit_rate()
+            .filter(|_| detail < Detail::NoCacheHits)
+        {
             parts.push(format!("CH{rate:.1}%"));
         }
-
-        match (self.cost, self.subscription) {
-            (Some(cost), _) if cost > 0.0 => parts.push(format!("${cost:.3}")),
-            (_, true) => parts.push("(sub)".to_string()),
-            _ => {}
-        }
         parts.join(" ")
+    }
+
+    /// What the session has cost, or that a subscription pays for it.
+    fn cost_label(&self) -> Option<String> {
+        match (self.cost, self.subscription) {
+            (Some(cost), _) if cost > 0.0 => Some(format!("${cost:.3}")),
+            (_, true) => Some("(sub)".to_string()),
+            _ => None,
+        }
     }
 
     /// Share of the last turn's prompt that came out of cache.
@@ -234,16 +297,19 @@ impl<'a> Footer<'a> {
     }
 
     /// How much of the window the conversation is using.
-    fn context(&self) -> String {
-        let window = format_tokens(self.context_window);
+    fn context(&self, detail: Detail) -> String {
         let share = match self.context_percent() {
             Some(percent) => format!("{percent:.1}%"),
             None => "?".to_string(),
         };
+        let reading = match detail < Detail::NoWindow {
+            true => format!("{share}/{}", format_tokens(self.context_window)),
+            false => share,
+        };
 
-        match self.auto_compact {
-            true => format!("{share}/{window} (auto)"),
-            false => format!("{share}/{window}"),
+        match self.auto_compact && detail < Detail::NoAutoNote {
+            true => format!("{reading} (auto)"),
+            false => reading,
         }
     }
 
@@ -260,25 +326,38 @@ impl<'a> Footer<'a> {
     }
 
     /// The model, and the reasoning budget it is running with.
-    fn model_side(&self) -> String {
+    fn model_side(&self, detail: Detail) -> String {
+        if detail >= Detail::NoModel {
+            return String::new();
+        }
         let model = match self.model.is_empty() {
             true => NO_MODEL,
             false => self.model,
         };
 
-        let model = match self.provider.filter(|provider| !provider.is_empty()) {
-            Some(provider) => format!(
+        let model = match (
+            self.provider.filter(|provider| !provider.is_empty()),
+            detail < Detail::ShortModel,
+        ) {
+            (Some(provider), true) => format!(
                 "({provider}) {}",
                 model.strip_prefix(&format!("{provider}/")).unwrap_or(model)
             ),
-            None => model.to_string(),
+            (_, true) => model.to_string(),
+            (_, false) => model.rsplit('/').next().unwrap_or(model).to_string(),
         };
-        let selected = match self.thinking.filter(|level| !level.is_empty()) {
+        let selected = match self
+            .thinking
+            .filter(|level| !level.is_empty() && detail < Detail::NoThinking)
+        {
             Some("off") => format!("{model} • thinking off"),
             Some(level) => format!("{model} • {level}"),
             None => model,
         };
-        match self.routed.filter(|routed| !routed.is_empty()) {
+        match self
+            .routed
+            .filter(|routed| !routed.is_empty() && detail < Detail::NoRoute)
+        {
             Some(routed) => format!("{selected} → {routed}"),
             None => selected,
         }
@@ -364,6 +443,29 @@ pub fn shorten_home(path: &str) -> String {
         Some(rest) if rest.is_empty() || rest.starts_with('/') => format!("~{rest}"),
         _ => path.to_string(),
     }
+}
+
+/// `text` shortened to `width` columns by cutting from the front, marking the cut with an
+/// ellipsis, so the end of a path stays in sight.
+fn truncate_front(text: &str, width: usize) -> String {
+    if text_width(text) <= width {
+        return text.to_string();
+    }
+    if width == 0 {
+        return String::new();
+    }
+    let mut kept: Vec<&str> = Vec::new();
+    let mut used = 0;
+    for grapheme in text.graphemes(true).rev() {
+        let advance = text_width(grapheme);
+        if used + advance > width - 1 {
+            break;
+        }
+        kept.push(grapheme);
+        used += advance;
+    }
+    kept.reverse();
+    format!("…{}", kept.concat())
 }
 
 fn span_width(spans: &[Span<'static>]) -> usize {
@@ -640,26 +742,58 @@ mod tests {
         assert!(rendered(&footer.rows(&Theme::dark(), 40)[1]).ends_with(NO_MODEL));
     }
 
+    /// The token counts give way first, then the notes and the model's long name, and the cost
+    /// and the context reading last of all.
     #[test]
-    fn the_model_gives_way_before_the_counts_do() {
+    fn the_least_useful_details_give_way_first() {
         let footer = Footer {
-            total: usage(1_200, 340, 45_000, 2_100),
-            last: usage(1_200, 340, 45_000, 2_100),
+            model: "openrouter/z-ai/glm-5.3",
+            thinking: Some("high"),
+            auto_compact: true,
+            cost: Some(10.052),
+            total: usage(1_300_000, 194_000, 180_000_000, 2_100),
+            last: usage(2_000, 300, 400_000, 0),
+            context_window: 1_048_576,
             ..footer()
         };
-        for width in 1..60 {
-            let row = &footer.rows(&Theme::dark(), width)[1];
-            let text = rendered(row);
-            assert!(
-                text_width(&text) <= width,
-                "row of {} exceeds {width}: {text}",
-                text_width(&text)
-            );
-        }
+        let at = |width: usize| rendered(&footer.rows(&Theme::dark(), width)[1]);
 
-        let text = rendered(&footer.rows(&Theme::dark(), 26)[1]);
-        assert!(text.starts_with("↑1.2k"), "{text}");
-        assert!(!text.contains("claude"), "{text}");
+        let roomy = at(120);
+        assert!(
+            roomy.starts_with("↑1.3M ↓194k R180.0M W2.1k CH99.5% · $10.052 · "),
+            "{roomy}"
+        );
+        assert!(roomy.ends_with("openrouter/z-ai/glm-5.3 • high"), "{roomy}");
+
+        let snug = at(60);
+        assert!(!snug.contains('↑'), "the counts went first: {snug}");
+        assert!(snug.contains("CH99.5% · $10.052 · 38.4%/1.0M"), "{snug}");
+        assert!(snug.ends_with("glm-5.3 • high"), "{snug}");
+
+        let tight = at(28);
+        assert!(tight.starts_with("$10.052 · 38.4% "), "{tight}");
+        assert!(tight.ends_with(" glm-5.3"), "{tight}");
+
+        let cramped = at(16);
+        assert_eq!(cramped, "$10.052 · 38.4%", "{cramped}");
+
+        for width in 1..140 {
+            let drawn = text_width(&at(width));
+            assert!(drawn <= width, "row of {drawn} exceeds {width}");
+        }
+    }
+
+    #[test]
+    fn a_long_path_is_cut_from_the_front_to_keep_its_branch() {
+        let footer = Footer {
+            cwd: "~/code/biz/a/very/long/working/directory/micro",
+            branch: Some("main"),
+            ..footer()
+        };
+        let row = rendered(&footer.rows(&Theme::dark(), 30)[0]);
+        assert_eq!(text_width(&row), 30);
+        assert!(row.starts_with('…'), "{row}");
+        assert!(row.ends_with("directory/micro (main)"), "{row}");
     }
 
     #[test]
