@@ -541,6 +541,25 @@ async fn a_turn_asks_for_no_more_output_than_the_window_leaves() {
 }
 
 #[tokio::test]
+async fn the_provider_summarizer_asks_again_for_what_the_account_can_afford() {
+    let provider = FakeProvider::builder()
+        .turn(Turn::error(
+            "openrouter returned 402: This request requires more credits, or fewer max_tokens. \
+             You requested up to 90000 tokens, but can only afford 20000.",
+        ))
+        .turn(Turn::text("a summary"))
+        .build();
+    let mut roomy = model();
+    roomy.max_tokens = 90_000;
+    let summarizer = ProviderSummarizer::new(Arc::new(provider.clone()), roomy, "k");
+
+    let summary = summarizer.summarize(&[Message::user("hi")]).await.unwrap();
+
+    assert_eq!(summary.text, "a summary");
+    assert_eq!(provider.call(1).model.max_tokens, 18_000);
+}
+
+#[tokio::test]
 async fn a_provider_failure_fails_summarization() {
     let provider = FakeProvider::once(Turn::error("Fake returned 500: boom"));
     let summarizer = ProviderSummarizer::new(Arc::new(provider), model(), "test-key");

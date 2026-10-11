@@ -337,6 +337,47 @@ async fn a_retryable_error_is_retried() {
     assert_eq!(messages.len(), 2);
 }
 
+const CREDIT_REFUSAL: &str = "openrouter returned 402: This request requires more credits, or \
+    fewer max_tokens. You requested up to 532855 tokens, but can only afford 120362. To increase, \
+    visit https://openrouter.ai/settings/credits and add more credits";
+
+#[tokio::test(start_paused = true)]
+async fn a_credit_refusal_is_retried_asking_for_what_the_account_can_afford() {
+    let provider = FakeProvider::builder()
+        .turn(Turn::error(CREDIT_REFUSAL))
+        .turn(Turn::text("recovered"))
+        .build();
+    let mut roomy = model();
+    roomy.max_tokens = 532_855;
+    let mut agent = Agent::new(Arc::new(provider.clone()), Vec::new(), roomy, "test-key")
+        .with_context_window(1_048_576);
+
+    let (_, events) = run_agent(&mut agent, Message::user("hi")).await;
+
+    assert_eq!(provider.call_count(), 2);
+    assert_eq!(provider.call(1).model.max_tokens, 108_326);
+    assert_eq!(events.retries(), vec![(1, 0)]);
+    assert_eq!(events.assistant_message_ends()[0].text(), "recovered");
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_credit_refusal_already_within_what_was_asked_is_reported() {
+    let provider = FakeProvider::builder()
+        .turn(Turn::error(CREDIT_REFUSAL))
+        .turn(Turn::text("never reached"))
+        .build();
+    let mut agent = agent(&provider, Vec::new());
+
+    let (_, events) = run_agent(&mut agent, Message::user("hi")).await;
+
+    assert_eq!(provider.call_count(), 1);
+    assert!(events.retries().is_empty());
+    assert_eq!(
+        events.assistant_message_ends()[0].error.as_deref(),
+        Some(CREDIT_REFUSAL)
+    );
+}
+
 #[tokio::test(start_paused = true)]
 async fn a_non_retryable_error_is_not_retried() {
     let provider = FakeProvider::builder()

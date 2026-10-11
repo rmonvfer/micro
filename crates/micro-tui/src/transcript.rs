@@ -486,11 +486,17 @@ impl Transcript {
                 attempt,
                 max_attempts,
                 delay_ms,
+                adjustment,
             } => self.push_notice(
-                format!(
-                    "retrying ({attempt}/{max_attempts}) in {}s",
-                    delay_ms / 1000
-                ),
+                match adjustment {
+                    Some(adjustment) => {
+                        format!("{adjustment}, retrying ({attempt}/{max_attempts})")
+                    }
+                    None => format!(
+                        "retrying ({attempt}/{max_attempts}) in {}s",
+                        delay_ms / 1000
+                    ),
+                },
                 NoticeLevel::Warning,
             ),
 
@@ -1093,11 +1099,30 @@ mod tests {
             attempt: 2,
             max_attempts: 5,
             delay_ms: 2_000,
+            adjustment: None,
         });
         assert_eq!(
             transcript.entries()[0],
             Entry::Notice {
                 text: "retrying (2/5) in 2s".into(),
+                level: NoticeLevel::Warning,
+            }
+        );
+    }
+
+    #[test]
+    fn a_retry_that_changes_the_request_says_how() {
+        let mut transcript = Transcript::new();
+        transcript.apply(&AgentEvent::Retry {
+            attempt: 1,
+            max_attempts: 5,
+            delay_ms: 0,
+            adjustment: Some("openrouter credits cannot cover the output asked for".into()),
+        });
+        assert_eq!(
+            transcript.entries()[0],
+            Entry::Notice {
+                text: "openrouter credits cannot cover the output asked for, retrying (1/5)".into(),
                 level: NoticeLevel::Warning,
             }
         );

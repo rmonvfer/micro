@@ -40,6 +40,7 @@ pub use registry::resolve;
 pub use registry::ProviderInfo;
 pub use registry::ResolveError;
 pub use registry::ResolvedProvider;
+pub use retry::affordable_output_tokens;
 pub use retry::requested_retry_delay;
 pub use retry::retry_after;
 pub use runtime::model_call_event;

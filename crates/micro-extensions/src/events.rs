@@ -642,6 +642,7 @@ mod tests {
                 attempt: 1,
                 max_attempts: 3,
                 delay_ms: 100,
+                adjustment: None,
             }),
             None
         );

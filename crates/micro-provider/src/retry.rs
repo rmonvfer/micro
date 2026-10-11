@@ -1,11 +1,16 @@
 //! What a provider says about when to ask again.
 
 use reqwest::header::HeaderMap;
+use serde_json::Value;
 use std::time::Duration;
 use std::time::SystemTime;
 
 /// Introduces the wait a provider asked for, at the end of the error its refusal is reported as.
 const RETRY_AFTER_MARKER: &str = "[retry after ";
+
+/// How OpenRouter states the output an account can still pay for when it refuses a request for
+/// asking more than that.
+const AFFORDABLE_MARKER: &str = "can only afford ";
 
 /// How long a provider asked to be left alone before the request is tried again.
 ///
@@ -39,17 +44,50 @@ fn non_negative(value: &str) -> Option<f64> {
         .filter(|number| number.is_finite() && *number >= 0.0)
 }
 
-/// The error an unsuccessful response is reported as: who refused, with what status and body, and
-/// how long it asked to be left alone when it said.
+/// The error an unsuccessful response is reported as: who refused, with what status and what it
+/// said, and how long it asked to be left alone when it said.
 pub(crate) async fn refusal(label: &str, response: reqwest::Response) -> String {
     let status = response.status().as_u16();
     let wait = retry_after(response.headers(), SystemTime::now());
     let body = response.text().await.unwrap_or_default();
-    let mut error = format!("{label} returned {status}: {}", body.trim());
+    let mut error = format!("{label} returned {status}: {}", said(&body));
     if let Some(wait) = wait {
         error.push_str(&format!(" {RETRY_AFTER_MARKER}{}ms]", wait.as_millis()));
     }
     error
+}
+
+/// What a refusal's body says, read from the error message services wrap in JSON, with the
+/// upstream detail OpenRouter attaches when it only relays a failure. A body with no message in
+/// that shape is given whole.
+fn said(body: &str) -> String {
+    let body = body.trim();
+    let Ok(json) = serde_json::from_str::<Value>(body) else {
+        return body.to_string();
+    };
+    let error = json.get("error").unwrap_or(&json);
+    let Some(message) = error.get("message").and_then(Value::as_str) else {
+        return body.to_string();
+    };
+    match error
+        .pointer("/metadata/raw")
+        .and_then(Value::as_str)
+        .filter(|raw| !raw.trim().is_empty())
+    {
+        Some(raw) => format!("{message}: {}", raw.trim()),
+        None => message.to_string(),
+    }
+}
+
+/// The output tokens a provider said the account can still pay for, when it refused a request for
+/// asking for more.
+pub fn affordable_output_tokens(error: &str) -> Option<u32> {
+    let start = error.find(AFFORDABLE_MARKER)? + AFFORDABLE_MARKER.len();
+    let digits: String = error[start..]
+        .chars()
+        .take_while(char::is_ascii_digit)
+        .collect();
+    digits.parse().ok()
 }
 
 /// The wait a provider asked for, as [`refusal`] recorded it in an error.
@@ -119,6 +157,47 @@ mod tests {
         );
         assert_eq!(retry_after(&headers(&[("retry-after", "-3")]), now), None);
         assert_eq!(retry_after(&HeaderMap::new(), now), None);
+    }
+
+    #[test]
+    fn a_refusal_gives_the_message_a_service_wraps_in_json() {
+        assert_eq!(
+            said(r#"{"error":{"message":"Reasoning is mandatory for this endpoint.","code":400}}"#),
+            "Reasoning is mandatory for this endpoint."
+        );
+        assert_eq!(
+            said(r#"{"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}"#),
+            "Overloaded"
+        );
+        assert_eq!(said(r#"{"message":"Too many tokens"}"#), "Too many tokens");
+    }
+
+    #[test]
+    fn a_relayed_failure_keeps_the_upstream_detail() {
+        let body = r#"{"error":{"message":"Provider returned error","code":400,
+            "metadata":{"raw":"{\"detail\":\"bad tool schema\"}","provider_name":"Z.AI"}}}"#;
+        assert_eq!(
+            said(body),
+            r#"Provider returned error: {"detail":"bad tool schema"}"#
+        );
+    }
+
+    #[test]
+    fn a_body_without_a_message_is_given_whole() {
+        assert_eq!(said("  upstream timed out \n"), "upstream timed out");
+        assert_eq!(said(r#"{"detail":"nope"}"#), r#"{"detail":"nope"}"#);
+    }
+
+    #[test]
+    fn the_affordable_output_is_read_from_a_credit_refusal() {
+        let error = "openrouter returned 402: This request requires more credits, or fewer \
+                     max_tokens. You requested up to 532855 tokens, but can only afford 120362. \
+                     To increase, visit https://openrouter.ai/settings/credits";
+        assert_eq!(affordable_output_tokens(error), Some(120_362));
+        assert_eq!(
+            affordable_output_tokens("openrouter returned 402: no credits"),
+            None
+        );
     }
 
     #[test]

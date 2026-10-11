@@ -67,6 +67,10 @@ const MAX_RETRY_DELAY_MS: u64 = 30_000;
 /// instead of waiting it out.
 const MAX_REQUESTED_DELAY_MS: u64 = 60_000;
 
+/// The least output worth asking for again when the account can pay for no more: below it, the
+/// credit refusal is reported instead.
+const MIN_AFFORDABLE_OUTPUT: u32 = 1_024;
+
 const RETRYABLE_STATUSES: [u16; 8] = [408, 409, 425, 429, 500, 502, 503, 504];
 
 /// The context window assumed when the caller does not supply the model's own.
@@ -1636,6 +1640,23 @@ impl Agent {
                         error: error.clone(),
                         usage_unknown: true,
                     });
+                    if !emitted_content && attempt < MAX_ATTEMPTS {
+                        if let Some(limit) = affordable_limit(model.max_tokens, &error) {
+                            model.max_tokens = limit;
+                            events.send(AgentEvent::Retry {
+                                attempt,
+                                max_attempts: MAX_ATTEMPTS,
+                                delay_ms: 0,
+                                adjustment: Some(format!(
+                                    "{} credits cannot cover the output asked for; asking for at \
+                                     most {limit} tokens",
+                                    model.provider
+                                )),
+                            });
+                            continue;
+                        }
+                    }
+
                     let retryable =
                         !emitted_content && attempt < MAX_ATTEMPTS && is_retryable(&error);
 
@@ -1646,6 +1667,7 @@ impl Agent {
                             attempt,
                             max_attempts: MAX_ATTEMPTS,
                             delay_ms,
+                            adjustment: None,
                         });
                         tokio::time::sleep(Duration::from_millis(delay_ms)).await;
                         continue;
@@ -1802,6 +1824,16 @@ fn ends_unanswered(messages: &[Message]) -> bool {
         .tool_calls()
         .iter()
         .any(|(id, ..)| !answered.contains(id))
+}
+
+/// The output limit to ask for again after a provider refused a request for asking for more output
+/// than the account can pay for: what it said the account can afford, less a tenth, since the price
+/// differs between the services a router sends the request to. Nothing when that is no less than
+/// what was asked, or too little to answer with.
+pub(crate) fn affordable_limit(asked: u32, error: &str) -> Option<u32> {
+    let affordable = micro_provider::affordable_output_tokens(error)?;
+    let limit = affordable - affordable / 10;
+    (limit >= MIN_AFFORDABLE_OUTPUT && limit < asked).then_some(limit)
 }
 
 /// True when an error message carries a transient HTTP status.

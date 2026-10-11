@@ -8,6 +8,7 @@ use micro_context::Summary;
 use micro_context::COMPACTION_PROMPT;
 use micro_provider::ApiKey;
 use micro_provider::Provider;
+use micro_types::AssistantMessage;
 use micro_types::CompactionCost;
 use micro_types::Context;
 use micro_types::Message;
@@ -58,6 +59,33 @@ impl ProviderSummarizer {
         self.cache_key = key;
         self
     }
+
+    /// Ask `model` once: the finished message, or what the provider refused it with.
+    async fn request(
+        &self,
+        model: &Model,
+        context: &Context,
+    ) -> Result<std::result::Result<AssistantMessage, String>> {
+        let api_key = self
+            .api_key
+            .current()
+            .await
+            .map_err(ContextError::summarizer)?;
+        let mut stream = self
+            .provider
+            .stream(model.clone(), context.clone(), api_key);
+
+        while let Some(event) = stream.recv().await {
+            match event {
+                StreamEvent::Done { message } => return Ok(Ok(message)),
+                StreamEvent::Error { message } => return Ok(Err(message)),
+                _ => {}
+            }
+        }
+        Err(ContextError::summarizer(
+            "the provider closed the stream without a summary",
+        ))
+    }
 }
 
 #[async_trait]
@@ -81,39 +109,32 @@ impl Summarizer for ProviderSummarizer {
             model.max_tokens = micro_context::output_budget(&context, window, model.max_tokens);
         }
 
-        let api_key = self
-            .api_key
-            .current()
-            .await
-            .map_err(ContextError::summarizer)?;
-        let mut stream = self.provider.stream(model, context, api_key);
-
-        while let Some(event) = stream.recv().await {
-            match event {
-                StreamEvent::Done { message } => {
-                    let summary = message.text().trim().to_string();
-
-                    if summary.is_empty() {
-                        return Err(ContextError::summarizer("the model returned no summary"));
-                    }
-                    return Ok(Summary {
-                        text: summary,
-
-                        cost: CompactionCost {
-                            usage: message.usage,
-                            provider: message.provider,
-                            model: message.model,
-                            pricing: self.pricing.clone(),
-                        },
-                    });
+        let message = match self.request(&model, &context).await? {
+            Ok(message) => message,
+            Err(error) => match crate::affordable_limit(model.max_tokens, &error) {
+                Some(limit) => {
+                    model.max_tokens = limit;
+                    self.request(&model, &context)
+                        .await?
+                        .map_err(ContextError::summarizer)?
                 }
-                StreamEvent::Error { message } => return Err(ContextError::summarizer(message)),
-                _ => {}
-            }
-        }
+                None => return Err(ContextError::summarizer(error)),
+            },
+        };
 
-        Err(ContextError::summarizer(
-            "the provider closed the stream without a summary",
-        ))
+        let summary = message.text().trim().to_string();
+        if summary.is_empty() {
+            return Err(ContextError::summarizer("the model returned no summary"));
+        }
+        Ok(Summary {
+            text: summary,
+
+            cost: CompactionCost {
+                usage: message.usage,
+                provider: message.provider,
+                model: message.model,
+                pricing: self.pricing.clone(),
+            },
+        })
     }
 }

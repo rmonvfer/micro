@@ -89,11 +89,15 @@ pub enum AgentEvent {
         output: String,
         is_error: bool,
     },
-    /// A transient failure is being retried after `delay_ms`.
+    /// A failed request is being tried again after `delay_ms`.
     Retry {
         attempt: u32,
         max_attempts: u32,
         delay_ms: u64,
+        /// What is asked differently this time, when the request is changed to get past the
+        /// failure rather than only repeated.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        adjustment: Option<String>,
     },
     /// A tool has said what it has done so far.
     ToolUpdate {

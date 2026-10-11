@@ -45,7 +45,11 @@ pub async fn run(mut agent: Agent, prompt: Message, quiet: bool) -> Result<()> {
                 attempt,
                 max_attempts,
                 delay_ms,
-            } if !quiet => eprintln!("  … retry {attempt}/{max_attempts} in {delay_ms}ms"),
+                adjustment,
+            } if !quiet => match adjustment {
+                Some(adjustment) => eprintln!("  … {adjustment}, retry {attempt}/{max_attempts}"),
+                None => eprintln!("  … retry {attempt}/{max_attempts} in {delay_ms}ms"),
+            },
             AgentEvent::MessageEnd {
                 message: Message::Assistant(assistant),
             } => {
