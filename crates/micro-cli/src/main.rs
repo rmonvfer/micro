@@ -1,26 +1,9 @@
 //! Entry point.
 
-mod access;
-mod archive;
-mod bug_report;
-mod capabilities;
-mod codemode;
-mod codemode_models;
-mod commands;
-mod default_tools;
-mod extension_broker;
-mod extensions;
-mod headless;
-mod llama;
-mod mcp;
-mod model_registry;
-mod remote;
-mod runtime;
-mod sandbox;
-mod share;
-mod subcommands;
-mod update;
-mod virtual_models;
+use micro_cli::{
+    access, commands, extensions, headless, llama, mcp, model_registry, runtime, sandbox,
+    subcommands, update,
+};
 
 use anyhow::Result;
 use clap::Parser;

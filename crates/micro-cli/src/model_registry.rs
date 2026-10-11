@@ -14,7 +14,7 @@ use std::sync::Arc;
 use tokio::sync::Mutex;
 
 /// Every model of every type, each marked with whether its provider has a credential.
-pub(crate) fn catalog(models: Option<&ModelRuntime>) -> Value {
+pub fn catalog(models: Option<&ModelRuntime>) -> Value {
     let Some(models) = models else {
         return json!({ "models": [] });
     };

@@ -1728,10 +1728,7 @@ mod prompt_files {
 }
 
 /// Point a model at the host its credential names, when the credential names one.
-pub(crate) fn with_host(
-    mut model: micro_types::Model,
-    base_url: Option<&str>,
-) -> micro_types::Model {
+pub fn with_host(mut model: micro_types::Model, base_url: Option<&str>) -> micro_types::Model {
     if let Some(base_url) = base_url.filter(|host| !host.trim().is_empty()) {
         model.base_url = base_url.to_string();
     }
