@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+## [0.2.11] - 2026-10-11
+
+### Fixed
+
+- The session cost counts what OpenRouter actually charged. OpenRouter sends each request to whichever service serves the model, at that service's price, while micro priced every request at the model's listed rate, which is the cheapest service's, and could show half of what was spent. micro now reads the charge OpenRouter reports for each turn, cache refresh and compaction summary, and bills and budgets with it.
+- The footer gives up detail gracefully as the terminal narrows: it drops the token counts first, then the notes, the routed model, the provider prefix, the cache hit rate, the reasoning level and the window size, and keeps the cost and the context reading to the last. Its groups are set apart, and a long working directory is cut from the front so its end and the branch stay in sight.
+
 ## [0.2.10] - 2026-10-11
 
 ### Fixed
