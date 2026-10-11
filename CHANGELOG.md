@@ -2,6 +2,20 @@
 
 ## [Unreleased]
 
+## [0.2.12] - 2026-10-11
+
+### Added
+
+- `/fork` lists the conversation's prompts, as pi does. Choosing one starts a new session holding everything before that prompt and puts the prompt back in the editor to change and send again.
+- `/resume` opens a session selector: this folder's sessions or every folder's (Tab), with forks threaded under the session they came from, message counts and ages, loose, exact-phrase (`"…"`) and regular-expression (`re:`) search, threaded, recent and best-match orders (ctrl+s), named-only view (ctrl+n), session ids (ctrl+p), renaming (ctrl+r) and deleting (ctrl+d).
+- `micro -r` opens the session selector at startup; `micro -r <id>` resumes that session.
+
+### Fixed
+
+- Forking a compacted conversation forks the right messages and keeps the summary, the entry labels, and what was recorded beside the conversation.
+- Resuming a session brings back the model it was held with, when it can still be used.
+- The footer's cost and token counts follow the session that is open after `/resume`, `/fork`, `/clone`, and `/new`, instead of keeping the previous session's.
+
 ## [0.2.11] - 2026-10-11
 
 ### Fixed
