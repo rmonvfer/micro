@@ -1,6 +1,6 @@
 target/
 book/
-/.DS_Store
+.DS_Store
 /.tmp/
 /.micro/node_modules/
 
