@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+## [0.2.9] - 2026-10-11
+
+### Fixed
+
+- Requests to models with a very large context window no longer fail with "maximum context length" errors: micro asks for no more output than the window leaves beside the conversation, where it used to pass on OpenRouter's listed output limit of 90% of the window.
+- Compaction works on models that cannot stop reasoning, such as GLM 5.3 and Grok 4.7 on OpenRouter: the summary is asked for at the lowest reasoning level the model offers instead of with reasoning off. micro reads OpenRouter's `reasoning.mandatory` flag and keeps the bundled thinking levels when it refreshes the model list.
+
 ## [0.2.8] - 2026-10-05
 
 ### Fixed
