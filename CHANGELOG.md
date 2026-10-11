@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+## [0.2.10] - 2026-10-11
+
+### Fixed
+
+- A request OpenRouter refuses because the account's credits cannot cover the output it asks for is tried again asking for a little less than OpenRouter says the credits cover, for turns and for compaction summaries, and the transcript says why. It used to fail with OpenRouter's raw error.
+- Provider errors show the message the service sent, plus OpenRouter's upstream detail when it only relays a failure, instead of the whole JSON response.
+
 ## [0.2.9] - 2026-10-11
 
 ### Fixed
