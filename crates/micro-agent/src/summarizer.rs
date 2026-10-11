@@ -25,6 +25,8 @@ pub struct ProviderSummarizer {
     pricing: Option<ModelPricing>,
     /// What the conversation being summarized is called.
     cache_key: Option<String>,
+    /// The model's context window, which the summary request must fit inside.
+    context_window: Option<usize>,
 }
 
 impl ProviderSummarizer {
@@ -35,12 +37,19 @@ impl ProviderSummarizer {
             api_key: api_key.into(),
             pricing: None,
             cache_key: None,
+            context_window: None,
         }
     }
 
     /// Record the rates used to price the summary this model writes.
     pub fn with_pricing(mut self, pricing: ModelPricing) -> Self {
         self.pricing = Some(pricing);
+        self
+    }
+
+    /// Keep each summary request inside a context window of `tokens`.
+    pub fn with_context_window(mut self, tokens: usize) -> Self {
+        self.context_window = Some(tokens);
         self
     }
 
@@ -65,7 +74,12 @@ impl Summarizer for ProviderSummarizer {
 
         let mut model = self.model.clone();
 
-        model.thinking = ThinkingLevel::Off;
+        // A model that cannot stop reasoning reasons as little as it offers.
+        model.thinking = model.clamp_thinking(ThinkingLevel::Off);
+
+        if let Some(window) = self.context_window {
+            model.max_tokens = micro_context::output_budget(&context, window, model.max_tokens);
+        }
 
         let api_key = self
             .api_key

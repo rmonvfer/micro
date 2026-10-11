@@ -493,6 +493,9 @@ impl Catalog {
                 if incoming.cost.is_free() {
                     incoming.cost = existing.cost.clone();
                 }
+                let mut thinking = existing.thinking.clone();
+                thinking.extend(std::mem::take(&mut incoming.thinking));
+                incoming.thinking = thinking;
                 if incoming.context_window == UNKNOWN_LIMIT {
                     incoming.context_window = existing.context_window;
                 }

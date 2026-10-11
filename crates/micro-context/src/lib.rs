@@ -10,6 +10,7 @@ pub use compaction::estimate_tokens;
 pub use compaction::find_cut;
 pub use compaction::is_self_contained;
 pub use compaction::is_summary;
+pub use compaction::output_budget;
 pub use compaction::render_transcript;
 pub use compaction::summary_message;
 pub use compaction::summary_text;

@@ -493,6 +493,54 @@ async fn the_provider_summarizer_does_not_pay_for_thinking() {
 }
 
 #[tokio::test]
+async fn the_provider_summarizer_keeps_a_model_reasoning_when_it_cannot_stop() {
+    let provider = FakeProvider::once(Turn::text("a summary"));
+    let mut mandatory = model();
+    mandatory.reasoning = true;
+    mandatory.thinking = ThinkingLevel::High;
+    mandatory.compat.thinking.insert("off".into(), None);
+    mandatory.compat.thinking.insert("minimal".into(), None);
+    let summarizer = ProviderSummarizer::new(Arc::new(provider.clone()), mandatory, "k");
+
+    summarizer.summarize(&[Message::user("hi")]).await.unwrap();
+
+    assert_eq!(provider.call(0).model.thinking, ThinkingLevel::Low);
+}
+
+#[tokio::test]
+async fn the_provider_summarizer_asks_for_no_more_output_than_the_window_leaves() {
+    let provider = FakeProvider::once(Turn::text("a summary"));
+    let mut roomy = model();
+    roomy.max_tokens = 90_000;
+    let summarizer = ProviderSummarizer::new(Arc::new(provider.clone()), roomy, "k")
+        .with_context_window(100_000);
+
+    summarizer
+        .summarize(&[Message::user("a".repeat(200_000))])
+        .await
+        .unwrap();
+
+    let asked = provider.call(0).model.max_tokens as usize;
+    assert!(asked < 50_000, "asked for {asked}");
+}
+
+#[tokio::test]
+async fn a_turn_asks_for_no_more_output_than_the_window_leaves() {
+    let provider = FakeProvider::once(Turn::text("ok"));
+    let mut roomy = model();
+    roomy.max_tokens = 90_000;
+
+    let mut agent = Agent::new(Arc::new(provider.clone()), Vec::new(), roomy, "test-key")
+        .with_context_window(100_000)
+        .without_compaction();
+
+    run_agent(&mut agent, Message::user("a".repeat(200_000))).await;
+
+    let asked = provider.call(0).model.max_tokens as usize;
+    assert!(asked < 50_000, "asked for {asked}");
+}
+
+#[tokio::test]
 async fn a_provider_failure_fails_summarization() {
     let provider = FakeProvider::once(Turn::error("Fake returned 500: boom"));
     let summarizer = ProviderSummarizer::new(Arc::new(provider), model(), "test-key");

@@ -507,7 +507,8 @@ impl Agent {
             self.model.clone(),
             self.api_key.clone(),
         )
-        .for_conversation(self.cache_key.clone());
+        .for_conversation(self.cache_key.clone())
+        .with_context_window(self.context_window);
         if let Some(cost) = &self.model_cost {
             summarizer = summarizer.with_pricing(cost.into());
         }
@@ -544,6 +545,7 @@ impl Agent {
     /// The model's context window in tokens, which decides when compaction fires.
     pub fn with_context_window(mut self, tokens: usize) -> Self {
         self.context_window = tokens;
+        self.summarizer = self.provider_summarizer();
         self
     }
 
@@ -1538,6 +1540,10 @@ impl Agent {
         self.turn += 1;
         let turn = self.turn;
 
+        let mut model = self.model.clone();
+        model.max_tokens =
+            micro_context::output_budget(&context, self.context_window, model.max_tokens);
+
         let mut attempt = 0;
 
         events.send(AgentEvent::MessageStart {
@@ -1553,7 +1559,7 @@ impl Agent {
             let prepared = match self.api_key.current().await {
                 Ok(api_key) => self
                     .provider
-                    .request_payload(&self.model, &context, &api_key)
+                    .request_payload(&model, &context, &api_key)
                     .map(|payload| (api_key, payload)),
                 Err(error) => Err(error),
             };
@@ -1575,12 +1581,9 @@ impl Agent {
             };
 
             self.record_request(&context, attempt, &payload);
-            let mut stream = self.provider.stream_prepared(
-                self.model.clone(),
-                context.clone(),
-                api_key,
-                payload,
-            );
+            let mut stream =
+                self.provider
+                    .stream_prepared(model.clone(), context.clone(), api_key, payload);
 
             let mut emitted_content = false;
             let mut outcome: Option<Result<AssistantMessage, String>> = None;

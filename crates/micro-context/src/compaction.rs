@@ -6,6 +6,7 @@ use async_trait::async_trait;
 use micro_types::now_ms;
 use micro_types::CompactionCost;
 use micro_types::ContentBlock;
+use micro_types::Context;
 use micro_types::Message;
 use micro_types::StopReason;
 use std::collections::HashSet;
@@ -15,6 +16,10 @@ use std::sync::Arc;
 pub const CHARS_PER_TOKEN: usize = 4;
 
 const IMAGE_CHARS: usize = 4_800;
+
+/// The least output a request asks for however full its window is: a conversation that leaves no
+/// room even for this is for compaction to shrink, not for the output limit to squeeze.
+const MIN_OUTPUT_TOKENS: u32 = 1_024;
 
 /// Wraps the summary so it stays recognisable after a round trip through session storage.
 pub const SUMMARY_OPEN: &str = "<compaction-summary>";
@@ -357,6 +362,24 @@ pub fn estimate_context_tokens(messages: &[Message]) -> usize {
         return reported + estimate_tokens(&messages[index + 1..]);
     }
     estimate_tokens(messages)
+}
+
+/// The most output a request for `context` can ask for, so that what it carries and what it asks
+/// for together fit `context_window`. A service rejects a request whose output limit overruns the
+/// window outright, even when the answer would have been short. The estimate of what the request
+/// carries is padded by a quarter, since characters per token is only a rough guide.
+pub fn output_budget(context: &Context, context_window: usize, max_tokens: u32) -> u32 {
+    let system = context.system_prompt.as_deref().map_or(0, str::len);
+    let tools: usize = context
+        .tools
+        .iter()
+        .map(|tool| serde_json::to_string(tool).map_or(0, |json| json.len()))
+        .sum();
+    let carried =
+        estimate_context_tokens(&context.messages) + (system + tools).div_ceil(CHARS_PER_TOKEN);
+    let reserved = carried + carried / 4;
+    let room = u32::try_from(context_window.saturating_sub(reserved)).unwrap_or(u32::MAX);
+    max_tokens.min(room.max(MIN_OUTPUT_TOKENS))
 }
 
 fn content_chars(content: &[ContentBlock]) -> usize {
@@ -718,6 +741,51 @@ mod tests {
                 "budget {budget} cut at {cut} orphaned a tool result"
             );
         }
+    }
+
+    #[test]
+    fn the_output_limit_shrinks_to_what_the_window_leaves() {
+        let context = Context {
+            messages: vec![user(&"a".repeat(400_000))],
+            ..Context::default()
+        };
+
+        assert_eq!(output_budget(&context, 1_048_576, 943_718), 923_576);
+        assert!(100_000 + output_budget(&context, 1_048_576, 943_718) as usize <= 1_048_576);
+    }
+
+    #[test]
+    fn an_output_limit_that_fits_is_kept() {
+        let context = Context {
+            messages: vec![user("hello")],
+            ..Context::default()
+        };
+
+        assert_eq!(output_budget(&context, 200_000, 32_000), 32_000);
+    }
+
+    #[test]
+    fn the_system_prompt_and_tools_count_against_the_window() {
+        let bare = Context {
+            messages: vec![user("hello")],
+            ..Context::default()
+        };
+        let dressed = Context {
+            system_prompt: Some("s".repeat(40_000)),
+            ..bare.clone()
+        };
+
+        assert!(output_budget(&dressed, 50_000, 50_000) < output_budget(&bare, 50_000, 50_000));
+    }
+
+    #[test]
+    fn a_full_window_still_leaves_some_output() {
+        let context = Context {
+            messages: vec![user(&"a".repeat(1_000_000))],
+            ..Context::default()
+        };
+
+        assert_eq!(output_budget(&context, 100_000, 32_000), MIN_OUTPUT_TOKENS);
     }
 
     #[test]

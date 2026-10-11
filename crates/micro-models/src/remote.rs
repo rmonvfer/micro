@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 use std::time::Duration;
 
+use micro_types::ThinkingLevel;
 use serde::Deserialize;
 
 use crate::catalog::{Catalog, Modality, ModelCost, ModelDef, WireApi, UNKNOWN_LIMIT};
@@ -125,6 +126,10 @@ pub fn parse_openrouter(body: &str) -> Result<Vec<ModelDef>> {
         let architecture = model.architecture.unwrap_or_default();
         let pricing = model.pricing.unwrap_or_default();
         let top = model.top_provider.unwrap_or_default();
+        let mut thinking = BTreeMap::new();
+        if model.reasoning.unwrap_or_default().mandatory {
+            thinking.insert(ThinkingLevel::Off.as_str().to_string(), None);
+        }
         let input = modalities(architecture.input_modalities.iter().map(String::as_str));
         let cost = ModelCost {
             input: per_million(pricing.prompt.as_deref()),
@@ -151,7 +156,7 @@ pub fn parse_openrouter(body: &str) -> Result<Vec<ModelDef>> {
             aliases: Vec::new(),
             cost,
             compat: Default::default(),
-            thinking: Default::default(),
+            thinking,
         };
 
         if architecture.output_modalities.iter().any(|m| m == "image") {
@@ -373,6 +378,15 @@ struct OpenRouterModel {
     top_provider: Option<OpenRouterTopProvider>,
     #[serde(default)]
     supported_parameters: Vec<String>,
+    #[serde(default)]
+    reasoning: Option<OpenRouterReasoning>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct OpenRouterReasoning {
+    /// Whether the model reasons on every request, refusing one that asks it not to.
+    #[serde(default)]
+    mandatory: bool,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -737,6 +751,55 @@ mod tests {
             .unwrap();
         assert_eq!(merged.context_window, context);
         assert_eq!(merged.max_output_tokens, output);
+    }
+
+    #[test]
+    fn a_model_that_must_reason_cannot_be_asked_not_to() {
+        let models = parse_openrouter(
+            r#"{"data": [
+                {"id": "z-ai/glm-5.3", "supported_parameters": ["tools", "reasoning"],
+                 "reasoning": {"mandatory": true}},
+                {"id": "z-ai/glm-5.2", "supported_parameters": ["tools", "reasoning"],
+                 "reasoning": {"mandatory": false}}
+            ]}"#,
+        )
+        .unwrap();
+
+        let levels = |id: &str| {
+            models
+                .iter()
+                .find(|model| model.id == id)
+                .unwrap()
+                .thinking_levels()
+        };
+        assert!(!levels("z-ai/glm-5.3").contains(&ThinkingLevel::Off));
+        assert!(levels("z-ai/glm-5.2").contains(&ThinkingLevel::Off));
+    }
+
+    #[test]
+    fn a_listing_keeps_the_bundled_thinking_levels() {
+        let mut catalog = Catalog::bundled();
+        let before = catalog
+            .get("openrouter", "~anthropic/claude-fable-latest")
+            .unwrap()
+            .thinking
+            .clone();
+
+        catalog.merge_listing(
+            parse_openrouter(
+                r#"{"data": [{
+                "id": "~anthropic/claude-fable-latest",
+                "supported_parameters": ["tools", "reasoning"]
+            }]}"#,
+            )
+            .unwrap(),
+        );
+
+        let merged = catalog
+            .get("openrouter", "~anthropic/claude-fable-latest")
+            .unwrap();
+        assert_eq!(merged.thinking, before);
+        assert!(!merged.thinking_levels().contains(&ThinkingLevel::Off));
     }
 
     #[test]
