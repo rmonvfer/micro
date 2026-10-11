@@ -130,6 +130,7 @@ impl Summarizer for ProviderSummarizer {
             text: summary,
 
             cost: CompactionCost {
+                charged: message.charged,
                 usage: message.usage,
                 provider: message.provider,
                 model: message.model,

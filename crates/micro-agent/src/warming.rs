@@ -628,6 +628,7 @@ async fn keep_warm(
                     if let Some(recorder) = &request.recorder {
                         let _ = recorder.send(Record::Event {
                             event: LedgerEvent::CacheWarm {
+                                charged: message.charged,
                                 turn: request.turn,
                                 usage,
                                 provider: message.provider,

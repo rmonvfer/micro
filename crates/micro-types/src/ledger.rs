@@ -57,6 +57,9 @@ pub enum LedgerEvent {
     TurnUsage {
         turn: u64,
         usage: Usage,
+        /// What the provider said it charged, in US dollars, when it says.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        charged: Option<f64>,
         stop_reason: StopReason,
         provider: String,
         model: String,
@@ -67,6 +70,9 @@ pub enum LedgerEvent {
         /// The turn whose request was replayed.
         turn: u64,
         usage: Usage,
+        /// What the provider said it charged, in US dollars, when it says.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        charged: Option<f64>,
         provider: String,
         model: String,
     },
@@ -164,6 +170,9 @@ pub struct CompactionCost {
     pub provider: String,
     #[serde(default)]
     pub model: String,
+    /// What the provider said it charged, in US dollars, when it says.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub charged: Option<f64>,
     /// The rates in force when the summary was written.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pricing: Option<ModelPricing>,
@@ -396,6 +405,7 @@ mod tests {
     fn every_event_round_trips_through_its_tag() {
         let events = vec![
             LedgerEvent::TurnUsage {
+                charged: None,
                 turn: 1,
                 usage: Usage {
                     input: 10,
@@ -412,6 +422,7 @@ mod tests {
                 kept: 4,
                 message_entry_ids: Vec::new(),
                 cost: CompactionCost {
+                    charged: None,
                     usage: Usage {
                         input: 900,
                         output: 120,

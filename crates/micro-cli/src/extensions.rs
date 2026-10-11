@@ -2713,6 +2713,7 @@ export default (micro) => {
             session
                 .append(&micro_types::Message::Assistant(
                     micro_types::AssistantMessage {
+                        charged: None,
                         content: vec![micro_types::ContentBlock::ToolCall {
                             id: "call_1".into(),
                             name: "read".into(),
@@ -3944,6 +3945,7 @@ export default (micro) => {
         sender
             .send(micro_types::StreamEvent::Done {
                 message: micro_types::AssistantMessage {
+                    charged: None,
                     content: vec![micro_types::ContentBlock::text("Hi there")],
                     provider: "custom-anthropic".into(),
                     model: "claude-sonnet-4-5".into(),

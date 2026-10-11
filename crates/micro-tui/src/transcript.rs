@@ -913,6 +913,7 @@ mod tests {
             });
         }
         AssistantMessage {
+            charged: None,
             content,
             provider: "anthropic".into(),
             model: "claude-opus-5".into(),

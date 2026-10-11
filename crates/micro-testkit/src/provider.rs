@@ -209,6 +209,7 @@ impl Turn {
             },
             None => StreamEvent::Done {
                 message: AssistantMessage {
+                    charged: None,
                     content: self.content.clone(),
                     provider: provider.to_string(),
                     model: model.to_string(),
@@ -612,6 +613,7 @@ mod tests {
     #[test]
     fn tool_call_pairing_is_reported_from_a_recorded_context() {
         let assistant = AssistantMessage {
+            charged: None,
             content: vec![ContentBlock::ToolCall {
                 id: "c1".into(),
                 name: "read".into(),

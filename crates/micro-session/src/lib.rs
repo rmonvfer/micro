@@ -1032,6 +1032,7 @@ mod tests {
 
     fn assistant(text: &str) -> Message {
         Message::Assistant(AssistantMessage {
+            charged: None,
             content: vec![ContentBlock::text(text)],
             provider: "anthropic".into(),
             model: "claude-opus-5".into(),
@@ -1734,6 +1735,7 @@ mod tests {
         session.append(&assistant("answered")).await.unwrap();
         session
             .append_event(LedgerEvent::TurnUsage {
+                charged: None,
                 turn: 1,
                 usage: Usage {
                     input: 7,

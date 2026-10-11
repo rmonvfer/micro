@@ -538,6 +538,7 @@ mod tests {
 
     fn assistant(text: &str) -> Message {
         Message::Assistant(AssistantMessage {
+            charged: None,
             content: vec![ContentBlock::text(text)],
             provider: "anthropic".into(),
             model: "claude-opus-5".into(),
@@ -550,6 +551,7 @@ mod tests {
 
     fn calls(ids: &[&str]) -> Message {
         Message::Assistant(AssistantMessage {
+            charged: None,
             content: ids
                 .iter()
                 .map(|id| ContentBlock::ToolCall {
@@ -627,6 +629,7 @@ mod tests {
     fn reported_usage_anchors_the_context_estimate() {
         let mut messages = conversation(2, 100);
         let anchored = Message::Assistant(AssistantMessage {
+            charged: None,
             content: vec![ContentBlock::text("done")],
             provider: "anthropic".into(),
             model: "claude-opus-5".into(),
@@ -651,6 +654,7 @@ mod tests {
     fn a_failed_turn_does_not_anchor_the_estimate() {
         let mut messages = vec![user("hello")];
         messages.push(Message::Assistant(AssistantMessage {
+            charged: None,
             content: vec![ContentBlock::text("boom")],
             provider: "anthropic".into(),
             model: "claude-opus-5".into(),

@@ -201,6 +201,7 @@ mod tests {
 
     fn assistant(text: &str) -> Message {
         Message::Assistant(AssistantMessage {
+            charged: None,
             content: vec![micro_types::ContentBlock::text(text)],
             provider: "fake".into(),
             model: "test-model".into(),

@@ -623,6 +623,7 @@ mod tests {
 
     fn reply(stop_reason: StopReason, error: Option<&str>) -> Message {
         Message::Assistant(AssistantMessage {
+            charged: None,
             content: Vec::new(),
             provider: "anthropic".into(),
             model: "claude-opus-5".into(),

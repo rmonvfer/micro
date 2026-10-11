@@ -784,7 +784,7 @@ impl Agent {
 
         let summary = compacted.messages[0].clone();
         self.record_compaction(&compacted);
-        self.charge(compacted.cost.usage);
+        self.charge(compacted.cost.usage, compacted.cost.charged);
         self.warmer.stop("conversation compacted");
         self.messages = compacted.messages;
         Ok(summary)
@@ -1009,17 +1009,22 @@ impl Agent {
     }
 
     /// Charge what a provider said a request cost against the session's budget.
-    fn charge(&mut self, usage: Usage) {
+    /// Count a request against the budget: what the provider said it charged, or what the
+    /// selected model's rates make of its usage when it said nothing.
+    fn charge(&mut self, usage: Usage, charged: Option<f64>) {
         let Some(budget) = &mut self.budget else {
             return;
         };
-        budget.spent += budget
-            .cost
-            .price(
-                TokenUsage::new(usage.input as u64, usage.output as u64)
-                    .with_cache(usage.cache_read as u64, usage.cache_write as u64),
-            )
-            .total();
+        budget.spent += match charged {
+            Some(charged) => charged,
+            None => budget
+                .cost
+                .price(
+                    TokenUsage::new(usage.input as u64, usage.output as u64)
+                        .with_cache(usage.cache_read as u64, usage.cache_write as u64),
+                )
+                .total(),
+        };
     }
 
     /// The ceiling and what has been spent against it, once the spending has reached it.
@@ -1517,7 +1522,7 @@ impl Agent {
 
         let summary = compacted.messages[0].clone();
         self.record_compaction(&compacted);
-        self.charge(compacted.cost.usage);
+        self.charge(compacted.cost.usage, compacted.cost.charged);
         self.warmer.stop("conversation compacted");
         self.messages = compacted.messages;
 
@@ -1620,13 +1625,14 @@ impl Agent {
             match result {
                 Ok(message) => {
                     self.record_event(LedgerEvent::TurnUsage {
+                        charged: message.charged,
                         turn,
                         usage: message.usage,
                         stop_reason: message.stop_reason,
                         provider: message.provider.clone(),
                         model: message.model.clone(),
                     });
-                    self.charge(message.usage);
+                    self.charge(message.usage, message.charged);
                     self.keep_warm(&context, turn, message.usage);
                     events.send(AgentEvent::MessageEnd {
                         message: Message::Assistant(message.clone()),
@@ -1706,6 +1712,7 @@ impl Agent {
 
     fn empty_assistant(&self, stop_reason: StopReason, error: Option<String>) -> AssistantMessage {
         AssistantMessage {
+            charged: None,
             content: Vec::new(),
             provider: self.model.provider.clone(),
             model: self.model.id.clone(),
@@ -1906,6 +1913,7 @@ mod tests {
             let (sender, receiver) = tokio::sync::mpsc::unbounded_channel();
             let _ = sender.send(StreamEvent::Done {
                 message: AssistantMessage {
+                    charged: None,
                     content: vec![ContentBlock::text("earlier work")],
                     provider: self.name.to_string(),
                     model: model.id,
@@ -1925,6 +1933,7 @@ mod tests {
 
     fn assistant_calling(calls: &[(&str, &str)]) -> Message {
         Message::Assistant(AssistantMessage {
+            charged: None,
             content: calls
                 .iter()
                 .map(|(id, name)| ContentBlock::ToolCall {
@@ -1946,6 +1955,7 @@ mod tests {
 
     fn assistant_text(text: &str) -> Message {
         Message::Assistant(AssistantMessage {
+            charged: None,
             content: vec![ContentBlock::text(text)],
             provider: "old".into(),
             model: "old-model".into(),

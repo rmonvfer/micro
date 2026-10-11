@@ -959,6 +959,7 @@ impl Accumulator {
 
         let _ = sender.send(StreamEvent::Done {
             message: AssistantMessage {
+                charged: None,
                 content,
                 provider: self.provider.clone(),
                 model: self.model.clone(),
@@ -1257,6 +1258,7 @@ mod tests {
         let messages = vec![
             Message::user("read it"),
             Message::Assistant(AssistantMessage {
+                charged: None,
                 content: vec![ContentBlock::ToolCall {
                     id: "call_1".into(),
                     name: "read".into(),

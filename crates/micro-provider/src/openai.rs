@@ -233,6 +233,8 @@ struct Accumulator {
     model_id: String,
     blocks: Vec<ContentBlock>,
     usage: Usage,
+    /// What the service said the request cost, which OpenRouter reports with the usage.
+    charged: Option<f64>,
     stop_reason: StopReason,
     next_index: usize,
     text: OpenText,
@@ -252,6 +254,7 @@ impl Accumulator {
             model_id: model.id.clone(),
             blocks: Vec::new(),
             usage: Usage::default(),
+            charged: None,
             stop_reason: StopReason::Stop,
             next_index: 0,
             text: OpenText::default(),
@@ -265,6 +268,7 @@ impl Accumulator {
 
     fn build(&self) -> AssistantMessage {
         AssistantMessage {
+            charged: self.charged,
             content: self.blocks.clone(),
             provider: self.provider.clone(),
             model: self.model_id.clone(),
@@ -405,6 +409,13 @@ impl Accumulator {
         let completion = read_u32(usage, "completion_tokens");
         if completion > 0 {
             self.usage.output = completion;
+        }
+        if let Some(cost) = usage
+            .get("cost")
+            .and_then(Value::as_f64)
+            .filter(|cost| cost.is_finite() && *cost >= 0.0)
+        {
+            self.charged = Some(cost);
         }
     }
 
@@ -1109,6 +1120,7 @@ mod tests {
             messages: vec![
                 Message::user("go"),
                 Message::Assistant(AssistantMessage {
+                    charged: None,
                     content: vec![ContentBlock::ToolCall {
                         id: "call_1".into(),
                         name: "read".into(),
@@ -1171,6 +1183,7 @@ mod tests {
     #[test]
     fn an_assistant_turn_with_nothing_in_it_is_dropped() {
         let empty = AssistantMessage {
+            charged: None,
             content: vec![ContentBlock::Thinking {
                 thinking: "hmm".into(),
                 signature: None,
@@ -1360,6 +1373,27 @@ mod tests {
         assert_eq!(usage.input, 20);
         assert_eq!(usage.cache_read, 80);
         assert_eq!(usage.output, 20);
+    }
+
+    #[test]
+    fn what_the_service_charged_is_kept_with_the_usage() {
+        let events = drain(&[
+            text_chunk("hi"),
+            stop_chunk("stop"),
+            json!({ "choices": [], "usage": {
+                "prompt_tokens": 100,
+                "completion_tokens": 20,
+                "cost": 0.0123
+            } }),
+        ]);
+        assert_eq!(done(&events).charged, Some(0.0123));
+
+        let silent = drain(&[
+            text_chunk("hi"),
+            stop_chunk("stop"),
+            json!({ "choices": [], "usage": { "prompt_tokens": 100, "completion_tokens": 20 } }),
+        ]);
+        assert_eq!(done(&silent).charged, None);
     }
 
     #[test]

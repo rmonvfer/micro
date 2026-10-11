@@ -110,6 +110,7 @@ fn conversation() -> Vec<Message> {
             timestamp: 1_700_000_000_000,
         },
         Message::Assistant(AssistantMessage {
+            charged: None,
             content: vec![
                 ContentBlock::Thinking {
                     thinking: "the file is probably under src".into(),
@@ -229,6 +230,7 @@ fn a_longer_conversation_opens_with_the_same_prefix() {
         let first = client.payload(&model, &context);
 
         context.messages.push(Message::Assistant(AssistantMessage {
+            charged: None,
             content: vec![ContentBlock::text("done")],
             provider: provider.into(),
             model: model.id.clone(),

@@ -132,6 +132,7 @@ mod tests {
 
     fn assistant(text: &str) -> Message {
         Message::Assistant(AssistantMessage {
+            charged: None,
             content: vec![ContentBlock::text(text)],
             provider: "openrouter".into(),
             model: "gemini-3-pro".into(),

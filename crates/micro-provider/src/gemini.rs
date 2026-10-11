@@ -280,6 +280,7 @@ impl Accumulator {
 
     fn build(&self) -> AssistantMessage {
         AssistantMessage {
+            charged: None,
             content: self.blocks.clone(),
             provider: self.provider.clone(),
             model: self.model_id.clone(),
@@ -1389,6 +1390,7 @@ mod tests {
             messages: vec![
                 Message::user("go"),
                 Message::Assistant(AssistantMessage {
+                    charged: None,
                     content: vec![ContentBlock::ToolCall {
                         id: "gemini-call-0".into(),
                         name: "read".into(),
@@ -1586,6 +1588,7 @@ mod tests {
         let history = vec![
             Message::user("go"),
             Message::Assistant(AssistantMessage {
+                charged: None,
                 content: vec![
                     ContentBlock::text("working"),
                     ContentBlock::ToolCall {

@@ -705,6 +705,7 @@ impl Accumulator {
 
     fn build(&self) -> AssistantMessage {
         AssistantMessage {
+            charged: None,
             content: self.blocks.clone(),
             provider: self.provider.clone(),
             model: self.model_id.clone(),
@@ -1282,6 +1283,7 @@ mod tests {
     fn reasoning_goes_back_to_other_models_without_a_signature() {
         let context = Context {
             messages: vec![Message::Assistant(AssistantMessage {
+                charged: None,
                 content: vec![
                     ContentBlock::Thinking {
                         thinking: "Plan.".into(),

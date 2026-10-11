@@ -66,6 +66,29 @@ impl RequestCost {
     pub fn total(&self) -> f64 {
         self.input + self.output + self.cache_read + self.cache_write
     }
+
+    /// This estimate made to match what the provider said it charged, when it said: the charge
+    /// is spread over what was billed in the proportions the listed rates give, or counted as
+    /// input when the rates give nothing to go by.
+    pub fn charged(self, charged: Option<f64>) -> RequestCost {
+        let Some(charged) = charged else {
+            return self;
+        };
+        let estimated = self.total();
+        if estimated <= 0.0 {
+            return RequestCost {
+                input: charged,
+                ..RequestCost::default()
+            };
+        }
+        let scale = charged / estimated;
+        RequestCost {
+            input: self.input * scale,
+            output: self.output * scale,
+            cache_read: self.cache_read * scale,
+            cache_write: self.cache_write * scale,
+        }
+    }
 }
 
 impl std::ops::Add for RequestCost {
@@ -91,6 +114,23 @@ impl std::ops::AddAssign for RequestCost {
 mod tests {
     use super::*;
     use crate::catalog::{Catalog, ModelCost};
+
+    #[test]
+    fn a_reported_charge_replaces_the_estimate_in_proportion() {
+        let estimate = RequestCost {
+            input: 1.0,
+            output: 3.0,
+            cache_read: 0.0,
+            cache_write: 0.0,
+        };
+        let charged = estimate.charged(Some(8.0));
+        assert_close(charged.total(), 8.0);
+        assert_close(charged.input, 2.0);
+        assert_close(charged.output, 6.0);
+
+        assert_eq!(estimate.charged(None), estimate);
+        assert_close(RequestCost::default().charged(Some(0.5)).input, 0.5);
+    }
 
     /// Comparing dollar amounts, tolerant of binary floating-point rounding.
     fn assert_close(actual: f64, expected: f64) {

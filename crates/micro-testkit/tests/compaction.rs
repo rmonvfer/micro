@@ -39,6 +39,7 @@ fn model() -> Model {
 
 fn assistant(text: &str) -> Message {
     Message::Assistant(AssistantMessage {
+        charged: None,
         content: vec![ContentBlock::text(text)],
         provider: "fake".into(),
         model: "test-model".into(),
@@ -51,6 +52,7 @@ fn assistant(text: &str) -> Message {
 
 fn tool_calls(ids: &[&str]) -> Message {
     Message::Assistant(AssistantMessage {
+        charged: None,
         content: ids
             .iter()
             .map(|id| ContentBlock::ToolCall {

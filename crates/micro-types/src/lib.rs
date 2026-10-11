@@ -144,6 +144,11 @@ pub struct AssistantMessage {
     pub provider: String,
     pub model: String,
     pub usage: Usage,
+    /// What the provider said it charged for this response, in US dollars, when it says. It is
+    /// the price the service actually applied, which a router choosing between services can set
+    /// apart from any listed rate.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub charged: Option<f64>,
     pub stop_reason: StopReason,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
@@ -354,6 +359,7 @@ mod tests {
     #[test]
     fn assistant_message_collects_tool_calls_in_order() {
         let message = AssistantMessage {
+            charged: None,
             content: vec![
                 ContentBlock::text("working"),
                 ContentBlock::ToolCall {

@@ -3871,6 +3871,7 @@ mod tests {
     fn the_last_answer_is_what_gets_copied() {
         let mut app = app();
         app.transcript = Transcript::from_messages(&[Message::Assistant(AssistantMessage {
+            charged: None,
             content: vec![ContentBlock::text("the answer")],
             provider: "openrouter".into(),
             model: "gemini-3-pro".into(),
@@ -4487,6 +4488,7 @@ mod tests {
     fn the_usage_a_command_is_told_about_is_what_the_answers_cost() {
         let mut app = app();
         app.transcript = Transcript::from_messages(&[Message::Assistant(AssistantMessage {
+            charged: None,
             content: vec![ContentBlock::text("done")],
             provider: "openrouter".into(),
             model: "gemini-3-pro".into(),
@@ -4739,6 +4741,7 @@ mod tests {
     fn the_model_a_virtual_model_routed_to_is_remembered() {
         let answered = |provider: &str, model: &str| AgentEvent::MessageEnd {
             message: micro_types::Message::Assistant(micro_types::AssistantMessage {
+                charged: None,
                 content: Vec::new(),
                 provider: provider.into(),
                 model: model.into(),

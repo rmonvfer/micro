@@ -343,6 +343,7 @@ async fn a_history_is_repaired_where_it_is_installed_and_not_between_turns() {
     let abandoned = vec![
         Message::user("read a.txt"),
         Message::Assistant(micro_types::AssistantMessage {
+            charged: None,
             content: vec![micro_types::ContentBlock::ToolCall {
                 id: "call_1".into(),
                 name: "read".into(),

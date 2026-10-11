@@ -486,6 +486,7 @@ pub fn message_from_json(value: &Value) -> Option<Message> {
             timestamp: timestamp(),
         }),
         "assistant" => Some(Message::Assistant(micro_types::AssistantMessage {
+            charged: None,
             content: content(),
             provider: text(value, "provider"),
             model: text(value, "model"),
@@ -735,6 +736,7 @@ mod tests {
     #[test]
     fn an_assistant_messages_fields_are_camel_cased() {
         let assistant = micro_types::AssistantMessage {
+            charged: None,
             content: vec![ContentBlock::text("hi")],
             provider: "anthropic".into(),
             model: "claude-opus-5".into(),
@@ -764,6 +766,7 @@ mod tests {
         translator.payload_of(&AgentEvent::TurnStart);
 
         let first_reply = Message::Assistant(micro_types::AssistantMessage {
+            charged: None,
             content: vec![ContentBlock::text("running a tool")],
             provider: "anthropic".into(),
             model: "claude-opus-5".into(),
@@ -794,6 +797,7 @@ mod tests {
 
         translator.payload_of(&AgentEvent::TurnStart);
         let second_reply = Message::Assistant(micro_types::AssistantMessage {
+            charged: None,
             content: vec![ContentBlock::text("done")],
             provider: "anthropic".into(),
             model: "claude-opus-5".into(),
@@ -858,6 +862,7 @@ mod tests {
         let done = translator.payload_of(&AgentEvent::MessageDelta {
             event: StreamEvent::Done {
                 message: micro_types::AssistantMessage {
+                    charged: None,
                     content: vec![ContentBlock::text("Hello")],
                     provider: "anthropic".into(),
                     model: "claude-opus-5".into(),
@@ -913,6 +918,7 @@ mod tests {
                 timestamp: 10,
             },
             Message::Assistant(micro_types::AssistantMessage {
+                charged: None,
                 content: vec![
                     ContentBlock::text("thinking about it"),
                     ContentBlock::ToolCall {

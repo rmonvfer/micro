@@ -130,6 +130,8 @@ pub struct CompactionBill {
     pub cost: RequestCost,
     pub on_current_branch: bool,
     pricing: Option<ModelPricing>,
+    /// What the provider said it charged, when it said.
+    charged: Option<f64>,
 }
 
 /// What a session cost, read out of its ledger and priced against the catalog.
@@ -153,7 +155,7 @@ pub async fn bill(
         .collect();
 
     let mut requests: Vec<(u64, Requested)> = Vec::new();
-    let mut usages: Vec<(u64, Usage, String, String)> = Vec::new();
+    let mut usages: Vec<(u64, Usage, Option<f64>, String, String)> = Vec::new();
     let mut compactions: Vec<CompactionBill> = Vec::new();
     let mut model_calls: Vec<(ModelCallBill, Option<ModelPricing>)> = Vec::new();
     let mut tool_costs: Vec<ToolCostBill> = Vec::new();
@@ -191,20 +193,22 @@ pub async fn bill(
             LedgerEvent::TurnUsage {
                 turn,
                 usage,
+                charged,
                 provider,
                 model,
                 ..
             } => {
                 reached = reached.max(*turn);
-                usages.push((*turn, *usage, provider.clone(), model.clone()));
+                usages.push((*turn, *usage, *charged, provider.clone(), model.clone()));
             }
             // Keeping a turn's cache warm is billed at that turn's rates, beside it.
             LedgerEvent::CacheWarm {
                 turn,
                 usage,
+                charged,
                 provider,
                 model,
-            } => usages.push((*turn, *usage, provider.clone(), model.clone())),
+            } => usages.push((*turn, *usage, *charged, provider.clone(), model.clone())),
             LedgerEvent::Compaction {
                 cost,
                 message_entry_ids,
@@ -215,6 +219,7 @@ pub async fn bill(
                     provider: cost.provider.clone(),
                     model: cost.model.clone(),
                     usage: cost.usage,
+                    charged: cost.charged,
                     cost: RequestCost::default(),
                     on_current_branch: message_entry_ids.len() <= current_path.len()
                         && current_path[..message_entry_ids.len()] == message_entry_ids[..],
@@ -269,7 +274,9 @@ pub async fn bill(
     let mut tools: HashMap<String, Vec<(EventSource, u64)>> = HashMap::new();
     let mut turns: Vec<TurnBill> = Vec::new();
 
-    for (turn, usage, provider, model) in usages {
+    // What a provider said it charged is the cost; the rates only spread it over what was billed,
+    // and price a request the provider said nothing about.
+    for (turn, usage, charged, provider, model) in usages {
         let requested = requests.iter().find(|(at, _)| *at == turn);
         // The recorded rates are those of the model the request named. When another model
         // answered, as when a virtual model routed the request, that model's own rates apply.
@@ -277,16 +284,21 @@ pub async fn bill(
         let recorded = requested
             .filter(|(_, requested)| requested.named == answered)
             .and_then(|(_, requested)| requested.pricing.as_ref());
-        let cost = match recorded {
-            Some(pricing) => {
+        let cost = match (recorded, charged) {
+            (Some(pricing), _) => {
                 let priced = ModelCost::from(pricing);
-                if priced.is_free() {
+                if priced.is_free() && charged.is_none() {
                     Noted::name(&mut noted.unmetered, &provider, &model);
                 }
                 priced.price(counted(usage))
             }
-            None => rates(catalog, &provider, &model, &mut noted).price(counted(usage)),
-        };
+            (None, None) => rates(catalog, &provider, &model, &mut noted).price(counted(usage)),
+            // A charge the provider reported leaves nothing unpriced to note.
+            (None, Some(_)) => {
+                rates(catalog, &provider, &model, &mut Noted::default()).price(counted(usage))
+            }
+        }
+        .charged(charged);
         let lines = match requested {
             Some((_, requested)) => {
                 let defined = match tools.get(&requested.tools_blob) {
@@ -342,10 +354,10 @@ pub async fn bill(
     }
 
     for summarized in &mut compactions {
-        summarized.cost = match summarized.pricing.as_ref() {
-            Some(pricing) => {
+        summarized.cost = match (summarized.pricing.as_ref(), summarized.charged) {
+            (Some(pricing), charged) => {
                 let priced = ModelCost::from(pricing);
-                if priced.is_free() {
+                if priced.is_free() && charged.is_none() {
                     Noted::name(
                         &mut noted.unmetered,
                         &summarized.provider,
@@ -354,9 +366,17 @@ pub async fn bill(
                 }
                 priced.price(counted(summarized.usage))
             }
-            None => rates(catalog, &summarized.provider, &summarized.model, &mut noted)
+            (None, None) => rates(catalog, &summarized.provider, &summarized.model, &mut noted)
                 .price(counted(summarized.usage)),
-        };
+            (None, Some(_)) => rates(
+                catalog,
+                &summarized.provider,
+                &summarized.model,
+                &mut Noted::default(),
+            )
+            .price(counted(summarized.usage)),
+        }
+        .charged(summarized.charged);
     }
 
     // A model call is priced at the rates recorded with it. Without them it is priced from the
@@ -1144,6 +1164,7 @@ mod tests {
             .unwrap();
         session
             .append_event(LedgerEvent::TurnUsage {
+                charged: None,
                 turn,
                 usage: reported,
                 stop_reason: StopReason::Stop,
@@ -1157,6 +1178,7 @@ mod tests {
 
     fn answered(text: &str, reported: Usage) -> Message {
         Message::Assistant(AssistantMessage {
+            charged: None,
             content: vec![ContentBlock::text(text)],
             provider: "openai".into(),
             model: "test-model".into(),
@@ -1213,6 +1235,7 @@ mod tests {
         record_turn(&mut session, 1, turn).await;
         session
             .append_event(LedgerEvent::CacheWarm {
+                charged: None,
                 turn: 1,
                 usage: warm,
                 provider: "openai".into(),
@@ -1225,6 +1248,46 @@ mod tests {
 
         let billed = bill(&harness.sessions, &catalog(), &id).await.unwrap();
         assert!((billed.total - (spent(turn) + spent(warm))).abs() < 1e-12);
+    }
+
+    /// A router bills at the rates of whichever service answered, so what it said it charged is
+    /// what the request cost, whatever the listed rates make of the usage.
+    #[tokio::test]
+    async fn what_the_provider_charged_is_what_a_request_cost() {
+        let harness = Harness::new("bill-charged");
+        let mut session = harness
+            .sessions
+            .create(&harness.workspace, "openai/test-model")
+            .await
+            .unwrap();
+        let turn = usage(1_000, 200, 0);
+        record_turn(&mut session, 1, turn).await;
+        session
+            .append_event(LedgerEvent::TurnUsage {
+                charged: Some(0.75),
+                turn: 2,
+                usage: usage(2_000, 300, 50_000),
+                stop_reason: StopReason::Stop,
+                provider: "openai".into(),
+                model: "test-model".into(),
+            })
+            .await
+            .unwrap();
+        session
+            .append_event(LedgerEvent::CacheWarm {
+                charged: Some(0.25),
+                turn: 2,
+                usage: usage(0, 1, 50_000),
+                provider: "openai".into(),
+                model: "test-model".into(),
+            })
+            .await
+            .unwrap();
+        let id = session.id().to_string();
+        drop(session);
+
+        let billed = bill(&harness.sessions, &catalog(), &id).await.unwrap();
+        assert!((billed.total - (spent(turn) + 0.75 + 0.25)).abs() < 1e-12);
     }
 
     #[tokio::test]
@@ -1250,6 +1313,7 @@ mod tests {
                 "summary",
                 1,
                 CompactionCost {
+                    charged: None,
                     usage: summary,
                     provider: "openai".into(),
                     model: "test-model".into(),
@@ -1307,6 +1371,7 @@ mod tests {
             .unwrap();
         session
             .append_event(LedgerEvent::TurnUsage {
+                charged: None,
                 turn: 1,
                 usage: reported,
                 stop_reason: StopReason::Stop,
@@ -1475,6 +1540,7 @@ mod tests {
                 "what was said so far",
                 1,
                 CompactionCost {
+                    charged: None,
                     usage: summary,
                     provider: "openai".into(),
                     model: "test-model".into(),
@@ -1517,6 +1583,7 @@ mod tests {
                 "abandoned summary",
                 1,
                 CompactionCost {
+                    charged: None,
                     usage: summary,
                     provider: "openai".into(),
                     model: "test-model".into(),
@@ -1802,6 +1869,7 @@ mod tests {
         assert_eq!(message_bytes(&said), 5);
 
         let answered = Message::Assistant(AssistantMessage {
+            charged: None,
             content: vec![ContentBlock::text("hi")],
             provider: "openai".into(),
             model: "test-model".into(),
